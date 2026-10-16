@@ -53,7 +53,7 @@ def cfg(tmp_path: Path) -> Config:
 
 @pytest.fixture
 def healthy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep: True)
+    monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep, required=None: True)
 
 
 def run(
@@ -103,7 +103,7 @@ def test_failed_recovery_build_leaves_the_server_alone(cfg: Config, healthy: Non
 
 def test_unhealthy_restart_rolls_back(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     results = iter([False, True])
-    monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep: next(results))
+    monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep, required=None: next(results))
     result, git = run(cfg, {})
     assert result == "failed: bbbbbbbb did not restart cleanly; rolled back to aaaaaaaa"
     assert sum(c.startswith("launchctl kickstart") for c in git.calls) == 2
@@ -112,7 +112,7 @@ def test_unhealthy_restart_rolls_back(cfg: Config, monkeypatch: pytest.MonkeyPat
 def test_rollback_that_is_also_unhealthy_says_so(
     cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep: False)
+    monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep, required=None: False)
     result, _ = run(cfg, {})
     assert "aaaaaaaa is not healthy either" in result
 
@@ -204,3 +204,99 @@ def test_refuses_a_changed_remote(cfg: Config, healthy: None) -> None:
     git2 = Git(answers={**BASE, "remote get-url": (0, "https://github.com/dalbrecht/jesinia.git")})
     git2.environ = {"JESINIA_UPDATE_REMOTE": "https://github.com/dalbrecht/jesinia.git"}
     assert upd.update(cfg, git2, Path("/r")).startswith("updated")
+
+
+def _fetch(git: Git) -> str:
+    return next(c for c in git.calls if " fetch " in c)
+
+
+def test_should_ask_launchd_for_the_ssh_agent_socket_before_fetching(
+    cfg: Config, healthy: None
+) -> None:
+    git = Git(answers={**BASE, "launchctl getenv SSH_AUTH_SOCK": (0, "/private/tmp/launchd/L")})
+    git.environ = {}
+    assert upd.update(cfg, git, Path("/r")).startswith("updated")
+    asked = git.calls.index("launchctl getenv SSH_AUTH_SOCK")
+    assert asked < git.calls.index(_fetch(git))
+    assert _fetch(git).startswith("env SSH_AUTH_SOCK=/private/tmp/launchd/L git -C /r fetch")
+
+
+def test_should_keep_an_inherited_ssh_agent_socket(cfg: Config, healthy: None) -> None:
+    git = Git(answers=dict(BASE))
+    git.environ = {"SSH_AUTH_SOCK": "/tmp/mine"}
+    upd.update(cfg, git, Path("/r"))
+    assert not any("getenv" in c for c in git.calls)
+    assert _fetch(git).startswith("git -C /r fetch")
+
+
+def test_should_fetch_without_a_socket_when_launchd_has_none(cfg: Config, healthy: None) -> None:
+    git = Git(answers={**BASE, "launchctl getenv": (1, "")})
+    git.environ = {}
+    assert upd.update(cfg, git, Path("/r")).startswith("updated")
+    assert _fetch(git).startswith("git -C /r fetch")
+
+
+def test_should_check_health_against_the_candidates_own_required_modules(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[frozenset[str] | None] = []
+
+    def healthy(cfg: Config, sleep: object, required: frozenset[str] | None = None) -> bool:
+        seen.append(required)
+        return True
+
+    monkeypatch.setattr(upd, "_healthy", healthy)
+    git = Git(answers={**BASE, "jesinia required-modules": (0, '["kb", "renamed"]')})
+    assert upd.update(cfg, git, Path("/r")).startswith("updated")
+    ask = next(c for c in git.calls if "required-modules" in c)
+    assert "run --quiet --project /r/server jesinia required-modules" in ask
+    assert git.calls.index(ask) > next(i for i, c in enumerate(git.calls) if " merge " in c)
+    assert seen == [frozenset({"kb", "renamed"})]
+
+
+@pytest.mark.parametrize("answer", [(1, ""), (0, "not json"), (0, '{"kb": 1}'), (0, "[1]")])
+def test_should_fall_back_to_what_the_candidate_reports_when_it_cannot_say(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, answer: tuple[int, str]
+) -> None:
+    seen: list[frozenset[str] | None] = []
+
+    def healthy(cfg: Config, sleep: object, required: frozenset[str] | None = None) -> bool:
+        seen.append(required)
+        return True
+
+    monkeypatch.setattr(upd, "_healthy", healthy)
+    git = Git(answers={**BASE, "jesinia required-modules": answer})
+    assert upd.update(cfg, git, Path("/r")).startswith("updated")
+    # Empty set: every non-optional module /healthz reports must be ok.
+    assert seen == [frozenset()]
+
+
+def test_rollback_restart_uses_the_running_codes_required_modules(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[frozenset[str] | None] = []
+
+    def healthy(cfg: Config, sleep: object, required: frozenset[str] | None = None) -> bool:
+        seen.append(required)
+        return len(seen) > 1
+
+    monkeypatch.setattr(upd, "_healthy", healthy)
+    git = Git(answers={**BASE, "jesinia required-modules": (0, '["kb"]')})
+    assert "rolled back" in upd.update(cfg, git, Path("/r"))
+    assert seen == [frozenset({"kb"}), None]
+
+
+def test_healthy_passes_the_required_set_through(cfg: Config) -> None:
+    body = {"ok": True, "modules": {"kb": {"ok": True, "detail": "ok"}}}
+    with respx.mock:
+        respx.get("http://127.0.0.1:5374/healthz").mock(return_value=Response(200, json=body))
+        assert upd._healthy(cfg, lambda s: None, frozenset({"kb"})) is True
+
+
+def test_cli_required_modules_prints_json() -> None:
+    import json
+
+    from jesinia.cli import main
+
+    out = CliRunner().invoke(main.app, ["required-modules"])
+    assert out.exit_code == 0 and set(json.loads(out.stdout)) == set(required_modules())

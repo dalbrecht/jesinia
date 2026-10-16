@@ -129,8 +129,14 @@ install.
   If the build or the restart fails, it resets to the previous commit, rebuilds and
   restarts, so a bad commit never leaves you without a server. A restart only counts as
   healthy when `/healthz` reports every required module ok (`agents` and `github` are
-  optional), the same check `jesinia install` uses. Each attempt adds a line to
-  `update.log`.
+  optional), the same check `jesinia install` uses. The list of required modules comes
+  from the new version itself, so a commit that renames or removes a module isn't rolled
+  back for it; if the new version can't list them, every non-optional module its
+  `/healthz` reports must be ok. Each attempt adds a line to `update.log`.
+- **SSH remotes:** the update agent doesn't store an `SSH_AUTH_SOCK` path (it changes at
+  every login). If it doesn't inherit one, `jesinia update` asks launchd
+  (`launchctl getenv SSH_AUTH_SOCK`) before fetching. Without an agent socket, an SSH
+  fetch fails and the attempt is skipped; an HTTPS remote needs none.
 - **What you're trusting:** auto-update runs whatever is pushed to `main` on the remote
   you cloned from, just like `git pull && ./setup`. The remote URL is pinned when you
   enable auto-update (so the checkout must have an `origin` remote; without one,

@@ -106,13 +106,26 @@ class EmptyIn(BaseModel):
     pass
 
 
+class AiAuthorIn(BaseModel):
+    agent: str = Field(min_length=1, max_length=80, description="e.g. claude-code, codex")
+    model: str = Field(min_length=1, max_length=80, description="The model that wrote the text")
+
+
 class WriteToolIn(BaseModel):
     id: str | None = None
     title: str = Field(min_length=1)
     folder: str = ""
     body: str = ""
-    jesinia: dict[str, object] = Field(default_factory=dict)
+    # None (omitted) keeps an existing page's metadata on update; {} clears it.
+    jesinia: dict[str, object] | None = Field(
+        None, description="Front-matter `jesinia:` metadata; omit on update to keep it"
+    )
     expected_rev: str | None = None
+    provenance: AiAuthorIn | None = Field(
+        None,
+        description="New pages only: you wrote the body, so Jesinia records it inside an "
+        "AI provenance block (time and session stamped by the server)",
+    )
 
 
 class MoveToolIn(BaseModel):

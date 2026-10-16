@@ -249,6 +249,12 @@ def install(
     raise typer.Exit(install_mod.install(kb_path, sys_, auto_update=auto_update))
 
 
+@app.command("required-modules", hidden=True)
+def required_modules() -> None:
+    """Print this checkout's required module names as JSON (used by `jesinia update`)."""
+    typer.echo(json.dumps(sorted(install_mod.required_modules())))
+
+
 @app.command()
 def update() -> None:
     """Fast-forward this checkout to origin/main, rebuild, and restart (with rollback)."""

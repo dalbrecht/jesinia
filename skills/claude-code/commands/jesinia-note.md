@@ -10,5 +10,7 @@ Use the `jesinia-kb-conventions` skill.
 2. Write a concise note about it: the gist, open questions, and links to related pages
    as `[[id|Title]]` (found with `kb_search`).
 3. Show the note and the target title, `Notes/<title>.md`, and ask before saving.
-4. Save with `kb_write` (`folder: "Notes"`, `jesinia: {"kind": "note"}`), ending the
-   body with `About: [[<page id>|<page title>]]`. Report the saved path.
+4. Save with `kb_write` (`folder: "Notes"`, `jesinia: {"kind": "note"}`, and
+   `provenance: {"agent": "claude-code", "model": "<your model id>"}` so Jesinia records
+   the text as AI-written), ending the body with `About: [[<page id>|<page title>]]`.
+   Don't write provenance markers yourself. Report the saved path.

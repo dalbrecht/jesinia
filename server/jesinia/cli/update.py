@@ -7,11 +7,15 @@ Only a clean checkout on ``main`` that can fast-forward is updated. After pullin
 rebuilds (``make install build``) and restarts the server; if the build or the restarted
 server fails (including a 200 ``/healthz`` that reports a required module down), it goes
 back to the previous commit, rebuilds that, and restarts again.
+
+The required modules come from the candidate's own code (``jesinia required-modules`` run
+from the updated checkout), not from this process, which imported the old version.
 """
 
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import time
 from collections.abc import Callable
@@ -26,13 +30,15 @@ from jesinia.core.config import Config
 HEALTH_TIMEOUT = 60.0
 
 
-def _healthy(cfg: Config, sleep: Callable[[float], None]) -> bool:
+def _healthy(
+    cfg: Config, sleep: Callable[[float], None], required: frozenset[str] | None = None
+) -> bool:
     deadline = time.monotonic() + HEALTH_TIMEOUT
     while time.monotonic() < deadline:
         try:
             r = httpx.get(f"http://127.0.0.1:{cfg.port}/healthz", timeout=2, trust_env=False)
             # A 200 with a failing required module is a broken update, same as for install.
-            if r.status_code == 200 and not unhealthy_modules(r.json()):
+            if r.status_code == 200 and not unhealthy_modules(r.json(), required):
                 return True
         except (httpx.HTTPError, ValueError):
             pass
@@ -67,7 +73,10 @@ def _update(cfg: Config, sys: System, repo: Path, say: Callable[[str], str], res
         return say("skipped: origin is not the remote this install was set up from")
     if sys.run([*git, "status", "--porcelain", "--untracked-files=no"], check=False)[1]:
         return say("skipped: the checkout has local changes")
-    if sys.run([*git, "fetch", "--quiet", "origin", "main"], check=False)[0] != 0:
+    fetch = [*git, "fetch", "--quiet", "origin", "main"]
+    if sock := _ssh_auth_sock(sys):
+        fetch = ["env", f"SSH_AUTH_SOCK={sock}", *fetch]
+    if sys.run(fetch, check=False)[0] != 0:
         return say("skipped: could not fetch origin/main")
     old = sys.run([*git, "rev-parse", "HEAD"])[1]
     new = sys.run([*git, "rev-parse", "origin/main"])[1]
@@ -78,7 +87,7 @@ def _update(cfg: Config, sys: System, repo: Path, say: Callable[[str], str], res
 
     sys.run([*git, "merge", "--ff-only", "--quiet", "origin/main"])
     built = sys.run(["make", "-C", str(repo), "install", "build"], check=False)[0] == 0
-    if built and (not restart or _restart(cfg, sys)):
+    if built and (not restart or _restart(cfg, sys, _candidate_required(sys, repo))):
         return say(f"updated {old[:8]} → {new[:8]}")
 
     # Roll back to the version that was running.
@@ -100,6 +109,39 @@ def _update(cfg: Config, sys: System, repo: Path, say: Callable[[str], str], res
     return say(f"failed: {new[:8]} did not restart cleanly; rolled back to {old[:8]}")
 
 
-def _restart(cfg: Config, sys: System) -> bool:
+def _ssh_auth_sock(sys: System) -> str | None:
+    """The agent socket for ``git fetch`` over SSH, or None to fetch with the inherited env.
+
+    launchd jobs don't get the login shell's environment, and a path saved at install time
+    goes stale after logout or reboot, so ask launchd for the current one. Best effort:
+    without it, an HTTPS remote still works and an SSH fetch is skipped as before.
+    """
+    if sys.environ.get("SSH_AUTH_SOCK"):
+        return None  # already inherited: git sees it
+    code, sock = sys.run(["launchctl", "getenv", "SSH_AUTH_SOCK"], check=False)
+    return sock if code == 0 and sock else None
+
+
+def _candidate_required(sys: System, repo: Path) -> frozenset[str]:
+    """Required modules as the updated checkout defines them (it may rename or drop some).
+
+    If the candidate can't say, an empty set: then every non-optional module its
+    ``/healthz`` reports must be ok (see ``unhealthy_modules``).
+    """
+    uv = sys.which("uv") or "uv"
+    argv = [uv, "run", "--quiet", "--project", str(repo / "server"), "jesinia"]
+    code, out = sys.run([*argv, "required-modules"], check=False)
+    try:
+        names = json.loads(out) if code == 0 else None
+    except ValueError:
+        names = None
+    if isinstance(names, list) and all(isinstance(n, str) for n in names):
+        return frozenset(names)
+    sys.echo("note: the new version did not list its required modules; checking all it reports")
+    return frozenset()
+
+
+def _restart(cfg: Config, sys: System, required: frozenset[str] | None = None) -> bool:
+    """Restart and wait for health; ``required`` None means this (running) code's set."""
     sys.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LABEL}"], check=False)
-    return _healthy(cfg, sys.sleep)
+    return _healthy(cfg, sys.sleep, required)

@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 from jesinia.services.kb.domain.links import link_targets, retitle_links
 from jesinia.services.kb.domain.page import PageId
-from jesinia.services.kb.domain.provenance import wrap_ai
+from jesinia.services.kb.domain.provenance import inert, provenance_label, wrap_ai
 
 
 def test_wrap_ai_exact() -> None:
@@ -26,6 +26,17 @@ def test_wrap_ai_converts_to_utc() -> None:
         "x", agent="a", model="m", at=datetime(2026, 10, 16, 2, 20, tzinfo=pdt), session="s"
     )
     assert "at=2026-10-16T09:20:00Z" in out
+
+
+def test_inert_neutralises_comment_markers() -> None:
+    assert inert("a <!-- b --> c") == "a &lt;!-- b --&gt; c"
+
+
+def test_provenance_label_is_one_safe_token() -> None:
+    assert provenance_label("claude-opus-5-5") == "claude-opus-5-5"
+    assert provenance_label("gpt 5 -->") == "gpt-5----"
+    assert provenance_label("") == "unknown"
+    assert len(provenance_label("x" * 200)) == 80
 
 
 def test_retitle_links_only_touches_that_id() -> None:

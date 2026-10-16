@@ -384,12 +384,15 @@ def test_should_not_need_an_origin_remote_without_auto_update(
     assert inst.install(kb, Spy(yes=True, origin="")) == 0
 
 
-def test_updater_gets_the_ssh_agent_socket(tmp_home: Path, kb: Path, healthy: None) -> None:
+def test_should_not_persist_the_login_ssh_agent_socket_in_the_updater(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    # The socket path changes every login; `jesinia update` asks launchd for it instead.
     inst.install(kb, Spy(yes=True), auto_update=True)
     env = plistlib.loads(
         (tmp_home / "Library/LaunchAgents/com.jesinia.updater.plist").read_bytes()
     )["EnvironmentVariables"]
-    assert env["SSH_AUTH_SOCK"] == "/tmp/ssh"
+    assert "SSH_AUTH_SOCK" not in env
 
 
 def test_uninstall_cleans_codex_instructions_without_the_cli(

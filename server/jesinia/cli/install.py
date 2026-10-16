@@ -347,9 +347,8 @@ def _set_auto_update(
         return
     # Pin the remote the user installed from: the updater refuses to pull if it changes.
     env = {**extra, "JESINIA_UPDATE_REMOTE": remote} if remote else dict(extra)
-    # launchd doesn't inherit the setup shell: git fetch over SSH needs the agent socket.
-    if sock := sys.environ.get("SSH_AUTH_SOCK"):
-        env["SSH_AUTH_SOCK"] = sock
+    # No SSH_AUTH_SOCK here: the path changes every login, so `jesinia update` asks
+    # launchd for the current one before fetching.
     plist = render_updater_plist(
         Path(uv), REPO, cfg.log_dir, sys.environ.get("PATH", "/usr/bin:/bin"), env
     )

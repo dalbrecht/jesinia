@@ -45,7 +45,9 @@ repository; this skill is the working summary.
 ## Provenance
 
 Text you write goes inside a provenance block, which Jesinia adds when it records your
-words (for example through `notes_save`):
+words: through `notes_save`, or through `kb_write` when you create a page whose body you
+wrote and pass `provenance: {"agent": "claude-code", "model": "<your model id>"}`. The
+server stamps the time and session.
 
 ```
 <!-- jesinia:ai agent=<agent> model=<model> at=<UTC time> session=<id> -->
@@ -58,8 +60,10 @@ hand, and never wrap the user's own words in them.
 
 ## Safe updates
 
-1. `kb_read` the page and keep its `rev`.
-2. `kb_write` with `id` and `expected_rev` set to that `rev`.
+1. `kb_read` the page and keep its `rev` and its `jesinia` metadata.
+2. `kb_write` with `id`, `expected_rev` set to that `rev`, and the same `jesinia`
+   object copied from `kb_read` (change only the keys you mean to). If you leave
+   `jesinia` out, Jesinia keeps the existing metadata; an explicit `{}` clears it.
 3. If the write fails with `StaleWrite`, the user changed the page meanwhile. Read it
    again, merge your change into the new text, and write with the new `rev`. Never
    overwrite their edit.

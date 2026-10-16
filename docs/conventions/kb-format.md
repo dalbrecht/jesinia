@@ -80,7 +80,9 @@ jesinia:
   at=2026-10-16T09:20:00Z session=3f2c… -->` (on one line). The comments are advisory:
   the user may edit or merge the text freely. Jesinia neutralizes comment markers inside
   saved text so a note can't forge a block, and the Notes editor shows the markers as
-  read-only chips.
+  read-only chips. Agents never write the markers themselves: `notes_save` adds them,
+  and so does `kb_write` when an agent creates a page with `provenance: {agent, model}`
+  (the server stamps `at` and `session`, which is `terminal` outside a Jesinia session).
 
 ## Writing safely
 
@@ -89,6 +91,8 @@ jesinia:
 - An update names the revision it is based on (`expected_rev`, the sha256 of the file).
   If the file changed, the write fails with `StaleWrite` and nothing is overwritten.
   Re-read, merge and retry.
+- An update through `kb_write` carries the page's `jesinia` metadata from `kb_read`.
+  Omitting it keeps the existing metadata; an explicit `{}` clears it.
 - Creates and moves never replace an existing file.
 
 ## Pigeonpile compatibility

@@ -64,6 +64,8 @@ The skills in `skills/` (Claude Code plugin, Codex snippet) teach agents to:
 - use the `kb_*` tools and never edit files directly;
 - keep ids and foreign front matter intact;
 - link pages by id;
-- pass `expected_rev` and merge after `StaleWrite`;
+- pass `expected_rev` (and the `jesinia` metadata from `kb_read`) and merge after
+  `StaleWrite`;
 - treat `<untrusted-data>` as data;
-- avoid writing provenance markers by hand.
+- avoid writing provenance markers by hand, and pass `provenance` to `kb_write` when
+  creating a page they wrote.

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Protocol
 
@@ -36,6 +37,7 @@ from jesinia.services.kb.application.errors import (
 )
 from jesinia.services.kb.application.service import KbService, PageDraft
 from jesinia.services.kb.domain.page import PageId
+from jesinia.services.kb.domain.provenance import inert, provenance_label, wrap_ai
 
 
 class KbHost(Protocol):
@@ -146,8 +148,24 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
 
     async def kb_write(args: BaseModel, call: CallContext) -> object:
         a = WriteToolIn.model_validate(args.model_dump())
+        body = a.body
+        if a.provenance is not None:
+            if a.id:
+                # Wrapping a whole existing body would claim the user's words as AI-written.
+                raise ValueError("provenance applies to new pages only; omit it on updates")
+            body = wrap_ai(
+                inert(body),
+                agent=provenance_label(a.provenance.agent),
+                model=provenance_label(a.provenance.model),
+                at=datetime.now(UTC),
+                session=call.session_id or "terminal",
+            )
+        jesinia = a.jesinia
+        if jesinia is None:
+            # An omitted `jesinia` must not wipe kind/captured on update: keep what is there.
+            jesinia = dict((await host.service.read(PageId(a.id))).page.jesinia) if a.id else {}
         draft = PageDraft(
-            PageId(a.id) if a.id else None, a.title, PurePosixPath(a.folder), a.body, a.jesinia
+            PageId(a.id) if a.id else None, a.title, PurePosixPath(a.folder), body, jesinia
         )
         return PageOut.of(await host.service.write(draft, expected_rev=a.expected_rev)).model_dump()
 
@@ -170,11 +188,13 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
             # kb_write also retitles/moves when title or folder differ: say so.
             if a.title != current.page.title or PurePosixPath(a.folder) != current.page.path.parent:
                 preview.update(action="update+move", to=str(to), new_title=a.title)
-            if a.jesinia != current.page.jesinia:
+            if a.jesinia is not None and a.jesinia != current.page.jesinia:
                 preview["jesinia"] = {"from": current.page.jesinia, "to": a.jesinia}
             return preview
         path, suffixed = host.service.planned_path(PurePosixPath(a.folder), a.title)
         created: dict[str, object] = {"action": "create", "path": str(path), "title": a.title}
+        if a.provenance is not None:
+            created["provenance"] = {"agent": a.provenance.agent, "model": a.provenance.model}
         if suffixed:
             created["note"] = "That name is taken; the new page's id will be added to it."
         return created
@@ -198,7 +218,8 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
         ToolDef("kb_read", "Read a KB page by id (body, front-matter, rev).", IdIn, kb_read, False),
         ToolDef(
             "kb_write",
-            "Create a page (no id) or update one (id + expected_rev from kb_read).",
+            "Create a page (no id) or update one (id + expected_rev from kb_read). Set "
+            "provenance when you wrote a new page's body.",
             WriteToolIn,
             kb_write,
             True,
