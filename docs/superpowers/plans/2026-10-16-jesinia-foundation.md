@@ -809,7 +809,7 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
 **Files:**
 - Create: `web/packages/client/{package.json,src/openapi.d.ts (generated),src/client.ts,src/sse.ts}`, `web/packages/shell/` (shared app shell, nav, sync/conflict banner, PWA manifest + service-worker helper), `web/apps/launcher/` (built to `server/jesinia/static/launcher/`, served at `/` and `/settings/`)
 - Modify: `Makefile` (`gen-client`: `uv run --project server jesinia openapi > web/packages/client/openapi.json` then `pnpm --filter @jesinia/client gen`), `server/jesinia/core/app.py` (static mounts: `/` → launcher, `/<app>/` → `static/<app>/`, SPA fallback to the app's `index.html`)
-- Test: `web/packages/client/src/__tests__/sse.test.ts`, `web/apps/launcher/src/__tests__/settings.test.tsx`, `tests/e2e/launcher.spec.ts`
+- Test: `web/packages/client/src/__tests__/sse.test.ts`, `web/apps/launcher/src/__tests__/settings.test.tsx`, `web/tests/e2e/launcher.spec.ts`
 
 **Interfaces:**
 - Produces:
@@ -863,7 +863,7 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 **Files:**
 - Create: `web/apps/notes/` (built to `server/jesinia/static/notes/`)
 - Create: `server/jesinia/testing/fake_runner_app.py` (starts the server with `FakeRunner` registered as `"fake"` when `JESINIA_FAKE_RUNNER=1`; refuses to load unless `JESINIA_HOME` is set, so it can never activate in a real install)
-- Test: `web/apps/notes/src/__tests__/*.test.tsx`, `tests/e2e/notes.spec.ts`
+- Test: `web/apps/notes/src/__tests__/*.test.tsx`, `web/tests/e2e/notes.spec.ts`
 
 **Interfaces:**
 - Consumes: Task 23 client/shell, Task 22 `ChatTranscript`, Task 24 routes, Task 18 SSE + pending routes.

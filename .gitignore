@@ -1,0 +1,40 @@
+# Test coverage output
+coverage/
+
+# Standards temporary files
+.standards_tmp/
+.standards-pending/
+
+# Backup files
+.cursorrules.backup
+*.pre-standards-setup
+
+# Note: .standards.yml should be committed — it is the project's declared config.
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# JS
+node_modules/
+dist/
+web/**/coverage/
+
+# Built PWAs (Task 22+)
+server/jesinia/static/
+
+# OS / editor
+.DS_Store
+.coverage.json
+
+# Local environment (never commit secrets; see AGENTS.md)
+.env
+.env.*
+!.env.example
+server/.audit-requirements.txt

@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[project]
+name = "jesinia"
+version = "0.1.0"
+description = "Local knowledge base server and app suite."
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.118",
+    "uvicorn>=0.37",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.13",
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "pytest-cov>=7.0",
+    "import-linter>=2.5",
+    "httpx>=0.28",
+    "pytest-asyncio>=1.2",
+    "pip-audit>=2.9",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jesinia"]
+
+[tool.uv]
+# Standards age gate (lang-01 §1): never adopt a package version published < 3 days
+# before this date. Bump deliberately when updating dependencies.
+exclude-newer = "2026-10-13T00:00:00Z"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-include = ["../scripts/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.format]
+# Compatible with Black style
+
+[tool.mypy]
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+mypy_path = "../scripts"
+files = ["jesinia", "tests", "../scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "../scripts"]
+addopts = "-q --strict-markers"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+branch = true
+source = ["jesinia", "../scripts"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+skip_covered = true
+
+[tool.importlinter]
+root_package = "jesinia"
+
+[[tool.importlinter.contracts]]
+name = "core <- services <- apps"
+type = "layers"
+layers = ["(jesinia.apps)", "(jesinia.services)", "(jesinia.core)"]
+
+[[tool.importlinter.contracts]]
+name = "apps never import each other"
+type = "independence"
+modules = ["jesinia.apps.*"]
+
+[[tool.importlinter.contracts]]
+name = "clean architecture inside each service and app"
+type = "layers"
+containers = ["jesinia.services.*", "jesinia.apps.*"]
+layers = ["(api)", "(infrastructure)", "(application)", "(domain)"]

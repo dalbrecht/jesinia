@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Wireframe page helper: light/dark toggle. Not @jesinia/design source.
 (function () {
   var root = document.documentElement;

@@ -1,0 +1,3 @@
+[submodule ".standards"]
+	path = .standards
+	url = https://github.com/c65llc/coding-standards

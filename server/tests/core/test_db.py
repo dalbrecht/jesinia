@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from jesinia.core.db import DbClass, MigrationError, ModuleDb, open_db
+
+
+@pytest.fixture
+def fake_migrations(tmp_path: Path) -> Path:
+    d = tmp_path / "migrations"
+    d.mkdir()
+    (d / "0002_add_col.sql").write_text("ALTER TABLE items ADD COLUMN note TEXT;\n")
+    (d / "0001_init.sql").write_text(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\n"
+        "-- a comment; with a semicolon\n"
+        "INSERT INTO items (name) VALUES ('a;b');\n"
+    )
+    (d / "README.md").write_text("not a migration\n")
+    return d
+
+
+@pytest.fixture
+def broken_migrations(tmp_path: Path) -> Path:
+    d = tmp_path / "broken"
+    d.mkdir()
+    (d / "0001_init.sql").write_text("CREATE TABLE items (id INTEGER PRIMARY KEY);\n")
+    (d / "0002_bad.sql").write_text(
+        "CREATE TABLE half (id INTEGER);\nINSERT INTO nowhere VALUES (1);\n"
+    )
+    return d
+
+
+def test_migrations_apply_once_in_order(tmp_path: Path, fake_migrations: Path) -> None:
+    conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, fake_migrations))
+    assert conn.execute("select max(version) from schema_version").fetchone()[0] == 2
+    assert conn.execute("select name, note from items").fetchall() == [("a;b", None)]
+    conn.close()
+    conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, fake_migrations))  # idempotent
+    assert conn.execute("select count(*) from items").fetchone()[0] == 1
+    assert conn.execute("select count(*) from schema_version").fetchone()[0] == 2
+    conn.close()
+
+
+def test_wal_and_foreign_keys(tmp_path: Path, fake_migrations: Path) -> None:
+    conn = open_db(tmp_path, ModuleDb("t", DbClass.CACHE, fake_migrations))
+    assert conn.execute("pragma journal_mode").fetchone()[0] == "wal"
+    assert conn.execute("pragma foreign_keys").fetchone()[0] == 1
+    conn.close()
+    assert (tmp_path / "t.sqlite").exists()
+
+
+def test_failed_migration_raises_and_rolls_back(tmp_path: Path, broken_migrations: Path) -> None:
+    with pytest.raises(MigrationError, match="0002_bad.sql"):
+        open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, broken_migrations))
+    conn = sqlite3.connect(tmp_path / "t.sqlite")
+    assert conn.execute("select max(version) from schema_version").fetchone()[0] == 1
+    tables = {r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
+    assert "half" not in tables and "items" in tables
+    conn.close()
+
+
+def test_duplicate_version_numbers_rejected(tmp_path: Path) -> None:
+    d = tmp_path / "dup"
+    d.mkdir()
+    (d / "0001_a.sql").write_text("CREATE TABLE a (id INTEGER);\n")
+    (d / "0001_b.sql").write_text("CREATE TABLE b (id INTEGER);\n")
+    with pytest.raises(MigrationError, match="duplicate"):
+        open_db(tmp_path, ModuleDb("t", DbClass.HISTORY, d))
+
+
+def test_db_class_values() -> None:
+    assert [c.value for c in DbClass] == ["derived", "cache", "history"]
+
+
+def test_creates_data_dir(tmp_path: Path, fake_migrations: Path) -> None:
+    target = tmp_path / "nested" / "data"
+    open_db(target, ModuleDb("t", DbClass.DERIVED, fake_migrations)).close()
+    assert (target / "t.sqlite").exists()
+
+
+def test_trailing_statement_without_semicolon(tmp_path: Path) -> None:
+    d = tmp_path / "m"
+    d.mkdir()
+    (d / "0001_a.sql").write_text(
+        "-- leading comment\nCREATE TABLE a (id INTEGER);\nCREATE TABLE b (id INTEGER)"
+    )
+    (d / "0002_b.sql").write_text("CREATE TABLE c (id INTEGER);\n-- trailing comment only\n")
+    conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, d))
+    tables = {r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
+    assert {"a", "b", "c"} <= tables
+    conn.close()
+
+
+def test_two_statements_on_one_line(tmp_path: Path) -> None:
+    d = tmp_path / "compact"
+    d.mkdir()
+    (d / "0001_a.sql").write_text(
+        "CREATE TABLE a (v TEXT); INSERT INTO a VALUES ('x;y'); INSERT INTO a VALUES ('z');\n"
+    )
+    conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, d))
+    assert [r[0] for r in conn.execute("SELECT v FROM a ORDER BY v")] == ["x;y", "z"]
+    conn.close()
+
+
+def test_zero_numbered_migration_rejected(tmp_path: Path) -> None:
+    d = tmp_path / "zero"
+    d.mkdir()
+    (d / "0000_base.sql").write_text("CREATE TABLE z (id INTEGER);\n")
+    with pytest.raises(MigrationError, match="start at 0001"):
+        open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, d))
