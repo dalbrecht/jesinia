@@ -31,3 +31,4 @@ server/jesinia/static/
 
 # OS / editor
 .DS_Store
+.coverage.json

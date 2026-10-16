@@ -5,7 +5,10 @@ version = "0.1.0"
 description = "Local knowledge base server and app suite."
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.118",
+    "uvicorn>=0.37",
+]
 
 [dependency-groups]
 dev = [
@@ -14,6 +17,8 @@ dev = [
     "pytest>=8.4",
     "pytest-cov>=7.0",
     "import-linter>=2.5",
+    "httpx>=0.28",
+    "pytest-asyncio>=1.2",
 ]
 
 [build-system]
@@ -50,6 +55,8 @@ files = ["jesinia", "tests", "../scripts"]
 testpaths = ["tests"]
 pythonpath = [".", "../scripts"]
 addopts = "-q --strict-markers"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 branch = true
@@ -67,3 +74,14 @@ root_package = "jesinia"
 name = "core <- services <- apps"
 type = "layers"
 layers = ["(jesinia.apps)", "(jesinia.services)", "(jesinia.core)"]
+
+[[tool.importlinter.contracts]]
+name = "apps never import each other"
+type = "independence"
+modules = ["jesinia.apps.*"]
+
+[[tool.importlinter.contracts]]
+name = "clean architecture inside each service and app"
+type = "layers"
+containers = ["jesinia.services.*", "jesinia.apps.*"]
+layers = ["(api)", "(infrastructure)", "(application)", "(domain)"]

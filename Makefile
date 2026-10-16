@@ -50,8 +50,9 @@ typecheck: ## Type-check Python (mypy --strict) and TypeScript
 imports: ## Enforce layering contracts (import-linter)
 	$(UV) run lint-imports
 
-coverage-check: ## Python tests with the per-module coverage gate (>= 95%)
-	$(UV) run pytest --cov --cov-report=term-missing
+coverage-check: ## Python tests with the per-module coverage gate (>= 95% per file)
+	$(UV) run pytest --cov --cov-report=term-missing --cov-report=json:.coverage.json
+	python3 scripts/coverage_per_file.py server/.coverage.json
 
 spdx: ## Check every source file has the SPDX header
 	python3 scripts/check_spdx.py .
@@ -67,7 +68,7 @@ ci-py: ## Everything CI runs for Python
 	$(UV) run ruff check . ../scripts
 	$(UV) run mypy
 	$(UV) run lint-imports
-	$(UV) run pytest --cov --cov-report=term-missing
+	$(MAKE) coverage-check
 	python3 scripts/check_spdx.py .
 
 ci-js: ## Everything CI runs for JS
