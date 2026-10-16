@@ -40,9 +40,6 @@ class NotesSaveIn(BaseModel):
 
     title: str = Field(min_length=1, max_length=200, description="A short title for the note")
     text: str = Field(min_length=1, description="The text to keep (Markdown)")
-    user_text: str = Field(
-        default="", description="The user's own words, kept outside the AI block"
-    )
 
 
 def _session_json(s: Session) -> dict[str, object]:
@@ -98,9 +95,10 @@ def build_tools(host: NotesHost) -> Sequence[ToolDef]:
         if call.session_id is None:
             raise ValueError("notes_save works only inside a Notes session started from Jesinia")
         session = host.service.sessions.get(call.session_id)
+        # An agent records only its own text; user-attributed text comes from the PWA.
         n = await host.service.save_note(
-            call.session_id, title=a.title, user_text=a.user_text, agent_text=a.text,
-            model=session.model or "unknown",
+            call.session_id, title=a.title, user_text="", agent_text=a.text,
+            model=session.model or "unknown", by_agent=True,
         )  # fmt: skip
         return _saved(n)
 

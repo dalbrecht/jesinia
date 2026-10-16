@@ -44,13 +44,33 @@ class NoteLog(Protocol):
 
     def notes_for(self, subject_id: str) -> list[str]: ...
 
+    def count_for_session(self, session_id: str) -> int: ...
+
+
+class TooManySavesError(ValueError):
+    """An agent hit the per-session cap on pre-authorized saves."""
+
 
 class NotSubjectSessionError(ValueError):
     """The session is not a Notes session about a KB page."""
 
 
+MAX_AGENT_SAVES = 10  # per session: notes_save is pre-authorized, so bound what it can do
+_MODEL = re.compile(r"[^\w.:/@+-]")
+
+
 def _plain(snippet: str) -> str:
-    return " ".join(html.unescape(_TAG.sub("", snippet)).split())
+    """Search snippet HTML → plain text (unescape first, then strip any tags)."""
+    return " ".join(_TAG.sub("", html.unescape(snippet)).split())
+
+
+def _inert(text: str) -> str:
+    """Neutralise HTML comment markers so text cannot open or close a provenance block."""
+    return text.replace("<!--", "&lt;!--").replace("-->", "--&gt;")
+
+
+def _link_title(title: str) -> str:
+    return " ".join(title.replace("|", " ").replace("]", " ").split())
 
 
 class NotesService:
@@ -97,19 +117,28 @@ class NotesService:
         )
 
     async def save_note(
-        self, session_id: str, *, title: str, user_text: str, agent_text: str, model: str
+        self,
+        session_id: str,
+        *,
+        title: str,
+        user_text: str,
+        agent_text: str,
+        model: str,
+        by_agent: bool = False,
     ) -> PageWithRev:
         session = self.sessions.get(session_id)
         if session.subject.kind != "kb":
             raise NotSubjectSessionError(f"session {session_id} is not about a KB page")
-        at = self.now()
-        parts = [user_text.strip()] if user_text.strip() else []
-        parts.append(
-            wrap_ai(
-                agent_text.strip(), agent=session.runner, model=model, at=at, session=session_id
+        if by_agent and self.log.count_for_session(session_id) >= MAX_AGENT_SAVES:
+            raise TooManySavesError(
+                f"this session already saved {MAX_AGENT_SAVES} notes; save more from the Notes app"
             )
-        )
-        parts.append(f"About: [[{session.subject.ref}|{session.subject.title}]]")
+        at = self.now()
+        parts = [_inert(user_text.strip())] if user_text.strip() else []
+        model = _MODEL.sub("-", model)[:80] or "unknown"
+        text = _inert(agent_text.strip())
+        parts.append(wrap_ai(text, agent=session.runner, model=model, at=at, session=session_id))
+        parts.append(f"About: [[{session.subject.ref}|{_link_title(session.subject.title)}]]")
         body = "\n\n".join(parts) + "\n"
         captured = at.astimezone().isoformat(timespec="seconds")
         note = await self.kb.write(

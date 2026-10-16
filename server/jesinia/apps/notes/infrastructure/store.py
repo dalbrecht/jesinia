@@ -21,6 +21,12 @@ class SqliteNoteLog:
                 (note_id, session_id, subject_id, at.isoformat()),
             )
 
+    def count_for_session(self, session_id: str) -> int:
+        r = self.conn.execute(
+            "SELECT COUNT(*) FROM saved_notes WHERE session_id = ?", (session_id,)
+        )
+        return int(r.fetchone()[0])
+
     def notes_for(self, subject_id: str) -> list[str]:
         rows = self.conn.execute(
             "SELECT note_id FROM saved_notes WHERE subject_id = ? ORDER BY saved_at", (subject_id,)
