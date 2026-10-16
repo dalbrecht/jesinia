@@ -410,3 +410,25 @@ async def test_rename_leaves_a_page_alone_when_the_index_was_stale(kb: KbService
     result = await tags.apply_rename("old", "new", {p.id: p.rev for p in preview.pages})
     assert result == RenameResult([], [])
     assert (await kb.read(a)).page.body == "no tags here"
+
+
+async def test_merging_an_alias_moves_it_off_its_old_entry(kb: KbService) -> None:
+    tags = TagService(kb, None)
+    await tags.add("db")
+    await _edit_catalog(kb, "- #db", "- #db (aliases: database, dbs)")
+    await tags.merge(["database"], "storage", {})
+    assert await tags.catalog() == [
+        TagInfo("db", "", ("dbs",), False, 0),
+        TagInfo("storage", "", ("database",), False, 0),
+    ]
+    assert (await tags.check("database")).canonical == "storage"
+    assert (await _catalog_text(kb)).count("database") == 1
+
+
+async def test_rename_never_rewrites_link_anchors(kb: KbService) -> None:
+    tags = TagService(kb, None)
+    body = "See [the db](#sqlite) and ?q=#sqlite, but #sqlite is a tag.\n\n    #sqlite code\n"
+    a = await _page(kb, "A", body)
+    preview = await tags.preview_rename("sqlite", "databases")
+    await tags.apply_rename("sqlite", "databases", {p.id: p.rev for p in preview.pages})
+    assert (await kb.read(a)).page.body == body.replace("but #sqlite", "but #databases")

@@ -10,11 +10,14 @@ from collections.abc import Iterable, Sequence
 TAG_LINE_PREFIX = "Tags:"
 
 # A tag starts with a letter or digit (never "_"), continues with letters, digits or "-", and
-# cannot hug a preceding word character, "/" or another "#" (so "C#", URLs and "##" are safe).
-_TAG = re.compile(r"(?<![\w/#])#([^\W_](?:[^\W_]|-)*)")
+# cannot hug a preceding word character, "/", "#", "(", "?", "=" or "&" (so "C#", URLs, link
+# anchors like "[x](#a)", query strings like "?q=#a", "&#38;" and "##" are never tags).
+_TAG = re.compile(r"(?<![\w/#(?=&])#([^\W_](?:[^\W_]|-)*)")
 _VALID_TAG = re.compile(r"[^\W_](?:[^\W_]|-)*")
 _HEADING_LINE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
 _FENCE_LINE = re.compile(r" {0,3}(```|~~~)")
+_INDENTED_LINE = re.compile(r"(?: {4}|\t)")
+_LIST_MARKER = re.compile(r"[ \t]*(?:[-*+]|\d+[.)])(?:[ \t]|$)")
 _INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
 _MIN_FUZZY_LETTERS = 5
 _MAX_EDIT_DISTANCE = 2
@@ -36,12 +39,25 @@ def _blank(text: str) -> str:
     return re.sub(r"[^\n]", " ", text)
 
 
+def _is_indented_code(line: str, may_start_code: bool) -> bool:
+    """An indented code line: 4 spaces or a tab, after a blank line or more code, and not
+    an indented list item."""
+    return (
+        may_start_code
+        and _INDENTED_LINE.match(line) is not None
+        and line.strip() != ""
+        and _LIST_MARKER.match(line) is None
+    )
+
+
 def _mask_ignored(body: str) -> str:
-    """Blank out fenced code, headings and inline code, keeping offsets identical."""
+    """Blank out fenced and indented code, headings and inline code, keeping offsets identical."""
     masked_lines: list[str] = []
     open_fence: str | None = None
+    may_start_code = True  # at the start, after a blank line, or inside an indented block
     for line in body.splitlines(keepends=True):
         fence = _FENCE_LINE.match(line)
+        is_code = False
         if open_fence is not None:
             if fence is not None and fence.group(1) == open_fence:
                 open_fence = None
@@ -49,10 +65,14 @@ def _mask_ignored(body: str) -> str:
         elif fence is not None:
             open_fence = fence.group(1)
             masked_lines.append(_blank(line))
+        elif _is_indented_code(line, may_start_code):
+            is_code = True
+            masked_lines.append(_blank(line))
         elif _HEADING_LINE.match(line):
             masked_lines.append(_blank(line))
         else:
             masked_lines.append(_INLINE_CODE.sub(lambda m: _blank(m.group(0)), line))
+        may_start_code = open_fence is None and (is_code or line.strip() == "")
     return "".join(masked_lines)
 
 

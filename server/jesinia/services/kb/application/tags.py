@@ -168,6 +168,12 @@ def _merged(catalog: TagCatalog, sources: list[str], target: str) -> TagCatalog:
             aliases.extend((source, *entry.aliases))
         else:
             aliases.append(source)
+            owner = catalog.resolve(source)
+            if owner is not None and owner != target:
+                # An alias moves: the entry that held it must let go, or it keeps resolving there.
+                held = catalog.entries[owner]
+                kept_aliases = tuple(alias for alias in held.aliases if alias != source)
+                catalog = with_entry(catalog, replace(held, aliases=kept_aliases))
         catalog = without_entry(catalog, source)
     kept = tuple(dict.fromkeys(alias for alias in aliases if alias != target))
     return with_entry(catalog, replace(base, meaning=meaning, aliases=kept))

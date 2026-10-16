@@ -68,3 +68,23 @@ def test_is_valid_tag_accepts_only_normalised_grammar_tags() -> None:
     assert is_valid_tag("3d")
     for bad in ("", "-x", "_x", "a/b", "a_b", "A", "a b", "#a"):
         assert not is_valid_tag(bad), bad
+
+
+def test_extract_ignores_link_anchors_query_strings_and_indented_code() -> None:
+    body = (
+        "[jump](#anchor) a?q=#query x=#eq &#amp ok #real\n"
+        "\n    #indented-code\n    #more-code\n\t#tab-code\nback to #prose\n"
+        "- item #listed\n    - nested #nested\n"
+        "\n\t- tab list #tab-listed\n"
+    )
+    assert extract_tags(body) == ["real", "prose", "listed", "nested", "tab-listed"]
+
+
+def test_indented_lines_without_a_blank_line_before_are_not_code() -> None:
+    assert extract_tags("para\n    #continued\n") == ["continued"]
+    assert extract_tags("    #first-line-code\n") == []
+
+
+def test_replace_tag_leaves_link_anchors_alone() -> None:
+    body = "[x](#sqlite) #sqlite\n"
+    assert replace_tag(body, "sqlite", "db") == "[x](#sqlite) #db\n"
