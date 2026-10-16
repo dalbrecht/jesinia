@@ -156,6 +156,29 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
         result = await host.service.move(PageId(a.id), PurePosixPath(a.folder), a.title)
         return MoveOut.of(result).model_dump()
 
+    async def preview_write(args: BaseModel) -> dict[str, object]:
+        a = WriteToolIn.model_validate(args.model_dump())
+        if a.id:
+            current = await host.service.read(PageId(a.id))
+            return {
+                "action": "update",
+                "path": str(current.page.path),
+                "title": current.page.title,
+                "current": current.page.body,
+            }
+        folder = PurePosixPath(a.folder)
+        return {"action": "create", "path": str(folder / f"{a.title}.md"), "title": a.title}
+
+    async def preview_move(args: BaseModel) -> dict[str, object]:
+        a = MoveToolIn.model_validate(args.model_dump())
+        current = await host.service.read(PageId(a.id))
+        title = a.title or current.page.title
+        return {
+            "action": "move",
+            "path": str(current.page.path),
+            "to": str(PurePosixPath(a.folder) / f"{title}.md"),
+        }
+
     async def kb_tree(args: BaseModel, call: CallContext) -> object:
         return [TreeOut.of(n).model_dump() for n in await host.service.tree()]
 
@@ -172,9 +195,15 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
             WriteToolIn,
             kb_write,
             True,
+            preview_write,
         ),
         ToolDef(
-            "kb_move", "Move or rename a page; renames update link text.", MoveToolIn, kb_move, True
+            "kb_move",
+            "Move or rename a page; renames update link text.",
+            MoveToolIn,
+            kb_move,
+            True,
+            preview_move,
         ),
         ToolDef("kb_tree", "List KB folders and pages with page counts.", EmptyIn, kb_tree, False),
         ToolDef("kb_link", "Resolve a page id to its title and path.", IdIn, kb_link, False),

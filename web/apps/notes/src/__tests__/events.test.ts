@@ -41,10 +41,23 @@ describe("chat events", () => {
         pending_id: "p1",
         tool: "kb_write",
         args: { title: "Draft", folder: "Notes", body: "a\nb" },
+        target: { action: "create", path: "Notes/Draft.md" },
       }),
       ev("pending_write", { pending_id: "p2", tool: "notes_save", args: { title: "N", text: "one" } }),
-      ev("pending_write", { pending_id: "p3", tool: "kb_update_body", args: { id: "abc", body: "x" } }),
-      ev("pending_write", { pending_id: "p4", tool: "kb_write", args: { title: "Root" } }),
+      ev("pending_write", {
+        pending_id: "p3",
+        tool: "kb_write",
+        args: { id: "abc", title: "Harmless", folder: "Notes", body: "keep\nnew" },
+        target: { action: "update", path: "Ideas/Real.md", current: "keep\nold" },
+      }),
+      ev("pending_write", {
+        pending_id: "p4",
+        tool: "kb_move",
+        args: { id: "abc", folder: "Archive" },
+        target: { action: "move", path: "Ideas/Real.md", to: "Archive/Real.md" },
+      }),
+      ev("pending_write", { pending_id: "p5", tool: "other", args: {}, target: { action: "unknown", error: "boom" } }),
+      ev("pending_write", { pending_id: "p6", tool: "x", args: { body: "z" } }),
     ]);
     const tools = s.messages.filter((m) => m.kind === "tool");
     expect(tools.map((t) => (t.kind === "tool" ? [t.summary, t.running] : null))).toEqual([
@@ -54,14 +67,14 @@ describe("chat events", () => {
       ["", true],
     ]);
     const pending = s.messages.filter((m) => m.kind === "pending-write");
-    expect(pending.map((p) => (p.kind === "pending-write" ? p.path : ""))).toEqual([
-      "Notes/Draft.md",
-      "Notes/N.md",
-      "abc",
-      "Root.md",
+    expect(pending.map((p) => (p.kind === "pending-write" ? [p.path, p.summary, p.diff] : null))).toEqual([
+      ["Notes/Draft.md", "Creates a new page (2 lines)", "+ a\n+ b"],
+      ["Notes/N.md", "Saves a note (1 line)", "+ one"],
+      ["Ideas/Real.md", "Changes an existing page (2 lines)", "- old\n+ new"],
+      ["Ideas/Real.md", "Moves the page to Archive/Real.md", "- Ideas/Real.md\n+ Archive/Real.md"],
+      ["other", "other: boom", ""],
+      ["x", "x (1 line)", "+ z"],
     ]);
-    expect(pending[0]).toMatchObject({ summary: "kb_write: 2 lines", diff: "+ a\n+ b", state: "awaiting" });
-    expect(pending[1]).toMatchObject({ summary: "notes_save: 1 line" });
     s = markApproving(s, "p1");
     expect(s.messages.find((m) => m.id === "p1")).toMatchObject({ state: "approving" });
     s = run(
@@ -76,6 +89,7 @@ describe("chat events", () => {
     expect(
       s.messages
         .filter((m) => m.kind === "pending-write")
+        .slice(0, 4)
         .map((m) => (m.kind === "pending-write" ? [m.state, m.error] : null)),
     ).toEqual([
       ["approved", undefined],

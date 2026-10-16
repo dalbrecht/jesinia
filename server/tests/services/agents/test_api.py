@@ -204,3 +204,49 @@ def test_module_before_start() -> None:
     assert mod.health().ok is False
     with pytest.raises(HTTPException):
         _ = mod.service
+
+
+async def test_pending_write_events_show_the_real_target(app_env: AppEnv) -> None:
+    from pathlib import PurePosixPath
+
+    from jesinia.services.kb.application.service import PageDraft
+
+    kb = app_env.app.state.ctx.services["kb"]
+    existing = await kb.write(PageDraft(None, "Existing", PurePosixPath("Ideas"), "old body"))
+    s = await _session(app_env)
+    async with mcp_session(app_env.app, _token(app_env, s["id"])) as m:
+        await m.call_tool("kb_write", WRITE)
+        # An "update" that names a new title and folder still targets the existing page.
+        await m.call_tool(
+            "kb_write",
+            {
+                "id": existing.page.id,
+                "title": "Harmless",
+                "folder": "Notes",
+                "body": "x",
+                "expected_rev": existing.rev,
+            },
+        )
+        await m.call_tool("kb_move", {"id": existing.page.id, "folder": "Archive"})
+        await m.call_tool("kb_move", {"id": "0" * 36, "folder": "Archive"})
+    r = await app_env.client.get(
+        f"/api/agents/sessions/{s['id']}/events", params={"follow": "false"}
+    )
+    targets = [
+        json.loads(line.removeprefix("data: "))["data"]["target"]
+        for line in r.text.splitlines()
+        if line.startswith("data: ") and '"pending_write"' in line
+    ]
+    assert targets[0] == {"action": "create", "path": "Notes/Agent page.md", "title": "Agent page"}
+    assert targets[1] == {
+        "action": "update",
+        "path": "Ideas/Existing.md",
+        "title": "Existing",
+        "current": "old body",
+    }
+    assert targets[2] == {
+        "action": "move",
+        "path": "Ideas/Existing.md",
+        "to": "Archive/Existing.md",
+    }
+    assert targets[3]["action"] == "unknown" and "PageNotFound" in targets[3]["error"]

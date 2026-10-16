@@ -37,12 +37,40 @@ function summarize(input: unknown): string {
   return typeof first === "string" ? `"${first.length > 60 ? `${first.slice(0, 60)}…` : first}"` : "";
 }
 
-function pendingPath(tool: string, args: Record<string, unknown>): string {
-  if (tool === "kb_write" || tool === "notes_save") {
-    const folder = str(args.folder, tool === "notes_save" ? "Notes" : "");
-    return `${folder ? `${folder}/` : ""}${str(args.title, "Untitled")}.md`;
+type Target = { action?: string; path?: string; to?: string; title?: string; current?: string; error?: string };
+
+/** The card shows what the server says the write will really do (tool preview). */
+function describe(
+  tool: string,
+  args: Record<string, unknown>,
+  target: Target,
+): { path: string; summary: string; diff: string } {
+  const body = str(args.body ?? args.text);
+  const lines = body ? body.split("\n") : [];
+  const count = `${lines.length} ${lines.length === 1 ? "line" : "lines"}`;
+  if (target.action === "move") {
+    return {
+      path: str(target.path),
+      summary: `Moves the page to ${str(target.to)}`,
+      diff: `- ${str(target.path)}\n+ ${str(target.to)}`,
+    };
   }
-  return str(args.id ?? args.path, tool);
+  if (target.action === "update") {
+    const before = str(target.current).split("\n");
+    const removed = before.filter((l) => !lines.includes(l)).map((l) => `- ${l}`);
+    const added = lines.filter((l) => !before.includes(l)).map((l) => `+ ${l}`);
+    return {
+      path: str(target.path),
+      summary: `Changes an existing page (${count})`,
+      diff: [...removed, ...added].join("\n"),
+    };
+  }
+  const plus = lines.map((l) => `+ ${l}`).join("\n");
+  if (target.action === "create")
+    return { path: str(target.path), summary: `Creates a new page (${count})`, diff: plus };
+  if (tool === "notes_save")
+    return { path: `Notes/${str(args.title, "Untitled")}.md`, summary: `Saves a note (${count})`, diff: plus };
+  return { path: tool, summary: target.error ? `${tool}: ${target.error}` : `${tool} (${count})`, diff: plus };
 }
 
 export function reduce(state: ChatState, e: AgentEvent, now = new Date().toISOString()): ChatState {
@@ -112,18 +140,8 @@ export function reduce(state: ChatState, e: AgentEvent, now = new Date().toISOSt
     case "pending_write": {
       const tool = str(e.data.tool);
       const args = (e.data.args ?? {}) as Record<string, unknown>;
-      const body = str(args.body ?? args.text);
-      messages.push({
-        id: str(e.data.pending_id),
-        kind: "pending-write",
-        path: pendingPath(tool, args),
-        summary: `${tool}: ${body.split("\n").length} ${body.split("\n").length === 1 ? "line" : "lines"}`,
-        diff: body
-          .split("\n")
-          .map((l) => `+ ${l}`)
-          .join("\n"),
-        state: "awaiting",
-      });
+      const d = describe(tool, args, (e.data.target ?? {}) as Target);
+      messages.push({ id: str(e.data.pending_id), kind: "pending-write", ...d, state: "awaiting" });
       return { ...state, messages };
     }
     case "pending_resolved": {

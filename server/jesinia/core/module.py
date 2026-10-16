@@ -40,6 +40,9 @@ class CallContext:
 
 
 ToolHandler = Callable[[BaseModel, CallContext], Awaitable[object]]
+# What a write would really do, for the approval card: e.g. {"action": "update",
+# "path": "Notes/a.md", "current": "<body now>"}.
+ToolPreview = Callable[[BaseModel], Awaitable[dict[str, object]]]
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,7 @@ class ToolDef:
     input_model: type[BaseModel]
     handler: ToolHandler
     writes: bool
+    preview: ToolPreview | None = None
 
     def __post_init__(self) -> None:
         if not _WIRE_NAME.match(self.name):

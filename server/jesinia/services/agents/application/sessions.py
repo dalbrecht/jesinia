@@ -275,10 +275,24 @@ class SessionService:
             uuid.uuid4().hex, session_id, tool.name, args.model_dump(), "pending"
         )
         self.store.add_pending(pending)
+        # Show the user what the write would really do (resolved by the tool), not what
+        # the agent's arguments suggest.
+        target: dict[str, object] = {"action": "unknown"}
+        if tool.preview is not None:
+            try:
+                target = await tool.preview(args)
+            except Exception as exc:  # noqa: BLE001 - a preview never blocks the request
+                target = {"action": "unknown", "error": f"{type(exc).__name__}: {exc}"}
         await self._append(
             session_id,
             "pending_write",
-            {"pending_id": pending.id, "tool": tool.name, "args": pending.args, "state": "pending"},
+            {
+                "pending_id": pending.id,
+                "tool": tool.name,
+                "args": pending.args,
+                "state": "pending",
+                "target": target,
+            },
         )
         return pending
 

@@ -168,6 +168,7 @@ describe("Notes", () => {
       pending_id: "w1",
       tool: "kb_write",
       args: { title: "Draft", folder: "Notes", body: "x" },
+      target: { action: "create", path: "Notes/Draft.md", title: "Draft" },
     });
     expect(await screen.findByText("Notes/Draft.md")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Reject" }));
