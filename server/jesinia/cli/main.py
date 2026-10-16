@@ -84,8 +84,14 @@ def serve() -> None:
 
     cfg = _cfg()
     configure_logging(cfg.log_dir)
+
+    def rotated(new: Config) -> None:  # Settings → Rotate token: refresh agent registrations
+        install_mod.refresh_registrations(
+            new, install_mod.System(echo=logging.getLogger("jesinia").info)
+        )
+
     uvicorn.run(
-        create_app(cfg, modules()),
+        create_app(cfg, modules(), on_token_rotated=rotated),
         host="127.0.0.1",
         port=cfg.port,
         log_config=None,

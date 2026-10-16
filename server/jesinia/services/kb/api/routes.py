@@ -48,6 +48,8 @@ class KbHost(Protocol):
 
     async def change_root(self, path: str) -> dict[str, object]: ...
 
+    def root_info(self) -> dict[str, object]: ...
+
 
 _STATUS: dict[type[KbError], int] = {
     KbUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -124,6 +126,11 @@ def build_router(host: KbHost) -> APIRouter:
     @r.post("/scan")
     async def post_scan() -> dict[str, object]:
         return await _guard(host.rescan)
+
+    @r.get("/path")
+    async def get_path() -> dict[str, object]:
+        """The configured KB folder and, if it is unusable, why (Settings)."""
+        return host.root_info()
 
     @r.put("/path")
     async def put_path(body: PathIn) -> dict[str, object]:

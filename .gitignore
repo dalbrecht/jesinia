@@ -38,3 +38,7 @@ server/jesinia/static/
 .env.*
 !.env.example
 server/.audit-requirements.txt
+
+# Playwright
+web/test-results/
+web/playwright-report/

@@ -38,3 +38,9 @@ jobs:
 
       - name: CI (Python, JS, standards; coverage gate >= 95%)
         run: make ci
+
+      - name: Install Playwright Chromium
+        run: cd web && pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end tests (Playwright)
+        run: make test-e2e

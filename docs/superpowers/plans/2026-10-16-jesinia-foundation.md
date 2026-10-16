@@ -818,9 +818,9 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
   - `AppShell({app, children})` — nav per Task 5 README, sync banner driven by `GET /api/kbsync/status` + `kbsync.status` SSE (`GET /api/events?topics=kbsync.status,kb.page_changed` — add this core SSE route in this task), conflict banner from `/api/kb/conflicts`.
   - Settings view: KB path field (`PUT /api/kb/path`, shows validation error), git mode + last sync + next run + Sync now / Resume / Initialize git, runner status (`/api/agents/runners`), conflicts list, token rotate.
 
-- [ ] **Step 1: Failing tests:** `sse.test.ts` — reconnect resumes from last id; `settings.test.tsx` — invalid KB path shows the server's error, "Resume" appears only when `paused`; e2e `launcher.spec.ts` against a server started with a temp `JESINIA_HOME` and a fixture KB repo: login via nonce URL, set KB path, see mode "push", click Sync now, see last result.
-- [ ] **Step 2–4:** FAIL → implement → PASS (`make test-e2e` starts the server via Playwright `webServer`).
-- [ ] **Step 5: Commit** `feat(web): typed client, app shell, launcher and settings PWA`.
+- [x] **Step 1: Failing tests:** `sse.test.ts` — reconnect resumes from last id; `settings.test.tsx` — invalid KB path shows the server's error, "Resume" appears only when `paused`; e2e `launcher.spec.ts` against a server started with a temp `JESINIA_HOME` and a fixture KB repo: login via nonce URL, set KB path, see mode "push", click Sync now, see last result.
+- [x] **Step 2–4:** FAIL → implement → PASS (`make test-e2e` starts the server via Playwright `webServer`).
+- [x] **Step 5: Commit** `feat(web): typed client, app shell, launcher and settings PWA`.
 
 ---
 

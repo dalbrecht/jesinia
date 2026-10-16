@@ -5,7 +5,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**"] },
+  { ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**", "packages/client/src/openapi.d.ts"] },
   js.configs.recommended,
   ...tseslint.configs.strict,
   security.configs.recommended,
@@ -26,8 +26,9 @@ export default tseslint.config(
     },
   },
   {
-    // Tests read fixed fixture files relative to themselves.
-    files: ["**/__tests__/**", "tests/**"],
+    // Tests read fixture files; dev scripts (icon export, client generation) take the
+    // paths they read and write from their command line.
+    files: ["**/__tests__/**", "tests/**", "**/scripts/**"],
     rules: { "security/detect-non-literal-fs-filename": "off" },
   },
 );

@@ -129,6 +129,14 @@ class KbModule:
         self._last = await scan(self.service)
         return _report(self._last)
 
+    def root_info(self) -> dict[str, object]:
+        path = self._ctx.cfg.kb_path if self._ctx is not None else None
+        return {
+            "path": str(path) if path else None,
+            "problem": self._problem,
+            "pages": self._last.indexed if self._last else 0,
+        }
+
     async def change_root(self, path: str) -> dict[str, object]:
         assert self._ctx is not None
         root = Path(path).expanduser()

@@ -7,7 +7,8 @@ PNPM := cd web && pnpm  # run inside web/ so Corepack reads its packageManager p
 
 .DEFAULT_GOAL := help
 .PHONY: help install build test test-py test-js test-e2e lint fmt fmt-check coverage-check \
-        typecheck spdx imports audit audit-py audit-js hooks ci-py ci-js ci lint-standards sync-standards doctor
+        typecheck spdx imports audit audit-py audit-js hooks ci-py ci-js ci lint-standards sync-standards doctor \
+        gen-client
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -18,6 +19,10 @@ install: ## Install Python and JS dependencies
 
 build: ## Build web apps into the server's static directory
 	$(PNPM) run build
+
+gen-client: ## Regenerate the typed web client from the server's OpenAPI document
+	home="$$(mktemp -d)"; JESINIA_HOME="$$home" $(UV) run jesinia openapi > web/packages/client/openapi.json; rm -rf "$$home"
+	$(PNPM) --filter @jesinia/client gen
 
 test: test-py test-js ## Run Python and JS unit tests
 

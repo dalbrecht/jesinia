@@ -1,0 +1,66 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+  height: max(38px, env(titlebar-area-height, 38px));
+  padding: 0 var(--jx-space-3);
+  padding-left: max(var(--jx-space-3), env(titlebar-area-x, 0px));
+  width: 100%;
+  background: var(--jx-app-chrome, var(--jx-surface));
+  border-bottom: 1px solid var(--jx-border);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.bar a,
+.bar button,
+.bar input {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.home {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+  color: var(--jx-fg);
+  text-decoration: none;
+  font-weight: var(--jx-weight-semibold);
+  font-size: var(--jx-text-sm);
+  border-radius: var(--jx-radius-sm);
+}
+.glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-app, var(--jx-fg-muted));
+}
+.glyph img {
+  width: 14px;
+  height: 14px;
+}
+.controls {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+  min-width: 0;
+}
+.end {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-1);
+}
+.main {
+  flex: 1;
+  min-height: 0;
+}
