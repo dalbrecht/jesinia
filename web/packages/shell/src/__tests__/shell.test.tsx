@@ -109,6 +109,19 @@ describe("AppShell", () => {
     await waitFor(() => expect(calls.filter((c) => c.url.endsWith("/api/kb/conflicts")).length).toBe(before + 1));
   });
 
+  it("a server that doesn't answer settles loading and offers Retry", async () => {
+    let down = true;
+    setup({
+      "GET /healthz": () =>
+        down ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ok: true, modules: {} }),
+    });
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+    expect(screen.getByText("Jesinia isn't answering:")).toBeInTheDocument();
+    down = false;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText("Jesinia isn't answering:")).toBeNull());
+  });
+
   it("a 401 shows the signed-out banner", async () => {
     setup();
     await screen.findByText("ready");

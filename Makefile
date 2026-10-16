@@ -45,7 +45,10 @@ e2e-server: ## Build the launcher and serve a throwaway e2e instance (needs E2E_
 	bash web/tests/e2e/fixture.sh
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set server.port "$(E2E_PORT)" >/dev/null
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set kbsync.quiet 1s >/dev/null
-	JESINIA_HOME="$(E2E_HOME)/data" exec $(UV) run jesinia serve
+	@# The server commits to the fixture KB; CI runners have no git identity of their own.
+	GIT_AUTHOR_NAME="Jesinia E2E" GIT_AUTHOR_EMAIL="e2e@example.invalid" \
+	  GIT_COMMITTER_NAME="Jesinia E2E" GIT_COMMITTER_EMAIL="e2e@example.invalid" \
+	  JESINIA_HOME="$(E2E_HOME)/data" exec $(UV) run jesinia serve
 
 lint: ## Lint Python and JS
 	$(UV) run ruff check . ../scripts
