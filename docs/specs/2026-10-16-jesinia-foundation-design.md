@@ -1,6 +1,6 @@
 # Jesinia — Foundation Design
 
-- **Status:** Built; acceptance pending one manual check (the Pigeonpile Wiki render, §15). Amended by ADR 0008.
+- **Status:** Implemented (acceptance in §15). Amended by ADR 0008.
 - **Date:** 2026-10-16
 - **Author:** Don Albrecht (with Claude)
 - **License of this project:** AGPL-3.0-or-later
@@ -573,7 +573,7 @@ a new repository with a private GitHub remote.
 | 1. Server under launchd | `com.jesinia.server` running (KeepAlive); `com.jesinia.updater` loaded, first run exited 0. `jesinia status`: all seven modules ok. |
 | 2. Sync | Mode `push`. `jesinia sync now`: `pushed` (adoption of the first page), then `skipped` on a clean tree; after an edit, `pushed`, and `origin/main` matched. |
 | 3. MCP from both agents | `kb_search` returned the KB page from Claude Code (`claude -p`) and from Codex (`codex exec`). Headless Codex needs the tool approved, since `kb_search` asks for approval by default. |
-| 4. Notes with a real runner | A Claude Code session on a page, one question, Save note: wrote `Notes/Note on Welcome (acceptance).md` with Jesinia front matter (`kind: note`, `captured`), the reply inside a `jesinia:ai` provenance block, and a back-link. **Pending:** confirming that page renders in the Pigeonpile Wiki (a manual check in that app). |
+| 4. Notes with a real runner | A Claude Code session on a page, one question, Save note: wrote `Notes/Note on Welcome (acceptance).md` with Jesinia front matter (`kind: note`, `captured`), the reply inside a `jesinia:ai` provenance block, and a back-link. The author opened `~/kb` in the Pigeonpile Wiki and confirmed the note renders. |
 | 5. CI and uninstall | CI green on `main` (63248d4). `./setup --uninstall --dry-run` touches only the LaunchAgents, agent registrations and the command shim, never the KB; the macOS `./setup smoke` job checks a real uninstall keeps KB files. |
 
 Follow-ups noted during acceptance: model names with brackets (Claude Code reports
