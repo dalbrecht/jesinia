@@ -34,6 +34,7 @@ def create_app(cfg: Config, modules: Sequence[Module]) -> FastAPI:
         return installed if installed is not None else DefaultGate()  # type: ignore[return-value]
 
     mcp = build_mcp(ctx, [t for m in modules for t in m.mcp_tools()], gate)
+    ctx.services["mcp.tools"] = mcp.tools  # the agents service executes approved writes
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
