@@ -239,7 +239,8 @@ Every review round is stored (§8), so any number of rounds builds on the last.
 ### 4.3 Stacks (user: review as a single unit)
 
 PRs form a stack when each PR's base branch is another open PR's head branch, in the same
-repo **(builder's call)**.
+repo (the head branch must live in the base repository, so fork PRs never stack onto
+same-named branches) **(builder's call)**.
 
 **A stack review covers:**
 
@@ -427,8 +428,11 @@ The page is seeded from the first deep review of a repo, for the author to edit.
     JSON validated against schemas.
   - Default runner: Codex, per the wireframe, configurable.
 - **The PWA:** `web/apps/review/`, from the shared template, using the Review icons already
-  exported. It contains the queue, the PR view with tabs, the stack view and Settings →
-  Review.
+  exported. It contains the queue, the PR view, the stack view and Settings → Review.
+  **Layout (design pass, `docs/design/wireframes/design-pass-2026-10-16.md`):** workspace tabs
+  (the queue plus one tab per open review); queue sections as tabs with counts; the PR view as
+  a book, with an outline on the left and a view pane with a toolbar on top and actions along
+  the bottom; Settings in the same outline-and-view-pane layout.
 
 ## 10. Errors (foundation §13 applies)
 

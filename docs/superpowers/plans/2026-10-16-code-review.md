@@ -76,7 +76,8 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - the correctness pass reports its own coverage the same way.
 - **Rebase:** content is unchanged when per-file `git patch-id --stable` sets match between the
   approved and the new PR diffs (each against its merge base), and CI is green or running.
-- **Stack:** PR B is stacked on A when B's base ref is A's head ref, in the same repo.
+- **Stack:** PR B is stacked on A when B's base ref is A's head ref **and** A's head repository
+  is the base repository (same `owner/name`); fork PRs never stack onto same-named branches.
 - **Posting:**
   - one atomic GitHub review (body plus inline comments) against the round's head SHA;
   - approving while any included comment matches `/blocking/i` shows a warning that needs an
@@ -96,6 +97,10 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - Each repo has `Reviews/<owner>-<repo>/How it works.md`, which is updated only on the
     author's accept.
 - **UI copy** follows brief §9.
+- **Design pass (2026-10-16):** `docs/design/wireframes/design-pass-2026-10-16.md` and the
+  mockups in `docs/design/wireframes/design-pass/` are the layout reference: workspace tabs,
+  tabbed queue sections, the book layout for the PR view and Settings, coverage always
+  visible.
 
 ## Review Focus
 
@@ -140,7 +145,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 **Interfaces:**
 - **Domain types:**
   - `PullRequest(repo, number, title, body, author, author_is_bot, base_ref, head_ref,
-    head_sha, base_sha, state, draft, additions, deletions, changed_files, url,
+    head_sha, base_sha, head_repo (owner/name of the head branch's repository), state, draft, additions, deletions, changed_files, url,
     review_requested: bool, mergeable_state)`;
   - `CheckState(state: Literal["pending","passing","failing","none"], checks: list[Check])`;
   - `ReviewSummary(author, author_is_bot, state, commit_sha, submitted_at, comment_count)`;
@@ -158,7 +163,9 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **The write:** `GitHubService.create_review(repo, n, *, commit_sha, event:
   Literal["APPROVE","REQUEST_CHANGES","COMMENT"], body: str, comments: list[DraftComment])
   -> str` posts `POST /repos/{repo}/pulls/{n}/reviews` and returns the review URL.
-  `DraftComment(path, line, side, body, start_line?)`.
+  `DraftComment(path, line, side, body, start_line?, start_side?)`: `start_side` is required
+  whenever `start_line` is set (GitHub rejects multi-line ranges without it); a test asserts
+  the payload carries both.
 
 - [ ] **Step 1: Failing tests (respx plus fixtures):**
   - `test_inbox_merges_requested_authored_and_reviewed`;
@@ -296,8 +303,9 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - Create:
   - `apps/review/domain/standards.py`;
   - `apps/review/application/jobs.py`;
-  - `apps/review/schemas/*.json` (correctness, findings, recommendation, overview,
-    background, walkthrough, quiz, metrics);
+  - `apps/review/schemas/*.json`: one per `JobKind` (correctness, findings, recommendation,
+    overview, background, walkthrough, quiz, metrics, stack_walkthrough, rereview); a test
+    asserts every `JobKind` has a schema file;
   - `apps/review/infrastructure/standards_loader.py`.
 - Modify: `server/pyproject.toml` (add `jsonschema`).
 - Test: `server/tests/apps/review/{test_standards,test_jobs}.py`
@@ -351,8 +359,10 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **`ParsedDiff`:** `parse_unified_diff(text) -> ParsedDiff`, in the domain layer.
 - **`Pipeline.prereview(pr)`:** gate, then the background jobs per the setting, then
   `recommend`. The queue row is updated with depth, verdict, evidence and coverage.
-- **`Pipeline.open(pr)`:** starts the on-open jobs and streams progress over SSE topic
-  `review.progress`.
+- **`Pipeline.open(pr)`:** applies the same `gate` first. If the PR isn't `ready`, it returns
+  the gate state (the UI shows it with **Review anyway**) and starts nothing; only
+  `review_anyway(pr)` bypasses the gate. Otherwise it starts the on-open jobs and streams
+  progress over SSE topic `review.progress`. Test: `test_open_respects_the_gate_and_only_review_anyway_bypasses_it`.
 
 - [ ] **Step 1: Failing tests:**
   - `test_coverage_counts_skipped_binaries_and_lockfiles` (Review Focus 2);
@@ -373,7 +383,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 
 **Interfaces:**
 - **REST `/api/review`:**
-  - `GET /queue`, `POST /load {ref}`, `POST /queue/{repo}/{n}/dismiss`;
+  - `GET /queue`, `POST /load {ref}`, `POST /queue/{owner}/{repo}/{n}/dismiss`;
   - `GET /prs/{owner}/{repo}/{n}` (the latest round plus its artifacts),
     `POST /prs/…/open`, `POST /prs/…/retry`, `POST /prs/…/review-anyway`;
   - `GET|PUT /prs/…/drafts`;
@@ -415,9 +425,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   `web/packages/shell/src/apps.ts` (Review `built: true`)
 
 **Interfaces:**
-- **Queue:** repo filter; rows with every spec §2 field (CI state, automated and human review
-  comment count, kind, depth, pre-review state, verdict, coverage %); groups **Loaded** and
-  **Still approved** (collapsed); a **Load PR** field plus a ⌘K command.
+- **Layout (design pass, `docs/design/wireframes/design-pass/review-queue.html`):**
+  - **Workspace tabs** above the body: the queue first, then one tab per opened review with a
+    verdict-coloured dot and a close button; open tabs persist per user (localStorage in a
+    try/catch) and `/review/<owner>/<repo>/<n>` opens or focuses a tab.
+  - **Queue sections are tabs with counts:** Ready for you, Waiting, Loaded, Still approved.
+    The open section has an intro bar (what's in it) with its bulk actions ("Open next",
+    "Open all quick"); rows are cards; a summary strip shows the other sections.
+- **Queue rows:** every spec §2 field (CI state, automated and human review comment count,
+  kind, depth, pre-review state, verdict, coverage %); a **Load PR** field plus a ⌘K command;
+  a repo filter on the left.
 - **States:** empty, loading, and GitHub auth missing (the wireframe's inline danger state with
   the exact command).
 - **Routes:** `/review/` and `/review/<owner>/<repo>/<n>`.
@@ -440,8 +457,17 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - Create: `web/apps/review/src/pr/{PrView,Quick,Overview,Background,Walkthrough,Findings,Metrics,Quiz,Recommendation}.tsx`, plus tests
 
 **Interfaces:**
-- **Quick and deep:** quick review is one page (spec §3.1); deep review uses the tabs. Switch
-  depth either way.
+- **The book layout (design pass, `design-pass/pr-view.html`):**
+  - **Left, the outline:** "Before you read" (Overview, Background), the walkthrough steps as
+    chapters with their findings, **Not walked through** with its share of the change, and
+    "After you read" (Findings, Metrics, Quiz, Your comments, Recommendation); read ticks and a
+    progress footer.
+  - **Right, the view pane:** a toolbar on top (verdict, depth switch, coverage, diff layout,
+    Ask, GitHub), the page in the middle (narrative beside the step's diff), and actions along
+    the bottom (previous/next step by name, draft a comment on the finding, mark read,
+    Request changes…, Approve…).
+- **Quick and deep:** quick review is the same layout with a short outline (explanation, one
+  walk, findings, recommendation). Switch depth either way.
 - **Walkthrough:**
   - narrative about 40% / diff about 60%, with the current step's hunk highlighted;
   - the **coverage line** and the **Not walked through** list with **Show** and **Walk
@@ -450,6 +476,8 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   If that hasn't landed, move it there in this task.
 - **Quiz:** one question at a time, skippable.
 - **Recommendation:** the verdict, the evidence list and the drafts editor.
+- **Re-review, stack and posting screens** follow `design-pass/followups.html` (Tasks 12–13
+  build them in the same book layout).
 - **Posting:** a confirmation dialog showing the exact text and every warning, with explicit
   confirm checkboxes per warning.
 
