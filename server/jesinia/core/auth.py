@@ -13,14 +13,14 @@ State is process-local: the server is a single process (spec §6).
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 
-from jesinia.core.config import Config
+from jesinia.core.config import Config, load_config
 
 COOKIE = "jesinia_session"
 DEFAULT_NONCE_TTL = timedelta(minutes=5)
@@ -120,6 +120,18 @@ def auth_router() -> APIRouter:
         cfg: Config = request.app.state.ctx.cfg
         nonce = issue_login_nonce()
         return {"nonce": nonce, "url": f"http://127.0.0.1:{cfg.port}/login?nonce={nonce}"}
+
+    @router.post("/api/auth/reload-token")
+    async def reload_token(
+        request: Request, _: Annotated[Principal, Depends(require_owner)]
+    ) -> dict[str, bool]:
+        """Adopt the token now in ``config.toml`` (after ``jesinia token rotate``) and sign
+        out every browser session. Authenticated with the token being replaced."""
+        ctx = request.app.state.ctx
+        fresh = load_config(ctx.cfg.data_dir / "config.toml")
+        ctx.cfg = replace(ctx.cfg, token=fresh.token)
+        invalidate_sessions()
+        return {"ok": True}
 
     @router.get("/api/ping")
     async def ping(principal: Annotated[Principal, Depends(require_user)]) -> dict[str, object]:

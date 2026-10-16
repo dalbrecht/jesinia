@@ -7,11 +7,17 @@ license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.118",
+    "httpx>=0.28",
     "mcp>=1.15",
+    "nh3>=0.2",
     "pyyaml>=6.0.2",
+    "typer>=0.15",
     "uvicorn>=0.37",
     "watchfiles>=1.1",
 ]
+
+[project.scripts]
+jesinia = "jesinia.cli.main:app"
 
 [dependency-groups]
 dev = [
@@ -24,6 +30,7 @@ dev = [
     "pytest-asyncio>=1.2",
     "pip-audit>=2.9",
     "types-pyyaml>=6.0",
+    "respx>=0.22",
 ]
 
 [build-system]

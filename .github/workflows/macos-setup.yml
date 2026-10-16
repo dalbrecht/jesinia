@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Smoke-test ./setup on macOS: install into a throwaway HOME, check the LaunchAgent
+# serves /healthz, uninstall, and confirm the KB folder survives.
+name: macOS setup
+
+on:
+  pull_request:
+    paths:
+      - setup
+      - server/jesinia/cli/**
+      - .github/workflows/macos-setup.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ./setup smoke
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.1"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack (pnpm)
+        run: corepack enable
+
+      - name: Install, check, uninstall
+        run: |
+          set -euxo pipefail
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          # Dry runs on a fresh checkout must not create server/.venv or the KB.
+          ./setup --kb-path "$HOME/kb" --yes --dry-run
+          ./setup --uninstall --purge-data --yes --dry-run
+          test ! -e server/.venv || { echo "dry run created server/.venv"; exit 1; }
+          test ! -e "$HOME/kb" || { echo "dry run created the KB"; exit 1; }
+          ./setup --kb-path "$HOME/kb" --yes
+          ./setup --uninstall --yes --dry-run  # with a venv: uv run --no-sync, changes nothing
+          test -e "$HOME/Library/LaunchAgents/com.jesinia.server.plist" || { echo "dry run uninstalled"; exit 1; }
+          echo "kept" > "$HOME/kb/keep.txt"  # not Markdown: Jesinia must never touch it
+          curl -fsS "http://127.0.0.1:$(uv run --project server jesinia config get server.port)/healthz"
+          ./setup --uninstall --purge-data --yes
+          # launchd stops the server asynchronously; give it a moment before checking.
+          for _ in $(seq 1 20); do launchctl print "gui/$(id -u)/com.jesinia.server" >/dev/null 2>&1 || break; sleep 0.5; done
+          test ! -e "$HOME/Library/LaunchAgents/com.jesinia.server.plist" || { echo "plist still present"; exit 1; }
+          test ! -e "$HOME/Library/Application Support/jesinia" || { echo "data dir still present:"; ls -la "$HOME/Library/Application Support/jesinia"; exit 1; }
+          test "$(cat "$HOME/kb/keep.txt")" = "kept" || { echo "KB was modified"; exit 1; }
+          test -d "$HOME/kb" || { echo "KB folder removed"; exit 1; }
+
+      - name: Server logs
+        if: failure()
+        run: cat "$RUNNER_TEMP"/home/Library/Logs/jesinia/* 2>/dev/null || true

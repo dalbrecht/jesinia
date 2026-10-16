@@ -69,3 +69,21 @@ async def test_nonce_endpoint_issues_login_url(client: httpx.AsyncClient, cfg: C
 async def test_session_principal_cannot_mint_nonces(client: httpx.AsyncClient) -> None:
     register_session_token("agent", "s-2")
     assert (await client.post("/api/auth/nonce", headers=bearer("agent"))).status_code == 403
+
+
+async def test_reload_token_adopts_rotated_token_and_signs_out(
+    client: httpx.AsyncClient, cfg: Config
+) -> None:
+    from dataclasses import replace
+
+    from jesinia.core.config import save_config
+
+    nonce = issue_login_nonce()
+    await client.get(f"/login?nonce={nonce}")
+    assert (await client.get("/api/ping")).status_code == 200  # cookie session
+    save_config(replace(cfg, token="n" * 43), cfg.data_dir / "config.toml")
+    r = await client.post("/api/auth/reload-token", headers=bearer(cfg.token))
+    assert r.status_code == 200
+    assert (await client.get("/api/ping")).status_code == 401  # cookie signed out
+    assert (await client.get("/api/ping", headers=bearer(cfg.token))).status_code == 401
+    assert (await client.get("/api/ping", headers=bearer("n" * 43))).status_code == 200

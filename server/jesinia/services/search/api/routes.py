@@ -65,6 +65,11 @@ def build_router(host: SearchHost) -> APIRouter:
         hits = await host.service.query(q, limit=limit, sources=set(source) if source else None)
         return [HitOut.of(h) for h in hits]
 
+    @r.post("/reindex")
+    async def reindex() -> dict[str, int]:
+        """Rebuild the KB part of the index (``jesinia reindex``)."""
+        return {"indexed": await host.service.reindex()}
+
     return r
 
 
