@@ -91,9 +91,11 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - **user and per-repo app overrides:** stored in `review.sqlite`;
   - later layers win.
 - **Kept pages:**
-  - A deep review that's posted or marked Done becomes `Reviews/<owner>-<repo>/#<n> <title>.md`,
-    `kind: review/pr`. Front matter: `source` (the PR URL), `repo`, `pr`, `head`, `verdict`,
-    `reviewed`, and `code: [{repo, path}]`.
+  - A deep review that's posted or marked Done becomes `Reviews/<owner>-<repo>/#<n> <title>.md`.
+    Its front matter keeps the shared `id`/`title` at the top and **everything Jesinia-owned
+    under `jesinia:`** (foundation §5.2): `jesinia: {kind: review/pr, source (the PR URL), repo,
+    pr, head, verdict, reviewed, code: [{repo, path}]}`. A test round-trips a kept page through
+    the KB parser and checks `jesinia.kind` and `jesinia.code`.
   - Each repo has `Reviews/<owner>-<repo>/How it works.md`, which is updated only on the
     author's accept.
 - **UI copy** follows brief §9.
@@ -147,7 +149,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **Domain types:**
   - `PullRequest(repo, number, title, body, author, author_is_bot, base_ref, head_ref,
     head_sha, base_sha, head_repo (owner/name of the head branch's repository), state, draft, additions, deletions, changed_files, url,
-    review_requested: bool, mergeable_state)`;
+    review_requested: bool, mergeable_state, created_at)`;
   - `CheckState(state: Literal["pending","passing","failing","none"], checks: list[Check])`;
   - `ReviewSummary(author, author_is_bot, state, commit_sha, submitted_at, comment_count)`;
   - `ReviewThread(path, line, body, author, resolved, commit_sha)`.
@@ -231,10 +233,18 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
     file per session in total** (a cumulative allowance tracked per session and path), with the
     cap stated in the result; files the coverage rules auto-skip (lockfiles, generated,
     vendored, binary) are refused with that reason;
-  - `repo_grep {pattern, glob?}`: at most 200 matches;
+  - `repo_grep {pattern, glob?}`: at most 200 matches and 64 KB of output per call, each
+    match line truncated to 500 characters; matched lines count against the same per-file,
+    per-session allowance as `repo_read`, and auto-skipped files are excluded from the search;
   - `repo_ls {path}`;
-  - `repo_git {cmd, args}`: `cmd` in `log|show|blame`, args validated (no `-c`, no `--exec`,
-    no paths outside the worktree).
+  - `repo_git {cmd, args}`: `cmd` in `log|show|blame`, with an **allowlist** of read-only
+    options per command (e.g. `log`: `--oneline`, `-n <k>`, `--stat`, `-p`, `--follow`,
+    `--since=`, `--author=`; `show`: `--stat`, `-p`, `<rev>`, `<rev>:<path>`; `blame`: `-L
+    <a>,<b>`, `<rev>`), plus revisions and worktree paths. Everything else is refused,
+    including `--output`, `-c`, `--exec`, `--ext-diff`, `--textconv` and pager or config
+    options. It runs with `GIT_CONFIG_NOSYSTEM=1`, no pager, and `--no-ext-diff
+    --no-textconv`. Test: `test_repo_git_refuses_options_outside_the_allowlist` (including
+    `--output=x`).
 - Every path goes through `safe_path(root, rel) -> Path`, which resolves symlinks and
   requires `is_relative_to(root)`.
 
@@ -266,8 +276,9 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **Schema:**
   - `repos(repo PK, watched, automated_reviewer NULL, prereview NULL)`;
   - `prs(repo, number, PK(repo,number), title, author, author_is_bot, head_sha, base_ref,
-    head_ref, size_lines, files, ci_state, auto_review_state, review_comment_count, kind,
-    depth, state, last_head_change_at, loaded, dismissed)`;
+    head_ref, head_repo, created_at, size_lines, files, ci_state, auto_review_state,
+    review_comment_count, kind, depth, state, last_head_change_at, loaded, dismissed)`.
+    `created_at` (the PR's creation time) drives the row's age;
   - `rounds(id PK, repo, number, head_sha, base_sha, depth, started_at, finished_at,
     verdict NULL, posted_review_url NULL, done)`;
   - `artifacts(round_id, kind, json, PK(round_id,kind))`;
@@ -406,6 +417,14 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
     every warning is in `confirm`, and `ReviewedHeadGone` if the round's SHA is no longer on
     the PR.
   - Posting refuses session principals (`require_owner`).
+  - **Idempotent posting:** `POST …/post` requires an `Idempotency-Key` (the RSS plan's Task 7A
+    dependency).
+    - Before calling GitHub, `post` records a `postings(round_id, event, key, started_at,
+      review_url NULL, state)` row.
+    - On success it stores the review URL. On a lost response or crash, a retry first lists
+      the PR's reviews and adopts one by the viewer on the round's commit, submitted after
+      `started_at` with the same body, instead of posting again.
+    - Test: `test_retry_after_lost_response_does_not_post_twice`.
 - **MCP (read-only):** `review_queue`, `review_get {repo, n}`, `review_findings {repo, n}`.
 
 - [ ] **Step 1: Failing tests:**
