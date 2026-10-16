@@ -125,5 +125,17 @@ def render_catalog(cat: TagCatalog) -> str:
 
 
 def with_entry(cat: TagCatalog, entry: CatalogEntry) -> TagCatalog:
-    """A catalog with ``entry`` added or replacing the entry of the same tag."""
+    """A catalog with ``entry`` added or replacing the entry of the same tag.
+
+    The tag and aliases are normalised first, because callers pass user input.
+    """
+    aliases = (normalise_tag(alias) for alias in entry.aliases)
+    entry = replace(entry, tag=normalise_tag(entry.tag), aliases=tuple(a for a in aliases if a))
     return TagCatalog(MappingProxyType({**cat.entries, entry.tag: entry}), cat.lines)
+
+
+def without_entry(cat: TagCatalog, tag: str) -> TagCatalog:
+    """A catalog without ``tag``'s entry; its line is dropped when the page is rendered."""
+    wanted = normalise_tag(tag)
+    entries = {key: entry for key, entry in cat.entries.items() if key != wanted}
+    return TagCatalog(MappingProxyType(entries), cat.lines)

@@ -12,6 +12,7 @@ TAG_LINE_PREFIX = "Tags:"
 # A tag starts with a letter or digit (never "_"), continues with letters, digits or "-", and
 # cannot hug a preceding word character, "/" or another "#" (so "C#", URLs and "##" are safe).
 _TAG = re.compile(r"(?<![\w/#])#([^\W_](?:[^\W_]|-)*)")
+_VALID_TAG = re.compile(r"[^\W_](?:[^\W_]|-)*")
 _HEADING_LINE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
 _FENCE_LINE = re.compile(r" {0,3}(```|~~~)")
 _INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
@@ -24,6 +25,11 @@ def normalise_tag(raw: str) -> str:
     text = raw.strip().removeprefix("#").lower()
     text = re.sub(r"[\s_]+", "-", text)
     return unicodedata.normalize("NFC", text)
+
+
+def is_valid_tag(tag: str) -> bool:
+    """Whether ``tag`` is already normalised and fits the ``#tag`` grammar (no leading ``#``)."""
+    return _VALID_TAG.fullmatch(tag) is not None and tag == normalise_tag(tag)
 
 
 def _blank(text: str) -> str:

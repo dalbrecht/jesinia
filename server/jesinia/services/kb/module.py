@@ -18,8 +18,10 @@ from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.events import Event, EventBus
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.kb.api.routes import build_router, build_tools
+from jesinia.services.kb.api.tags import build_tags_router, build_tags_tools
 from jesinia.services.kb.application.scan import ScanReport, scan
 from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.infrastructure.fs import LocalFiles
 from jesinia.services.kb.infrastructure.index import SqliteIndex
 from jesinia.services.kb.infrastructure.watcher import KbWatcher
@@ -44,6 +46,7 @@ class KbModule:
 
     def __init__(self) -> None:
         self._svc: KbService | None = None
+        self._tags: TagService | None = None
         self._conn: sqlite3.Connection | None = None
         self._ctx: AppContext | None = None
         self._watcher: KbWatcher | None = None
@@ -57,14 +60,22 @@ class KbModule:
         return self._svc
 
     @property
+    def tags(self) -> TagService:
+        if self._tags is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "kb module not started")
+        return self._tags
+
+    @property
     def watcher(self) -> KbWatcher | None:
         return self._watcher
 
     def router(self) -> APIRouter | None:
-        return build_router(self)
+        router = build_router(self)
+        router.include_router(build_tags_router(self))
+        return router
 
     def mcp_tools(self) -> Sequence[ToolDef]:
-        return build_tools(self)
+        return [*build_tools(self), *build_tags_tools(self)]
 
     @staticmethod
     def _usable(path: Path | None) -> str | None:
@@ -105,6 +116,9 @@ class KbModule:
         self._conn = open_db(ctx.cfg.data_dir, KB_DB)
         self._svc = KbService(None, SqliteIndex(self._conn), ctx.bus)
         ctx.services["kb"] = self._svc
+        # No advisor yet (the agent-backed one is RSS plan Task 5): catalog-only answers.
+        self._tags = TagService(self._svc, None)
+        ctx.services["tags"] = self._tags
         # kbsync's quiet period reads the watcher's last activity (spec §4.4 step 2).
         ctx.services["kb.activity"] = lambda: (
             self._watcher.last_activity if self._watcher is not None else None

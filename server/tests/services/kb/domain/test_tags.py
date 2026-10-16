@@ -4,6 +4,7 @@ from __future__ import annotations
 from jesinia.services.kb.domain.tags import (
     TAG_LINE_PREFIX,
     extract_tags,
+    is_valid_tag,
     near_matches,
     normalise_tag,
     render_tag_line,
@@ -60,3 +61,10 @@ def test_near_matches_requires_five_letters_for_edit_distance() -> None:
 def test_render_tag_line() -> None:
     assert TAG_LINE_PREFIX == "Tags:"
     assert render_tag_line(["a", "b"]) == "Tags: #a #b"
+
+
+def test_is_valid_tag_accepts_only_normalised_grammar_tags() -> None:
+    assert is_valid_tag("sqlite") and is_valid_tag("write-ahead-log") and is_valid_tag("café")
+    assert is_valid_tag("3d")
+    for bad in ("", "-x", "_x", "a/b", "a_b", "A", "a b", "#a"):
+        assert not is_valid_tag(bad), bad

@@ -6,6 +6,7 @@ from jesinia.services.kb.domain.tag_catalog import (
     parse_catalog,
     render_catalog,
     with_entry,
+    without_entry,
 )
 
 
@@ -68,3 +69,19 @@ def test_resolve_normalises_input_and_prefers_first_claim() -> None:
 def test_new_entry_is_appended_directly_when_page_has_no_trailing_newline() -> None:
     out = render_catalog(with_entry(parse_catalog("intro"), CatalogEntry("wal")))
     assert out == "intro\n- #wal"
+
+
+def test_with_entry_normalises_the_tag_and_aliases() -> None:
+    cat = with_entry(
+        parse_catalog("- #sqlite: old\n"), CatalogEntry("#SQLite", "new", ("SQL Lite",))
+    )
+    assert list(cat.entries) == ["sqlite"]
+    assert cat.entries["sqlite"] == CatalogEntry("sqlite", "new", ("sql-lite",))
+    assert render_catalog(cat) == "- #sqlite: new (aliases: sql-lite)\n"
+
+
+def test_without_entry_drops_the_line_and_keeps_the_rest() -> None:
+    cat = without_entry(parse_catalog("intro\n- #a: x\n- #b\n"), "#A")
+    assert list(cat.entries) == ["b"]
+    assert render_catalog(cat) == "intro\n- #b\n"
+    assert without_entry(cat, "missing").entries == cat.entries
