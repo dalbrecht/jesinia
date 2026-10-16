@@ -15,6 +15,7 @@ import ipaddress
 import socket
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
@@ -72,8 +73,12 @@ class FetchService:
         resolve: Resolver = system_resolve,
         min_interval: float = 1.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        allowed: Callable[[str], bool] = is_public,
     ) -> None:
+        """``allowed`` decides which resolved addresses may be fetched; only the
+        end-to-end test server widens it (to loopback, for fixture feeds)."""
         self._cache = cache
+        self._allowed = allowed
         self._resolve = resolve
         self._min_interval = min_interval
         self._transport = transport
@@ -88,7 +93,7 @@ class FetchService:
         if host == "localhost" or host.endswith(".localhost"):
             raise FetchBlocked(f"{host} is not a public host")
         addresses = [host] if _is_ip(host) else await self._resolve(host)
-        if not addresses or not all(is_public(a) for a in addresses):
+        if not addresses or not all(self._allowed(a) for a in addresses):
             raise FetchBlocked(f"{host} does not resolve to a public address")
         return host
 

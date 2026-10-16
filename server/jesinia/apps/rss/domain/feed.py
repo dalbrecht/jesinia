@@ -9,8 +9,12 @@ from urllib.parse import urlsplit
 
 # A feed shows a warning after this many consecutive failed polls (spec §4.2).
 WARN_AFTER_FAILURES = 3
-# Every feed starts polling every 30 minutes, then adapts (Task 10).
+# Every feed starts polling every 30 minutes, then adapts between these bounds (spec §4.2).
 FIRST_INTERVAL_S = 30 * 60
+MIN_INTERVAL_S = 15 * 60
+MAX_INTERVAL_S = 12 * 60 * 60
+# Past this many failures the backoff is at its cap; it also keeps 2**n small.
+_BACKOFF_DOUBLINGS = 10
 FOLDER_NAME_MAX = 100
 
 
@@ -78,6 +82,20 @@ def feed_warning(fail_count: int, last_error: str | None) -> str | None:
     if fail_count < WARN_AFTER_FAILURES:
         return None
     return last_error or f"the feed failed {fail_count} times in a row"
+
+
+def next_interval_s(interval_s: int, *, has_new_items: bool) -> int:
+    """The polling interval after a successful poll: halved when it brought new items,
+    grown by half when it brought none, kept within 15 minutes and 12 hours."""
+    if has_new_items:
+        return max(MIN_INTERVAL_S, interval_s // 2)
+    return min(MAX_INTERVAL_S, int(interval_s * 1.5))
+
+
+def failure_delay_s(fail_count: int) -> int:
+    """How long to wait after the ``fail_count``-th failure in a row: 30 minutes doubled
+    per failure, at most 12 hours."""
+    return min(MAX_INTERVAL_S, FIRST_INTERVAL_S << min(fail_count, _BACKOFF_DOUBLINGS))
 
 
 @dataclass(frozen=True)

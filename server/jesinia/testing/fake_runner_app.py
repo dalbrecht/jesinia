@@ -6,12 +6,14 @@
 On its first turn in a session the runner calls ``kb_write`` through the session's MCP
 endpoint, exactly as a real agent would (so the write gate makes it a pending write),
 then replies. Later turns only reply. A tag ask (a prompt starting ``TAGS:``) gets a
-fixed JSON tag list and never writes. It refuses to load outside a throwaway
-``JESINIA_HOME``, so it can never activate in a real install.
+fixed JSON tag list and never writes. The fetch service may also reach loopback
+addresses, so e2e can serve fixture feeds from a local port. It refuses to load outside a
+throwaway ``JESINIA_HOME``, so neither can ever activate in a real install.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from collections.abc import AsyncIterator, Callable
@@ -28,6 +30,8 @@ from jesinia.services.agents.domain.events import (
     ToolUse,
     TurnDone,
 )
+from jesinia.services.fetch.domain.address import is_public
+from jesinia.services.fetch.module import FetchModule
 
 DRAFT: dict[str, object] = {
     "title": "Agent draft",
@@ -93,22 +97,45 @@ class McpScriptRunner:
         yield TurnDone(f"fake-{key[-8:]}", "fake-model")
 
 
-def build_app() -> FastAPI:
+def _require_throwaway_home() -> None:
     if os.environ.get("JESINIA_FAKE_RUNNER") != "1" or not os.environ.get("JESINIA_HOME"):
         raise RuntimeError(
             "fake_runner_app is for tests only: "
             "set JESINIA_FAKE_RUNNER=1 and a throwaway JESINIA_HOME"
         )
+
+
+def allow_loopback(address: str) -> bool:
+    """Public addresses, plus loopback (where e2e serves fixture feeds); never private
+    networks, link-local or metadata addresses."""
+    if is_public(address):
+        return True
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def fixture_fetch_module() -> FetchModule:
+    """The fetch service widened to loopback; only under the throwaway-home guard."""
+    _require_throwaway_home()
+    return FetchModule(allowed=allow_loopback)
+
+
+def build_app() -> FastAPI:
+    _require_throwaway_home()
     from jesinia.core.app import create_app
     from jesinia.core.config import load_config
+    from jesinia.core.module import Module
     from jesinia.core.paths import config_path
     from jesinia.registry import modules
     from jesinia.services.agents.module import AgentsModule
 
-    mods = [
-        AgentsModule(runners={"fake": McpScriptRunner()}) if m.name == "agents" else m
-        for m in modules()
-    ]
+    replacements: dict[str, Callable[[], Module]] = {
+        "agents": lambda: AgentsModule(runners={"fake": McpScriptRunner()}),
+        "fetch": fixture_fetch_module,
+    }
+    mods = [replacements[m.name]() if m.name in replacements else m for m in modules()]
     return create_app(load_config(config_path()), mods)
 
 

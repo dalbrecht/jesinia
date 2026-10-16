@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from jesinia.apps.rss.application.ports import NewFeed
 from jesinia.apps.rss.domain.feed import (
@@ -177,6 +177,7 @@ async def test_every_route_requires_the_owner(env: Env) -> None:
             anonymous.patch(f"{API}/folders/1", json={"name": "x"}),
             anonymous.post(f"{API}/opml", json={"opml": "<opml/>"}),
             anonymous.get(f"{API}/opml"),
+            anonymous.post(f"{API}/refresh"),
         ]
         for call in calls:
             assert (await call).status_code == 401
@@ -455,3 +456,30 @@ def test_store_adds_posts_all_or_nothing(cfg: Config) -> None:
     assert store.add_posts(feed.id, [item, item], now) == 1
     assert store.add_posts(feed.id, [item], now) == 0
     conn.close()
+
+
+async def test_refresh_route_polls_every_feed_now(env: Env, mock: respx.MockRouter) -> None:
+    route = _serve(mock, FEED_URL, _fixture("rss2.xml"), "application/rss+xml")
+    assert (await _add(env)).status_code == 201
+    missing = await env.client.post(f"{API}/refresh", headers={IDEMPOTENCY_HEADER: ""})
+    assert missing.status_code == 400
+    refreshed = await env.client.post(f"{API}/refresh", headers={IDEMPOTENCY_HEADER: "r1"})
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json() == {"polled": 1, "new_items": 0, "failed": 0}
+    assert route.call_count == 2  # the add, then the refresh (the feed was not due)
+    with env.db() as db:
+        interval = db.execute("SELECT interval_s FROM feeds").fetchone()[0]
+    assert interval == 2700  # nothing new: the next poll backs off
+
+
+async def test_module_polls_due_feeds_on_its_schedule(env: Env, mock: respx.MockRouter) -> None:
+    route = _serve(mock, FEED_URL, _fixture("rss2.xml"), "application/rss+xml")
+    opml = render_opml([OpmlFeed(FEED_URL, "Imported", None)])
+    assert (await env.client.post(f"{API}/opml", json={"opml": opml})).status_code == 200
+    await env.module.poll_due()
+    assert route.call_count == 1
+    assert (await env.client.get(f"{API}/feeds")).json()[0]["unread"] == 2
+    stopped = RssModule()
+    await stopped.poll_due()  # a tick before start (or after stop) does nothing
+    with pytest.raises(HTTPException):
+        _ = stopped.poller

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from jesinia.apps.rss.application.feeds import FeedService, ImportResult
+from jesinia.apps.rss.application.poller import Poller, PollSummary
 from jesinia.apps.rss.domain.feed import (
     FOLDER_NAME_MAX,
     FeedExists,
@@ -35,6 +36,9 @@ class RssHost(Protocol):
 
     @property
     def service(self) -> FeedService: ...
+
+    @property
+    def poller(self) -> Poller: ...
 
     @property
     def idempotency(self) -> IdempotencyStore: ...
@@ -104,6 +108,16 @@ class ImportResultOut(BaseModel):
     def of(cls, result: ImportResult) -> ImportResultOut:
         failed = [ImportFailureOut(url=f.url, cause=f.cause) for f in result.failed]
         return cls(added=result.added, existing=result.existing, failed=failed)
+
+
+class PollSummaryOut(BaseModel):
+    polled: int
+    new_items: int
+    failed: int
+
+    @classmethod
+    def of(cls, summary: PollSummary) -> PollSummaryOut:
+        return cls(polled=summary.polled, new_items=summary.new_items, failed=summary.failed)
 
 
 class RssErrorOut(BaseModel):
@@ -204,5 +218,14 @@ def build_router(host: RssHost) -> APIRouter:
             media_type=OPML_MEDIA_TYPE,
             headers={"Content-Disposition": 'attachment; filename="jesinia-feeds.opml"'},
         )
+
+    @r.post("/refresh", response_model=PollSummaryOut)
+    async def refresh(idem: IdempotentCall = keyed) -> Response:
+        """Poll every feed now; a failing feed is reported on the feed, not here."""
+
+        async def run() -> PollSummaryOut:
+            return PollSummaryOut.of(await host.poller.poll_all())
+
+        return await idem.run(lambda: _respond(run))
 
     return r

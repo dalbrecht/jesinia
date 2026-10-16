@@ -8,7 +8,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 
-from jesinia.apps.rss.application.ports import NewFeed
+from jesinia.apps.rss.application.ports import NewFeed, PollState
 from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedItem, feed_warning
 
 _FEED_COLUMNS = (
@@ -62,6 +62,24 @@ class SqliteFeedStore:
 
     def feed_by_url(self, url: str) -> Feed | None:
         return self._one_feed("url", url)
+
+    def feeds(self) -> list[Feed]:
+        rows = self._conn.execute(f"SELECT {_FEED_COLUMNS} FROM feeds ORDER BY id").fetchall()
+        return [_feed(row) for row in rows]
+
+    def set_poll_state(self, feed_id: int, state: PollState) -> None:
+        self._conn.execute(
+            "UPDATE feeds SET interval_s = ?, next_poll_at = ?, fail_count = ?, last_error = ?, "
+            "last_ok_at = ? WHERE id = ?",
+            (
+                state.interval_s,
+                state.next_poll_at.isoformat(),
+                state.fail_count,
+                state.last_error,
+                state.last_ok_at.isoformat() if state.last_ok_at is not None else None,
+                feed_id,
+            ),
+        )
 
     def insert_feed(self, feed: NewFeed) -> Feed:
         cursor = self._conn.execute(

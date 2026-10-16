@@ -42,12 +42,31 @@ class NewFeed:
     last_error: str | None
 
 
+@dataclass(frozen=True)
+class PollState:
+    """A feed's polling state after a poll: its schedule and the outcome."""
+
+    interval_s: int
+    next_poll_at: datetime
+    fail_count: int
+    last_error: str | None
+    last_ok_at: datetime | None
+
+
 class FeedStore(Protocol):
     """Feeds, folders and posts in ``rss.sqlite``."""
 
     def feed(self, feed_id: int) -> Feed | None: ...
 
     def feed_by_url(self, url: str) -> Feed | None: ...
+
+    def feeds(self) -> list[Feed]:
+        """Every subscribed feed with its polling state."""
+        ...
+
+    def set_poll_state(self, feed_id: int, state: PollState) -> None:
+        """Record a poll's outcome (a feed deleted meanwhile is left deleted)."""
+        ...
 
     def insert_feed(self, feed: NewFeed) -> Feed:
         """Insert a feed whose URL is not subscribed yet (callers check ``feed_by_url``)."""
