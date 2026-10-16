@@ -14,6 +14,7 @@ import asyncio
 import ipaddress
 import socket
 import time
+import zlib
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
@@ -26,6 +27,10 @@ MAX_REDIRECTS = 5
 REDIRECTS = frozenset({301, 302, 303, 307, 308})
 TIMEOUT = httpx.Timeout(20.0)
 USER_AGENT = "Jesinia/0.1 (+personal feed reader)"
+
+
+# Content encodings we inflate ourselves (bounded); zlib wbits for each.
+_ZLIB = {"gzip": 16 + zlib.MAX_WBITS, "x-gzip": 16 + zlib.MAX_WBITS, "deflate": zlib.MAX_WBITS}
 
 
 class FetchError(RuntimeError):
@@ -101,7 +106,7 @@ class FetchService:
             transport=self._transport,
             trust_env=False,
             follow_redirects=False,
-            headers={"User-Agent": USER_AGENT},
+            headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, deflate"},
         ) as client:
             for _ in range(MAX_REDIRECTS + 1):
                 host = await self.check(url)
@@ -139,14 +144,30 @@ def _is_ip(host: str) -> bool:
 
 
 async def _read_capped(resp: httpx.Response, max_bytes: int) -> bytes:
+    """The body, decompressed with a bound: ``max_bytes`` caps the decoded size, so a
+    small compressed response cannot expand past it (httpx would inflate whole chunks)."""
     declared = resp.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > max_bytes:
         raise FetchTooLarge(f"response is {declared} bytes (limit {max_bytes})")
-    chunks: list[bytes] = []
-    size = 0
-    async for chunk in resp.aiter_bytes():
-        size += len(chunk)
-        if size > max_bytes:
+    encoding = resp.headers.get("content-encoding", "identity").strip().lower()
+    if encoding not in ("identity", "", *_ZLIB):
+        raise FetchBlocked(f"unsupported content encoding: {encoding}")
+    inflate = zlib.decompressobj(_ZLIB[encoding]) if encoding in _ZLIB else None
+    out = bytearray()
+
+    def add(data: bytes) -> None:
+        out.extend(data)
+        if len(out) > max_bytes:
             raise FetchTooLarge(f"response exceeds {max_bytes} bytes")
-        chunks.append(chunk)
-    return b"".join(chunks)
+
+    async for chunk in resp.aiter_raw():
+        if inflate is None:
+            add(chunk)
+            continue
+        data = chunk
+        while data:
+            add(inflate.decompress(data, max_bytes + 1 - len(out)))
+            data = inflate.unconsumed_tail
+    if inflate is not None:
+        add(inflate.flush())
+    return bytes(out)

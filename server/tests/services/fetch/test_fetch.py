@@ -168,6 +168,10 @@ def test_is_public() -> None:
         "fc00::1",
         "224.0.0.1",
         "::ffff:127.0.0.1",
+        "::127.0.0.1",
+        "64:ff9b::a00:1",
+        "2002:7f00:1::1",
+        "2001:0:4136:e378::1",
         "not-an-ip",
     ):
         assert not is_public(a), a
@@ -225,3 +229,33 @@ async def test_module_lifecycle(cfg: Config) -> None:
             "detail": "ready",
         }
     assert mod.health().ok is False
+
+
+@respx.mock
+async def test_compressed_body_is_bounded_after_decoding(fetch: FetchService) -> None:
+    import gzip
+    import zlib
+
+    bomb = gzip.compress(b"\0" * 2_000_000)
+    respx.get("https://pub.example/bomb").mock(
+        return_value=Response(200, content=bomb, headers={"Content-Encoding": "gzip"})
+    )
+    with pytest.raises(FetchTooLarge):
+        await fetch.get("https://pub.example/bomb", max_bytes=10_000)
+    respx.get("https://pub.example/gz").mock(
+        return_value=Response(
+            200, content=gzip.compress(b"hello"), headers={"Content-Encoding": "gzip"}
+        )
+    )
+    assert (await fetch.get("https://pub.example/gz")).body == b"hello"
+    respx.get("https://pub.example/df").mock(
+        return_value=Response(
+            200, content=zlib.compress(b"deflated"), headers={"Content-Encoding": "deflate"}
+        )
+    )
+    assert (await fetch.get("https://pub.example/df")).body == b"deflated"
+    respx.get("https://pub.example/br").mock(
+        return_value=Response(200, content=b"x", headers={"Content-Encoding": "br"})
+    )
+    with pytest.raises(FetchBlocked, match="encoding"):
+        await fetch.get("https://pub.example/br")
