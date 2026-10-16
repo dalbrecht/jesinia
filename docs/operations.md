@@ -129,6 +129,11 @@ install.
   If the build or the restart fails, it resets to the previous commit, rebuilds and
   restarts, so a bad commit never leaves you without a server. Each attempt adds a line
   to `update.log`.
+- **What you're trusting:** auto-update runs whatever is pushed to `main` on the remote
+  you cloned from, just like `git pull && ./setup`. The remote URL is pinned when you
+  enable auto-update, so if `origin` is changed, updates stop until you run
+  `jesinia install --kb-path <kb> --auto-update` again. Protect `main` on that remote if
+  others can push to it.
 - **Manual:** `cd ~/apps/jesinia && git pull && ./setup`.
 - Turn auto-update on or off later with `jesinia install --kb-path <kb> --auto-update`
   or `--no-auto-update`. Running `./setup` without the flag leaves it as it is.

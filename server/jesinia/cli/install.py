@@ -334,8 +334,11 @@ def _set_auto_update(sys: System, uv: str, cfg: Config, extra: Mapping[str, str]
     if not on:
         sys.remove(plist_path(UPDATER))
         return
+    # Pin the remote the user installed from: the updater refuses to pull if it changes.
+    remote = sys.run(["git", "-C", str(REPO), "remote", "get-url", "origin"], check=False)[1]
+    env = {**extra, "JESINIA_UPDATE_REMOTE": remote} if remote else dict(extra)
     plist = render_updater_plist(
-        Path(uv), REPO, cfg.log_dir, sys.environ.get("PATH", "/usr/bin:/bin"), extra
+        Path(uv), REPO, cfg.log_dir, sys.environ.get("PATH", "/usr/bin:/bin"), env
     )
     sys.write(plist_path(UPDATER), plist)
     sys.run(["launchctl", "bootstrap", _domain(), str(plist_path(UPDATER))])

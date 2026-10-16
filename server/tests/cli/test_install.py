@@ -281,6 +281,9 @@ def test_auto_update_on_then_off(tmp_home: Path, kb: Path, healthy: None) -> Non
     spy = Spy(yes=True)
     assert inst.install(kb, spy, auto_update=True) == 0
     assert updater.exists()
+    assert (
+        "JESINIA_UPDATE_REMOTE" not in plistlib.loads(updater.read_bytes())["EnvironmentVariables"]
+    )
     assert ["launchctl", "bootstrap"] in [c[:2] for c in spy.calls if "updater" in " ".join(c)]
     assert inst.install(kb, Spy(yes=True)) == 0 and updater.exists()  # None keeps it
     assert inst.install(kb, Spy(yes=True), auto_update=False) == 0 and not updater.exists()
@@ -347,3 +350,20 @@ def test_command_shim(tmp_home: Path, kb: Path, healthy: None) -> None:
     shim.unlink()
     inst.install(kb, on_path)
     assert not any("add" in o and ".local/bin" in o for o in on_path.out)
+
+
+def test_updater_pins_the_install_remote(tmp_home: Path, kb: Path, healthy: None) -> None:
+    spy = Spy(yes=True)
+    real = spy.run
+
+    def run(argv: list[str], *, check: bool = True) -> tuple[int, str]:
+        if argv[-2:] == ["get-url", "origin"]:
+            return 0, "https://github.com/dalbrecht/jesinia.git"
+        return real(argv, check=check)
+
+    spy.run = run  # type: ignore[method-assign]
+    inst.install(kb, spy, auto_update=True)
+    env = plistlib.loads(
+        (tmp_home / "Library/LaunchAgents/com.jesinia.updater.plist").read_bytes()
+    )["EnvironmentVariables"]
+    assert env["JESINIA_UPDATE_REMOTE"] == "https://github.com/dalbrecht/jesinia.git"

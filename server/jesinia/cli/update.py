@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``jesinia update``: keep an install on the latest ``main`` (run by the update agent).
 
+Trust model: this runs whatever is on ``origin/main`` of the remote the install was set
+up from (the same trust as ``git pull && ./setup``); a changed ``origin`` is refused.
 Only a clean checkout on ``main`` that can fast-forward is updated. After pulling it
 rebuilds (``make install build``) and restarts the server; if the build or the restarted
 server fails, it goes back to the previous commit, rebuilds that, and restarts again.
@@ -62,6 +64,9 @@ def _update(cfg: Config, sys: System, repo: Path, say: Callable[[str], str], res
     code, branch = sys.run([*git, "rev-parse", "--abbrev-ref", "HEAD"], check=False)
     if code != 0 or branch != "main":
         return say(f"skipped: {repo} is not on main ({branch or 'no branch'})")
+    pinned = sys.environ.get("JESINIA_UPDATE_REMOTE")
+    if pinned and sys.run([*git, "remote", "get-url", "origin"], check=False)[1] != pinned:
+        return say("skipped: origin is not the remote this install was set up from")
     if sys.run([*git, "status", "--porcelain", "--untracked-files=no"], check=False)[1]:
         return say("skipped: the checkout has local changes")
     if sys.run([*git, "fetch", "--quiet", "origin", "main"], check=False)[0] != 0:

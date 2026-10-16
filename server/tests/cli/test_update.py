@@ -130,3 +130,13 @@ def test_cli_update_exit_codes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert CliRunner().invoke(main.app, ["update"]).exit_code == 0
     monkeypatch.setattr(upd, "update", lambda cfg, sys: "failed: x")
     assert CliRunner().invoke(main.app, ["update"]).exit_code == 1
+
+
+def test_refuses_a_changed_remote(cfg: Config, healthy: None) -> None:
+    git = Git(answers={**BASE, "remote get-url": (0, "https://evil.example/fork.git")})
+    git.environ = {"JESINIA_UPDATE_REMOTE": "https://github.com/dalbrecht/jesinia.git"}
+    result = upd.update(cfg, git, Path("/r"))
+    assert "origin is not the remote" in result and not any(" fetch " in c for c in git.calls)
+    git2 = Git(answers={**BASE, "remote get-url": (0, "https://github.com/dalbrecht/jesinia.git")})
+    git2.environ = {"JESINIA_UPDATE_REMOTE": "https://github.com/dalbrecht/jesinia.git"}
+    assert upd.update(cfg, git2, Path("/r")).startswith("updated")

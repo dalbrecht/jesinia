@@ -32,6 +32,11 @@ defaults:
   - If the build or the restarted server fails, it resets to the previous commit,
     rebuilds and restarts.
   - Runs are serialized with a lock file and logged to `update.log`.
+  - **Trust model:** it runs whatever lands on `origin/main` of the remote the install
+    was set up from, which is the same trust as running `git pull && ./setup` by hand.
+    That remote URL is pinned when auto-update is enabled, and an update is refused if
+    `origin` changes. Commits are not signature-checked; protect `main` on the remote
+    (branch protection, reviewed merges) if more is needed.
 - **Agent registration:**
   - The installer registers the MCP endpoint itself: `claude mcp add --scope user` with
     a header, and `codex mcp add` plus a static header in Codex's config.
