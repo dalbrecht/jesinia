@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia Type Pairings</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;500&family=Atkinson+Hyperlegible+Next:wght@400;500;600&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600&family=Figtree:wght@400;500;600&family=Fraunces:opsz,wght,SOFT@9..144,400;9..144,600,50&family=IBM+Plex+Mono:wght@400;500&family=JetBrains+Mono:wght@400;500&family=Literata:opsz,wght@7..72,400;7..72,600&family=Newsreader:opsz,wght@6..72,400;6..72,600&family=Recursive:slnt,wght,CASL,MONO@-15..0,300..800,0..1,0..1&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+<style>
+/* Layout: one specimen card per pairing, showing the three roles in situ (app chrome + list, reader, diff, chat). Botanical-plate palette. */
+:root{
+  --bg:oklch(97.4% 0.007 120); --surf:oklch(99.3% 0.004 120); --bd:oklch(88.5% 0.012 120); --fg:oklch(24% 0.015 140); --mut:oklch(47% 0.015 140);
+  --pri:oklch(46% 0.075 155); --sel:oklch(93.5% 0.024 150); --ai:oklch(95.3% 0.018 150); --hl:oklch(91% 0.09 85 / .6);
+  --add:oklch(94% 0.035 165); --del:oklch(94% 0.03 30);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:oklch(19% 0.012 150);--surf:oklch(23% 0.013 150);--bd:oklch(33% 0.014 150);--fg:oklch(92% 0.012 120);--mut:oklch(71% 0.014 120);--pri:oklch(76% 0.08 155);--sel:oklch(30% 0.035 155);--ai:oklch(27% 0.025 155);--hl:oklch(48% 0.09 80 / .5);--add:oklch(30% 0.045 165);--del:oklch(30% 0.045 30);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:oklch(19% 0.012 150);--surf:oklch(23% 0.013 150);--bd:oklch(33% 0.014 150);--fg:oklch(92% 0.012 120);--mut:oklch(71% 0.014 120);--pri:oklch(76% 0.08 155);--sel:oklch(30% 0.035 155);--ai:oklch(27% 0.025 155);--hl:oklch(48% 0.09 80 / .5);--add:oklch(30% 0.045 165);--del:oklch(30% 0.045 30);color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding-inline:16px;padding-block:28px 56px}
+.wrap{max-width:1180px;margin:0 auto;display:grid;gap:40px}
+h1{font-size:22px;margin:0;font-weight:600}
+.lede{color:var(--mut);max-width:72ch;line-height:1.5;margin:6px 0 0}
+.pair{display:grid;gap:12px}
+.head{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline}
+.head h2{font-size:17px;margin:0;font-weight:600}
+.head span{font-size:13px;color:var(--mut)}
+.pair>p{margin:0;color:var(--mut);font-size:14px;line-height:1.5;max-width:82ch}
+.card{background:var(--surf);border:1px solid var(--bd);border-radius:10px;display:grid;grid-template-columns:minmax(0,300px) minmax(0,1fr) minmax(0,300px);overflow:hidden}
+@media (max-width:980px){.card{grid-template-columns:1fr}}
+.col{padding:16px;display:grid;gap:10px;align-content:start;min-width:0;border-right:1px solid var(--bd)}
+.col:last-child{border-right:0}
+@media (max-width:980px){.col{border-right:0;border-bottom:1px solid var(--bd)}}
+.role{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut)}
+/* UI role */
+.ui{font-family:var(--f-ui)}
+.apptitle{font-size:15px;font-weight:600}
+.rows{border:1px solid var(--bd);border-radius:6px;overflow:hidden}
+.rows div{padding:8px 10px;border-bottom:1px solid var(--bd);display:grid;gap:2px}
+.rows div:last-child{border-bottom:0}
+.rows .on{background:var(--sel)}
+.rows b{font-size:14px;font-weight:550}
+.rows small{font-size:12px;color:var(--mut)}
+.btns{display:flex;gap:6px;flex-wrap:wrap}
+.btn{font:inherit;font-size:13px;font-weight:500;border-radius:6px;padding:5px 11px;border:1px solid var(--bd);background:var(--surf);color:var(--fg)}
+.btn.p{background:var(--pri);border-color:transparent;color:var(--surf)}
+/* Reading role */
+.rd{font-family:var(--f-read)}
+.rd h3{font-size:26px;line-height:1.15;margin:0;font-weight:600;text-wrap:balance}
+.rd .by{font-family:var(--f-ui);font-size:12.5px;color:var(--mut)}
+.rd p{font-size:17px;line-height:1.6;margin:0;max-width:62ch}
+.rd mark{background:var(--hl);color:inherit;padding:0 2px;border-radius:2px}
+.rd em{font-style:italic}
+/* Mono role */
+.mono{font-family:var(--f-mono);font-size:12.5px;line-height:1.55;border:1px solid var(--bd);border-radius:6px;overflow-x:auto}
+.mono div{padding:0 10px;white-space:pre}
+.mono .a{background:var(--add)} .mono .d{background:var(--del)} .mono .h{color:var(--mut);padding-block:4px}
+.chat{font-family:var(--f-ui);font-size:13.5px;line-height:1.45;display:grid;gap:6px}
+.msg{padding:8px 10px;border-radius:8px}
+.msg.u{background:var(--surf);border:1px solid var(--bd);justify-self:end;max-width:90%}
+.msg.ai{background:var(--ai)}
+.msg code{font-family:var(--f-mono);font-size:.92em}
+.who{font-size:11.5px;color:var(--mut)}
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Type pairings</h1>
+    <p class="lede">Each pairing covers three roles: <b>UI sans</b> for chrome, lists, and chat; <b>reading face</b> for articles, KB pages, and walkthroughs; and <b>mono</b> for diffs and code. Every family listed is OFL-1.1 and on @fontsource (checked against the Fontsource API today). Colors come from the Botanical plate palette.</p>
+  </header>
+  <div id="out" style="display:grid;gap:40px"></div>
+</div>
+
+<template id="t">
+  <div class="card">
+    <div class="col ui"><span class="role">UI sans</span>
+      <div class="apptitle">RSS · Unread</div>
+      <div class="rows"><div><b>What SQLite's WAL mode guarantees</b><small>Fly.io blog · 5 h</small></div><div class="on"><b>The quiet economics of maintenance</b><small>Works in Progress · 2 h</small></div><div><b>On keeping a commonplace book</b><small>The Marginalian · 1 d</small></div></div>
+      <div class="btns"><button class="btn p">Engage</button><button class="btn">Mark read</button></div>
+      <div class="chat"><div class="msg u">What's the core claim?</div><div class="msg ai"><div class="who">Claude</div>Upkeep loses to new building in the budget. The fix is one pool, and <code>maint_ratio</code> above 0.4.</div></div>
+    </div>
+    <div class="col rd"><span class="role">Reading</span>
+      <h3>The quiet economics of maintenance</h3>
+      <div class="by">Works in Progress · 11 min read</div>
+      <p>Most infrastructure fails not from neglect but from a budget model that rewards building over keeping. <mark>A ribbon-cutting is visible; a re-pointed brick wall is not.</mark> Three cities flipped the incentive, and their bridges, quite literally, stopped falling down.</p>
+      <p><em>Locke indexed his commonplace book</em> by the first letter and vowel of each heading — 1,234 entries, 0 lost.</p>
+    </div>
+    <div class="col"><span class="role">Mono</span>
+      <div class="mono"><div class="h">@@ kbsync/cycle.py:41 @@</div><div>  def run_cycle(repo: Repo) -&gt; Result:</div><div class="d">-     if repo.is_dirty():</div><div class="a">+     if repo.is_dirty(untracked=True):</div><div>          commit_all(repo, msg=AUTO)</div><div class="a">+     if repo.head.is_detached:</div><div class="a">+         return Result.paused("detached HEAD")</div><div>      return push(repo)  # 0O1lI</div></div>
+    </div>
+  </div>
+</template>
+
+<script>
+const P=[
+ {n:"A · Bricolage + Newsreader + JetBrains Mono",tag:"crafted, editorial",
+  ui:"'Bricolage Grotesque'",read:"'Newsreader'",mono:"'JetBrains Mono'",
+  note:"Bricolage is a grotesque with hand-cut quirks and an optical-size axis, so it stays calm at 13px and shows character in headings. Newsreader is built for long screen reading and feels like a good magazine. JetBrains Mono is the standard for code legibility. Of the four, this has the most personality."},
+ {n:"B · Atkinson Hyperlegible Next + Fraunces + Atkinson Hyperlegible Mono",tag:"humane, legible",
+  ui:"'Atkinson Hyperlegible Next'",read:"'Fraunces'",mono:"'Atkinson Hyperlegible Mono'",
+  note:"Atkinson (Braille Institute) keeps similar letters distinct, which is kind for long sessions, and its mono shares the same DNA. Fraunces uses its soft axis for a warm, 'Old Style, softened' serif that fits Botanical well. Fraunces can feel busy at body size, so it may suit headings better than body text."},
+ {n:"C · Recursive Sans + Source Serif 4 + Recursive Mono",tag:"one superfamily, playful",
+  ui:"'Recursive'",read:"'Source Serif 4'",mono:"'Recursive'",mono2:true,
+  note:"Recursive's sans and mono are one variable family with a 'casual' axis, so the UI can sit slightly hand-drawn while code stays crisp. Source Serif 4 is a sturdy, neutral reading face. This is the most cohesive system, and its personality comes from one dial."},
+ {n:"D · Figtree + Literata + IBM Plex Mono",tag:"quiet, safe",
+  ui:"'Figtree'",read:"'Literata'",mono:"'IBM Plex Mono'",
+  note:"Figtree is a friendly geometric sans. Literata was designed for e-reading (it began as the Google Play Books face). Plex Mono is solid and familiar. This is the calmest and least distinctive option, offered as the control."}
+];
+const out=document.getElementById('out'),t=document.getElementById('t');
+P.forEach(p=>{
+  const s=document.createElement('section'); s.className='pair';
+  s.style.setProperty('--f-ui',p.ui+',system-ui,sans-serif');
+  s.style.setProperty('--f-read',p.read+',Georgia,serif');
+  s.style.setProperty('--f-mono',p.mono+',ui-monospace,Menlo,monospace');
+  s.innerHTML=`<div class="head"><h2>${p.n}</h2><span>${p.tag}</span></div><p>${p.note}</p>`;
+  const c=t.content.cloneNode(true);
+  if(p.n.startsWith("C")){c.querySelector('.ui').style.fontVariationSettings='"CASL" 0.35';c.querySelectorAll('.mono,.msg code').forEach(e=>e.style.fontVariationSettings='"MONO" 1, "CASL" 0');}
+  if(p.n.startsWith("B")){c.querySelectorAll('.rd h3,.rd p').forEach(e=>e.style.fontVariationSettings='"SOFT" 50');}
+  s.append(c); out.append(s);
+});
+</script>
+
+</body>
+</html>

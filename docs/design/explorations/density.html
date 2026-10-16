@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia Density Samples</title>
+<style>
+/* Layout: three density columns of the same RSS list, then two Issues lists side by side. Fonts deliberately neutral (type is Q6). */
+:root{
+  --bg:oklch(97.5% 0.006 85); --surface:oklch(99.3% 0.003 85); --fg:oklch(24% 0.012 70);
+  --muted:oklch(48% 0.012 70); --border:oklch(89% 0.008 80); --accent:oklch(52% 0.09 200); --sel:oklch(94% 0.025 200);
+  --ui:system-ui,-apple-system,"Segoe UI",sans-serif; --read:Georgia,"Times New Roman",serif; --mono:ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:oklch(19% 0.008 70);--surface:oklch(23% 0.008 70);--fg:oklch(92% 0.008 80);--muted:oklch(70% 0.01 80);--border:oklch(33% 0.008 70);--accent:oklch(75% 0.09 200);--sel:oklch(30% 0.03 200);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:oklch(19% 0.008 70);--surface:oklch(23% 0.008 70);--fg:oklch(92% 0.008 80);--muted:oklch(70% 0.01 80);--border:oklch(33% 0.008 70);--accent:oklch(75% 0.09 200);--sel:oklch(30% 0.03 200);color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--ui);padding-inline:16px;padding-block:28px 48px}
+.wrap{max-width:1240px;margin:0 auto;display:grid;gap:36px}
+h1{font-size:22px;font-weight:600;margin:0}
+h2{font-size:15px;font-weight:600;margin:0 0 4px}
+.lede{color:var(--muted);max-width:68ch;margin:6px 0 0;line-height:1.5}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:20px}
+@media (max-width:480px){.grid2{grid-template-columns:1fr}}
+.opt{display:grid;gap:10px;min-width:0}
+.tag{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.note{font-size:13px;color:var(--muted);line-height:1.45;margin:0}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;min-width:0}
+.row{border-bottom:1px solid var(--border);display:grid}
+.row:last-child{border-bottom:0}
+.row.on{background:var(--sel)}
+.src{color:var(--muted)}
+/* Book */
+.book .row{padding:18px 20px;gap:6px}
+.book .t{font-family:var(--read);font-size:19px;line-height:1.3}
+.book .ex{font-family:var(--read);font-size:15px;line-height:1.55;color:var(--muted)}
+.book .src{font-size:12.5px}
+/* Desk */
+.desk .row{padding:11px 14px;gap:3px}
+.desk .t{font-size:15px;font-weight:550;line-height:1.3}
+.desk .ex{font-size:13.5px;line-height:1.4;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.desk .src{font-size:12px}
+/* Cockpit */
+.cock .row{padding:5px 10px;grid-template-columns:8px 92px 1fr 44px;gap:8px;align-items:baseline;font-size:12.5px}
+.cock .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cock .src,.cock .d{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cock .d{text-align:right;font-variant-numeric:tabular-nums}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--accent);align-self:center}
+.dot.read{background:transparent;border:1px solid var(--border)}
+/* Issues */
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+td,th{text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:0}
+.scroll{overflow-x:auto}
+.cal td,.cal th{padding:10px 14px;font-size:14px}
+.cal td.title{white-space:normal;min-width:220px}
+.cmp td,.cmp th{padding:4px 10px;font-size:12.5px}
+.num{font-family:var(--mono);color:var(--muted)}
+.lab{display:inline-block;border:1px solid var(--border);border-radius:3px;padding:0 5px;font-size:11.5px;color:var(--muted)}
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Density samples</h1>
+    <p class="lede">The same RSS feed list at three densities, then Issues at two. Fonts and color are placeholders for now. This page only compares spacing, type size, and how much metadata each row shows.</p>
+  </header>
+
+  <section class="grid3">
+    <div class="opt">
+      <span class="tag">A · Book</span>
+      <div class="panel book">
+        <div class="row on"><div class="t">The quiet economics of maintenance</div><div class="ex">Most infrastructure fails not from neglect but from a budget model that rewards building over keeping. A look at three cities that flipped it.</div><div class="src">Works in Progress · 2 h</div></div>
+        <div class="row"><div class="t">What SQLite's WAL mode actually guarantees</div><div class="ex">Readers never block writers, but checkpoint starvation is real. Notes from a week of fsync tracing.</div><div class="src">Fly.io blog · 5 h</div></div>
+        <div class="row"><div class="t">On keeping a commonplace book</div><div class="ex">Locke indexed his by the first letter and vowel of each heading. It still works.</div><div class="src">The Marginalian · yesterday</div></div>
+      </div>
+      <p class="note">About 3 items per screen. The serif carries excerpts. You read the list as much as you scan it.</p>
+    </div>
+
+    <div class="opt">
+      <span class="tag">B · Desk</span>
+      <div class="panel desk">
+        <div class="row on"><div class="t">The quiet economics of maintenance</div><div class="ex">Most infrastructure fails not from neglect but from a budget model that rewards building…</div><div class="src">Works in Progress · 2 h</div></div>
+        <div class="row"><div class="t">What SQLite's WAL mode actually guarantees</div><div class="ex">Readers never block writers, but checkpoint starvation is real. Notes from a week…</div><div class="src">Fly.io blog · 5 h</div></div>
+        <div class="row"><div class="t">On keeping a commonplace book</div><div class="ex">Locke indexed his by the first letter and vowel of each heading. It still works.</div><div class="src">The Marginalian · yesterday</div></div>
+        <div class="row"><div class="t">Rust 1.92 release notes</div><div class="ex">Async closures stabilised; new lints for unused lifetimes.</div><div class="src">Rust blog · yesterday</div></div>
+        <div class="row"><div class="t">Designing calm interfaces for long sessions</div><div class="ex">Contrast fatigue is cumulative. Lower the floor, not the ceiling.</div><div class="src">Robin Rendle · 2 d</div></div>
+      </div>
+      <p class="note">About 7–8 items per screen. Sans UI, one-line excerpt. The list is for scanning; the serif is saved for the reader view.</p>
+    </div>
+
+    <div class="opt">
+      <span class="tag">C · Cockpit</span>
+      <div class="panel cock">
+        <div class="row on"><span class="dot"></span><span class="src">Works in Prog…</span><span class="t">The quiet economics of maintenance</span><span class="d">2h</span></div>
+        <div class="row"><span class="dot"></span><span class="src">Fly.io blog</span><span class="t">What SQLite's WAL mode actually guarantees</span><span class="d">5h</span></div>
+        <div class="row"><span class="dot"></span><span class="src">Marginalian</span><span class="t">On keeping a commonplace book</span><span class="d">1d</span></div>
+        <div class="row"><span class="dot read"></span><span class="src">Rust blog</span><span class="t">Rust 1.92 release notes</span><span class="d">1d</span></div>
+        <div class="row"><span class="dot read"></span><span class="src">Robin Rendle</span><span class="t">Designing calm interfaces for long sessions</span><span class="d">2d</span></div>
+        <div class="row"><span class="dot read"></span><span class="src">LWN</span><span class="t">The rocky road to a stable io_uring</span><span class="d">2d</span></div>
+        <div class="row"><span class="dot read"></span><span class="src">Simon Willison</span><span class="t">Notes on running agents headlessly</span><span class="d">3d</span></div>
+        <div class="row"><span class="dot read"></span><span class="src">Julia Evans</span><span class="t">A zine about git rebase</span><span class="d">3d</span></div>
+      </div>
+      <p class="note">Around 20 items per screen. Titles only, mail-client style. Fast triage, no reading in the list.</p>
+    </div>
+  </section>
+
+  <section class="opt">
+    <h2>Issues: same density as RSS, or denser?</h2>
+    <div class="grid2">
+      <div class="opt">
+        <span class="tag">Issues at Desk</span>
+        <div class="panel scroll"><table class="cal">
+          <tr><th>#</th><th>Title</th><th>Labels</th><th>Age</th></tr>
+          <tr><td class="num">412</td><td class="title">Sync pauses forever after a rebase conflict</td><td><span class="lab">bug</span></td><td>2d</td></tr>
+          <tr><td class="num">409</td><td class="title">Show which page an engaged post saved to</td><td><span class="lab">rss</span></td><td>4d</td></tr>
+          <tr><td class="num">401</td><td class="title">Codex runner: surface login hint in Settings</td><td><span class="lab">agents</span></td><td>1w</td></tr>
+        </table></div>
+      </div>
+      <div class="opt">
+        <span class="tag">Issues compact</span>
+        <div class="panel scroll"><table class="cmp">
+          <tr><th>#</th><th>Title</th><th>Labels</th><th>Assignee</th><th>Age</th></tr>
+          <tr><td class="num">412</td><td>Sync pauses forever after a rebase conflict</td><td><span class="lab">bug</span> <span class="lab">kbsync</span></td><td>dalbrecht</td><td>2d</td></tr>
+          <tr><td class="num">409</td><td>Show which page an engaged post saved to</td><td><span class="lab">rss</span></td><td>—</td><td>4d</td></tr>
+          <tr><td class="num">401</td><td>Codex runner: surface login hint in Settings</td><td><span class="lab">agents</span></td><td>—</td><td>1w</td></tr>
+          <tr><td class="num">398</td><td>Duplicate page id warning lacks a path</td><td><span class="lab">bug</span></td><td>—</td><td>1w</td></tr>
+          <tr><td class="num">390</td><td>Quiz: allow skipping a question</td><td><span class="lab">review</span></td><td>—</td><td>2w</td></tr>
+          <tr><td class="num">377</td><td>Reader view drops figure captions</td><td><span class="lab">rss</span> <span class="lab">bug</span></td><td>—</td><td>3w</td></tr>
+        </table></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+</body>
+</html>
