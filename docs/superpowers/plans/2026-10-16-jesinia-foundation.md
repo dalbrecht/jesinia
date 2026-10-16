@@ -755,7 +755,7 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
 
 **Interfaces:**
 - Consumes: Task 3 `docs/design/tokens.md` (exact names/values), Task 4 `docs/design/components.md` (props signatures).
-- Produces: `import "@jesinia/design/tokens.css"`, `reset.css`, `fonts.css`; React exports `Button, Input, Panel, List, Row, Badge, Tabs, Toast, ToastProvider, ChatTranscript` with the props from Task 4; `ChatMessage` type `{id, kind: "user"|"agent"|"tool"|"error"|"pending-write", text?, streaming?, tool?, pending?: {id, summary}}`, `ChatTranscript({messages, onApprove, onReject})`.
+- Produces: `import "@jesinia/design/tokens.css"`, `reset.css`, `fonts.css`; React exports `Button, Input, Panel, List, Row, Badge, Tabs, Toast, ToastProvider, useToast, ChatTranscript` and the `ChatMessage` type, with the exact props and message shapes from Task 4 (`docs/design/components.md`; e.g. `ChatTranscript({runner, messages, onApprove, onReject, onRetry})`). Task 4 is authoritative where this line and that spec differ.
 
 - [ ] **Step 1: Failing tests:** `contrast.test.ts` parses `tokens.css`, resolves each pair from the Task 3 contrast table in light and dark, and asserts ratios ≥ the table's required minimum (oklch → sRGB → WCAG luminance). `components.test.tsx`: Button `loading` sets `aria-busy` and disables; Tabs arrow-key roving focus; ChatTranscript renders a pending-write card whose Approve calls `onApprove(id)`, announces new agent text through a polite live region, and does not auto-scroll when the user has scrolled up.
 - [ ] **Step 2–4:** FAIL → implement from the Phase 0 docs → PASS.

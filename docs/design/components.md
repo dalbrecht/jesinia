@@ -74,6 +74,16 @@ with `secondary` ("Cancel").
 
 **Keyboard:** Enter and Space activate. When rendered as `<a>`, only Enter.
 
+**Link buttons (`href`).** The native `disabled` attribute does nothing on `<a>`, so a
+disabled link button:
+
+- renders `<a role="link" aria-disabled="true" tabindex="-1">` with the `href` removed,
+  so it can't navigate and leaves the tab order, matching a disabled `<button>`;
+- ignores clicks and Enter (the handler calls `preventDefault`).
+
+`loading` is not allowed together with `href`; the type rejects it. A link that starts
+work becomes a `<button>`.
+
 **ARIA**
 
 - Native `<button type="button">` by default; `type="submit"` must be explicit.
@@ -86,18 +96,24 @@ with `secondary` ("Cancel").
 **Props**
 
 ```ts
-type ButtonProps = {
+type ButtonBase = {
   variant?: "primary" | "secondary" | "ghost" | "danger"; // default "secondary"
   size?: "sm" | "md";                                       // default "md"
-  loading?: boolean;
   icon?: ReactNode;          // leading
   iconTrailing?: ReactNode;
-  href?: string;             // renders <a>
 } & (
-  | { children: ReactNode }                              // labelled
+  | { children: ReactNode }                                    // labelled
   | { children?: never; "aria-label": string; icon: ReactNode } // icon-only
-) & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">;
+);
 
+type ButtonProps =
+  | (ButtonBase & { href?: undefined; loading?: boolean }
+      & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">)  // renders <button>
+  | (ButtonBase & { href: string; loading?: never; disabled?: boolean }
+      & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "children" | "href">); // renders <a>;
+      // disabled → aria-disabled, href removed, tabindex -1
+
+// ref is HTMLButtonElement or HTMLAnchorElement to match the rendered element.
 function Button(props: ButtonProps): JSX.Element;
 ```
 
@@ -152,19 +168,27 @@ function Button(props: ButtonProps): JSX.Element;
 **Props**
 
 ```ts
-type InputProps = {
+type InputCommon = {
   label: string;
   hideLabel?: boolean;
   help?: ReactNode;
   error?: ReactNode;         // presence sets invalid
-  variant?: "text" | "search" | "path";
-  multiline?: boolean;       // composer
   loading?: boolean;
   leading?: ReactNode;
   trailing?: ReactNode;      // e.g. <Button size="sm">Validate</Button>
-  onSubmit?: (value: string) => void; // multiline: Enter
-} & Omit<InputHTMLAttributes<HTMLInputElement>, "size">;
+};
 
+type InputProps =
+  | (InputCommon & {
+      multiline?: false;
+      variant?: "text" | "search" | "path";
+    } & Omit<InputHTMLAttributes<HTMLInputElement>, "size">)       // renders <input>
+  | (InputCommon & {
+      multiline: true;                                            // composer
+      onSubmit?: (value: string) => void;                         // Enter (not Shift+Enter, not during IME)
+    } & Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "onSubmit">); // renders <textarea>
+
+// ref is HTMLInputElement or HTMLTextAreaElement to match the rendered element.
 function Input(props: InputProps): JSX.Element;
 ```
 
@@ -458,8 +482,15 @@ type ToastOptions = {
   duration?: number | "persistent"; // overrides the tone default
 };
 
-function ToastRegion(): JSX.Element;        // mounted once by the app shell
+// Mounted once by the app shell. Provides the useToast context and renders the
+// toast region (landmark + live regions) after its children.
+function ToastProvider(props: { children: ReactNode }): JSX.Element;
+
 function useToast(): { show: (o: ToastOptions) => string; dismiss: (id: string) => void };
+
+// The presentational toast that ToastProvider renders for each entry. Exported for the
+// demo page and tests; apps call useToast().show instead of rendering it.
+function Toast(props: ToastOptions & { id: string; onDismiss: (id: string) => void }): JSX.Element;
 ```
 
 ---
@@ -497,7 +528,7 @@ shows the monogram ("C" for Claude Code, "X" for Codex) in `--jx-runner-<r>-fg` 
 | **error** | Left, full width bubble with a "×" icon, message, and a **Retry** button | `--jx-chat-error-bg`, `--jx-chat-error-fg` | Copy gives the cause and the fix ("Claude stopped: the CLI is logged out. Run `claude login`, then Retry."). Retry resumes the session (spec §13). The transcript up to the error is kept |
 | **pending write** | A raised card. Header: glyph and "Claude wants to edit **Notes/maintenance.md**". Body: a one-line summary ("Adds a 'Funding models' section, 12 lines") plus a "Show changes" disclosure with a unified diff in mono. Footer: **Approve change** (primary) and **Reject** (secondary) | `--jx-chat-pending-bg`, `-pending-border`, `-pending-shadow`; diff uses `--jx-surface-sunken` | See 8.3 |
 
-Grouping: consecutive tool-use rows between two agent messages collapse into one row
+Grouping: consecutive tool-use messages between two agent messages collapse into one row
 ("▸ 3 tool calls") that expands into the individual rows.
 
 ### 8.3 Pending-write card states
@@ -518,7 +549,9 @@ you replied".
 ### 8.4 Scrolling and announcements
 
 **Auto-scroll rule:** the transcript sticks to the bottom while the user is at the
-bottom. "At the bottom" means within 48 px of `scrollHeight`.
+bottom. "At the bottom" means the remaining distance
+`scrollHeight - scrollTop - clientHeight` is at most 48 px. It is measured on scroll
+events, and once more before each content append.
 
 - When the user scrolls up, auto-scroll stops. New content then increments the "Jump to
   latest" counter instead of moving the view.
@@ -559,7 +592,7 @@ bottom. "At the bottom" means within 48 px of `scrollHeight`.
 ```ts
 type Runner = { id: "claude" | "codex"; name: string };
 
-type ChatItem =
+type ChatMessage =
   | { id: string; kind: "user"; text: string; at: string }
   | { id: string; kind: "agent"; markdown: string; streaming: boolean; at: string }
   | { id: string; kind: "tool"; name: string; summary: string; detail?: string; running: boolean }
@@ -570,7 +603,7 @@ type ChatItem =
 
 type ChatTranscriptProps = {
   runner: Runner;
-  items: ChatItem[];
+  messages: ChatMessage[];
   onRetry?: (id: string) => void;
   onApprove?: (id: string) => void;
   onReject?: (id: string) => void;
@@ -589,7 +622,7 @@ function ChatTranscript(props: ChatTranscriptProps): JSX.Element;
 | empty | Centered `--jx-fg-muted` line from `empty`, defaulting to "Ask \<runner\> about this \<subject\>." No illustration |
 | loading (history) | Two skeleton bubbles (user right, agent left) in `--jx-surface-sunken` |
 | runner unavailable | Rendered by the chat pane, not the transcript: an inline banner "Codex isn't available: not logged in. Run `codex login`, or switch to Claude." plus a runner switch (spec §13) |
-| terminal attached | A neutral row "Continued in Claude Code · live", with activity appended as normal items (spec §4.3) |
+| terminal attached | A neutral row "Continued in Claude Code · live", with activity appended as normal messages (spec §4.3) |
 
 ---
 
