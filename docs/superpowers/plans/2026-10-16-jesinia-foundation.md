@@ -887,4 +887,12 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 | 14 | 24–25 | Notes |
 | 15 | 26–27 | skills + docs |
 
-Each PR follows the repo workflow: local code review → push → CI + Copilot review → address all findings → green CI → merge.
+Each PR follows the repo workflow: local code review → push → open PR → **request a Codex review** (comment `@codex review` on the PR unless Codex auto-review is enabled on the repo) → **wait for the Codex review to land** → address every finding → **green CI** → merge. Never merge with an unaddressed Codex finding or a red/pending CI run.
+
+**Phase 0 exception:** PRs 1–2 land before CI exists (CI is created in Task 7 / PR 3). These pre-scaffold PRs are docs only and are gated on the Codex review alone (all findings addressed). Every PR from PR 3 on must also have green CI.
+
+## Execution
+
+- **Method:** subagent-driven (superpowers:subagent-driven-development) — a fresh implementer and a fresh reviewer per task.
+- **Phase 0 (Tasks 1–6)** is run interactively with the user; the design-pass kit is `docs/design/README.md`.
+- **Phases 1–7 (Tasks 7–28)** run as a Workflow in a fresh session, started only after the Task 6 design ADR is Accepted and merged.
