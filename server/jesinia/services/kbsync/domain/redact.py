@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import re
 
-_URL_USERINFO = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@")
+# Greedy to the last '@' before the path: passwords may themselves contain '@'.
+_URL_USERINFO = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s]*@")
 MAX_LEN = 300
 
 

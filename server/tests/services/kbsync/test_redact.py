@@ -12,6 +12,8 @@ def test_masks_url_credentials() -> None:
     assert "https://***@github.com/a/kb.git/" in out
     assert redact("ssh://git@host/x") == "ssh://***@host/x"
     assert redact("no urls here") == "no urls here"
+    out = redact("https://u:p@ss@w0rd@host.example/repo.git")
+    assert out == "https://***@host.example/repo.git" and "w0rd" not in out
 
 
 def test_caps_length() -> None:
