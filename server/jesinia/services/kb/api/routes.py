@@ -156,6 +156,36 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
         result = await host.service.move(PageId(a.id), PurePosixPath(a.folder), a.title)
         return MoveOut.of(result).model_dump()
 
+    async def preview_write(args: BaseModel) -> dict[str, object]:
+        a = WriteToolIn.model_validate(args.model_dump())
+        if a.id:
+            current = await host.service.read(PageId(a.id))
+            to, _ = host.service.planned_path(PurePosixPath(a.folder), a.title, PageId(a.id))
+            preview: dict[str, object] = {
+                "action": "update",
+                "path": str(current.page.path),
+                "title": current.page.title,
+                "current": current.page.body,
+            }
+            # kb_write also retitles/moves when title or folder differ: say so.
+            if a.title != current.page.title or PurePosixPath(a.folder) != current.page.path.parent:
+                preview.update(action="update+move", to=str(to), new_title=a.title)
+            if a.jesinia != current.page.jesinia:
+                preview["jesinia"] = {"from": current.page.jesinia, "to": a.jesinia}
+            return preview
+        path, suffixed = host.service.planned_path(PurePosixPath(a.folder), a.title)
+        created: dict[str, object] = {"action": "create", "path": str(path), "title": a.title}
+        if suffixed:
+            created["note"] = "That name is taken; the new page's id will be added to it."
+        return created
+
+    async def preview_move(args: BaseModel) -> dict[str, object]:
+        a = MoveToolIn.model_validate(args.model_dump())
+        current = await host.service.read(PageId(a.id))
+        title = a.title or current.page.title
+        to, _ = host.service.planned_path(PurePosixPath(a.folder), title, PageId(a.id))
+        return {"action": "move", "path": str(current.page.path), "to": str(to)}
+
     async def kb_tree(args: BaseModel, call: CallContext) -> object:
         return [TreeOut.of(n).model_dump() for n in await host.service.tree()]
 
@@ -172,9 +202,15 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
             WriteToolIn,
             kb_write,
             True,
+            preview_write,
         ),
         ToolDef(
-            "kb_move", "Move or rename a page; renames update link text.", MoveToolIn, kb_move, True
+            "kb_move",
+            "Move or rename a page; renames update link text.",
+            MoveToolIn,
+            kb_move,
+            True,
+            preview_move,
         ),
         ToolDef("kb_tree", "List KB folders and pages with page counts.", EmptyIn, kb_tree, False),
         ToolDef("kb_link", "Resolve a page id to its title and path.", IdIn, kb_link, False),

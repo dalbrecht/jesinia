@@ -88,7 +88,7 @@ describe("Settings", () => {
   it("lists runners, conflicts, and rotates the token after confirming", async () => {
     renderSettings({
       "GET /api/agents/runners": {
-        claude: { available: true, version: "2.1.301", detail: "ok" },
+        "claude-code": { available: true, version: "2.1.301", detail: "ok" },
         codex: { available: false, version: null, detail: "not logged in: run codex login" },
       },
       "GET /api/kb/conflicts": [

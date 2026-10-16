@@ -1036,6 +1036,103 @@
         }
       }
     },
+    "/api/notes/sessions": {
+      "post": {
+        "tags": [
+          "notes"
+        ],
+        "summary": "Start",
+        "operationId": "start_api_notes_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Start Api Notes Sessions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notes/sessions/{id}/save": {
+      "post": {
+        "tags": [
+          "notes"
+        ],
+        "summary": "Save",
+        "operationId": "save_api_notes_sessions__id__save_post",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Save Api Notes Sessions  Id  Save Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "summary": "Healthz",
@@ -1358,6 +1455,37 @@
         ],
         "title": "PathIn"
       },
+      "SaveIn": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "user_text": {
+            "type": "string",
+            "title": "User Text",
+            "default": ""
+          },
+          "agent_text": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Agent Text"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": "unknown"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "agent_text"
+        ],
+        "title": "SaveIn"
+      },
       "SessionIn": {
         "properties": {
           "subject": {
@@ -1400,6 +1528,24 @@
           "runner"
         ],
         "title": "SessionIn"
+      },
+      "StartIn": {
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "title": "Page Id"
+          },
+          "runner": {
+            "type": "string",
+            "title": "Runner"
+          }
+        },
+        "type": "object",
+        "required": [
+          "page_id",
+          "runner"
+        ],
+        "title": "StartIn"
       },
       "SubjectIn": {
         "properties": {

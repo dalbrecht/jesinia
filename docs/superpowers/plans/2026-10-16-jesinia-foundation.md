@@ -841,7 +841,7 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
   - Routes `POST /api/notes/sessions {page_id, runner}`, `POST /api/notes/sessions/{id}/save`; MCP `notes_save` (`writes=True`).
   - Editing and browsing (ADR 0008 §5) use the shared KB routes from Task 12 (`GET /api/kb/tree`, `PATCH /api/kb/pages/{id}/body`, `PUT /api/kb/pages`, `POST /api/kb/pages/{id}/move`); the Notes module adds no KB routes and never touches the filesystem directly.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
 
 ```python
 async def test_save_note_format(env):
@@ -856,7 +856,7 @@ async def test_pack_wraps_subject_as_untrusted(env, tmp_session_dir): ...
 async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 ```
 
-- [ ] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(notes): tracer app backend`.
+- [x] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(notes): tracer app backend`.
 
 ### Task 25: Notes PWA and end-to-end flow
 
@@ -869,13 +869,13 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 - Consumes: Task 23 client/shell, Task 22 `ChatTranscript`, Task 24 routes, Task 18 SSE + pending routes.
 - Editor: CodeMirror 6 (MIT) Markdown with live styling (markers only on the caret line), `[[` autocomplete, provenance comments folded into read-only chips, autosave (~1 s idle, blur, page switch) via `PATCH /api/kb/pages/{id}/body` with `expected_rev`; properties edits go through `PUT /api/kb/pages`; file tree from `GET /api/kb/tree`; grouped search results per the Task 5 wireframes (ADR 0008 §5).
 
-- [ ] **Step 1: Failing tests:** unit — search box debounces 200 ms and lists hits; chat streams deltas into one agent message; Save note disabled until an agent turn completes. e2e (`notes.spec.ts`, fake runner scripted to call `kb_write` once and then reply):
+- [x] **Step 1: Failing tests:** unit — search box debounces 200 ms and lists hits; chat streams deltas into one agent message; Save note disabled until an agent turn completes. e2e (`notes.spec.ts`, fake runner scripted to call `kb_write` once and then reply):
   1. search fixture page → open → start chat with runner "fake" → see streamed reply;
   2. the agent's `kb_write` shows a pending-write card → Reject → file not created;
   3. Save note → file appears in fixture KB `Notes/` with provenance comments and back-link (assert by reading the file);
   4. edit the body of a fixture page whose front matter is noncanonical (flow-style `aliases: [rt]`, a quoted title, a YAML comment) and which contains a provenance block → autosave writes it, and the front-matter block and the untouched provenance block are byte-identical (assert by reading the file);
   5. change the file on disk while a local edit is unsaved → the changed-on-disk bar appears and "Keep mine" writes the local version.
-- [ ] **Step 2–4:** FAIL → implement per Task 5 wireframes → PASS.
+- [x] **Step 2–4:** FAIL → implement per Task 5 wireframes → PASS.
 - [ ] **Step 5: Manual check** with real `claude` and `codex` runners on the author's Mac; record result in the PR description. Commit `feat(notes): tracer PWA with end-to-end test`.
 
 ### Task 26: Agent skills and plugins

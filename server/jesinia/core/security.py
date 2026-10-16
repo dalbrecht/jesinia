@@ -12,8 +12,12 @@ from __future__ import annotations
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+# Scripts, fonts and connections stay same-origin. Inline *styles* are allowed: the
+# editor (CodeMirror) injects its theme at runtime, and the static PWAs cannot carry a
+# per-response nonce.
 CSP = (
-    "default-src 'self'; frame-src 'self'; frame-ancestors 'none'; "
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-src 'self'; "
+    "frame-ancestors 'none'; "
     "object-src 'none'; base-uri 'none'"
 )
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})

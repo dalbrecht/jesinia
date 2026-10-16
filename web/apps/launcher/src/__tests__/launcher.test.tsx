@@ -11,7 +11,7 @@ describe("Launcher", () => {
     const { client } = fakeClient(
       baseRoutes({
         "GET /api/agents/runners": {
-          claude: { available: true, version: "2.1.301", detail: "ok" },
+          "claude-code": { available: true, version: "2.1.301", detail: "ok" },
           codex: { available: false, version: null, detail: "not logged in" },
         },
         "POST /api/kbsync/run": {
@@ -22,8 +22,7 @@ describe("Launcher", () => {
     );
     render(<App path="/" client={client} />);
     expect(await screen.findByText("12 pages indexed")).toBeInTheDocument();
-    // No app bundle ships yet in this phase, so every tile is inert ("Coming soon").
-    expect(screen.queryByRole("link", { name: /Notes/ })).toBeNull();
+    expect(screen.getByRole("link", { name: /Notes/ })).toHaveAttribute("href", "/notes/");
     expect(screen.getByText("RSS").closest("[aria-disabled]")).not.toBeNull();
     expect(await screen.findByText("12 pages indexed")).toBeInTheDocument();
     expect(await screen.findByText("not logged in")).toBeInTheDocument();

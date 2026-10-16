@@ -41,14 +41,16 @@ test-e2e: ## Run end-to-end tests (Playwright)
 # Playwright's webServer runs this, so the JS toolchain never starts Python itself.
 e2e-server: ## Build the launcher and serve a throwaway e2e instance (needs E2E_HOME, E2E_PORT)
 	@test -n "$(E2E_HOME)" && test -n "$(E2E_PORT)" || { echo "set E2E_HOME and E2E_PORT"; exit 2; }
-	$(PNPM) --filter @jesinia/launcher build
+	$(PNPM) --filter @jesinia/launcher --filter @jesinia/notes build
 	bash web/tests/e2e/fixture.sh
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set server.port "$(E2E_PORT)" >/dev/null
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set kbsync.quiet 1s >/dev/null
+	@# The server plus a scripted "fake" runner that calls kb_write through MCP (tests only).
 	@# The server commits to the fixture KB; CI runners have no git identity of their own.
 	GIT_AUTHOR_NAME="Jesinia E2E" GIT_AUTHOR_EMAIL="e2e@example.invalid" \
 	  GIT_COMMITTER_NAME="Jesinia E2E" GIT_COMMITTER_EMAIL="e2e@example.invalid" \
-	  JESINIA_HOME="$(E2E_HOME)/data" exec $(UV) run jesinia serve
+	  JESINIA_HOME="$(E2E_HOME)/data" JESINIA_FAKE_RUNNER=1 exec $(UV) run uvicorn \
+	  jesinia.testing.fake_runner_app:app --host 127.0.0.1 --port "$(E2E_PORT)"
 
 lint: ## Lint Python and JS
 	$(UV) run ruff check . ../scripts

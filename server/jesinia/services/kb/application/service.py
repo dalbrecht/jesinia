@@ -84,6 +84,9 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+NEW_ID_PLACEHOLDER = "new page id"
+
+
 class KbService:
     def __init__(self, files: PageFiles | None, index: PageIndex, bus: EventBus) -> None:
         self._files = files
@@ -134,6 +137,22 @@ class KbService:
             )
         self._fs().contain(folder)
         return nfc(folder)
+
+    def planned_path(
+        self, folder: PurePosixPath, title: str, id: PageId | None = None
+    ) -> tuple[PurePosixPath, bool]:
+        """Where a write would put the page, using the same resolution as the write.
+
+        For a new page (``id`` None) the collision suffix depends on the id it gets at
+        write time, so a suffixed path shows ``[new page id]`` rather than a sampled id,
+        and the second value says whether a suffix will be added.
+        """
+        checked = self._check_folder(folder)
+        path = self._target(checked, title, id or new_page_id())
+        suffixed = path.name != f"{sanitize_title(title)}.md"
+        if suffixed and id is None:
+            path = path.with_name(f"{sanitize_title(title)} [{NEW_ID_PLACEHOLDER}].md")
+        return path, suffixed
 
     def _target(self, folder: PurePosixPath, title: str, id: PageId) -> PurePosixPath:
         """A free path for the page: the title, else title + id prefix, else the full id."""

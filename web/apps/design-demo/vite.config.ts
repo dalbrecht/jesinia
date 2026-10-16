@@ -10,5 +10,6 @@ export default defineConfig({
   build: {
     outDir: fileURLToPath(new URL("../../../server/jesinia/static/design", import.meta.url)),
     emptyOutDir: true,
+    assetsInlineLimit: 0, // no data: URIs (CSP)
   },
 });
