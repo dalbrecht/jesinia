@@ -144,6 +144,31 @@ describe("TagPicker", () => {
     expect(screen.queryByRole("group", { name: "Suggested tags" })).not.toBeInTheDocument();
   });
 
+  it("shows the cause and clears loading when the check request is rejected", async () => {
+    const { changes } = setup({
+      "GET /api/kb/tags/check": () => Promise.reject(new Error("network down")),
+    });
+    const box = screen.getByRole("textbox", { name: "Add a tag" });
+    await userEvent.type(box, "wal{Enter}");
+    expect(await screen.findByText(/network down/)).toBeInTheDocument();
+    expect(changes).not.toHaveBeenCalled();
+    expect(box).toHaveValue("wal");
+    expect(screen.getByRole("button", { name: "Add" })).toBeEnabled();
+  });
+
+  it("shows the server's message when suggestions fail with an error response", async () => {
+    setup({ "POST /api/kb/tags/suggest": () => Response.json({ detail: "Agent unavailable." }, { status: 503 }) });
+    await suggestNow();
+    expect(await screen.findByText("Agent unavailable.")).toBeInTheDocument();
+  });
+
+  it("clears the suggesting state when the suggest request is rejected", async () => {
+    setup({ "POST /api/kb/tags/suggest": () => Promise.reject(new Error("offline")) });
+    await suggestNow();
+    expect(await screen.findByText(/offline/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Suggest tags" })).toBeEnabled();
+  });
+
   it("asks for no suggestions without text", async () => {
     const { calls } = setup({}, { text: "  " });
     expect(screen.getByRole("textbox", { name: "Add a tag" })).toBeInTheDocument();

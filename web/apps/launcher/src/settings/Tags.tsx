@@ -120,6 +120,9 @@ function ChangeDialog({
   const [preview, setPreview] = useState<{ pages: PageRef[]; reserved: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Bumped whenever the sources or destination change (and per preview): a preview still in
+  // flight for an older set is dropped, so Apply never sends revisions for the wrong sources.
+  const previewGeneration = useRef(0);
   const dialogRef = useRef<HTMLDivElement>(null);
   const scrimRef = useRef<HTMLDivElement>(null);
   useModalBehaviour(dialogRef, scrimRef, onClose);
@@ -127,32 +130,46 @@ function ChangeDialog({
   const destination = name.trim().replace(/^#/, "");
   const sourceList = sources.map((x) => `#${x}`).join(", ");
 
+  const invalidatePreview = () => {
+    previewGeneration.current += 1;
+    setPreview(null);
+    setBusy(false);
+  };
+
   const addSource = () => {
     const tag = extra.trim().replace(/^#/, "");
     if (tag !== "" && !sources.includes(tag)) {
       setSources([...sources, tag]);
-      setPreview(null);
+      invalidatePreview();
     }
     setExtra("");
   };
 
   const runPreview = async () => {
+    previewGeneration.current += 1;
+    const generation = previewGeneration.current;
+    const isCurrent = () => previewGeneration.current === generation;
     setBusy(true);
     setError(null);
     const pages = new Map<string, PageRef>();
     const reserved = new Set<string>();
-    for (const source of sources) {
-      const r = await client.POST("/api/kb/tags/rename/preview", { body: { old: source, new: destination } });
-      if (!r.data) {
-        setBusy(false);
-        setError(errorText(r.error, "Couldn't preview that change."));
-        return;
+    try {
+      for (const source of sources) {
+        const r = await client.POST("/api/kb/tags/rename/preview", { body: { old: source, new: destination } });
+        if (!isCurrent()) return;
+        if (!r.data) {
+          setError(errorText(r.error, "Couldn't preview that change."));
+          return;
+        }
+        r.data.pages.forEach((p) => pages.has(p.id) || pages.set(p.id, p));
+        r.data.skipped_reserved.forEach((path) => reserved.add(path));
       }
-      r.data.pages.forEach((p) => pages.has(p.id) || pages.set(p.id, p));
-      r.data.skipped_reserved.forEach((path) => reserved.add(path));
+      setPreview({ pages: [...pages.values()], reserved: [...reserved] });
+    } catch (cause) {
+      if (isCurrent()) setError(`Couldn't preview that change: ${failureCause(cause)}`);
+    } finally {
+      if (isCurrent()) setBusy(false);
     }
-    setBusy(false);
-    setPreview({ pages: [...pages.values()], reserved: [...reserved] });
   };
 
   const apply = async () => {
@@ -234,7 +251,7 @@ function ChangeDialog({
                             aria-label={`Remove #${x}`}
                             onClick={() => {
                               setSources(sources.filter((y) => y !== x));
-                              setPreview(null);
+                              invalidatePreview();
                             }}
                           >
                             ×
@@ -267,7 +284,7 @@ function ChangeDialog({
                 autoFocus
                 onChange={(e) => {
                   setName(e.target.value);
-                  setPreview(null);
+                  invalidatePreview();
                 }}
                 help={mode === "merge" ? `Pages tagged ${sourceList} are retagged with this tag.` : undefined}
                 error={error ?? undefined}
@@ -320,6 +337,29 @@ function AddTagForm({ onAdded }: { onAdded: () => void }) {
   const submit = async (force: boolean) => {
     setBusy(true);
     setError(null);
+    if (!force) {
+      // The server's own check is cheap; the agent-backed same-meaning check only runs here.
+      try {
+        const checked = await client.GET("/api/kb/tags/check", { params: { query: { tag } } });
+        if (!checked.data) {
+          setBusy(false);
+          setSuggestion(null);
+          setError(errorText(checked.error, "Couldn't check that tag."));
+          return;
+        }
+        const similar = [...(checked.data.same_meaning ? [checked.data.same_meaning] : []), ...checked.data.near];
+        if (!checked.data.canonical && similar.length > 0) {
+          setBusy(false);
+          setSuggestion({ near: similar });
+          return;
+        }
+      } catch (cause) {
+        setBusy(false);
+        setSuggestion(null);
+        setError(`Couldn't check that tag: ${failureCause(cause)}`);
+        return;
+      }
+    }
     const r = await send(["add", tag, meaning, force], (header) =>
       client.POST("/api/kb/tags", { body: { tag, meaning, force }, params: { header } }),
     ).catch((cause: unknown) => {
@@ -405,14 +445,18 @@ export function TagsSection() {
   const [dialog, setDialog] = useState<ChangeTarget | null>(null);
 
   const reload = useCallback(async () => {
-    const [tags, loose] = await Promise.all([client.GET("/api/kb/tags"), client.GET("/api/kb/tags/uncataloged")]);
-    if (tags.data) {
-      setCatalog(tags.data);
-      setLoadError(null);
-    } else {
-      setLoadError(errorText(tags.error, "Couldn't load the tag catalog."));
+    try {
+      const [tags, loose] = await Promise.all([client.GET("/api/kb/tags"), client.GET("/api/kb/tags/uncataloged")]);
+      if (tags.data) {
+        setCatalog(tags.data);
+        setLoadError(null);
+      } else {
+        setLoadError(errorText(tags.error, "Couldn't load the tag catalog."));
+      }
+      setUncataloged(loose.data ?? []);
+    } catch (cause) {
+      setLoadError(`Couldn't load the tag catalog: ${failureCause(cause)}`);
     }
-    setUncataloged(loose.data ?? []);
   }, [client]);
 
   useEffect(() => {
@@ -422,9 +466,13 @@ export function TagsSection() {
   const act = async (path: "retire" | "restore" | "adopt" | "ignore", tag: string, done: string) => {
     const r = await send([path, tag], (header) =>
       client.POST(`/api/kb/tags/${path}`, { body: { tag }, params: { header } }),
-    ).catch(() => null); // offline: the key is kept, so trying again is the same action
-    if (!r?.response.ok) {
-      toast.show({ tone: "danger", message: errorText(r?.error, "That didn't work.") });
+    ).catch((cause: unknown) => failureCause(cause)); // offline: the key is kept, so trying again is the same action
+    if (typeof r === "string") {
+      toast.show({ tone: "danger", message: `That didn't work: ${r}` });
+      return;
+    }
+    if (!r.response.ok) {
+      toast.show({ tone: "danger", message: errorText(r.error, "That didn't work.") });
       return;
     }
     toast.show({ tone: "success", message: done });

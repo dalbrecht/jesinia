@@ -128,3 +128,40 @@ def test_trailing_hyphen_is_not_part_of_the_tag() -> None:
 
 def test_is_valid_tag_rejects_doubled_and_trailing_hyphens() -> None:
     assert not is_valid_tag("a-") and not is_valid_tag("a--b")
+
+
+def test_tag_identity_uses_unicode_case_folding() -> None:
+    assert normalise_tag("#STRASSE") == normalise_tag("#straße") == "strasse"
+    assert extract_tags("#straße and #STRASSE and #Ünï\n") == ["strasse", "ünï"]
+
+
+def test_replace_tag_renames_every_case_fold_spelling() -> None:
+    assert replace_tag("#straße x #STRASSE\n", "strasse", "road") == "#road x #road\n"
+    assert replace_tag("#Straße\n", "#STRASSE", "road") == "#road\n"
+
+
+def test_longer_fence_is_not_closed_by_shorter_or_other_character_lines() -> None:
+    body = "````\n#a\n```\n#b\n~~~~\n#c\n````\n#after\n"
+    assert extract_tags(body) == ["after"]
+
+
+def test_fence_closes_on_equal_or_longer_run_of_the_same_character() -> None:
+    assert extract_tags("```\n#a\n`````\n#after\n") == ["after"]
+    assert extract_tags("~~~~\n#a\n~~~~~\n#after\n") == ["after"]
+    assert extract_tags("```\n#a\n```trailing\n#b\n```\n#after\n") == ["after"]
+
+
+def test_inline_code_span_crossing_a_newline_is_masked() -> None:
+    body = "see `code\n#hidden` then #shown\n"
+    assert extract_tags(body) == ["shown"]
+    assert replace_tag(body, "hidden", "x") == body
+
+
+def test_inline_code_span_is_broken_by_a_blank_line() -> None:
+    body = "an `unclosed\n\n#visible` tail\n"
+    assert extract_tags(body) == ["visible"]
+
+
+def test_inline_code_span_needs_a_matching_backtick_run_across_lines() -> None:
+    body = "``a\n#hidden` still``\n#after `x\n#kept\n"
+    assert extract_tags(body) == ["after", "kept"]
