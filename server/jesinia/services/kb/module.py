@@ -22,6 +22,7 @@ from jesinia.services.kb.api.tags import build_tags_router, build_tags_tools
 from jesinia.services.kb.application.scan import ScanReport, scan
 from jesinia.services.kb.application.service import KbService
 from jesinia.services.kb.application.tags import TagService
+from jesinia.services.kb.infrastructure.agent_advisor import AgentTagAdvisor, OneShotAsker
 from jesinia.services.kb.infrastructure.fs import LocalFiles
 from jesinia.services.kb.infrastructure.index import SqliteIndex
 from jesinia.services.kb.infrastructure.watcher import KbWatcher
@@ -111,13 +112,28 @@ class KbModule:
         if self._svc is not None:
             self._last = await scan(self._svc)
 
+    @staticmethod
+    def _advisor(ctx: AppContext) -> AgentTagAdvisor:
+        """The agent-backed advisor. The agents module starts after kb, so its service
+        and runner choice are looked up per ask; without them answers are catalog-only."""
+
+        def sessions() -> OneShotAsker | None:
+            found = ctx.services.get("agents")
+            return found if isinstance(found, OneShotAsker) else None
+
+        def runner() -> str | None:
+            pick = ctx.services.get("agents.runner")
+            chosen = pick() if callable(pick) else None
+            return chosen if isinstance(chosen, str) else None
+
+        return AgentTagAdvisor(sessions, runner)
+
     async def start(self, ctx: AppContext) -> None:
         self._ctx = ctx
         self._conn = open_db(ctx.cfg.data_dir, KB_DB)
         self._svc = KbService(None, SqliteIndex(self._conn), ctx.bus)
         ctx.services["kb"] = self._svc
-        # No advisor yet (the agent-backed one is RSS plan Task 5): catalog-only answers.
-        self._tags = TagService(self._svc, None)
+        self._tags = TagService(self._svc, self._advisor(ctx))
         ctx.services["tags"] = self._tags
         # kbsync's quiet period reads the watcher's last activity (spec §4.4 step 2).
         ctx.services["kb.activity"] = lambda: (

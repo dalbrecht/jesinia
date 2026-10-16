@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, replace
@@ -20,10 +21,17 @@ from jesinia.core import auth
 from jesinia.core.module import CallContext, ToolDef
 from jesinia.services.agents.application.errors import (
     PendingNotFound,
+    RunnerUnavailable,
     SessionBusy,
     SessionNotFound,
+    TurnFailed,
 )
-from jesinia.services.agents.application.packs import ContextPack, system_prompt, write_pack
+from jesinia.services.agents.application.packs import (
+    ContextPack,
+    system_prompt,
+    wrap_untrusted,
+    write_pack,
+)
 from jesinia.services.agents.application.ports import SessionStore
 from jesinia.services.agents.application.runner import AgentRunner, TurnRequest
 from jesinia.services.agents.domain.events import RunError, TextDelta, ToolResult, ToolUse, TurnDone
@@ -40,10 +48,22 @@ log = logging.getLogger(__name__)
 __all__ = [
     "AttachInfo",
     "PendingNotFound",
+    "RunnerUnavailable",
     "SessionBusy",
     "SessionNotFound",
     "SessionService",
+    "TurnFailed",
 ]
+
+ONE_SHOT_SUBJECT = "one-shot"
+
+
+def _inline_context(pack: ContextPack) -> str:
+    """The pack's files as prompt text: a one-shot agent has no tools to open them with.
+    Untrusted documents stay fenced."""
+    parts = [f"## {name}\n{text.rstrip()}" for name, text in pack.files.items()]
+    parts += [f"## {name}\n{wrap_untrusted(doc)}" for name, doc in pack.untrusted.items()]
+    return "\n\n".join(parts)
 
 
 @dataclass(frozen=True)
@@ -69,6 +89,7 @@ class SessionService:
         self._tools = tools
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._changed: dict[str, asyncio.Condition] = {}
+        self._toolless: set[str] = set()  # one-shot sessions: no Jesinia tools at all
 
     # -- helpers -------------------------------------------------------------------
     def dir_for(self, id: str) -> Path:
@@ -79,11 +100,12 @@ class SessionService:
 
     async def _append(
         self, id: str, kind: str, data: dict[str, object], origin: Origin = "pwa"
-    ) -> None:
-        self.store.append(id, kind, data, origin)
+    ) -> StoredEvent:
+        event = self.store.append(id, kind, data, origin)
         cond = self._cond(id)
         async with cond:
             cond.notify_all()
+        return event
 
     def get(self, id: str) -> Session:
         s = self.store.get_session(id)
@@ -153,10 +175,13 @@ class SessionService:
         pack: ContextPack,
         *,
         preauthorized_tools: frozenset[str] | set[str] = frozenset(),
+        tools_allowed: bool = True,
     ) -> Session:
         if runner not in self.runners:
             raise ValueError(f"unknown runner {runner!r}")
         id = uuid.uuid4().hex
+        if not tools_allowed:
+            self._toolless.add(id)
         write_pack(pack, self.dir_for(id))
         token = secrets.token_urlsafe(32)
         self._write_mcp_config(id, token)
@@ -175,15 +200,93 @@ class SessionService:
         return session
 
     async def send(self, session_id: str, text: str) -> None:
+        await self._start_turn(session_id, text)
+
+    async def _start_turn(self, session_id: str, text: str) -> int:
+        """Start a turn in the background; the sequence number of its ``user_message``."""
         session = self.get(session_id)
         task = self._tasks.get(session_id)
         if session.status == "running" or (task is not None and not task.done()):
             raise SessionBusy(session_id)
         self.store.set_status(session_id, "running")
-        await self._append(session_id, "user_message", {"text": text})
+        message = await self._append(session_id, "user_message", {"text": text})
         self._tasks[session_id] = asyncio.create_task(
             self._turn(session_id, text), name=f"turn:{session_id}"
         )
+        return message.seq
+
+    async def ask(self, session_id: str, prompt: str, *, timeout: float = 45.0) -> str:
+        """Run one turn in an existing session (resuming the agent's own session) and
+        return the text it replied with. Raises ``SessionNotFound``, ``SessionBusy``,
+        ``TurnFailed`` (the agent reported an error) or ``TimeoutError``; a timed-out turn
+        is stopped and marked failed so the session can be used again."""
+        after = await self._start_turn(session_id, prompt)
+        try:
+            async with asyncio.timeout(timeout):
+                return await self._reply_after(session_id, after)
+        except TimeoutError:
+            await self._abandon_turn(session_id, f"the turn timed out after {timeout:g}s")
+            raise
+
+    async def _reply_after(self, session_id: str, after_seq: int) -> str:
+        parts: list[str] = []
+        async for event in self.stream(session_id, after_seq):
+            if event.kind == "text":
+                parts.append(str(event.data.get("text", "")))
+            elif event.kind == "error":
+                raise TurnFailed(str(event.data.get("message", "the agent turn failed")))
+            elif event.kind == "turn_done":
+                break
+        return "".join(parts)
+
+    async def _abandon_turn(self, session_id: str, reason: str) -> None:
+        task = self._tasks.get(session_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self.get(session_id).status == "running":
+            self.store.set_status(session_id, "failed")
+            await self._append(session_id, "error", {"message": reason})
+
+    async def one_shot(
+        self, runner: str, pack: ContextPack, prompt: str, *, timeout: float = 45.0
+    ) -> str:
+        """Ask ``runner`` one question in a throwaway session with no tools, and return
+        its reply. The pack's role becomes the system prompt; its files follow the prompt
+        inline (untrusted ones fenced). The session is closed whatever happens. Raises
+        ``RunnerUnavailable``, ``TurnFailed`` or ``TimeoutError``."""
+        if runner not in self.runners:
+            raise RunnerUnavailable(runner)
+        session = await self.create(
+            Subject(ONE_SHOT_SUBJECT, "", "One-shot ask"),
+            runner,
+            ContextPack(pack.role_prompt),
+            tools_allowed=False,
+        )
+        context = _inline_context(pack)
+        text = f"{prompt}\n\n{context}" if context else prompt
+        try:
+            return await self.ask(session.id, text, timeout=timeout)
+        finally:
+            await self.close(session.id)
+
+    async def close(self, session_id: str) -> None:
+        """End a session for good: stop its turn, revoke its MCP token, and delete its
+        scratch folder. The transcript stays (history)."""
+        await self._abandon_turn(session_id, "the session was closed during this turn")
+        path = self.dir_for(session_id) / "mcp.json"
+        if path.exists():
+            header = json.loads(path.read_text())["mcpServers"]["jesinia"]["headers"][
+                "Authorization"
+            ]
+            auth.revoke_session_token(str(header).removeprefix("Bearer "))
+        shutil.rmtree(self.dir_for(session_id), ignore_errors=True)
+        self._toolless.discard(session_id)
+        self._tasks.pop(session_id, None)
+        self._changed.pop(session_id, None)
 
     async def _turn(self, id: str, text: str) -> None:
         session = self.get(id)
@@ -195,7 +298,7 @@ class SessionService:
             system_prompt=system_prompt(workdir),
             resume_id=session.agent_session_id,
             mcp_config=workdir / "mcp.json",
-            allowed_tools=sorted(self._tools()),
+            allowed_tools=[] if id in self._toolless else sorted(self._tools()),
         )
         finished = False
         try:

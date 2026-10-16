@@ -5,7 +5,8 @@
 
 On its first turn in a session the runner calls ``kb_write`` through the session's MCP
 endpoint, exactly as a real agent would (so the write gate makes it a pending write),
-then replies. Later turns only reply. It refuses to load outside a throwaway
+then replies. Later turns only reply. A tag ask (a prompt starting ``TAGS:``) gets a
+fixed JSON tag list and never writes. It refuses to load outside a throwaway
 ``JESINIA_HOME``, so it can never activate in a real install.
 """
 
@@ -33,6 +34,7 @@ DRAFT: dict[str, object] = {
     "folder": "Notes",
     "body": "Drafted by the fake runner.",
 }
+TAG_REPLY = '["fixture","new-fixture-tag"]'
 REPLY = (
     "I read the page. ",
     "It is about the fixture topic. ",
@@ -77,6 +79,10 @@ class McpScriptRunner:
 
     async def run(self, req: TurnRequest) -> AsyncIterator[AgentEvent]:
         key = str(req.workdir)
+        if req.prompt.startswith("TAGS:"):
+            yield TextDelta(TAG_REPLY)
+            yield TurnDone(f"fake-{key[-8:]}", "fake-model")
+            return
         turn = self.turns.get(key, 0)
         self.turns[key] = turn + 1
         if turn == 0:

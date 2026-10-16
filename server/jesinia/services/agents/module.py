@@ -68,6 +68,14 @@ class AgentsModule:
         self._status = out
         return out
 
+    def preferred_runner(self) -> str | None:
+        """The runner for background asks: ``claude-code`` if available, else the first
+        available one (as of the last status check), else None."""
+        available = [name for name, st in self._status.items() if st.get("available")]
+        if "claude-code" in available:
+            return "claude-code"
+        return available[0] if available else None
+
     async def start(self, ctx: AppContext) -> None:
         self._conn = open_db(ctx.cfg.data_dir, SESSIONS_DB)
         runners = self._runners if self._runners is not None else default_runners()
@@ -87,6 +95,7 @@ class AgentsModule:
         await self._svc.recover()
         ctx.services["agents"] = self._svc
         ctx.services["agents.gate"] = SessionWriteGate(self._svc)
+        ctx.services["agents.runner"] = self.preferred_runner
         await self.runner_status()
 
     async def stop(self) -> None:
