@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""What the KB service needs from the outside world; implemented in ``infrastructure``."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Protocol
+
+from jesinia.services.kb.domain.page import PageId
+
+
+@dataclass(frozen=True)
+class IndexRow:
+    id: PageId
+    path: PurePosixPath  # NFC logical path
+    disk: str  # the path as found on disk
+    rev: str
+    title: str
+    mtime: float
+
+
+class PageFiles(Protocol):
+    root: Path
+
+    def contain(self, rel: PurePosixPath) -> Path:
+        """Absolute path for ``rel``; raises ``PathOutsideKb`` if it escapes the root."""
+        ...
+
+    def read(self, disk: str) -> bytes: ...
+
+    def write_atomic(self, disk: str, data: bytes) -> float:
+        """Write via temp file + fsync + rename; return the new mtime."""
+        ...
+
+    def rename(self, src: str, dst: str) -> None: ...
+
+    def exists(self, disk: str) -> bool: ...
+
+    def walk(self) -> Iterator[str]:
+        """Every file below the root, as root-relative POSIX strings."""
+        ...
+
+
+class PageIndex(Protocol):
+    def get(self, id: PageId) -> IndexRow | None: ...
+
+    def by_path(self, path: PurePosixPath) -> IndexRow | None: ...
+
+    def put(
+        self, id: PageId, path: PurePosixPath, disk: str, rev: str, title: str, mtime: float
+    ) -> None: ...
+
+    def delete(self, id: PageId) -> None: ...
+
+    def all(self) -> list[IndexRow]: ...
+
+    def set_links(self, src: PageId, dsts: Iterable[PageId]) -> None: ...
+
+    def links_to(self, dst: PageId) -> list[PageId]: ...

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from jesinia.core.db import DbClass, MigrationError, ModuleDb, open_db
+from jesinia.core.db import DbClass, MigrationError, ModuleDb, open_db, transaction
 
 
 @pytest.fixture
@@ -90,6 +90,17 @@ def test_trailing_statement_without_semicolon(tmp_path: Path) -> None:
     conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, d))
     tables = {r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
     assert {"a", "b", "c"} <= tables
+
+
+def test_transaction_commits_and_rolls_back(tmp_path: Path, fake_migrations: Path) -> None:
+    conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, fake_migrations))
+    with transaction(conn):
+        conn.execute("INSERT INTO items (name) VALUES ('kept')")
+    with pytest.raises(sqlite3.IntegrityError), transaction(conn):
+        conn.execute("INSERT INTO items (name) VALUES ('dropped')")
+        conn.execute("INSERT INTO items (name) VALUES (NULL)")
+    names = [r[0] for r in conn.execute("SELECT name FROM items ORDER BY id")]
+    assert names == ["a;b", "kept"]
     conn.close()
 
 

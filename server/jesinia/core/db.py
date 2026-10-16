@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -99,3 +101,16 @@ def open_db(data_dir: Path, spec: ModuleDb) -> sqlite3.Connection:
             conn.close()
             raise MigrationError(f"{spec.name}: migration {name} failed: {exc}") from exc
     return conn
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """``BEGIN`` … ``COMMIT`` (``ROLLBACK`` on error) for autocommit connections from
+    ``open_db`` (where ``with conn:`` would not open a transaction)."""
+    conn.execute("BEGIN")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")

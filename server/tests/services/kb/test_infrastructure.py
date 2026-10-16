@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+import os
+from pathlib import Path, PurePosixPath
+
+import pytest
+
+from jesinia.core.db import open_db
+from jesinia.services.kb.application.errors import PathOutsideKb
+from jesinia.services.kb.domain.page import PageId
+from jesinia.services.kb.infrastructure.fs import LocalFiles
+from jesinia.services.kb.infrastructure.index import SqliteIndex
+from tests.services.kb.conftest import KB_DB
+
+A = PageId("0192f7a8-0000-7000-8000-00000000000a")
+B = PageId("0192f7a8-0000-7000-8000-00000000000b")
+
+
+def test_walk_lists_files_sorted(tmp_path: Path) -> None:
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "z.md").write_text("z")
+    (tmp_path / "a.md").write_text("a")
+    assert list(LocalFiles(tmp_path).walk()) == ["a.md", "b/z.md"]
+
+
+def test_contain_rejects_escapes(tmp_path: Path) -> None:
+    fs = LocalFiles(tmp_path)
+    for bad in ("../x", "/etc/passwd"):
+        with pytest.raises(PathOutsideKb):
+            fs.contain(PurePosixPath(bad))
+    assert fs.contain(PurePosixPath("ok/x.md")) == (tmp_path / "ok/x.md").resolve()
+
+
+def test_failed_atomic_write_leaves_no_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fs = LocalFiles(tmp_path)
+    fs.write_atomic("a.md", b"v1")
+
+    def boom(src: object, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        fs.write_atomic("a.md", b"v2")
+    assert (tmp_path / "a.md").read_bytes() == b"v1"
+    assert [p.name for p in tmp_path.iterdir()] == ["a.md"]
+
+
+def test_rename_creates_parents(tmp_path: Path) -> None:
+    fs = LocalFiles(tmp_path)
+    fs.write_atomic("a.md", b"x")
+    fs.rename("a.md", "deep/er/b.md")
+    assert fs.exists("deep/er/b.md") and not fs.exists("a.md")
+
+
+def test_index_put_get_delete_links(tmp_path: Path) -> None:
+    conn = open_db(tmp_path, KB_DB)
+    idx = SqliteIndex(conn)
+    idx.put(A, PurePosixPath("N/a.md"), "N/a.md", "r1", "A", 1.0)
+    idx.put(B, PurePosixPath("N/b.md"), "N/b.md", "r2", "B", 2.0)
+    idx.set_links(B, [A])
+    assert idx.links_to(A) == [B]
+    assert idx.by_path(PurePosixPath("N/a.md")) == idx.get(A)
+    # a new id claiming an indexed path replaces the old row
+    idx.put(B, PurePosixPath("N/a.md"), "N/a.md", "r3", "B", 3.0)
+    assert idx.get(A) is None and idx.get(B) is not None
+    idx.delete(B)
+    assert idx.get(B) is None and idx.links_to(A) == [] and idx.all() == []
+    conn.close()
