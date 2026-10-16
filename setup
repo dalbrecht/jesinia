@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Install (or uninstall) Jesinia for this macOS user. Safe to re-run.
+#
+#   ./setup [--kb-path PATH] [--yes] [--dry-run]
+#   ./setup --uninstall [--purge-data] [--yes] [--dry-run]
+set -euo pipefail
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+kb_path="" dry_run=0 uninstall=0 yes=0 purge=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --kb-path) [[ $# -ge 2 ]] || die "--kb-path needs a value"; kb_path="$2"; shift 2 ;;
+    --kb-path=*) kb_path="${1#*=}"; shift ;;
+    --dry-run) dry_run=1; shift ;;
+    --uninstall) uninstall=1; shift ;;
+    --purge-data) purge=1; shift ;;
+    --yes|-y) yes=1; shift ;;
+    -h|--help) sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown option: $1 (see --help)" ;;
+  esac
+done
+
+[[ "$(uname -s)" == "Darwin" ]] || die "Jesinia runs on macOS."
+cd "$(dirname "$0")"
+
+flags=()
+(( dry_run )) && flags+=(--dry-run)
+(( yes )) && flags+=(--yes)
+
+if (( uninstall )); then
+  command -v uv >/dev/null || die "uv is not installed; nothing to uninstall with."
+  (( purge )) && flags+=(--purge-data)
+  exec uv run --project server jesinia uninstall "${flags[@]+"${flags[@]}"}"
+fi
+
+missing=()
+command -v git  >/dev/null || missing+=("xcode-select --install   # git")
+command -v uv   >/dev/null || missing+=("brew install uv")
+command -v node >/dev/null || missing+=("brew install node")
+if ! command -v pnpm >/dev/null; then
+  command -v corepack >/dev/null && missing+=("corepack enable pnpm") || missing+=("brew install pnpm")
+fi
+if (( ${#missing[@]} )); then
+  printf 'Missing tools. Install them, then run ./setup again:\n' >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  exit 1
+fi
+command -v gh >/dev/null || printf 'note: GitHub features need the gh CLI: brew install gh && gh auth login\n'
+
+if (( dry_run )); then
+  printf 'would run: make install build\n'
+else
+  make install build
+fi
+
+if [[ -z "$kb_path" ]]; then
+  if (( yes )); then
+    kb_path="$HOME/kb"
+  else
+    read -r -p "KB folder [~/kb]: " kb_path
+    kb_path="${kb_path:-$HOME/kb}"
+  fi
+fi
+kb_path="${kb_path/#\~/$HOME}"
+
+exec uv run --project server jesinia install --kb-path "$kb_path" "${flags[@]+"${flags[@]}"}"

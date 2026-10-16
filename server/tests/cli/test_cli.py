@@ -10,7 +10,7 @@ import pytest
 import respx
 from typer.testing import CliRunner, Result
 
-from jesinia.cli import main
+from jesinia.cli import install, main
 from jesinia.cli.doctor import Check, doctor, run_command
 from jesinia.core.config import load_config, save_config
 from jesinia.core.db import open_db
@@ -29,7 +29,15 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def cli(home: Path) -> Cli:
+def refreshed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Never reach the real claude/codex configs from tests."""
+    seen: list[str] = []
+    monkeypatch.setattr(install, "refresh_registrations", lambda cfg, sys: seen.append(cfg.token))
+    return seen
+
+
+@pytest.fixture
+def cli(home: Path, refreshed: list[str]) -> Cli:
     runner = CliRunner()
 
     def invoke(args: list[str]) -> Result:
@@ -65,7 +73,7 @@ def test_unreadable_config_exits_2(cli: Cli, home: Path) -> None:
 
 
 @respx.mock
-def test_token_rotate_changes_token(cli: Cli, home: Path) -> None:
+def test_token_rotate_changes_token(cli: Cli, home: Path, refreshed: list[str]) -> None:
     old = cli(["token", "show"]).stdout.strip()
     route = respx.post(f"{BASE}/api/auth/reload-token").mock(
         return_value=httpx.Response(200, json={"ok": True})
@@ -74,7 +82,7 @@ def test_token_rotate_changes_token(cli: Cli, home: Path) -> None:
     new = cli(["token", "show"]).stdout.strip()
     assert r.exit_code == 0 and new != old and len(new) >= 40
     assert route.calls[0].request.headers["Authorization"] == f"Bearer {old}"
-    assert "browser sessions signed out" in r.stdout
+    assert "browser sessions signed out" in r.stdout and refreshed == [new]
     assert (home / "config.toml").stat().st_mode & 0o777 == 0o600
 
 

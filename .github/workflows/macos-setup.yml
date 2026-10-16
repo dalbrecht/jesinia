@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Smoke-test ./setup on macOS: install into a throwaway HOME, check the LaunchAgent
+# serves /healthz, uninstall, and confirm the KB folder survives.
+name: macOS setup
+
+on:
+  pull_request:
+    paths:
+      - setup
+      - server/jesinia/cli/**
+      - .github/workflows/macos-setup.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ./setup smoke
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.1"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack (pnpm)
+        run: corepack enable
+
+      - name: Install, check, uninstall
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          ./setup --kb-path "$HOME/kb" --yes
+          echo "kept" > "$HOME/kb/keep.md"
+          curl -fsS http://127.0.0.1:4870/healthz
+          ./setup --uninstall --purge-data --yes
+          test ! -e "$HOME/Library/LaunchAgents/com.jesinia.server.plist"
+          test ! -e "$HOME/Library/Application Support/jesinia"
+          test "$(cat "$HOME/kb/keep.md")" = "kept"
+
+      - name: Server logs
+        if: failure()
+        run: cat "$RUNNER_TEMP"/home/Library/Logs/jesinia/* 2>/dev/null || true

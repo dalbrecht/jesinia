@@ -17,6 +17,7 @@ import typer
 
 from jesinia.cli import backup as backup_mod
 from jesinia.cli import doctor as doctor_mod
+from jesinia.cli import install as install_mod
 from jesinia.cli.server import ServerDown, call
 from jesinia.core.config import Config, ConfigError, format_duration, load_config, save_config
 from jesinia.core.config import set_value as config_set_value
@@ -154,7 +155,8 @@ def token_show() -> None:
 
 
 def reregister_agents(cfg: Config) -> None:
-    """Refresh agent MCP registrations that embed the token (filled in by the installer)."""
+    """Refresh agent MCP registrations, which carry the token."""
+    install_mod.refresh_registrations(cfg, install_mod.System(echo=typer.echo))
 
 
 @token_app.command("rotate")
@@ -217,3 +219,25 @@ def openapi() -> None:
 
     cfg = _cfg()
     sys.stdout.write(json.dumps(create_app(cfg, modules()).openapi(), indent=2) + "\n")
+
+
+@app.command()
+def install(
+    kb_path: Annotated[Path, typer.Option("--kb-path", help="The KB folder")],
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print actions only")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Don't ask")] = False,
+) -> None:
+    """Install the LaunchAgent, start the server, and register agents."""
+    sys_ = install_mod.System(dry_run=dry_run, yes=yes, echo=typer.echo)
+    raise typer.Exit(install_mod.install(kb_path, sys_))
+
+
+@app.command()
+def uninstall(
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print actions only")] = False,
+    purge_data: Annotated[bool, typer.Option("--purge-data", help="Also delete data")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Don't ask")] = False,
+) -> None:
+    """Stop and remove the LaunchAgent and agent registrations. Never touches the KB."""
+    sys_ = install_mod.System(dry_run=dry_run, yes=yes, echo=typer.echo)
+    raise typer.Exit(install_mod.uninstall(sys_, purge_data=purge_data))
