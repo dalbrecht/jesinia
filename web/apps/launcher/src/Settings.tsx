@@ -4,11 +4,13 @@ import { Badge, Button, Input, Panel, useToast } from "@jesinia/design";
 import { RUNNER_NAMES, useClient, type KbPathInfo, type ServerStatus, type SyncStatus } from "@jesinia/shell";
 import { useEffect, useState, type FormEvent } from "react";
 import { clock, MODE_LABEL } from "./format";
+import { TagsSection } from "./settings/Tags";
 import s from "./settings.module.css";
 
 const SECTIONS = [
   ["kb", "Knowledge base"],
   ["sync", "Git sync"],
+  ["tags", "Tags"],
   ["agents", "Agents"],
   ["conflicts", "Conflicts"],
   ["security", "Security"],
@@ -290,6 +292,7 @@ export function Settings({ status }: { status: ServerStatus }) {
         </div>
         <KbSection status={status} />
         <SyncSection status={status} />
+        <TagsSection />
         <AgentsSection status={status} />
         <ConflictsSection status={status} />
         <SecuritySection />
