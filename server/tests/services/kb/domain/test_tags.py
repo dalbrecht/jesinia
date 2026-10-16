@@ -88,3 +88,43 @@ def test_indented_lines_without_a_blank_line_before_are_not_code() -> None:
 def test_replace_tag_leaves_link_anchors_alone() -> None:
     body = "[x](#sqlite) #sqlite\n"
     assert replace_tag(body, "sqlite", "db") == "[x](#sqlite) #db\n"
+
+
+def test_parenthesised_tag_in_prose_is_a_tag() -> None:
+    assert extract_tags("Uses SQLite (#sqlite) daily.\n") == ["sqlite"]
+    assert replace_tag("(#sqlite)", "sqlite", "db") == "(#db)"
+
+
+def test_markdown_link_targets_are_still_not_tags() -> None:
+    assert extract_tags("[x](#a) and [y](#b-c)\n") == []
+
+
+def test_underscore_joined_words_are_not_tags_or_prefixes_of_tags() -> None:
+    assert extract_tags("#machine_learning and #b_c and #machine\n") == ["machine"]
+    assert extract_tags("#foo-bar_baz\n") == []
+
+
+def test_rename_does_not_touch_underscore_joined_words() -> None:
+    body = "#machine_learning and #machine"
+    assert replace_tag(body, "machine", "ml") == "#machine_learning and #ml"
+
+
+def test_decomposed_combining_marks_are_part_of_the_tag() -> None:
+    decomposed = "#café and #cafe"
+    assert extract_tags(decomposed) == ["café", "cafe"]
+    assert extract_tags("é#tag") == []
+
+
+def test_rename_keeps_decomposed_tags_and_the_rest_of_the_text_unchanged() -> None:
+    decomposed = "Café #café and #cafe."
+    assert replace_tag(decomposed, "cafe", "coffee") == "Café #café and #coffee."
+    assert replace_tag(decomposed, "café", "coffee") == "Café #coffee and #cafe."
+
+
+def test_trailing_hyphen_is_not_part_of_the_tag() -> None:
+    assert extract_tags("#foo- and #bar--baz\n") == ["foo", "bar"]
+    assert replace_tag("#foo- x", "foo", "qux") == "#qux- x"
+
+
+def test_is_valid_tag_rejects_doubled_and_trailing_hyphens() -> None:
+    assert not is_valid_tag("a-") and not is_valid_tag("a--b")

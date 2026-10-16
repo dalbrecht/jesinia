@@ -38,7 +38,7 @@ from jesinia.services.kb.domain.paths import (
     is_reserved,
     sanitize_title,
 )
-from jesinia.services.kb.domain.tags import extract_tags
+from jesinia.services.kb.domain.tag_catalog import indexed_tags
 
 log = logging.getLogger(__name__)
 
@@ -193,7 +193,7 @@ class KbService:
                 page.title,
                 mtime,
                 link_targets(page.body),
-                extract_tags(page.body),
+                indexed_tags(page.body, page.jesinia),
                 source_of(page.jesinia),
             )
         except Exception:

@@ -68,3 +68,13 @@ def test_source_of_requires_a_non_empty_string() -> None:
     assert source_of({"source": ""}) is None
     assert source_of({"source": 3}) is None
     assert source_of({}) is None
+
+
+async def test_catalog_page_does_not_count_as_a_use(kb: KbService) -> None:
+    (_root(kb) / "Tags.md").write_text(
+        "---\nid: 01HZZZZZZZZZZZZZZZZZZZZZZY\ntitle: Tags\njesinia:\n  kind: tag-catalog\n---\n"
+        "- #approved: nobody uses this yet\n"
+    )
+    (_root(kb) / "P.md").write_text("---\nid: 01HZZZZZZZZZZZZZZZZZZZZZZX\ntitle: P\n---\n#used\n")
+    await scan(kb)
+    assert kb.index.tag_counts() == {"used": 1}

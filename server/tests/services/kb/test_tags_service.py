@@ -462,3 +462,11 @@ async def test_restore_clears_retired_and_rejects_unknown_tags(kb: KbService) ->
     assert not (await tags.catalog())[0].retired
     with pytest.raises(TagNotFound):
         await tags.restore("ghost")
+
+
+async def test_catalog_page_does_not_count_as_a_use(kb: KbService) -> None:
+    tags = TagService(kb, None)
+    await tags.add("approved", "nobody uses this yet")
+    await _page(kb, "A", "#used")
+    assert kb.index.tag_counts() == {"used": 1}
+    assert kb.index.pages_with_tag("approved") == []

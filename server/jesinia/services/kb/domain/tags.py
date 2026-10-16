@@ -9,11 +9,32 @@ from collections.abc import Iterable, Sequence
 
 TAG_LINE_PREFIX = "Tags:"
 
-# A tag starts with a letter or digit (never "_"), continues with letters, digits or "-", and
-# cannot hug a preceding word character, "/", "#", "(", "?", "=" or "&" (so "C#", URLs, link
-# anchors like "[x](#a)", query strings like "?q=#a", "&#38;" and "##" are never tags).
-_TAG = re.compile(r"(?<![\w/#(?=&])#([^\W_](?:[^\W_]|-)*)")
-_VALID_TAG = re.compile(r"[^\W_](?:[^\W_]|-)*")
+
+def _combining_mark_class() -> str:
+    """A regex class body of every combining mark (Unicode category M*).
+
+    Python's ``\\w`` excludes marks, so a decomposed (NFD) ``#cafe\u0301`` would otherwise stop
+    at ``e``. Marks only live in planes 0, 1 and 14, so only those are scanned.
+    """
+    code_points = (*range(0x20000), *range(0xE0000, 0xE1000))
+    marks = (chr(code) for code in code_points if unicodedata.category(chr(code))[0] == "M")
+    return "".join(re.escape(mark) for mark in marks)
+
+
+_MARKS = _combining_mark_class()
+# One tag character: a letter or digit (never "_") plus any combining marks on it.
+_TAG_CHAR = rf"[^\W_][{_MARKS}]*"
+# Single hyphens join tag characters; a trailing hyphen is never part of the tag.
+_TAG_BODY = rf"{_TAG_CHAR}(?:-?{_TAG_CHAR})*"
+# A tag cannot hug a preceding word character, combining mark, "/", "#", "?", "=" or "&", and
+# cannot be a Markdown link target "](#a)" (so "C#", URLs, link anchors, query strings like
+# "?q=#a", "&#38;" and "##" are never tags; "(#a)" in prose is). It must not run on into "_", a
+# word character or a mark, even across one hyphen, so "#machine_learning" and "#b_c" are not
+# tags at all rather than the tags "machine" and "b". Matching runs on the original text (never a
+# normalised copy) so match offsets are the text's own and a rename leaves everything else
+# byte-identical; the captured tag is NFC-normalised by ``normalise_tag``.
+_TAG = re.compile(rf"(?<![\w/#?=&{_MARKS}])(?<!\]\()#({_TAG_BODY})(?!-?[\w{_MARKS}])")
+_VALID_TAG = re.compile(_TAG_BODY)
 _HEADING_LINE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
 _FENCE_LINE = re.compile(r" {0,3}(```|~~~)")
 _INDENTED_LINE = re.compile(r"(?: {4}|\t)")

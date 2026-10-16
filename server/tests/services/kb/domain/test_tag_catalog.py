@@ -85,3 +85,10 @@ def test_without_entry_drops_the_line_and_keeps_the_rest() -> None:
     assert list(cat.entries) == ["b"]
     assert render_catalog(cat) == "intro\n- #b\n"
     assert without_entry(cat, "missing").entries == cat.entries
+
+
+def test_ignored_entries_keep_their_meaning_and_aliases() -> None:
+    body = "- #x: why (aliases: a) (ignored)\n"
+    cat = parse_catalog(body)
+    assert cat.entries["x"] == CatalogEntry("x", "why", ("a",), ignored=True)
+    assert render_catalog(cat) == body

@@ -88,11 +88,15 @@ jesinia:
 
 ### Grammar
 
-- A tag is `#` followed by a letter or digit, then any letters, digits or `-`
-  (`#sqlite`, `#wal-mode`, `#2026`). Unicode letters count (`#ünïcode`); `_` does not.
-- The `#` must not follow a word character, `/`, `#`, `(`, `?`, `=` or `&`. So `C#`,
-  URLs, link anchors (`[x](#a)`), query strings (`?q=#a`), entities (`&#38;`) and `##`
-  are never tags.
+- A tag is `#` followed by a letter or digit, then any letters or digits, joined by single
+  `-` (`#sqlite`, `#wal-mode`, `#2026`). Unicode letters and their combining marks count
+  (`#ünïcode`, composed or decomposed); `_` does not. A trailing `-` is not part of the tag
+  (`#foo-` is `#foo`).
+- The `#` must not follow a word character, `/`, `#`, `?`, `=` or `&`, and must not be a
+  Markdown link target (`](#a)`). So `C#`, URLs, link anchors (`[x](#a)`), query strings
+  (`?q=#a`), entities (`&#38;`) and `##` are never tags; `(#a)` in prose is.
+- A tag must not run on into `_` or another word character: `#machine_learning` and `#b_c`
+  are not tags at all (and renaming `#machine` never touches them).
 - Ignored: fenced code blocks, indented code blocks, inline code, and heading lines
   (`# Title` is a heading, not a tag).
 - Tags are case-insensitive and compared in NFC: `#SQLite` and `#sqlite` are one tag.
@@ -130,7 +134,8 @@ One line per tag:
 - Duplicate entry lines for the same tag are merged when read (the first non-empty meaning
   wins, aliases are combined) and rewritten as one line on the next catalog write.
 - Agents check the catalog (`tags_suggest`, `tags_check`) before writing tags, and never
-  create a near-duplicate of an existing tag.
+  create a near-duplicate of an existing tag. Those MCP tools answer from the catalog alone;
+  the calling agent judges meaning itself.
 
 ## Writing safely
 

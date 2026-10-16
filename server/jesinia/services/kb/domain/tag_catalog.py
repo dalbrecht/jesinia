@@ -8,13 +8,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
-from jesinia.services.kb.domain.tags import normalise_tag
+from jesinia.services.kb.domain.tags import extract_tags, normalise_tag
 
 CATALOG_TITLE = "Tags"
 CATALOG_KIND = "tag-catalog"
 
 _ENTRY_LINE = re.compile(r"^- #(?P<tag>[^\W_](?:[^\W_]|-)*)(?P<rest>.*)$")
 _TRAILING_GROUP = re.compile(r"\s*\((?P<body>aliases:[^()]*|retired|ignored)\)\s*$")
+
+
+def indexed_tags(body: str, jesinia: Mapping[str, object]) -> list[str]:
+    """The tags a page uses, for the index. The catalog page lists tags; it never uses them,
+    so an approved tag no page uses has no uses (and no page to rename)."""
+    return [] if jesinia.get("kind") == CATALOG_KIND else extract_tags(body)
 
 
 @dataclass(frozen=True)
@@ -92,8 +98,6 @@ def parse_catalog(body: str) -> TagCatalog:
 
 
 def _render_entry(entry: CatalogEntry) -> str:
-    if entry.ignored:
-        return f"- #{entry.tag} (ignored)"
     text = f"- #{entry.tag}"
     if entry.meaning:
         text += f": {entry.meaning}"
@@ -101,6 +105,8 @@ def _render_entry(entry: CatalogEntry) -> str:
         text += f" (aliases: {', '.join(entry.aliases)})"
     if entry.retired:
         text += " (retired)"
+    if entry.ignored:
+        text += " (ignored)"
     return text
 
 
