@@ -335,7 +335,7 @@ async def test_cancelled_git_command_is_killed(tmp_path: Path) -> None:
     assert time.monotonic() - started < 5  # killed and reaped, not left to finish
 
 
-async def test_temp_files_are_never_staged(env: Env, remote: Path) -> None:
+async def test_in_flight_temp_file_is_left_out_of_the_push(env: Env, remote: Path) -> None:
     (env.work / "Notes/.page.md.abc123.jesinia-tmp").write_text("half written")
     (env.work / "Notes/real.md").write_text("real\n")
     assert (await env.sync.run_cycle("manual")).outcome == "pushed"
