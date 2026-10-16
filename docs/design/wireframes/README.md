@@ -20,6 +20,7 @@ self-host every face via `@fontsource` (kit §2).
 | [RSS](rss.html) | Product (lower) | Three-pane reader, Engage → chat → Save to KB; empty, loading, feed error, streaming, runner unavailable, sync paused |
 | [Review](review.html) | Product (lower) | PR picker; Walkthrough beside the diff with chat beneath; Background, Metrics, Quiz, Recommendation; empty, loading pack, GitHub auth, runner unavailable, sync paused |
 | [Issues](issues.html) | Product (lower) | Board, triage drawer with suggestions and chat, list with bulk triage, issue detail; empty, loading, GitHub auth, bulk triage in progress, sync paused |
+| [App icons](../icons/index.html) | n/a | The six icons per brief §8a, from the committed sources, at every size |
 | [Mission Control](overview.html) | n/a | All six windows at thumbnail scale, to check the brief §10 distinctiveness rule |
 
 ## Shell decisions
@@ -89,6 +90,7 @@ ADR 0008 (Task 6) must record these. They change the foundation spec:
   density, group titles before content, and offer folder scope and sort.
 - **Three shell components** are added to the design package: CommandPalette, Banner,
   and StatusIndicator (components §9). The plan's Task 22 export list is updated.
+- **App icons** follow the convention in [brief §8a](../brief.md#8a-app-icons): an AI-generated macro image in the app's hue plus a monochrome symbol. Each app's title-bar glyph becomes its symbol.
 - **The PWA manifest** gains `display_override: ["window-controls-overlay"]`, and the
   shell (Task 23 `AppShell`) renders the title-bar header described above.
   `theme_color` is each app's `-chrome` value (tokens §3).

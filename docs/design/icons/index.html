@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia App Icons</title>
+<!-- Preview only: the apps self-host these faces via @fontsource (kit §2). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../wireframes/tokens.css">
+<link rel="stylesheet" href="../wireframes/wire.css">
+<script src="../wireframes/wire.js" defer></script>
+<style>
+/* Composite = source image + vignette + symbol (CSS mask of symbol.svg). Masters are full-bleed squares; the squircle here previews the OS mask. */
+.set { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap: var(--jx-space-4); }
+.app { display: grid; grid-template-columns: 160px 1fr; gap: var(--jx-space-4); align-items: center; background: var(--jx-surface); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-lg); padding: var(--jx-space-4); }
+.app b { font-size: var(--jx-text-lg); font-weight: 600; }
+.app dl { margin: 6px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: var(--jx-text-sm); }
+.app dt { color: var(--jx-fg-muted); } .app dd { margin: 0; }
+.ic { --s: 160px; width: var(--s); height: var(--s); border-radius: 22.5%; position: relative; overflow: hidden; flex: none; background: var(--img) center / cover; box-shadow: var(--jx-shadow-2); }
+.ic.master { border-radius: 0; }
+.ic::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, transparent 35%, color-mix(in oklch, var(--jx-paper-950) 45%, transparent) 100%); }
+.ic .sym { position: absolute; inset: 17%; background: var(--sym-color, var(--jx-paper-0)); -webkit-mask: var(--sym) center / contain no-repeat; mask: var(--sym) center / contain no-repeat; filter: drop-shadow(0 1px 1.5px color-mix(in oklch, var(--jx-paper-950) 50%, transparent)); }
+.ink { --sym-color: var(--jx-paper-950); }
+.ink .sym { filter: drop-shadow(0 0 1.5px color-mix(in oklch, var(--jx-paper-0) 70%, transparent)); }
+.notes { --img: url(notes/source.jpg); --sym: url(notes/symbol.svg); }
+.rss { --img: url(rss/source.jpg); --sym: url(rss/symbol.svg); }
+.review { --img: url(review/source.jpg); --sym: url(review/symbol.svg); }
+.issues { --img: url(issues/source.jpg); --sym: url(issues/symbol.svg); }
+.launcher { --img: url(launcher/source.jpg); --sym: url(launcher/symbol.svg); }
+.settings { --img: url(settings/source.jpg); --sym: url(settings/symbol.svg); }
+.ladder { display: flex; flex-wrap: wrap; gap: var(--jx-space-6); align-items: flex-end; background: var(--jx-surface); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-lg); padding: var(--jx-space-5); }
+.ladder figure { margin: 0; display: grid; gap: 8px; justify-items: center; }
+.dock { display: flex; gap: 10px; padding: 10px 14px; border-radius: 18px; background: var(--jx-bg); border: 1px solid var(--jx-border); box-shadow: var(--jx-shadow-2); }
+.flat { width: 32px; height: 32px; border-radius: 22.5%; background: var(--jx-app); position: relative; }
+.flat .sym, .mono .sym { position: absolute; inset: 12%; background: var(--jx-paper-0); -webkit-mask: var(--sym) center / contain no-repeat; mask: var(--sym) center / contain no-repeat; }
+.mono { width: 16px; height: 16px; position: relative; } .mono .sym { inset: 0; background: var(--jx-fg); }
+.row { display: flex; gap: 10px; align-items: center; }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>App icons</h1>
+      <p>The convention is in <a href="../brief.md#8a-app-icons">brief §8a</a>: an AI-generated macro image in the app's hue, with a heavy monochrome symbol on top. These are the composites from the committed sources (<code>&lt;app&gt;/source.jpg</code> plus <code>&lt;app&gt;/symbol.svg</code>). Credits are in <a href="CREDITS.md">CREDITS.md</a>.</p>
+    </div>
+    <div class="row"><nav class="doc-nav" aria-label="Wireframes"><a href="../wireframes/README.md">Wireframes</a><a href="../wireframes/overview.html">Mission Control</a></nav><button class="theme-toggle" type="button">Theme: system</button></div>
+  </header>
+
+  <section class="screen" aria-labelledby="s-set">
+    <h2 id="s-set">The set</h2>
+    <div class="set">
+      <div class="app"><div class="ic notes"><span class="sym"></span></div><div><b>Notes</b><dl><dt>Image</dt><dd>Fern fiddlehead</dd><dt>Hue</dt><dd>Sage</dd><dt>Symbol</dt><dd>Pencil</dd></dl></div></div>
+      <div class="app"><div class="ic rss"><span class="sym"></span></div><div><b>RSS</b><dl><dt>Image</dt><dd>Honeybee fur and pollen</dd><dt>Hue</dt><dd>Marigold</dd><dt>Symbol</dt><dd>Feed arcs</dd></dl></div></div>
+      <div class="app"><div class="ic review"><span class="sym"></span></div><div><b>Review</b><dl><dt>Image</dt><dd>Jewel-beetle wing case</dd><dt>Hue</dt><dd>Plum</dd><dt>Symbol</dt><dd>Magnifier with check (knockout)</dd></dl></div></div>
+      <div class="app"><div class="ic issues"><span class="sym"></span></div><div><b>Issues</b><dl><dt>Image</dt><dd>Morpho wing scales</dd><dt>Hue</dt><dd>Cornflower</dd><dt>Symbol</dt><dd>Board columns</dd></dl></div></div>
+      <div class="app"><div class="ic launcher"><span class="sym"></span></div><div><b>Launcher</b><dl><dt>Image</dt><dd>Lichen on stone</dd><dt>Hue</dt><dd>Near-neutral</dd><dt>Symbol</dt><dd>Four tiles</dd></dl></div></div>
+      <div class="app"><div class="ic settings"><span class="sym"></span></div><div><b>Settings</b><dl><dt>Image</dt><dd>Feather barbs</dd><dt>Hue</dt><dd>Near-neutral</dd><dt>Symbol</dt><dd>Sliders</dd></dl></div></div>
+    </div>
+  </section>
+
+  <section class="screen" aria-labelledby="s-sizes">
+    <h2 id="s-sizes">Sizes</h2>
+    <div class="ladder">
+      <figure><div class="ic rss master" style="--s:200px"><span class="sym"></span></div><figcaption>Master (full bleed, no mask)</figcaption></figure>
+      <figure><div class="ic rss" style="--s:96px"><span class="sym"></span></div><figcaption>192 · launcher</figcaption></figure>
+      <figure><div class="dock">
+        <div class="ic notes" style="--s:48px"><span class="sym"></span></div>
+        <div class="ic rss" style="--s:48px"><span class="sym"></span></div>
+        <div class="ic review" style="--s:48px"><span class="sym"></span></div>
+        <div class="ic issues" style="--s:48px"><span class="sym"></span></div>
+        <div class="ic launcher" style="--s:48px"><span class="sym"></span></div>
+        <div class="ic settings" style="--s:48px"><span class="sym"></span></div>
+      </div><figcaption>48 · Dock</figcaption></figure>
+      <figure><div class="row">
+        <div class="flat notes" data-app="notes"><span class="sym"></span></div><div class="flat rss" data-app="rss"><span class="sym"></span></div><div class="flat review" data-app="review"><span class="sym"></span></div><div class="flat issues" data-app="issues"><span class="sym"></span></div>
+      </div><figcaption>≤ 32 · flat hue + symbol</figcaption></figure>
+      <figure><div class="row">
+        <div class="mono notes"><span class="sym"></span></div><div class="mono rss"><span class="sym"></span></div><div class="mono review"><span class="sym"></span></div><div class="mono issues"><span class="sym"></span></div><div class="mono launcher"><span class="sym"></span></div><div class="mono settings"><span class="sym"></span></div>
+      </div><figcaption>16 · symbol alone</figcaption></figure>
+    </div>
+  </section>
+</main>
+</body>
+</html>

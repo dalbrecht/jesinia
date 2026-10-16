@@ -219,3 +219,11 @@ figcaption b { color: var(--jx-fg); font-weight: 600; }
 .box b { color: var(--jx-fg); font-weight: 500; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Title-bar glyph = the app's icon symbol (brief §8a) on its identity hue. */
+.hdr .glyph-app { position: relative; }
+.hdr .glyph-app::after { content: ""; position: absolute; inset: 15%; background: var(--jx-paper-0); -webkit-mask: var(--app-sym) center / contain no-repeat; mask: var(--app-sym) center / contain no-repeat; }
+[data-app="notes"] { --app-sym: url(../icons/notes/symbol.svg); }
+[data-app="rss"] { --app-sym: url(../icons/rss/symbol.svg); }
+[data-app="review"] { --app-sym: url(../icons/review/symbol.svg); }
+[data-app="issues"] { --app-sym: url(../icons/issues/symbol.svg); }

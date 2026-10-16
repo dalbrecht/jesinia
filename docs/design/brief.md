@@ -151,6 +151,54 @@ against the Fontsource API on 2026-10-16.
 - **KB content is never visually marked as AI-written.** Provenance stays in hidden
   Markdown comments (spec §5).
 
+## 8a. App icons
+
+Every app icon follows one convention, added 2026-10-16 during Task 5. The icon is a
+**zoomed-in macro image of a flower, plant, or animal in the app's identity hue**, with
+a **contrasting monochrome symbol** for the app centered on top.
+
+| App | Macro subject | Hue | Symbol |
+|---|---|---|---|
+| Notes | Unfurling fern fiddlehead | sage ~155 | Pencil |
+| RSS | Honeybee fur dusted with pollen | marigold ~80 | Feed arcs |
+| Review | Jewel-beetle wing case (elytra) | plum ~340 | Magnifier with check |
+| Issues | Morpho butterfly wing scales | cornflower ~260 | Board columns |
+| Launcher | Grey-green lichen on stone | near-neutral paper | Four tiles, one filled |
+| Settings | Grey feather barbs | near-neutral paper | Sliders |
+
+**Image**
+
+- True macro: texture fills the frame (petals, fur, scales, fronds, barbs). At icon
+  size it reads as color and pattern, not as a recognizable subject.
+- Graded toward the app hue with a light duotone, so the set reads as one family.
+- Quiet in the center: shallow depth of field or soft texture where the symbol sits,
+  plus a gentle vignette.
+- **Source: AI-generated.** Each image records its model, prompt, and date in
+  `docs/design/icons/CREDITS.md`. No stock or third-party photos, so there are no
+  redistribution questions for the AGPL repo.
+
+**Symbol**
+
+- Monochrome: paper-white on dark or saturated images, ink on light ones.
+- **Heavy:** drawn on a 24-unit grid, using filled shapes wherever they read well and
+  3.2–3.6 unit round strokes otherwise. It fills about 66% of the tile, optically
+  centered, inside the 80% maskable safe zone.
+- At least 3:1 contrast against the image under it, helped by the vignette and a
+  1–1.5 px soft shadow. Checked at 48 px.
+- The same glyph is the app's title-bar glyph and its PWA `monochrome` icon.
+
+**Files and sizes**
+
+- **Masters:** 1024 px square, full bleed, with no baked-in corner radius or shadow
+  (the OS applies its mask). The symbol stays inside the central 80% maskable safe
+  zone.
+- **Manifest:** 192 and 512 `any`, 512 `maskable`, and an SVG `monochrome` icon.
+- **32 px and below** (favicon, tabs): no image; a flat `--jx-app` fill plus the
+  symbol.
+- **16 px:** the symbol alone.
+- **Layout:** `docs/design/icons/<app>/` holds the source image, graded master, symbol
+  SVG, and exports.
+
 ## 9. UI voice
 
 Jesinia's copy is **plain, warm, and short**. Write like a knowledgeable colleague at the
