@@ -1,0 +1,37 @@
+[
+  {
+    "id": 101,
+    "user": {
+      "login": "copilot-pull-request-reviewer[bot]",
+      "type": "Bot"
+    },
+    "body": "Looks fine",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/acme/api/pull/7#pullrequestreview-101",
+    "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "submitted_at": "2026-10-15T10:10:00Z",
+    "author_association": "NONE"
+  },
+  {
+    "id": 102,
+    "user": {
+      "login": "bob",
+      "type": "User"
+    },
+    "body": "",
+    "state": "APPROVED",
+    "html_url": "https://github.com/acme/api/pull/7#pullrequestreview-102",
+    "commit_id": "cccccccccccccccccccccccccccccccccccccccc",
+    "submitted_at": "2026-10-15T11:00:00Z",
+    "author_association": "MEMBER"
+  },
+  {
+    "id": 103,
+    "user": null,
+    "body": "",
+    "state": "PENDING",
+    "html_url": "https://github.com/acme/api/pull/7#pullrequestreview-103",
+    "commit_id": "cccccccccccccccccccccccccccccccccccccccc",
+    "author_association": "NONE"
+  }
+]

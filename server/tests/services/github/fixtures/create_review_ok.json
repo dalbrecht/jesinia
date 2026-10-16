@@ -1,0 +1,15 @@
+{
+  "id": 80,
+  "node_id": "PRR_80",
+  "user": {
+    "login": "me",
+    "type": "User"
+  },
+  "body": "Two notes.",
+  "state": "CHANGES_REQUESTED",
+  "html_url": "https://github.com/acme/api/pull/7#pullrequestreview-80",
+  "pull_request_url": "https://api.github.com/repos/acme/api/pulls/7",
+  "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "submitted_at": "2026-10-16T09:00:00Z",
+  "author_association": "MEMBER"
+}

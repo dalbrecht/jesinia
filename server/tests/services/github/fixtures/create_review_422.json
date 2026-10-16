@@ -1,0 +1,8 @@
+{
+  "message": "Unprocessable Entity",
+  "errors": [
+    "Pull request review thread line must be part of the diff"
+  ],
+  "documentation_url": "https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request",
+  "status": "422"
+}

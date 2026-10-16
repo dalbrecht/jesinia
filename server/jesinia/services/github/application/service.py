@@ -7,13 +7,20 @@ answer is served from ``github.sqlite`` (304s do not count against the rate limi
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
 
 from jesinia.services.github.application.ports import GitHubCache, TokenSource
+from jesinia.services.github.domain.pr import (
+    DraftComment,
+    ReviewEvent,
+    validate_pull_number,
+    validate_repo,
+    validate_sha,
+)
 
 API = "https://api.github.com"
 TIMEOUT = httpx.Timeout(20.0)
@@ -25,6 +32,16 @@ class GitHubError(RuntimeError):
 
 class GitHubUnavailable(GitHubError):  # noqa: N818 - public name fixed by the plan interface
     """No usable token: GitHub features are off until ``gh auth login`` (or a Keychain PAT)."""
+
+
+class GitHubRequestError(GitHubError):
+    """GitHub refused or failed a request; carries its status and its own message."""
+
+    def __init__(self, status: int | None, github_message: str) -> None:
+        answered = f"GitHub answered {status}" if status is not None else "GitHub request failed"
+        super().__init__(f"{answered}: {github_message}")
+        self.status = status
+        self.github_message = github_message
 
 
 @dataclass(frozen=True)
@@ -39,6 +56,38 @@ def _json(resp: httpx.Response) -> object:
         return resp.json()
     except ValueError:
         return resp.text
+
+
+def _error_detail(error: object) -> str:
+    if isinstance(error, Mapping):
+        parts = (error.get(key) for key in ("message", "resource", "field", "code"))
+        return " ".join(str(part) for part in parts if part)
+    return str(error)
+
+
+def github_error_message(data: object) -> str:
+    """GitHub's ``message`` plus each entry of its ``errors`` list, where the real cause
+    of a 422 lives; a non-JSON body is returned as is."""
+    if not isinstance(data, Mapping):
+        return str(data)
+    message = str(data.get("message") or "no message")
+    errors = data.get("errors")
+    if isinstance(errors, list) and errors:
+        message += ": " + "; ".join(_error_detail(e) for e in errors)
+    return message
+
+
+def _comment_payload(comment: DraftComment) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "path": comment.path,
+        "line": comment.line,
+        "side": comment.side,
+        "body": comment.body,
+    }
+    if comment.start_line is not None:
+        payload["start_line"] = comment.start_line
+        payload["start_side"] = comment.start_side
+    return payload
 
 
 class GitHubService:
@@ -99,7 +148,58 @@ class GitHubService:
             raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")
         body = resp.json()
         if errors := body.get("errors"):
-            raise RuntimeError("; ".join(str(e.get("message", e)) for e in errors))
+            raise GitHubRequestError(
+                resp.status_code, "; ".join(str(e.get("message", e)) for e in errors)
+            )
         resp.raise_for_status()
         data: dict[str, object] = body.get("data") or {}
         return data
+
+    async def _post(self, path: str, payload: Mapping[str, object]) -> object:
+        """A write: never cached or revalidated, and every failure keeps GitHub's cause."""
+        headers = await self._headers()
+        try:
+            async with self._client() as client:
+                resp = await client.post(path, json=dict(payload), headers=headers)
+        except httpx.HTTPError as exc:
+            raise GitHubRequestError(None, str(exc) or type(exc).__name__) from exc
+        if resp.status_code == 401:
+            raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")
+        data = _json(resp)
+        if not resp.is_success:
+            raise GitHubRequestError(resp.status_code, github_error_message(data))
+        return data
+
+    async def create_review(
+        self,
+        repo: str,
+        number: int,
+        *,
+        commit_sha: str,
+        event: ReviewEvent,
+        body: str,
+        comments: Sequence[DraftComment],
+    ) -> str:
+        """Post one atomic review (body plus every inline comment) and return its URL.
+
+        Owner-only: the REST route enforces that, and no MCP tool may ever call this.
+
+        Raises:
+            GitHubUnavailable: no token, or GitHub rejected it.
+            GitHubRequestError: GitHub refused the review; ``github_message`` says why.
+            InvalidPullRequestReferenceError: ``repo``, ``number`` or ``commit_sha`` is malformed.
+        """
+        path = f"/repos/{validate_repo(repo)}/pulls/{validate_pull_number(number)}/reviews"
+        data = await self._post(
+            path,
+            {
+                "commit_id": validate_sha(commit_sha),
+                "event": event,
+                "body": body,
+                "comments": [_comment_payload(c) for c in comments],
+            },
+        )
+        url = data.get("html_url") if isinstance(data, Mapping) else None
+        if not isinstance(url, str):
+            raise GitHubRequestError(None, "GitHub created the review but returned no html_url")
+        return url

@@ -1,0 +1,57 @@
+{
+  "total_count": 4,
+  "check_runs": [
+    {
+      "id": 502,
+      "name": "lint",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/acme/api/runs/lint",
+      "started_at": "2026-10-15T10:00:00Z",
+      "completed_at": "2026-10-15T10:05:00Z",
+      "app": {
+        "slug": "github-actions"
+      }
+    },
+    {
+      "id": 25,
+      "name": "unit",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "completed",
+      "conclusion": "failure",
+      "html_url": "https://github.com/acme/api/runs/unit",
+      "started_at": "2026-10-15T10:00:00Z",
+      "completed_at": "2026-10-15T10:05:00Z",
+      "app": {
+        "slug": "github-actions"
+      }
+    },
+    {
+      "id": 588,
+      "name": "e2e",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "in_progress",
+      "conclusion": null,
+      "html_url": "https://github.com/acme/api/runs/e2e",
+      "started_at": "2026-10-15T10:00:00Z",
+      "completed_at": null,
+      "app": {
+        "slug": "github-actions"
+      }
+    },
+    {
+      "id": 987,
+      "name": "docs",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "completed",
+      "conclusion": "skipped",
+      "html_url": "https://github.com/acme/api/runs/docs",
+      "started_at": "2026-10-15T10:00:00Z",
+      "completed_at": "2026-10-15T10:05:00Z",
+      "app": {
+        "slug": "github-actions"
+      }
+    }
+  ]
+}

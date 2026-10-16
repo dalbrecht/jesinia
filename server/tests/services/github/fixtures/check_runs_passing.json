@@ -1,0 +1,31 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {
+      "id": 502,
+      "name": "lint",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/acme/api/runs/lint",
+      "started_at": "2026-10-15T10:00:00Z",
+      "completed_at": "2026-10-15T10:05:00Z",
+      "app": {
+        "slug": "github-actions"
+      }
+    },
+    {
+      "id": 25,
+      "name": "unit",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "completed",
+      "conclusion": "neutral",
+      "html_url": "https://github.com/acme/api/runs/unit",
+      "started_at": "2026-10-15T10:00:00Z",
+      "completed_at": "2026-10-15T10:05:00Z",
+      "app": {
+        "slug": "github-actions"
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+[
+  {
+    "sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "commit": {
+      "message": "feat: add limit\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+      "author": {
+        "name": "Alice A",
+        "email": "alice@example.com",
+        "date": "2026-10-14T09:00:00Z"
+      }
+    },
+    "author": {
+      "login": "alice",
+      "type": "User"
+    }
+  },
+  {
+    "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "commit": {
+      "message": "fix: typo",
+      "author": {
+        "name": "Unlinked Person",
+        "email": "u@example.com",
+        "date": "2026-10-14T09:20:00Z"
+      }
+    },
+    "author": null
+  }
+]

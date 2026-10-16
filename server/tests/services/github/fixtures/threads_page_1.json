@@ -1,0 +1,38 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": true,
+            "endCursor": "Y3Vyc29yOjE="
+          },
+          "nodes": [
+            {
+              "isResolved": false,
+              "path": "src/app.py",
+              "line": 12,
+              "originalLine": 11,
+              "comments": {
+                "nodes": [
+                  {
+                    "body": "Is this bounded?",
+                    "author": {
+                      "login": "bob"
+                    },
+                    "commit": {
+                      "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "originalCommit": {
+                      "oid": "cccccccccccccccccccccccccccccccccccccccc"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
