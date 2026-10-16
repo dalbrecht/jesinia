@@ -336,3 +336,15 @@ def test_registry_runs_every_module_in_order() -> None:
         "fetch",
         "notes",
     ]
+
+
+@respx.mock
+def test_reindex_timeout_never_deletes_live_databases(cli: Cli, home: Path) -> None:
+    load_config(home / "config.toml")
+    open_db(home, SEARCH_DB).close()
+    respx.post(f"{BASE}/api/kb/scan").mock(side_effect=httpx.ReadTimeout("slow"))
+    r = cli(["reindex"])
+    assert r.exit_code == 1 and "may still be working" in r.stderr
+    assert (home / "search.sqlite").exists()
+    respx.get(f"{BASE}/healthz").mock(side_effect=httpx.ReadTimeout("slow"))
+    assert cli(["status"]).exit_code == 1

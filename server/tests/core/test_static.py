@@ -36,6 +36,9 @@ async def test_serves_launcher_apps_and_spa_fallback(cfg: Config, static: Path) 
         assert (await c.get("/assets/missing.css")).status_code == 404
         assert (await c.get("/notes/../../secret.txt")).status_code == 404
         assert (await c.get("/notes/%2e%2e/%2e%2e/secret.txt")).status_code == 404
+        assert (await c.get("/%2e%2e/secret.txt")).status_code == 404
+        assert (await c.get("/%2e%2e/static/notes/index.html")).status_code == 404
+        assert (await c.get("/%2e/notes/index.html")).status_code == 404
         assert (await c.get("/api/nothing")).status_code == 404
         assert (await c.get("/healthz")).json()["ok"] is True  # real routes still win
         assert (await c.get("/openapi.json")).status_code == 200

@@ -3,7 +3,7 @@ import { defineConfig } from "@playwright/test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// One fixed scratch home per run (serve.sh wipes it): config is loaded in several
+// One fixed scratch home per run (fixture.sh wipes it): config is loaded in several
 // processes, so it must not be random.
 const home = join(tmpdir(), "jesinia-e2e");
 process.env.E2E_HOME = home;
@@ -15,7 +15,7 @@ export default defineConfig({
   workers: 1,
   use: { baseURL: `http://127.0.0.1:${PORT}`, trace: "retain-on-failure" },
   webServer: {
-    command: "pnpm --filter @jesinia/launcher --filter @jesinia/notes build && bash tests/e2e/serve.sh",
+    command: "make -C .. e2e-server",
     url: `http://127.0.0.1:${PORT}/healthz`,
     env: { E2E_HOME: home, E2E_PORT: String(PORT) },
     reuseExistingServer: false,
