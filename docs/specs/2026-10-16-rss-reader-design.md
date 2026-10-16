@@ -179,7 +179,14 @@ Takeaway: …
   - the full readable text, extracted from the original page with a readability pass and
     converted to Markdown;
   - images saved to `_assets/<page-id>/` and linked relatively (foundation §5.3), with a
-    per-page cap of 20 images and 10 MB **(builder's call)**;
+    per-page cap of 20 images and 10 MB **(builder's call)**. They stay **on this Mac and out
+    of git (user)**:
+    - each archived page's asset folder gets a `.gitignore` containing `*` **(builder's
+      call)**, so KB sync never commits the images while the Wiki and Notes still render
+      them through the relative links;
+    - the article text itself is in the page and syncs normally;
+    - on another machine the page shows the text with broken image links, which is
+      acceptable; Open original still works;
   - when extraction fails, the feed's own content is used instead, with a one-line note
     saying so.
 - **Keeping again:** keeping the same post again (same `source`) updates the existing page
