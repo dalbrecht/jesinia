@@ -44,6 +44,8 @@ function KbSection({ status }: { status: ServerStatus }) {
     }
     const data = r.data as { indexed?: number };
     toast.show({ tone: "success", message: `KB folder saved. ${data.indexed ?? 0} pages indexed.` });
+    const fresh = await client.GET("/api/kb/path");
+    if (fresh.data) setInfo(fresh.data as KbPathInfo);
     await status.refresh();
   };
 
@@ -230,12 +232,15 @@ function SecuritySection() {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
   const rotate = async () => {
     setBusy(true);
     const r = await client.POST("/api/auth/rotate");
     setBusy(false);
     setConfirming(false);
     setDone(r.response.ok);
+    const warning = (r.data as { warning?: string } | undefined)?.warning;
+    if (warning) setWarning(warning);
   };
   return (
     <Panel title="Security" id="security">
@@ -246,7 +251,7 @@ function SecuritySection() {
         </p>
         {done ? (
           <p role="status">
-            Token rotated. Open a new login link from <code>jesinia status</code>.
+            Token rotated. Open a new login link from <code>jesinia status</code>.{warning ? ` ${warning}` : ""}
           </p>
         ) : confirming ? (
           <div className={s.actions}>

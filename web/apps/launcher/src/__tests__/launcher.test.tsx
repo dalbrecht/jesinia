@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { baseRoutes, fakeClient, syncStatus } from "@jesinia/shell";
+import { APPS, baseRoutes, fakeClient, syncStatus } from "@jesinia/shell";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
@@ -21,7 +21,9 @@ describe("Launcher", () => {
       }),
     );
     render(<App path="/" client={client} />);
-    expect(await screen.findByRole("link", { name: /Notes/ })).toHaveAttribute("href", "/notes/");
+    expect(await screen.findByText("12 pages indexed")).toBeInTheDocument();
+    // No app bundle ships yet in this phase, so every tile is inert ("Coming soon").
+    expect(screen.queryByRole("link", { name: /Notes/ })).toBeNull();
     expect(screen.getByText("RSS").closest("[aria-disabled]")).not.toBeNull();
     expect(await screen.findByText("12 pages indexed")).toBeInTheDocument();
     expect(await screen.findByText("not logged in")).toBeInTheDocument();
@@ -56,6 +58,20 @@ describe("Launcher", () => {
     expect(screen.getByText("available")).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Sync now" }));
     expect((await screen.findAllByText("Sync: push failed")).length).toBeGreaterThan(0);
+  });
+
+  it("built apps get a link tile when the KB is healthy", async () => {
+    const notes = APPS.find((a) => a.id === "notes");
+    if (!notes) throw new Error("no notes app");
+    const was = notes.built;
+    notes.built = true;
+    try {
+      const { client } = fakeClient(baseRoutes());
+      render(<App path="/" client={client} />);
+      expect(await screen.findByRole("link", { name: /Notes/ })).toHaveAttribute("href", "/notes/");
+    } finally {
+      notes.built = was;
+    }
   });
 
   it("formats times and greetings", () => {

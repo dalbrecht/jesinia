@@ -13,7 +13,7 @@ import {
 } from "@jesinia/design";
 import { useEffect, useMemo, type ReactNode } from "react";
 import s from "./AppShell.module.css";
-import { APPS, RUNNER_NAMES } from "./apps";
+import { APPS, RUNNER_NAMES, type AppInfo } from "./apps";
 import { ClientProvider, useClient } from "./context";
 import { useServerStatus, type ServerStatus } from "./status";
 import { applyTheme, cycleTheme, readTheme } from "./theme";
@@ -35,6 +35,19 @@ export type AppShellProps = {
 function go(href: string, newWindow: boolean) {
   if (newWindow) window.open(href, "_blank", "noopener");
   else window.location.assign(href);
+}
+
+/** "Open <app>" palette commands for every built app except the current one. */
+export function appCommands(apps: AppInfo[], current: string): PaletteItem[] {
+  return apps
+    .filter((a) => a.built && a.id !== current)
+    .map((a) => ({
+      id: `open-${a.id}`,
+      label: `Open ${a.name}`,
+      detail: a.href,
+      group: "command" as const,
+      onRun: ({ newWindow }: { newWindow: boolean }) => go(a.href, newWindow),
+    }));
 }
 
 /** Status-dot items for minor conditions; blocking ones also get a banner. */
@@ -85,13 +98,7 @@ function Shell({ app, children, controls, ownSearch, appSearch, commands = [] }:
 
   const shellCommands: PaletteItem[] = useMemo(
     () => [
-      ...APPS.filter((a) => a.built && a.id !== app.id).map((a) => ({
-        id: `open-${a.id}`,
-        label: `Open ${a.name}`,
-        detail: a.href,
-        group: "command" as const,
-        onRun: ({ newWindow }: { newWindow: boolean }) => go(a.href, newWindow),
-      })),
+      ...appCommands(APPS, app.id),
       { id: "open-launcher", label: "Open launcher", detail: "/", group: "command", onRun: ({ newWindow }) => go("/", newWindow) },
       { id: "open-settings", label: "Open Settings", detail: "/settings/", group: "command", onRun: ({ newWindow }) => go("/settings/", newWindow) },
       { id: "sync-now", label: "Sync now", detail: "Commit and push", group: "command", onRun: () => void syncNow() },

@@ -13,6 +13,7 @@ State is process-local: the server is a single process (spec §6).
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ from jesinia.core.config import Config, load_config, save_config
 COOKIE = "jesinia_session"
 DEFAULT_NONCE_TTL = timedelta(minutes=5)
 
+log = logging.getLogger(__name__)
 _nonces: dict[str, datetime] = {}
 _cookie_sessions: set[str] = set()
 _session_tokens: dict[str, str] = {}
@@ -125,7 +127,7 @@ def auth_router() -> APIRouter:
     @router.post("/api/auth/rotate")
     async def rotate(
         request: Request, _: Annotated[Principal, Depends(require_owner)]
-    ) -> dict[str, bool]:
+    ) -> dict[str, object]:
         """Settings → Rotate token: a new install token; every browser is signed out
         (a new login link comes from ``jesinia status``) and agents are re-registered."""
         ctx = request.app.state.ctx
@@ -136,8 +138,18 @@ def auth_router() -> APIRouter:
         invalidate_sessions()
         hook = ctx.services.get("auth.token_rotated")
         if callable(hook):
-            await asyncio.to_thread(hook, ctx.cfg)
-        return {"ok": True}
+            # Re-registering agents is secondary: the rotation already succeeded.
+            try:
+                await asyncio.to_thread(hook, ctx.cfg)
+            except Exception as exc:
+                log.exception("token rotated, but refreshing agent registrations failed")
+                return {
+                    "ok": True,
+                    "agents_refreshed": False,
+                    "warning": f"Agents were not re-registered ({type(exc).__name__}: {exc}). "
+                    "Run `jesinia token rotate` or ./setup again.",
+                }
+        return {"ok": True, "agents_refreshed": True}
 
     @router.post("/api/auth/reload-token")
     async def reload_token(

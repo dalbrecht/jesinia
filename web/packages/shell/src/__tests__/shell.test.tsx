@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AppShell,
+  appCommands,
   applyTheme,
   baseRoutes,
   cycleTheme,
@@ -215,8 +216,7 @@ describe("AppShell edge cases", () => {
     await userEvent.click(await screen.findByRole("button", { name: "+1 more" }));
     expect(assign).toHaveBeenCalledWith("/settings/");
     fireEvent.keyDown(window, { key: "k", metaKey: true });
-    await userEvent.click(screen.getByText("Open Notes"));
-    expect(assign).toHaveBeenCalledWith("/notes/");
+    expect(screen.queryByText("Open Notes")).toBeNull(); // not built yet
     fireEvent.keyDown(window, { key: "k", metaKey: true });
     await userEvent.click(screen.getByText("Sync now"));
     fireEvent.keyDown(window, { key: "k", metaKey: true });
@@ -237,6 +237,21 @@ describe("AppShell edge cases", () => {
     );
     await waitFor(() => expect(fetch).toHaveBeenCalled());
     fetch.mockRestore();
+  });
+});
+
+describe("appCommands", () => {
+  it("offers every built app except the current one", () => {
+    Object.defineProperty(window, "location", { configurable: true, value: { ...window.location, assign } });
+    const apps = [
+      { id: "notes", name: "Notes", href: "/notes/", description: "", built: true },
+      { id: "rss", name: "RSS", href: "/rss/", description: "", built: false },
+      { id: "here", name: "Here", href: "/here/", description: "", built: true },
+    ];
+    const cmds = appCommands(apps, "here");
+    expect(cmds.map((c) => c.label)).toEqual(["Open Notes"]);
+    cmds[0]?.onRun({ newWindow: false });
+    expect(assign).toHaveBeenCalledWith("/notes/");
   });
 });
 

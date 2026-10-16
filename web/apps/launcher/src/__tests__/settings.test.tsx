@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { baseRoutes, fakeClient, syncStatus } from "@jesinia/shell";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { App } from "../App";
@@ -108,8 +108,33 @@ describe("Settings", () => {
     expect(await screen.findByText(/Token rotated/)).toBeInTheDocument();
   });
 
-  it("shows the KB problem the server reports", async () => {
-    renderSettings({ "GET /api/kb/path": { path: null, problem: "no KB path configured", pages: 0 } });
+  it("shows the KB problem the server reports, and clears it after a successful save", async () => {
+    let configured = false;
+    renderSettings({
+      "GET /api/kb/path": () =>
+        Response.json(
+          configured
+            ? { path: "/Users/me/kb", problem: null, pages: 1 }
+            : { path: null, problem: "no KB path configured", pages: 0 },
+        ),
+      "PUT /api/kb/path": () => {
+        configured = true;
+        return Response.json({ path: "/Users/me/kb", indexed: 1 });
+      },
+    });
     expect(await screen.findByText("no KB path configured")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("KB folder"), "/Users/me/kb");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByText("no KB path configured")).toBeNull());
+    expect(screen.getByLabelText("KB folder")).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("reports when agents could not be re-registered after rotation", async () => {
+    renderSettings({
+      "POST /api/auth/rotate": { ok: true, agents_refreshed: false, warning: "Agents were not re-registered." },
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Rotate token…" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rotate token" }));
+    expect(await screen.findByText(/Agents were not re-registered/)).toBeInTheDocument();
   });
 });
