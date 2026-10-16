@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia Review Wireframes</title>
+<!-- Preview only: the apps self-host these faces via @fontsource (kit §2). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="wire.css">
+<script src="wire.js" defer></script>
+<style>
+/* Review: wide diff + narrative column. Page-local layout only; all values are tokens. */
+.crumb { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.crumb .sep { color: var(--jx-fg-subtle); }
+.rv { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; height: 100%; }
+.prbar { display: flex; align-items: center; gap: 12px; padding: var(--jx-space-2) var(--jx-space-4); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); min-width: 0; }
+.prbar .tt { font-weight: 600; font-size: var(--jx-text-lg); font-variation-settings: "opsz" 48; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prbar .meta { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prbar .sp { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.plus { color: var(--jx-success); } .minus { color: var(--jx-danger); }
+.rv .tabs { background: var(--jx-surface); }
+.tabs.scrollx { overflow-x: auto; flex-wrap: nowrap; }
+.split { grid-template-columns: minmax(0, 3fr) 6px minmax(0, 2fr); }
+.rightcol { display: grid; grid-template-rows: minmax(0, 1fr) 6px minmax(0, 1fr); min-height: 0; }
+.hhandle { height: 6px; cursor: row-resize; border-top: 1px solid var(--jx-border); position: relative; }
+.hhandle::after { content: ""; position: absolute; left: 50%; top: 1px; width: 28px; height: 3px; transform: translateX(-50%); border-radius: 3px; background: var(--jx-border-strong); }
+.fileh { display: flex; align-items: center; gap: 8px; padding: 6px var(--jx-space-3); font-family: var(--jx-font-mono); font-size: var(--jx-text-sm); background: var(--jx-surface); border-block: 1px solid var(--jx-border); position: sticky; top: 0; }
+.fileh .sp { margin-left: auto; font-family: var(--jx-font-ui); color: var(--jx-fg-muted); }
+.diff .hunk { white-space: normal; padding: 0; }
+.diff .fileh { white-space: normal; padding: 6px var(--jx-space-3); }
+.diff .hunk.cur { background: var(--jx-accent-subtle); }
+.diff .hunk.cur .h { background: var(--jx-highlight); color: var(--jx-fg); }
+.walk { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+.steph { display: flex; align-items: center; gap: 8px; padding: var(--jx-space-3) var(--jx-space-4) var(--jx-space-2); }
+.steph .n { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; }
+.stepb { padding: 0 var(--jx-space-4) var(--jx-space-3); }
+.stepb h3 { margin: 0 0 var(--jx-space-2); font-size: var(--jx-text-lg); font-weight: 600; font-variation-settings: "opsz" 48; }
+.stepb p { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0 0 var(--jx-space-2); }
+.stepnav { display: flex; align-items: center; gap: 6px; padding: var(--jx-space-2) var(--jx-space-4); border-top: 1px solid var(--jx-border); }
+.stepnav .dots { display: flex; gap: 4px; margin-inline: auto; }
+.stepnav .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--jx-border-strong); display: block; }
+.stepnav .dots i.on { background: var(--jx-app); }
+.repos .row { grid-template-columns: 1fr auto; }
+.prrow .t { font-weight: var(--jx-weight-medium); }
+.chg { color: var(--jx-warn); font-size: var(--jx-text-sm); }
+.tabbody { padding: var(--jx-space-5) var(--jx-space-6); display: grid; gap: var(--jx-space-4); align-content: start; max-width: 860px; }
+.tabbody h3 { margin: 0; font-size: var(--jx-text-lg); font-weight: 600; }
+.tabbody .lede { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0; }
+.frame.half .tabbody { padding: var(--jx-space-4); gap: var(--jx-space-3); }
+.mtable { width: 100%; border-collapse: collapse; font-size: var(--jx-text-sm); }
+.mtable th { text-align: left; font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--jx-border); }
+.mtable td { padding: 8px; border-bottom: 1px solid var(--jx-border); vertical-align: top; }
+.mtable td.c { font-weight: 500; white-space: nowrap; }
+.mtable td.r { color: var(--jx-fg-muted); }
+.score { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.bar { width: 80px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; display: block; }
+.bar > span { display: block; height: 100%; background: var(--jx-app); }
+.quiz fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; }
+.quiz legend { font-family: var(--jx-font-read); font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); font-weight: 600; margin-bottom: var(--jx-space-2); padding: 0; }
+.opt { display: flex; gap: 10px; align-items: flex-start; padding: var(--jx-space-2) var(--jx-space-3); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); }
+.opt input { margin-top: 4px; accent-color: var(--jx-accent); }
+.opt.picked { border-color: var(--jx-accent); background: var(--jx-accent-subtle); }
+.feedback { padding: var(--jx-space-2) var(--jx-space-3); background: var(--jx-success-bg); border-radius: var(--jx-radius-sm); font-size: var(--jx-text-sm); }
+.feedback b { color: var(--jx-success); }
+.qprog { display: flex; align-items: center; gap: 10px; color: var(--jx-fg-muted); font-size: var(--jx-text-sm); }
+.qprog .bar { width: 140px; }
+.rec { display: flex; align-items: center; gap: 10px; }
+.rec .verdict { font-size: var(--jx-text-xl); font-weight: 600; font-variation-settings: "opsz" 72; }
+.reasons { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); }
+.advisory { border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: var(--jx-space-2) var(--jx-space-3); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); background: var(--jx-surface-sunken); }
+.advisory b { color: var(--jx-fg); font-weight: 500; }
+.inline-err { border: 1px solid var(--jx-danger); background: var(--jx-danger-bg); border-radius: var(--jx-radius-md); padding: var(--jx-space-3); display: grid; gap: 8px; font-size: var(--jx-text-sm); }
+.inline-err b { color: var(--jx-danger); font-weight: 600; }
+.reflist { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: var(--jx-text-sm); }
+.reflist li { display: flex; gap: 8px; align-items: baseline; }
+.reflist .why { color: var(--jx-fg-muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--jx-space-3); }
+.toggle { display: flex; gap: 6px; padding: var(--jx-space-2) var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.sheet { position: absolute; inset: 64px 0 0 0; background: var(--jx-bg); border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0; box-shadow: var(--jx-shadow-2); z-index: 5; display: grid; grid-template-rows: auto 1fr; overflow: hidden; border-top: 1px solid var(--jx-border); }
+.sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--jx-border-strong); margin: 6px auto; }
+.frame.narrow .prbar { flex-wrap: wrap; gap: 4px 8px; padding: var(--jx-space-2) var(--jx-space-3); }
+.frame.narrow .prbar .tt { font-size: var(--jx-text-base); white-space: normal; }
+.frame.narrow .stepb, .frame.narrow .steph, .frame.narrow .stepnav { padding-inline: var(--jx-space-3); }
+.frame.narrow .row .t { white-space: normal; }
+.chatbtn { position: absolute; right: 12px; bottom: 12px; z-index: 3; box-shadow: var(--jx-shadow-2); }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>Review</h1>
+      <p><code>/review</code>. Product screen at lower fidelity; it informs Review's own spec later. Review helps you understand a pull request before you approve it: background, a guided walkthrough beside the diff, your own metrics, a short quiz, and an advisory recommendation. Plum chrome; the silhouette is a wide diff with a narrative column, and the chat docks under the walkthrough.</p>
+    </div>
+    <div class="row-inline">
+      <nav class="doc-nav" aria-label="Wireframes"><a href="README.md">Index</a><a href="launcher.html">Launcher</a><a href="settings.html">Settings</a><a href="notes.html">Notes</a><a href="rss.html">RSS</a><a href="review.html">Review</a><a href="issues.html">Issues</a><a href="overview.html">Mission Control</a></nav>
+      <button class="theme-toggle" type="button">Theme: system</button>
+    </div>
+  </header>
+
+  <!-- ================= PR picker ================= -->
+  <section class="screen" aria-labelledby="s-picker">
+    <h2 id="s-picker">PR picker</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a>
+              <div class="mid"><span class="crumb"><b>dalbrecht/jesinia</b><span class="sep">/</span>Awaiting your review</span></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search PRs or jump to…</span><kbd>⌘K</kbd></span><span class="sdot" title="All systems OK"></span><button class="iconbtn" aria-label="Settings">⚙</button></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="cols" style="grid-template-columns: 260px 1fr">
+                <div class="pane">
+                  <div class="pane-h"><b>Repos</b><span class="sp"><button class="btn g sm">Add repo</button></span></div>
+                  <div class="scroll list repos">
+                    <div class="row sel"><span class="t">dalbrecht/jesinia</span><span class="m"><span class="badge plum">3</span></span></div>
+                    <div class="row"><span class="t">c65llc/coding-standards</span><span class="m"><span class="badge neutral">1</span></span></div>
+                    <div class="row"><span class="t">c65llc/kb-tools</span><span class="m"><span class="badge neutral">0</span></span></div>
+                    <div class="row"><span class="t">dalbrecht/dotfiles</span><span class="m"><span class="badge neutral">0</span></span></div>
+                  </div>
+                </div>
+                <div class="pane">
+                  <div class="pane-h"><b>Awaiting your review</b><span>3 open</span><span class="sp"><button class="btn g sm">Sort: updated ▾</button><button class="btn s sm">Refresh</button></span></div>
+                  <div class="scroll list">
+                    <div class="row prrow unread"><span class="lead"><span class="udot"></span></span><span class="t">kbsync: pause on detached HEAD</span><span class="m">2 h</span><span class="x">#42 · contributor-a · +210 −34 · 3 files · updated 2 h</span><span class="mm"><span class="badge cornflower">sync</span><span class="badge clay">bug</span><span class="chg">● Changes since your last review</span></span></div>
+                    <div class="row prrow unread"><span class="lead"><span class="udot"></span></span><span class="t">notes: stream chat tokens over SSE instead of polling</span><span class="m">5 h</span><span class="x">#39 · dalbrecht-bot · +486 −122 · 9 files · updated 5 h</span><span class="mm"><span class="badge fern">notes</span><span class="badge neutral">performance</span><span>Review requested</span></span></div>
+                    <div class="row prrow"><span class="lead"></span><span class="t">design: add plum and cornflower app tokens</span><span class="m">1 d</span><span class="x">#37 · jkaur · +58 −4 · 2 files · updated yesterday</span><span class="mm"><span class="badge plum">design</span><span class="badge ok">Checks passed</span><span>You commented · no new commits</span></span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280.</b> Repo list left, PRs requesting your review right. Each row shows number, author, size, file count, and freshness; the amber line flags new commits since your last pass.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ================= PR view: Walkthrough ================= -->
+  <section class="screen" aria-labelledby="s-walk">
+    <h2 id="s-walk">PR view: Walkthrough</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a>
+              <div class="mid"><span class="crumb">dalbrecht/jesinia<span class="sep">/</span><b>#42</b></span></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot minor" title="1 minor issue"></span><button class="iconbtn" aria-label="Settings">⚙</button></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="rv">
+                <div class="prbar">
+                  <span class="tt">kbsync: pause on detached HEAD</span>
+                  <span class="meta"><span>#42</span><span>contributor-a</span><code>fix/kbsync-detached-head</code><span>→</span><code>main</code><span class="plus">+210</span><span class="minus">−34</span><span class="badge ok">Checks passed</span></span>
+                  <span class="sp"><button class="btn g sm">Open on GitHub ↗</button></span>
+                </div>
+                <div class="tabs" role="tablist" aria-label="PR sections">
+                  <span class="tab" role="tab" aria-selected="false">Background</span>
+                  <span class="tab on" role="tab" aria-selected="true">Walkthrough</span>
+                  <span class="tab" role="tab" aria-selected="false">Metrics</span>
+                  <span class="tab" role="tab" aria-selected="false">Quiz <span class="badge neutral">2 of 5</span></span>
+                  <span class="tab" role="tab" aria-selected="false">Recommendation</span>
+                </div>
+                <div class="cols split">
+                  <div class="scroll diff" aria-label="Diff">
+                    <div class="fileh">src/kbsync/cycle.py<span class="sp"><span class="plus">+48</span> <span class="minus">−9</span></span></div>
+                    <div class="hunk cur">
+<div class="h">@@ -61,14 +61,31 @@ def run_cycle(repo: Repo, cfg: SyncConfig) -&gt; CycleResult:</div>
+<div><span class="ln">61</span>    log.info("sync cycle start", repo=repo.path)</div>
+<div><span class="ln">62</span>    status = git.status(repo)</div>
+<div class="a"><span class="ln">63</span>+   head = git.symbolic_ref(repo, "HEAD", quiet=True)</div>
+<div class="a"><span class="ln">64</span>+   if head is None:</div>
+<div class="a"><span class="ln">65</span>+       log.warning("detached HEAD; pausing sync", repo=repo.path)</div>
+<div class="a"><span class="ln">66</span>+       state.set_paused(repo, reason=PauseReason.DETACHED_HEAD)</div>
+<div class="a"><span class="ln">67</span>+       return CycleResult.paused(PauseReason.DETACHED_HEAD)</div>
+<div><span class="ln">68</span>    if status.has_conflicts:</div>
+<div class="d"><span class="ln">69</span>-       raise SyncError("merge conflict")</div>
+<div class="a"><span class="ln">69</span>+       state.set_paused(repo, reason=PauseReason.CONFLICT)</div>
+<div class="a"><span class="ln">70</span>+       return CycleResult.paused(PauseReason.CONFLICT)</div>
+<div><span class="ln">71</span>    if not status.dirty:</div>
+<div><span class="ln">72</span>        return CycleResult.noop()</div>
+                    </div>
+                    <div class="hunk">
+<div class="h">@@ -98,6 +115,12 @@ def _commit(repo: Repo, msg: str) -&gt; str:</div>
+<div><span class="ln">115</span>    git.add_all(repo)</div>
+<div class="a"><span class="ln">116</span>+   if state.is_paused(repo):</div>
+<div class="a"><span class="ln">117</span>+       raise AssertionError("commit while paused")</div>
+<div><span class="ln">118</span>    return git.commit(repo, msg, author=cfg.author)</div>
+                    </div>
+                    <div class="fileh">src/kbsync/state.py<span class="sp"><span class="plus">+31</span> <span class="minus">−2</span></span></div>
+                    <div class="hunk">
+<div class="h">@@ -12,6 +12,14 @@ class PauseReason(str, Enum):</div>
+<div><span class="ln">12</span>    CONFLICT = "conflict"</div>
+<div class="a"><span class="ln">13</span>+   DETACHED_HEAD = "detached_head"</div>
+<div class="a"><span class="ln">14</span>+</div>
+<div class="a"><span class="ln">15</span>+   def message(self) -&gt; str:</div>
+<div class="a"><span class="ln">16</span>+       return MESSAGES[self]</div>
+                    </div>
+                    <div class="fileh">tests/kbsync/test_cycle.py<span class="sp"><span class="plus">+131</span> <span class="minus">−23</span></span></div>
+                    <div class="hunk">
+<div class="h">@@ -0,0 +1,18 @@</div>
+<div class="a"><span class="ln">1</span>+def test_detached_head_pauses_without_commit(tmp_repo):</div>
+<div class="a"><span class="ln">2</span>+    tmp_repo.checkout("HEAD~1", detach=True)</div>
+<div class="a"><span class="ln">3</span>+    result = run_cycle(tmp_repo, cfg)</div>
+<div class="a"><span class="ln">4</span>+    assert result.status == "paused"</div>
+                    </div>
+                  </div>
+                  <div class="handle" aria-hidden="true"></div>
+                  <div class="rightcol">
+                    <div class="walk">
+                      <div class="steph"><span class="n">Step 1 of 5</span><span class="badge plum">cycle.py · lines 63–70</span></div>
+                      <div class="stepb scroll">
+                        <h3>Detect a detached HEAD before committing</h3>
+                        <p>Before this change, a cycle that started on a detached HEAD would commit onto it, and the push would quietly do nothing. The cycle now asks git for the symbolic ref first; if there isn't one, it records a pause and returns.</p>
+                        <p>Conflicts follow the same path: they used to raise, which the scheduler logged and retried every interval. Both now return <code>paused</code> so the shell can show one sync-paused strip.</p>
+                      </div>
+                      <div class="stepnav">
+                        <button class="btn s sm" disabled>← Previous</button>
+                        <span class="dots" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i><i></i></span>
+                        <button class="btn p sm">Next: Guard commits while paused →</button>
+                      </div>
+                    </div>
+                    <div class="hhandle" aria-hidden="true"></div>
+                    <div class="chat">
+                      <div class="chat-h">
+                        <span class="who-pick"><span class="rg codex">X</span>Codex ▾</span>
+                        <span style="color:var(--jx-fg-muted)">· about step 1</span>
+                        <span class="sp"><button class="iconbtn" aria-label="Pop out chat">⧉</button><button class="iconbtn" aria-label="Collapse chat">▾</button></span>
+                      </div>
+                      <div class="transcript">
+                        <div class="msg u">Does anything else call <code>run_cycle</code> and expect it to raise on conflicts?</div>
+                        <div>
+                          <div class="who"><span class="rg codex">X</span><b>Codex</b><span>just now</span></div>
+                          <div class="tool">grep "run_cycle" src/ · 3 matches</div>
+                          <div class="msg ai"><p>One caller relies on the old behavior: <code>scheduler.py:88</code> catches <code>SyncError</code> to set the retry backoff. With this PR that branch never runs, so a conflicted repo retries on the normal interval instead of backing off.<span class="cursor"></span></p></div>
+                        </div>
+                      </div>
+                      <div class="composer">
+                        <input class="inp" id="chat-q-main" type="text" placeholder="Ask Codex about this PR…" aria-label="Message Codex">
+                        <div class="hint"><span>Context: PR #42, step 1</span><span><kbd>↵</kbd> send</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280. Main frame.</b> Diff about 60%, narrative about 40%. The current step's hunk gets a plum rail and a highlighted hunk header. The chat docks under the walkthrough with a draggable divider. Runner defaults to Codex here; ⧉ pops it out into its own window.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ================= Other tabs ================= -->
+  <section class="screen" aria-labelledby="s-tabs">
+    <h2 id="s-tabs">PR view: Background, Metrics, Quiz, Recommendation</h2>
+    <p>Same header, PR bar, and tabs as the walkthrough; only the body changes. The chat stays available from the header in these tabs (collapsed by default; ⌘J opens it).</p>
+    <div class="states">
+      <!-- Background -->
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">jesinia<span class="sep">/</span><b>#42</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="rv">
+                <div class="prbar"><span class="tt">kbsync: pause on detached HEAD</span><span class="meta"><span>#42</span><span class="plus">+210</span><span class="minus">−34</span></span></div>
+                <div class="tabs" role="tablist" aria-label="PR sections (Background)"><span class="tab on" role="tab" aria-selected="true">Background</span><span class="tab" role="tab" aria-selected="false">Walkthrough</span><span class="tab" role="tab" aria-selected="false">Metrics</span><span class="tab" role="tab" aria-selected="false">Quiz</span><span class="tab" role="tab" aria-selected="false">Recommendation</span></div>
+                <div class="scroll"><div class="tabbody">
+                  <p class="lede">Stops the sync cycle from committing onto a detached HEAD and turns conflicts from an exception into a pause, so both surface as the shell's sync-paused strip.</p>
+                  <div class="grid2">
+                    <div class="panel"><div class="ph-title">Relevant code</div><div class="pb"><ul class="reflist">
+                      <li><code>kbsync/cycle.py</code><span class="why">changed · entry point</span></li>
+                      <li><code>kbsync/scheduler.py</code><span class="why">calls run_cycle; not changed</span></li>
+                      <li><code>kbsync/state.py</code><span class="why">pause reasons</span></li>
+                    </ul></div></div>
+                    <div class="panel"><div class="ph-title">Related KB pages</div><div class="pb"><ul class="reflist">
+                      <li><a href="#">KB sync conventions</a><span class="why">Notes/kb-sync.md</span></li>
+                      <li><a href="#">ADR 0004: sync never loses work</a></li>
+                    </ul></div></div>
+                  </div>
+                </div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Background.</b> Codex's summary in reading type, then the code areas the PR touches or depends on, and KB pages that explain the domain.</figcaption>
+      </figure>
+
+      <!-- Metrics -->
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">jesinia<span class="sep">/</span><b>#42</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="rv">
+                <div class="prbar"><span class="tt">kbsync: pause on detached HEAD</span><span class="sp"><button class="btn s sm">Edit metrics</button></span></div>
+                <div class="tabs" role="tablist" aria-label="PR sections (Metrics)"><span class="tab" role="tab" aria-selected="false">Background</span><span class="tab" role="tab" aria-selected="false">Walkthrough</span><span class="tab on" role="tab" aria-selected="true">Metrics</span><span class="tab" role="tab" aria-selected="false">Quiz</span><span class="tab" role="tab" aria-selected="false">Recommendation</span></div>
+                <div class="scroll"><div class="tabbody">
+                  <table class="mtable">
+                    <thead><tr><th scope="col">Criterion</th><th scope="col">Score</th><th scope="col">Rationale</th></tr></thead>
+                    <tbody>
+                      <tr><td class="c">Correctness</td><td><span class="score">4/5 <span class="bar"><span style="width:80%"></span></span></span></td><td class="r">Fixes both paths; scheduler backoff no longer triggers.</td></tr>
+                      <tr><td class="c">Test coverage</td><td><span class="score">5/5 <span class="bar"><span style="width:100%"></span></span></span></td><td class="r">Detached, conflict, and paused-commit cases covered.</td></tr>
+                      <tr><td class="c">Readability</td><td><span class="score">4/5 <span class="bar"><span style="width:80%"></span></span></span></td><td class="r">Clear early returns; assertion message is terse.</td></tr>
+                      <tr><td class="c">Risk</td><td><span class="score">3/5 <span class="bar"><span style="width:60%"></span></span></span></td><td class="r">Changes a public return contract used by the scheduler.</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Metrics.</b> Your criteria, not a fixed rubric. Each has a score as text plus a bar, and one line of rationale. "Edit metrics" changes the set for this repo.</figcaption>
+      </figure>
+
+      <!-- Quiz -->
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">jesinia<span class="sep">/</span><b>#42</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="rv">
+                <div class="prbar"><span class="qprog">Question 2 of 5 <span class="bar"><span style="width:40%"></span></span></span></div>
+                <div class="tabs" role="tablist" aria-label="PR sections (Quiz)"><span class="tab" role="tab" aria-selected="false">Background</span><span class="tab" role="tab" aria-selected="false">Walkthrough</span><span class="tab" role="tab" aria-selected="false">Metrics</span><span class="tab on" role="tab" aria-selected="true">Quiz</span><span class="tab" role="tab" aria-selected="false">Recommendation</span></div>
+                <div class="scroll"><form class="tabbody quiz" onsubmit="return false">
+                  <fieldset>
+                    <legend>Why does the cycle return <code>paused</code> instead of raising?</legend>
+                    <label class="opt" for="q2-a"><input type="radio" id="q2-a" name="q2" value="a"> Raising would crash the sync worker process.</label>
+                    <label class="opt picked" for="q2-b"><input type="radio" id="q2-b" name="q2" value="b" checked> So the shell can show one paused state instead of retrying every interval.</label>
+                    <label class="opt" for="q2-c"><input type="radio" id="q2-c" name="q2" value="c"> Exceptions can't carry a pause reason.</label>
+                  </fieldset>
+                  <div class="row-inline"><button class="btn p sm" type="submit">Check answer</button><button class="btn g sm" type="button">Skip</button></div>
+                  <div class="feedback" role="status"><b>✓ Right.</b> A paused result shows the sync strip once and waits for you; raising sent it through the scheduler's retry loop.</div>
+                </form></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Quiz.</b> One question at a time, radios in a fieldset. Feedback appears after "Check answer". After question 5 the tab shows a result chip: <span class="badge ok">4 of 5 · Ready to review</span></figcaption>
+      </figure>
+
+      <!-- Recommendation -->
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">jesinia<span class="sep">/</span><b>#42</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="rv">
+                <div class="prbar"><span class="tt">kbsync: pause on detached HEAD</span><span class="sp"><span class="badge ok">Quiz 4 of 5 · Ready to review</span></span></div>
+                <div class="tabs" role="tablist" aria-label="PR sections (Recommendation)"><span class="tab" role="tab" aria-selected="false">Background</span><span class="tab" role="tab" aria-selected="false">Walkthrough</span><span class="tab" role="tab" aria-selected="false">Metrics</span><span class="tab" role="tab" aria-selected="false">Quiz</span><span class="tab on" role="tab" aria-selected="true">Recommendation</span></div>
+                <div class="scroll"><div class="tabbody">
+                  <div class="rec"><span class="rg codex">X</span><span class="verdict">Approve</span><span class="badge ok">Recommended</span></div>
+                  <ul class="reasons">
+                    <li>Both pause paths are tested, including a commit attempted while paused.</li>
+                    <li>Mention to contributor-a that <code>scheduler.py:88</code> no longer backs off; worth a follow-up issue.</li>
+                  </ul>
+                  <div class="advisory"><b>This is a recommendation.</b> Nothing is posted to GitHub until you choose to.</div>
+                  <div class="row-inline"><button class="btn s sm">Post approval to GitHub…</button><button class="btn g sm">Copy reasoning</button></div>
+                </div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Recommendation.</b> Verdict, reasoning, and a plain advisory line. Posting is a secondary button with an ellipsis: it opens a confirm step showing the exact review text.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ================= Narrow ================= -->
+  <section class="screen" aria-labelledby="s-narrow">
+    <h2 id="s-narrow">Narrow, 390</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a>
+              <div class="mid"></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="rv" style="grid-template-rows: auto 1fr">
+                <div class="toggle"><button class="btn s sm">dalbrecht/jesinia ▾</button><span style="margin-left:auto;color:var(--jx-fg-muted);font-size:var(--jx-text-sm);align-self:center">3 awaiting</span></div>
+                <div class="scroll list">
+                  <div class="row prrow unread"><span class="lead"><span class="udot"></span></span><span class="t">kbsync: pause on detached HEAD</span><span class="m">2 h</span><span class="x">#42 · contributor-a · +210 −34 · 3 files</span><span class="mm"><span class="badge cornflower">sync</span><span class="badge clay">bug</span><span class="chg">● Changes since your last review</span></span></div>
+                  <div class="row prrow unread"><span class="lead"><span class="udot"></span></span><span class="t">notes: stream chat tokens over SSE instead of polling</span><span class="m">5 h</span><span class="x">#39 · dalbrecht-bot · +486 −122</span><span class="mm"><span class="badge fern">notes</span></span></div>
+                  <div class="row prrow"><span class="lead"></span><span class="t">design: add plum and cornflower app tokens</span><span class="m">1 d</span><span class="x">#37 · jkaur · +58 −4</span><span class="mm"><span class="badge ok">Checks passed</span></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>PR list.</b> The repo list becomes a picker button; rows wrap titles.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Review</span></div>
+          <div class="app relative" data-app="review">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a>
+              <div class="mid"><span class="crumb"><b>#42</b></span></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="rv" style="grid-template-rows: auto auto auto 1fr">
+                <div class="prbar"><span class="tt">kbsync: pause on detached HEAD</span><span class="meta"><span class="plus">+210</span><span class="minus">−34</span><span>contributor-a</span></span></div>
+                <div class="tabs scrollx" role="tablist" aria-label="PR sections (narrow)"><span class="tab" role="tab" aria-selected="false">Background</span><span class="tab on" role="tab" aria-selected="true">Walkthrough</span><span class="tab" role="tab" aria-selected="false">Metrics</span><span class="tab" role="tab" aria-selected="false">Quiz</span><span class="tab" role="tab" aria-selected="false">Recommendation</span></div>
+                <div class="toggle"><button class="btn s sm" aria-pressed="false">Show diff</button><span style="margin-left:auto;color:var(--jx-fg-muted);font-size:var(--jx-text-sm);align-self:center">cycle.py · 63–70</span></div>
+                <div class="walk scroll">
+                  <div class="steph"><span class="n">Step 1 of 5</span></div>
+                  <div class="stepb">
+                    <h3>Detect a detached HEAD before committing</h3>
+                    <p>The cycle now asks git for the symbolic ref first. If there isn't one, it records a pause and returns instead of committing onto a detached HEAD.</p>
+                    <div class="diff panel" style="padding-block:4px">
+<div class="a"><span class="ln">63</span>+ head = git.symbolic_ref(…)</div>
+<div class="a"><span class="ln">64</span>+ if head is None:</div>
+<div class="a"><span class="ln">67</span>+   return paused(DETACHED)</div>
+                    </div>
+                  </div>
+                  <div class="stepnav"><button class="btn s sm" disabled>←</button><span class="dots" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i><i></i></span><button class="btn p sm">Next →</button></div>
+                </div>
+              </div>
+            </div>
+            <button class="btn p chatbtn"><span class="rg codex">X</span>Ask Codex</button>
+          </div>
+        </div>
+        <figcaption><b>PR view.</b> Tabs scroll sideways. Narrative comes first with a short excerpt of its hunk; "Show diff" swaps in the full diff. Chat opens from the floating button.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Review</span></div>
+          <div class="app relative" data-app="review">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a>
+              <div class="mid"><span class="crumb"><b>#42</b></span></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body"></div>
+            <div class="scrim"></div>
+            <div class="sheet" role="dialog" aria-label="Chat with Codex">
+              <div><span class="grab" style="display:block"></span></div>
+              <div class="chat">
+                <div class="chat-h"><span class="who-pick"><span class="rg codex">X</span>Codex ▾</span><span class="sp"><button class="iconbtn" aria-label="Close chat">✕</button></span></div>
+                <div class="transcript">
+                  <div class="msg u">Does anything else expect <code>run_cycle</code> to raise on conflicts?</div>
+                  <div>
+                    <div class="who"><span class="rg codex">X</span><b>Codex</b></div>
+                    <div class="tool">grep "run_cycle" src/ · 3 matches</div>
+                    <div class="msg ai"><p><code>scheduler.py:88</code> catches <code>SyncError</code> to back off retries. With this PR that branch never runs.</p></div>
+                  </div>
+                </div>
+                <div class="composer"><input class="inp" id="chat-q-narrow" type="text" placeholder="Ask Codex about this PR…" aria-label="Message Codex"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Chat sheet.</b> Full-height sheet over the PR; drag down or ✕ to close. Pop-out isn't offered at this width.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ================= States ================= -->
+  <section class="screen" aria-labelledby="s-states">
+    <h2 id="s-states">States</h2>
+    <div class="states">
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb"><b>dalbrecht/jesinia</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"><div class="empty"><b>Nothing waiting on you.</b><span>PRs that request your review show up here.</span><button class="btn s sm">Pick another repo</button></div></div>
+          </div>
+        </div>
+        <figcaption><b>Empty.</b> No PRs request your review in this repo.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">jesinia<span class="sep">/</span><b>#42</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="rv">
+                <div class="prbar"><span class="tt">kbsync: pause on detached HEAD</span></div>
+                <div class="tabs" role="tablist" aria-label="PR sections (loading)"><span class="tab on" role="tab" aria-selected="true">Background</span><span class="tab" role="tab" aria-selected="false">Walkthrough</span><span class="tab" role="tab" aria-selected="false">Metrics</span><span class="tab" role="tab" aria-selected="false">Quiz</span><span class="tab" role="tab" aria-selected="false">Recommendation</span></div>
+                <div class="tabbody">
+                  <div class="who"><span class="rg codex">X</span><b>Codex is reading the PR…</b><span class="spin" aria-hidden="true"></span></div>
+                  <div class="tool">read src/kbsync/cycle.py · read src/kbsync/scheduler.py</div>
+                  <p class="lede">Stops the sync cycle from committing onto a detached<span class="cursor"></span></p>
+                  <span class="skel w90"></span><span class="skel w80"></span><span class="skel w60"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Loading the background pack.</b> The summary streams in as Codex reads; the remaining sections show skeletons. Other tabs fill in as their parts finish.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot bad"></span></div></div>
+            <div></div>
+            <div class="body"><div class="tabbody">
+              <div class="inline-err" role="alert"><b>× GitHub isn't connected.</b><span>Run <code>gh auth login</code>, then Check again.</span><span class="row-inline"><button class="btn s sm">Check again</button><button class="btn g sm">Open Settings</button></span></div>
+              <div class="lofi"><div class="box">PR list appears here once Review can reach GitHub.</div></div>
+            </div></div>
+          </div>
+        </div>
+        <figcaption><b>GitHub auth missing.</b> Review can't work without it, so it's inline and danger-toned in place of the list, with the exact command. Status dot goes red.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">jesinia<span class="sep">/</span><b>#42</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="chat">
+                <div class="chat-h"><span class="who-pick"><span class="rg codex">X</span>Codex ▾</span><span class="sp"><button class="iconbtn" aria-label="Pop out chat (state)">⧉</button><button class="iconbtn" aria-label="Collapse chat (state)">▾</button></span></div>
+                <div class="transcript">
+                  <div class="msg err"><p><b>Codex isn't available.</b> Not logged in. Run <code>codex login</code> in a terminal, or switch this chat to Claude.</p><p><button class="btn s sm">Use Claude for this chat</button> <button class="btn g sm">Check again</button></p></div>
+                </div>
+                <div class="composer"><input class="inp" id="chat-q-off" type="text" placeholder="Codex is unavailable" aria-label="Message Codex" disabled></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Runner unavailable in chat.</b> Minor (amber dot, no strip). The error sits in the transcript with the fix and a one-click switch to the other runner.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Review</span></div>
+          <div class="app" data-app="review">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">jesinia<span class="sep">/</span><b>#42</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div></div>
+            <div class="strip"><b>! Sync paused:</b> merge conflict in <code>Notes/rss.md</code>. Resolve it, then choose Resume. <span class="act"><button class="btn s sm">Resume</button><button class="btn g sm">Details</button></span></div>
+            <div class="body">
+              <div class="rv" style="grid-template-rows: auto 1fr">
+                <div class="tabs" role="tablist" aria-label="PR sections (sync paused)"><span class="tab" role="tab" aria-selected="false">Background</span><span class="tab on" role="tab" aria-selected="true">Walkthrough</span><span class="tab" role="tab" aria-selected="false">Metrics</span><span class="tab" role="tab" aria-selected="false">Quiz</span><span class="tab" role="tab" aria-selected="false">Recommendation</span></div>
+                <div class="lofi pad"><div class="box"><b>Diff</b> and <b>walkthrough</b> keep working. Saving chat notes to the KB waits until sync resumes.</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Sync paused.</b> Blocking banner (shell decision 3), the same strip as every other app. Review keeps working.</figcaption>
+      </figure>
+    </div>
+    <ol class="notes">
+      <li><b>Chat under the walkthrough</b> is Review's own placement (shell decision 2): questions are usually about the current step, so the chat sits beside the same hunk instead of in a separate rail. The divider resizes it; ⧉ pops it out; ▾ collapses it to its header.</li>
+      <li><b>Codex is the default runner</b> in Review, switchable from the chat header. The choice is remembered per app.</li>
+      <li><b>The recommendation is advisory.</b> Posting to GitHub is a separate, explicit action behind a confirm step that shows the exact text. Copying the reasoning never posts anything.</li>
+      <li><b>Metrics are user-defined</b>, stored per repo. The agent scores them with a one-line rationale each; it does not invent new criteria.</li>
+      <li><b>Silhouette:</b> plum header, a wide monospace diff, and a narrow reading-type column stacked over chat. That shape reads as Review even in a Mission Control thumbnail.</li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

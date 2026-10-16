@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia Notes Wireframes</title>
+<!-- Preview only: the apps self-host these faces via @fontsource (kit §2). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="wire.css">
+<script src="wire.js" defer></script>
+<style>
+.notes-cols { grid-template-columns: 280px minmax(0, 1fr) 6px 380px; }
+.notes-cols.nochat { grid-template-columns: 280px minmax(0, 1fr); }
+
+/* ---- sidebar: search + file tree (compact density) ---- */
+.side { background: var(--jx-surface); border-right: 1px solid var(--jx-border); display: grid; grid-template-rows: auto auto 1fr; min-height: 0; }
+.search { padding: var(--jx-space-2); }
+.search .inp { height: 30px; font-size: var(--jx-text-sm); }
+.search .inp kbd { margin-left: auto; }
+.side-h { display: flex; align-items: center; gap: 6px; padding: 0 var(--jx-space-2) 0 var(--jx-space-3); height: 28px; font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; font-weight: 600; color: var(--jx-fg-muted); }
+.side-h .sp { margin-left: auto; display: flex; gap: 2px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.side-h .iconbtn { width: 22px; height: 22px; font-size: 12px; }
+.side-h select, .side-h .sort { font: inherit; font-size: var(--jx-text-xs); color: var(--jx-fg-muted); }
+.tree { font-size: var(--jx-text-sm); line-height: 18px; padding-bottom: var(--jx-space-3); }
+.tn { display: flex; align-items: center; gap: 4px; height: 24px; padding-right: var(--jx-space-2); white-space: nowrap; color: var(--jx-fg); }
+.tn .tw { width: 14px; text-align: center; color: var(--jx-fg-subtle); font-size: 10px; flex: none; }
+.tn .nm { overflow: hidden; text-overflow: ellipsis; }
+.tn .ct { margin-left: auto; color: var(--jx-fg-subtle); font-size: var(--jx-text-xs); font-variant-numeric: tabular-nums; }
+.tn.dir .nm { font-weight: 500; }
+.tn.on { background: var(--jx-row-bg-selected); }
+.tn.on .nm { font-weight: 600; }
+.tn .mod { width: 6px; height: 6px; border-radius: 50%; background: var(--jx-highlight-strong); margin-left: auto; flex: none; }
+.tn.newfile .nm { flex: 1; }
+.tn.newfile .inp { height: 22px; font-size: var(--jx-text-sm); padding: 0 6px; }
+/* indent levels */
+.l0 { padding-left: 6px; } .l1 { padding-left: 20px; } .l2 { padding-left: 34px; }
+
+/* ---- results: dense, skimmable ---- */
+.grp { display: flex; align-items: center; gap: 6px; padding: 8px var(--jx-space-3) 2px; font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; font-weight: 600; color: var(--jx-fg-muted); }
+.grp span { letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--jx-fg-subtle); }
+.hit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 8px; padding: 5px var(--jx-space-3); font-size: var(--jx-text-sm); line-height: 18px; border-bottom: 1px solid var(--jx-row-divider); }
+.hit .ti { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--jx-fg); }
+.hit .dt { color: var(--jx-fg-subtle); font-size: var(--jx-text-xs); font-variant-numeric: tabular-nums; }
+.hit .pa { grid-column: 1 / 3; display: flex; gap: 4px; align-items: center; color: var(--jx-fg-muted); font-size: var(--jx-text-xs); white-space: nowrap; overflow: hidden; }
+.hit .pa .fold { color: var(--jx-fg-muted); }
+.hit .pa .n { margin-left: auto; color: var(--jx-fg-subtle); }
+.hit .sn { grid-column: 1 / 3; color: var(--jx-fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hit mark { background: var(--jx-highlight); color: var(--jx-fg); border-radius: 2px; padding: 0 1px; }
+.hit.on { background: var(--jx-row-bg-selected); }
+.hit.on .ti { font-weight: 600; }
+.results .hit { padding: 5px var(--jx-space-5); }
+.results .grp { padding-inline: var(--jx-space-5); }
+
+/* ---- always-editable page (live-styled Markdown) ---- */
+.page-bar { display: flex; gap: 8px; align-items: center; padding: 0 var(--jx-space-3); height: 40px; border-bottom: 1px solid var(--jx-border); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); min-width: 0; }
+.crumb { display: flex; gap: 4px; align-items: center; white-space: nowrap; overflow: hidden; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.saved { display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
+.saved i { width: 6px; height: 6px; border-radius: 50%; background: var(--jx-success); display: block; }
+.saved.dirty i { background: var(--jx-highlight-strong); }
+.page-bar .sp { margin-left: auto; display: flex; gap: 2px; align-items: center; }
+.tb { display: flex; gap: 1px; padding: 0 var(--jx-space-2); height: 34px; align-items: center; border-bottom: 1px solid var(--jx-border); }
+.tb .iconbtn { width: 28px; height: 26px; font-size: 13px; color: var(--jx-fg-muted); }
+.tb .iconbtn b, .tb .iconbtn i { color: var(--jx-fg); }
+.tb .sep { width: 1px; height: 16px; background: var(--jx-border); margin: 0 4px; }
+.tb .hint { margin-left: auto; font-size: var(--jx-text-xs); color: var(--jx-fg-subtle); }
+.editor { padding: var(--jx-space-5) var(--jx-space-7) var(--jx-space-7); }
+.props { font-family: var(--jx-font-ui); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: var(--jx-space-4); padding-bottom: var(--jx-space-3); border-bottom: 1px dashed var(--jx-border); }
+.props .k { color: var(--jx-fg-subtle); }
+.props code { font-size: var(--jx-text-xs); }
+.mk { color: var(--jx-fg-subtle); font-weight: 400; }
+.wikilink { color: var(--jx-accent-text); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+.caretline { background: var(--jx-surface-hover); border-radius: 3px; box-shadow: 0 0 0 4px var(--jx-surface-hover); }
+.prov { display: inline-flex; align-items: center; gap: 4px; font-family: var(--jx-font-ui); font-size: var(--jx-text-xs); color: var(--jx-fg-subtle); border: 1px solid var(--jx-border); border-radius: 999px; padding: 0 6px; vertical-align: 2px; user-select: none; }
+.ac { width: 300px; left: 690px; top: 548px; padding: 4px 0; font-family: var(--jx-font-ui); font-size: var(--jx-text-sm); }
+.ac .it { display: flex; gap: 8px; padding: 5px 10px; }
+.ac .it small { margin-left: auto; color: var(--jx-fg-subtle); font-size: var(--jx-text-xs); }
+.ac .it.on { background: var(--jx-row-bg-selected); }
+.ac .it.new { color: var(--jx-fg-muted); border-top: 1px solid var(--jx-border); }
+.backlinks { font-family: var(--jx-font-ui); border-top: 1px solid var(--jx-border); margin-top: var(--jx-space-5); padding-top: var(--jx-space-3); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.backlinks b { color: var(--jx-fg); font-weight: 600; }
+
+/* inline bars inside the page column */
+.ibar { display: flex; gap: 10px; align-items: center; padding: 7px var(--jx-space-3); font-size: var(--jx-text-sm); border-bottom: 1px solid var(--jx-border); background: var(--jx-warn-bg); }
+.ibar b { color: var(--jx-warn); }
+.ibar .act { margin-left: auto; display: flex; gap: 6px; }
+
+.modal { left: 50%; top: 60px; transform: translateX(-50%); width: 560px; }
+.modal .mh { padding: var(--jx-space-4) var(--jx-space-5) 0; font-size: var(--jx-text-lg); font-weight: 600; }
+.modal .mb { padding: var(--jx-space-4) var(--jx-space-5); display: grid; gap: var(--jx-space-4); }
+.modal .mf { padding: var(--jx-space-3) var(--jx-space-5); border-top: 1px solid var(--jx-border); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.modal .mf .dest { margin-right: auto; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.keep { display: grid; gap: 6px; }
+.keep label { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; padding: 8px 10px; border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-ai); font-size: var(--jx-text-sm); }
+.keep label.off { background: var(--jx-surface); color: var(--jx-fg-muted); }
+.cb { width: 14px; height: 14px; border: 1px solid var(--jx-border-strong); border-radius: 3px; margin-top: 2px; display: inline-grid; place-items: center; font-size: 10px; background: var(--jx-surface); }
+.cb.on { background: var(--jx-accent); border-color: var(--jx-accent); color: var(--jx-accent-fg); }
+.sheet { position: absolute; inset: 64px 0 0 0; background: var(--jx-bg); border-radius: 14px 14px 0 0; box-shadow: var(--jx-shadow-2); display: grid; grid-template-rows: auto 1fr; z-index: 5; border-top: 1px solid var(--jx-border); }
+.grab { width: 36px; height: 4px; border-radius: 2px; background: var(--jx-border-strong); margin: 6px auto 0; }
+.frame.narrow .editor { padding: var(--jx-space-4); }
+.frame.narrow .tb { overflow-x: auto; }
+.frame.half .notes-cols { grid-template-columns: minmax(0, 1fr) 280px; }
+.frame.half .editor { padding: var(--jx-space-4); }
+.inline-banner { margin: var(--jx-space-3); padding: var(--jx-space-3); border-radius: var(--jx-radius-md); background: var(--jx-warn-bg); font-size: var(--jx-text-sm); display: grid; gap: 8px; }
+.inline-banner b { color: var(--jx-warn); }
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 0; font-family: var(--jx-font-mono); font-size: 12px; }
+.cmp > div { padding: var(--jx-space-3); border-right: 1px solid var(--jx-border); }
+.cmp > div:last-child { border-right: 0; }
+.cmp .lbl { font-family: var(--jx-font-ui); font-size: var(--jx-text-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--jx-fg-muted); font-weight: 600; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>Notes</h1>
+      <p><code>/notes/</code>. The tracer app, at the highest fidelity. Browse or search the KB, edit any page in place, talk about it with your agent, and save what matters as a note. It uses every foundation service end to end (spec §11; editing is a Task 5 change, listed in the <a href="README.md#spec-changes">index</a>).</p>
+    </div>
+    <div class="row-inline">
+      <nav class="doc-nav" aria-label="Wireframes"><a href="README.md">Index</a><a href="launcher.html">Launcher</a><a href="settings.html">Settings</a><a href="notes.html">Notes</a><a href="rss.html">RSS</a><a href="review.html">Review</a><a href="issues.html">Issues</a><a href="overview.html">Mission Control</a></nav>
+      <button class="theme-toggle" type="button">Theme: system</button>
+    </div>
+  </header>
+
+  <!-- ============ 1. Files + editable page + chat ============ -->
+  <section class="screen" aria-labelledby="s-page">
+    <h2 id="s-page">File tree, editable page, chat</h2>
+    <p>The sidebar is a file tree with a search field above it. The page is <b>always editable</b>: rendered Markdown you type into directly, saved automatically. Chat is a resizable right rail bound to the open page.</p>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop relative">
+          <div class="titlebar"><i></i><i></i><i></i><span>Notes · The quiet economics of maintenance</span></div>
+          <div class="app relative" data-app="notes">
+            <div class="hdr">
+              <a class="home" href="#" aria-label="Jesinia launcher"><span class="glyph-app"></span><span class="name">Notes</span></a>
+              <div class="mid"></div>
+              <div class="right"><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="cols notes-cols">
+                <nav class="side" aria-label="Knowledge base" data-density="compact">
+                  <div class="search"><div class="inp"><span style="color:var(--jx-fg-muted)">⌕</span><span class="ph">Search the KB</span><kbd>⌘F</kbd></div></div>
+                  <div class="side-h">Files<span class="sp"><button class="iconbtn" aria-label="New note">＋</button><button class="iconbtn" aria-label="New folder">⊞</button><button class="iconbtn" aria-label="Collapse all">⊟</button></span></div>
+                  <div class="scroll tree" role="tree" aria-label="Files">
+                    <div class="tn dir l0" role="treeitem" aria-expanded="false"><span class="tw">▸</span><span class="nm">Daily</span><span class="ct">212</span></div>
+                    <div class="tn dir l0" role="treeitem" aria-expanded="true"><span class="tw">▾</span><span class="nm">Notes</span><span class="ct">42</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">Funding models</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">How I take notes</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">Maintenance budgets in Pittsburgh</span><span class="mod" title="Edited by Claude, not yet reviewed"></span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">Reading list 2026</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">Tending the garden</span></div>
+                    <div class="tn dir l0" role="treeitem" aria-expanded="false"><span class="tw">▸</span><span class="nm">Projects</span><span class="ct">17</span></div>
+                    <div class="tn dir l0" role="treeitem" aria-expanded="true"><span class="tw">▾</span><span class="nm">Sources</span><span class="ct">118</span></div>
+                    <div class="tn dir l1" role="treeitem" aria-expanded="false"><span class="tw">▸</span><span class="nm">Papers</span><span class="ct">31</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">On keeping a commonplace book</span></div>
+                    <div class="tn l1 on" aria-selected="true"><span class="tw"></span><span class="nm">The quiet economics of maintenance</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">What SQLite's WAL mode guarantees</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">Why bridges fall down</span></div>
+                    <div class="tn dir l0" role="treeitem" aria-expanded="false"><span class="tw">▸</span><span class="nm">Templates</span><span class="ct">4</span></div>
+                  </div>
+                </nav>
+                <div class="pane" style="grid-template-rows:auto 1fr">
+                  <div class="page-bar"><span class="crumb">Sources <span class="mk">›</span> <b>quiet-economics.md</b></span><span class="saved"><i></i>Saved</span><span class="sp"><button class="btn g sm">Save note</button><button class="iconbtn" aria-label="More: open in external editor, reveal in Finder, copy link">⋯</button></span></div>
+                                    <div class="scroll editor">
+                    <div class="props"><span class="k">id</span><code>quiet-economics</code><span class="k">tags</span><span class="badge fern">infrastructure</span><span class="badge marigold">economics</span><button class="btn g sm">＋ tag</button><span class="k" style="margin-left:auto">Properties ▸</span></div>
+                    <article class="read" contenteditable="false">
+                      <h1>The quiet economics of maintenance</h1>
+                      <p>Most infrastructure fails not from neglect but from a budget model that rewards building over keeping. A ribbon-cutting is visible; a re-pointed brick wall is not. Three cities flipped the incentive, and their bridges stopped falling down.</p>
+                      <h2><span class="mk">## </span>Why upkeep loses</h2>
+                      <p>Capital budgets and operating budgets are separate pools. New construction draws from the larger, bond-funded capital pool; maintenance draws from the operating pool, which is cut first in every downturn. See <a class="wikilink" href="#">Funding models</a> and <a class="wikilink" href="#">Maintenance budgets in Pittsburgh</a>.</p>
+                      <p class="caretline">The fix in all three cities was the same: let maintenance draw from the capital pool when it <span class="mk">**</span><b>extends an asset's life</b><span class="mk">**</span>. See <span class="mk">[[</span>Life exten<span class="cursor"></span><span class="mk">]]</span></p>
+                      <p><span class="prov" title="Agent-written text follows (jesinia:ai provenance)">⋯ provenance</span> Pittsburgh applied this in 2019; maintenance spend rose 40% within two budgets.<span class="prov" title="End of agent-written text">⋯</span></p>
+                      <div class="backlinks"><b>Linked from</b><a href="#">Reading list 2026</a><a href="#">Funding models</a></div>
+                    </article>
+                  </div>
+                </div>
+                <div class="handle" aria-hidden="true"></div>
+                <div class="chat">
+                  <div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span><span style="color:var(--jx-fg-muted)">· this page</span><span class="sp"><button class="iconbtn" aria-label="New session">＋</button><button class="iconbtn" aria-label="Pop out chat">⧉</button><button class="iconbtn" aria-label="Collapse chat">⇥</button></span></div>
+                  <div class="transcript">
+                    <div class="msg u">What's the core claim, and does it match my Pittsburgh note?</div>
+                    <div class="tool">▸ kb.read "Notes/pittsburgh-budget.md" · 1 page</div>
+                    <div class="msg ai"><div class="who"><span class="rg claude">C</span><b>Claude</b> · 2 min ago</div><p>Maintenance loses because it's funded from the operating pool, which is cut first.</p><p>Your Pittsburgh note matches, but it doesn't record the life-extension rule that made the change stick.</p></div>
+                    <div class="msg u">Add that rule to the Pittsburgh note.</div>
+                    <div class="pending" role="group" aria-label="Pending change">
+                      <div class="who" style="margin:0"><span class="rg claude">C</span>Claude wants to edit <b>Notes/pittsburgh-budget.md</b></div>
+                      <div>Adds a "Life-extension rule" paragraph (4 lines) with a link back to this page.</div>
+                      <button class="btn g sm" style="justify-self:start">▸ Show changes</button>
+                      <div class="acts"><button class="btn p sm">Approve change</button><button class="btn s sm">Reject</button></div>
+                    </div>
+                  </div>
+                  <div class="composer"><div class="inp area"><span class="ph">Reply to Claude…</span></div><div class="hint"><span><kbd>↵</kbd> send · <kbd>⇧↵</kbd> new line</span><span>Replying rejects the pending change</span></div></div>
+                </div>
+              </div>
+            </div>
+            <div class="pop ac" role="listbox" aria-label="Link to page">
+              <div class="it on">Life-extension rule<small>Notes</small></div>
+              <div class="it">Life-cycle costing<small>Sources/Papers</small></div>
+              <div class="it new">＋ Create "Life exten…" in Notes/</div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280.</b> Title bar and app header are one 38 px strip. Compact file tree | always-editable page (caret is in the last paragraph, typing a <code>[[link]]</code> with autocomplete) | chat. "Saved" sits in the page bar.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Notes</span></div>
+          <div class="app" data-app="notes">
+            <div class="hdr"><a class="home" href="#" aria-label="Jesinia launcher"><span class="glyph-app"></span><span class="name">Notes</span></a><div class="mid"></div><div class="right"><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <nav class="side" style="border-right:0" data-density="compact" aria-label="Knowledge base">
+                <div class="search"><div class="inp"><span style="color:var(--jx-fg-muted)">⌕</span><span class="ph">Search the KB</span></div></div>
+                <div class="side-h">Files<span class="sp"><button class="iconbtn" aria-label="New note">＋</button></span></div>
+                <div class="scroll tree" style="font-size:var(--jx-text-base)">
+                  <div class="tn dir l0" style="height:36px"><span class="tw">▸</span><span class="nm">Daily</span><span class="ct">212</span></div>
+                  <div class="tn dir l0" style="height:36px"><span class="tw">▾</span><span class="nm">Notes</span><span class="ct">42</span></div>
+                  <div class="tn l1" style="height:36px"><span class="tw"></span><span class="nm">Funding models</span></div>
+                  <div class="tn l1" style="height:36px"><span class="tw"></span><span class="nm">How I take notes</span></div>
+                  <div class="tn l1" style="height:36px"><span class="tw"></span><span class="nm">Maintenance budgets in Pittsburgh</span><span class="mod"></span></div>
+                  <div class="tn l1" style="height:36px"><span class="tw"></span><span class="nm">Reading list 2026</span></div>
+                  <div class="tn dir l0" style="height:36px"><span class="tw">▸</span><span class="nm">Projects</span><span class="ct">17</span></div>
+                  <div class="tn dir l0" style="height:36px"><span class="tw">▾</span><span class="nm">Sources</span><span class="ct">118</span></div>
+                  <div class="tn l1" style="height:36px"><span class="tw"></span><span class="nm">On keeping a commonplace book</span></div>
+                  <div class="tn l1" style="height:36px"><span class="tw"></span><span class="nm">The quiet economics of maintenance</span></div>
+                  <div class="tn dir l0" style="height:36px"><span class="tw">▸</span><span class="nm">Templates</span><span class="ct">4</span></div>
+                </div>
+              </nav>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow: files.</b> The tree fills the screen with 36 px rows so they're easy to hit. Tapping a file opens the editor.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Notes</span></div>
+          <div class="app" data-app="notes">
+            <div class="hdr"><a class="home" href="#" aria-label="Back to files">‹</a><span class="name" style="font-size:var(--jx-text-base)">Quiet economics…</span><div class="mid"></div><div class="right"><span class="saved" style="font-size:var(--jx-text-xs);color:var(--jx-fg-muted)"><i></i>Saved</span><button class="iconbtn" aria-label="Open chat">💬</button></div></div>
+            <div></div>
+            <div class="body" style="grid-template-rows:1fr auto">
+              <div class="scroll editor"><article class="read">
+                <h1 style="font-size:var(--jx-text-read-lg);line-height:var(--jx-leading-read-lg)">The quiet economics of maintenance</h1>
+                <p>Most infrastructure fails not from neglect but from a budget model that rewards building over keeping.</p>
+                <p class="caretline">The fix was the same: let maintenance draw from the capital pool when it <span class="mk">**</span><b>extends an asset's life</b><span class="mk">**</span><span class="cursor"></span></p>
+              </article></div>
+              <div class="tb" role="toolbar" aria-label="Formatting" style="border-top:1px solid var(--jx-border);border-bottom:0;height:44px"><button class="iconbtn" aria-label="Heading">H</button><button class="iconbtn" aria-label="Bold"><b>B</b></button><button class="iconbtn" aria-label="Italic"><i>I</i></button><button class="iconbtn" aria-label="Wiki link">[[ ]]</button><button class="iconbtn" aria-label="Checklist">☐</button><button class="iconbtn" aria-label="Bulleted list">•</button><button class="iconbtn" aria-label="Hide keyboard">⌄</button></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow: editor.</b> The formatting toolbar sits above the keyboard. Chat opens as a full-height sheet from 💬.</figcaption>
+      </figure>
+    </div>
+    <ol class="notes">
+      <li><b>File tree</b> (compact density, 24 px rows): folders show page counts. ←→ collapse and expand, ↑↓ move, and Enter opens. "＋" creates a note in the selected folder with an inline name field. Dragging a file moves it; links are rewritten by <code>kb.*</code>, never silently. A small marigold dot marks files Claude changed that you haven't opened since.</li>
+      <li><b>No permanent toolbar</b> on desktop. Formatting uses Markdown shortcuts (<code>##</code>, <code>**</code>, <code>- [ ]</code>) and keys (⌘B, ⌘I, ⌘K for link while text is selected). A small floating toolbar appears over selected text. Narrow keeps a toolbar above the keyboard.</li>
+      <li><b>Always editable</b>, with no Read/Edit toggle. Markdown renders in place, and syntax markers (<code>##</code>, <code>**</code>, <code>[[ ]]</code>) appear only on the line holding the caret. Typing <code>[[</code> opens page autocomplete, including "Create". Undo works across the session (⌘Z / ⇧⌘Z).</li>
+      <li><b>Autosave</b>: the file is written about 1 s after you stop typing, and on blur or switching pages. The page bar shows "Editing…", then "Saved". The write is atomic and checks the base version, so an external change is caught (see states).</li>
+      <li><b>Front-matter</b> becomes a quiet properties line: the <code>id</code> is read-only, tags are editable badges, and "Properties ▸" opens the rest. <b>Provenance</b> comments (<code>jesinia:ai</code>) fold into small chips that can't be edited by accident. They mark the file, not the reading view (brief §8).</li>
+      <li><b>External editor</b> stays available under ⋯ ("Open in editor"), because the KB belongs to the files. Chat, pending writes, and Save note work as before.</li>
+    </ol>
+  </section>
+
+  <!-- ============ 2. Search results ============ -->
+  <section class="screen" aria-labelledby="s-search">
+    <h2 id="s-search">Search results</h2>
+    <p>Search runs from the field above the tree, and results open as a page in the wide middle column. The tree stays visible, so you can search and browse side by side. Results use compact density, three short lines per hit, built to be skimmed. Opening a hit replaces the results; ⌘[ goes back to them.</p>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>Notes · Search</span></div>
+          <div class="app" data-app="notes">
+            <div class="hdr"><a class="home" href="#" aria-label="Jesinia launcher"><span class="glyph-app"></span><span class="name">Notes</span></a><div class="mid"></div><div class="right"><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="cols notes-cols nochat">
+                <nav class="side" aria-label="Knowledge base" data-density="compact">
+                  <div class="search"><div class="inp" style="outline:var(--jx-focus-width) solid var(--jx-focus);outline-offset:var(--jx-focus-offset)"><span style="color:var(--jx-fg-muted)">⌕</span>maintenance<span class="cursor"></span><button class="iconbtn" style="margin-left:auto;width:20px;height:20px" aria-label="Clear search">×</button></div></div>
+                  <div class="side-h">Files<span class="sp"><button class="iconbtn" aria-label="New note">＋</button></span></div>
+                  <div class="scroll tree">
+                    <div class="tn dir l0"><span class="tw">▸</span><span class="nm">Daily</span><span class="ct">212</span></div>
+                    <div class="tn dir l0"><span class="tw">▾</span><span class="nm">Notes</span><span class="ct">42</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">Funding models</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">How I take notes</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">Maintenance budgets in Pittsburgh</span></div>
+                    <div class="tn l1"><span class="tw"></span><span class="nm">Reading list 2026</span></div>
+                    <div class="tn dir l0"><span class="tw">▸</span><span class="nm">Projects</span><span class="ct">17</span></div>
+                    <div class="tn dir l0"><span class="tw">▸</span><span class="nm">Sources</span><span class="ct">118</span></div>
+                    <div class="tn dir l0"><span class="tw">▸</span><span class="nm">Templates</span><span class="ct">4</span></div>
+                  </div>
+                </nav>
+                <div class="pane" style="grid-template-rows:auto 1fr" data-density="compact">
+                  <div class="page-bar"><b style="color:var(--jx-fg)">14 results</b><span>for “maintenance”</span><span class="sp"><span class="sort">In: All folders ▾</span><span class="sep" style="width:1px;height:14px;background:var(--jx-border);margin:0 8px"></span><span class="sort">Best match ▾</span></span></div>
+                  <div class="scroll results" role="listbox" aria-label="Search results">
+                    <div class="grp">Titles <span>3</span></div>
+                    <div class="hit on" role="option" aria-selected="true"><span class="ti">The quiet economics of <mark>maintenance</mark></span><span class="dt">3 d</span><span class="pa"><span class="fold">Sources</span><span class="badge fern">infrastructure</span><span class="badge marigold">economics</span><span class="n">6 matches</span></span><span class="sn">…a budget model that rewards building over keeping. <mark>Maintenance</mark> draws from the operating pool, which is cut first in every downturn…</span></div>
+                    <div class="hit" role="option"><span class="ti"><mark>Maintenance</mark> budgets in Pittsburgh</span><span class="dt">today</span><span class="pa"><span class="fold">Notes</span><span class="n">4 matches</span></span><span class="sn">The city moved upkeep into the capital pool in 2019. <mark>Maintenance</mark> spend rose 40% within two budgets…</span></div>
+                    <div class="hit" role="option"><span class="ti">Software <mark>maintenance</mark> as tending</span><span class="dt">Aug 12</span><span class="pa"><span class="fold">Notes</span><span class="badge plum">software</span><span class="n">2 matches</span></span><span class="sn">Kent Beck on tidying as a habit rather than a project; small, continuous <mark>maintenance</mark> beats rewrites…</span></div>
+                    <div class="grp">Content <span>11</span></div>
+                    <div class="hit" role="option"><span class="ti">Funding models</span><span class="dt">1 w</span><span class="pa"><span class="fold">Notes</span><span class="n">3 matches</span></span><span class="sn">Three ways to pay for <mark>maintenance</mark>: ring-fenced, pooled, and outcome-based. Pooled is what Pittsburgh did…</span></div>
+                    <div class="hit" role="option"><span class="ti">Why bridges fall down</span><span class="dt">2 w</span><span class="pa"><span class="fold">Sources</span><span class="badge fern">infrastructure</span><span class="n">2 matches</span></span><span class="sn">…deferred <mark>maintenance</mark> compounds like debt: each skipped year raises the cost of the next repair…</span></div>
+                    <div class="hit" role="option"><span class="ti">Reading list 2026</span><span class="dt">Sep 30</span><span class="pa"><span class="fold">Notes</span><span class="n">1 match</span></span><span class="sn">…Stewart Brand, The <mark>Maintenance</mark> Race; How Buildings Learn…</span></div>
+                    <div class="hit" role="option"><span class="ti">2026-10-02</span><span class="dt">Oct 2</span><span class="pa"><span class="fold">Daily</span><span class="n">1 match</span></span><span class="sn">Call with county staff about the <mark>maintenance</mark> backlog; they want a one-page summary by Friday…</span></div>
+                    <div class="hit" role="option"><span class="ti">How Buildings Learn</span><span class="dt">Jul 8</span><span class="pa"><span class="fold">Sources › Papers</span><span class="n">1 match</span></span><span class="sn">…low-road buildings invite <mark>maintenance</mark> and change by their users…</span></div>
+                    <div class="hit" role="option"><span class="ti">Jesinia roadmap</span><span class="dt">Oct 1</span><span class="pa"><span class="fold">Projects</span><span class="n">1 match</span></span><span class="sn">…keep the <mark>maintenance</mark> cost of each app low; shared services over copies…</span></div>
+                    <div class="hit" role="option"><span class="ti">Bridge inspection cadence</span><span class="dt">Jun 19</span><span class="pa"><span class="fold">Sources › Papers</span><span class="n">1 match</span></span><span class="sn">…biennial inspections miss fast-moving defects; <mark>maintenance</mark> crews see them first…</span></div>
+                    <div class="grp" style="text-transform:none;letter-spacing:0;font-weight:400"><button class="btn g sm">Show 4 more</button></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop.</b> Tree on the left, results across the middle. Grouped Titles, then Content. Each hit has title and age, then folder, tags, and match count, then one long snippet line.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Notes</span></div>
+          <div class="app" data-app="notes">
+            <div class="hdr"><a class="home" href="#" aria-label="Jesinia launcher"><span class="glyph-app"></span><span class="name">Notes</span></a><div class="mid"></div><div class="right"><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <nav class="side" style="border-right:0" data-density="compact" aria-label="Knowledge base">
+                <div class="search"><div class="inp"><span style="color:var(--jx-fg-muted)">⌕</span>maintenance<button class="iconbtn" style="margin-left:auto;width:20px;height:20px" aria-label="Clear search">×</button></div></div>
+                <div class="side-h">14 results<span class="sp"><span class="sort">Best match ▾</span></span></div>
+                <div class="scroll" role="listbox" aria-label="Search results">
+                  <div class="grp">Titles <span>3</span></div>
+                  <div class="hit" style="padding-block:8px"><span class="ti">The quiet economics of <mark>maintenance</mark></span><span class="dt">3 d</span><span class="pa"><span class="fold">Sources</span><span class="n">6 matches</span></span><span class="sn">…<mark>Maintenance</mark> draws from the operating pool…</span></div>
+                  <div class="hit" style="padding-block:8px"><span class="ti"><mark>Maintenance</mark> budgets in Pittsburgh</span><span class="dt">today</span><span class="pa"><span class="fold">Notes</span><span class="n">4 matches</span></span><span class="sn">…<mark>Maintenance</mark> spend rose 40%…</span></div>
+                  <div class="hit" style="padding-block:8px"><span class="ti">Software <mark>maintenance</mark> as tending</span><span class="dt">Aug</span><span class="pa"><span class="fold">Notes</span></span><span class="sn">Kent Beck: tidying as a habit…</span></div>
+                  <div class="grp">Content <span>11</span></div>
+                  <div class="hit" style="padding-block:8px"><span class="ti">Funding models</span><span class="dt">1 w</span><span class="pa"><span class="fold">Notes</span><span class="n">3 matches</span></span><span class="sn">Three ways to pay for <mark>maintenance</mark>…</span></div>
+                  <div class="hit" style="padding-block:8px"><span class="ti">Why bridges fall down</span><span class="dt">2 w</span><span class="pa"><span class="fold">Sources</span></span><span class="sn">…deferred <mark>maintenance</mark> compounds…</span></div>
+                </div>
+              </nav>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow.</b> Results replace the tree, with the same three-line hit and taller rows for touch.</figcaption>
+      </figure>
+    </div>
+    <ol class="notes">
+      <li><b>Three lines per hit</b>: (1) title in medium weight with the match marked, age right-aligned in tabular figures; (2) folder path, tags, and match count, all muted; (3) one snippet line around the best match. In compact density about 14 hits fit on a laptop screen.</li>
+      <li><b>Grouping and scope</b>: title matches first, then content matches, each with a count. "In" limits to a folder (also <code>in:Notes</code>), and sort is Best match, Recently edited, or Folder. Syntax: <code>title:</code>, <code>tag:</code>.</li>
+      <li><b>Keyboard</b>: ↓ moves from the field into the results, ↵ opens, ⌘↵ opens in a new window, and Escape clears the search and returns to the open page. ⌘F focuses the field. Notes shows no second search box: ⌘K still opens the command palette (commands and jumping to other apps) from the keyboard.</li>
+    </ol>
+  </section>
+
+  <!-- ============ 3. Save note ============ -->
+  <section class="screen" aria-labelledby="s-save">
+    <h2 id="s-save">Save note</h2>
+    <p>"Save note" turns a conversation into a new page: your text plus the agent text you choose to keep. It's your own action, so it writes without a pending-write confirmation (spec §4.3). In the file, kept agent text is wrapped in hidden <code>jesinia:ai</code> provenance comments.</p>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop relative">
+          <div class="titlebar"><i></i><i></i><i></i><span>Notes · The quiet economics of maintenance</span></div>
+          <div class="app relative" data-app="notes">
+            <div class="hdr"><a class="home" href="#" aria-label="Jesinia launcher"><span class="glyph-app"></span><span class="name">Notes</span></a><div class="mid"></div><div class="right"><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"><div class="cols notes-cols"><div class="side"></div><div class="pane"></div><div class="handle"></div><div class="chat"></div></div></div>
+            <div class="scrim"></div>
+            <div class="pop modal" role="dialog" aria-labelledby="save-h">
+              <div class="mh" id="save-h">Save note</div>
+              <div class="mb">
+                <div class="field"><label for="nt">Title</label><div class="inp" id="nt">Why maintenance loses the budget fight</div></div>
+                <div class="field"><label for="nb">Your note</label><div class="inp area" id="nb" style="min-height:84px">Capital vs operating pools explains Pittsburgh too. The life-extension rule is the part worth copying for the county proposal.</div></div>
+                <div class="field"><span style="font-weight:500">From the conversation</span>
+                  <div class="keep">
+                    <label><span class="cb on">✓</span><span>Maintenance loses because it's funded from the operating pool, which is cut first.</span></label>
+                    <label class="off"><span class="cb"></span><span>Your Pittsburgh note matches, but it doesn't record the life-extension rule…</span></label>
+                  </div>
+                </div>
+              </div>
+              <div class="mf"><span class="dest">Saves to <code>Notes/why-maintenance-loses.md</code> · links back to this page</span><button class="btn s">Cancel</button><button class="btn p">Save note</button></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Save note dialog.</b> Title, your own text, and the agent messages to keep. The footer shows the destination. The new page then opens in the editor and appears in the tree.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ============ 4. States ============ -->
+  <section class="screen" aria-labelledby="s-states">
+    <h2 id="s-states">States</h2>
+    <div class="states">
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div></div><div></div>
+            <div class="body" style="grid-template-rows:auto auto 1fr">
+              <div class="page-bar"><span class="crumb">Sources <span class="mk">›</span> <b>quiet-economics.md</b></span><span class="saved dirty"><i></i>Editing…</span></div>
+              <div class="ibar"><span><b>! This file changed on disk</b> while you were editing (another app or a sync).</span><span class="act"><button class="btn s sm">Compare</button><button class="btn s sm">Keep mine</button><button class="btn g sm">Use theirs</button></span></div>
+              <div class="scroll editor"><div class="read"><p>The fix in all three cities was the same: let maintenance draw from the capital pool when it extends an asset's life.</p></div></div>
+            </div></div></div>
+        <figcaption><b>Changed on disk.</b> Autosave stops; nothing is overwritten until you choose. "Keep mine" writes your version (the old one stays in git history), and "Compare" opens the view below.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div></div><div></div>
+            <div class="body" style="grid-template-rows:auto 1fr auto">
+              <div class="page-bar"><b style="color:var(--jx-fg)">Compare</b><span>quiet-economics.md</span></div>
+              <div class="cmp scroll"><div><div class="lbl">Yours</div>…when it <b>extends an asset's life</b>.<br><span style="background:var(--jx-success-bg)">See [[Life-extension rule]].</span></div><div><div class="lbl">On disk · 14:41</div>…when it <b>extends an asset's life</b>.<br><span style="background:var(--jx-danger-bg)">Edited in iA Writer.</span></div></div>
+              <div class="page-bar" style="border-top:1px solid var(--jx-border);border-bottom:0"><span class="sp"><button class="btn g sm">Cancel</button><button class="btn s sm">Use theirs</button><button class="btn p sm">Keep mine</button></span></div>
+            </div></div></div>
+        <figcaption><b>Compare.</b> Side by side, with differences tinted. Choosing a side resolves the conflict and resumes autosave.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div></div><div></div>
+            <div class="body"><div class="cols notes-cols"><div class="pane"><div class="scroll editor"><div class="read"><p class="caretline">…extends an asset's life. See [[Life exten<span class="cursor"></span></p></div></div></div>
+              <div class="chat" style="border-left:1px solid var(--jx-border)"><div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span></div><div class="transcript">
+                <div class="pending"><div class="who" style="margin:0"><span class="rg claude">C</span>Claude wants to edit <b>this page</b></div><div>Adds a summary paragraph at the top.</div><div style="font-size:var(--jx-text-sm);color:var(--jx-fg-muted)">You're editing this page. Approving merges Claude's change into your text, and you can undo it with ⌘Z.</div><div class="acts"><button class="btn p sm">Approve change</button><button class="btn s sm">Reject</button></div></div>
+              </div></div></div></div></div></div>
+        <figcaption><b>Pending write on the open page.</b> Approving applies the change as one undoable edit at the agent's anchor, so your unsaved typing is never lost.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div></div><div></div>
+            <div class="body"><div class="cols" style="grid-template-columns:260px 1fr"><nav class="side" data-density="compact" aria-label="Knowledge base"><div class="search"><div class="inp"><span class="ph">Search the KB</span></div></div><div class="side-h">Files</div><div class="tree">
+              <div class="tn dir l0"><span class="tw">▾</span><span class="nm">Notes</span><span class="ct">42</span></div>
+              <div class="tn l1 newfile on"><span class="tw"></span><span class="nm"><span class="inp">County proposal<span class="cursor"></span></span></span></div>
+              <div class="tn l1"><span class="tw"></span><span class="nm">Funding models</span></div>
+              <div class="tn l1"><span class="tw"></span><span class="nm">How I take notes</span></div>
+            </div></nav><div class="pane"><div class="empty" style="align-self:center"><span>↵ creates <code>Notes/county-proposal.md</code> and opens it</span></div></div></div></div></div></div>
+        <figcaption><b>New note</b> from the tree: an inline name field in the selected folder. Enter creates the file with generated front-matter (id, title) and puts the caret in the body.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div></div><div></div>
+            <div class="body"><div class="cols notes-cols"><div class="pane"><div class="scroll editor"><div class="read"><p>Capital budgets and operating budgets are separate pools…</p></div></div></div>
+              <div class="chat" style="border-left:1px solid var(--jx-border)"><div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span></div><div class="transcript">
+                <div class="msg u">What's the core claim?</div>
+                <div class="msg ai" aria-busy="true"><div class="who"><span class="rg claude">C</span><b>Claude</b> · responding</div>Maintenance loses because it's funded from the operating pool, which<span class="cursor"></span></div>
+              </div><div class="composer"><div class="inp area" style="min-height:40px"><span class="ph">Reply…</span></div></div></div></div></div></div></div>
+        <figcaption><b>Streaming.</b> Quiet cursor and <code>aria-busy</code>; screen readers hear "Claude is responding", then the finished message.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div></div><div></div>
+            <div class="body"><div class="cols notes-cols"><div class="pane"><div class="scroll editor"><div class="read"><p>Capital budgets and operating budgets are separate pools…</p></div></div></div>
+              <div class="chat" style="border-left:1px solid var(--jx-border)"><div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span></div><div class="transcript">
+                <div class="msg u">Compare it with my Pittsburgh note.</div>
+                <div class="msg ai"><div class="who"><span class="rg claude">C</span><b>Claude</b></div>Your Pittsburgh note matches the…</div>
+                <div class="msg err"><b>× Claude stopped:</b> the CLI is logged out. Run <code>claude login</code>, then retry. <div style="margin-top:6px"><button class="btn s sm">Retry</button></div></div>
+              </div></div></div></div></div></div>
+        <figcaption><b>Error mid-stream.</b> The partial answer stays, and Retry resumes the session (spec §13).</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div><div class="right"><span class="sdot minor"></span></div></div><div></div>
+            <div class="body"><div class="cols notes-cols"><div class="pane"><div class="scroll editor"><div class="read"><p>Capital budgets and operating budgets are separate pools…</p></div></div></div>
+              <div class="chat" style="border-left:1px solid var(--jx-border)"><div class="chat-h"><span class="who-pick"><span class="rg codex">X</span>Codex ▾</span></div>
+                <div class="inline-banner"><span><b>! Codex isn't available:</b> not logged in. Run <code>codex login</code>, or switch to Claude.</span><span class="row-inline"><button class="btn s sm">Switch to Claude</button><button class="btn g sm">Check again</button></span></div>
+                <div></div></div></div></div></div></div>
+        <figcaption><b>Runner unavailable.</b> Shown inline in the chat pane, and the header dot turns amber (minor). Editing is unaffected.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div></div><div></div>
+            <div class="body"><div class="cols notes-cols"><div class="pane"><div class="scroll editor"><div class="read"><p>Capital budgets and operating budgets are separate pools…</p></div></div></div>
+              <div class="chat" style="border-left:1px solid var(--jx-border)"><div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude</span><span class="badge neutral" style="margin-left:6px">In terminal</span></div><div class="transcript">
+                <div class="attach"><span class="rg claude" style="width:16px;height:16px;font-size:10px">C</span>Continued in Claude Code · live</div>
+                <div class="tool">▸ kb.read "Notes/funding-models.md"</div>
+                <div class="msg ai"><div class="who"><span class="rg claude">C</span><b>Claude</b> · from terminal</div>I've compared the three funding models…<span class="cursor"></span></div>
+              </div><div class="composer"><div class="inp area" style="min-height:40px;opacity:.6"><span class="ph">Session is active in Claude Code</span></div></div></div></div></div></div></div>
+        <figcaption><b>Terminal attached</b> (<code>agents.session_attach</code>). Activity appears live, and the composer is disabled while the terminal holds the session.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div><div class="right"><span class="sdot minor"></span></div></div>
+            <div class="strip"><b>! Sync paused:</b> merge conflict in <code>Notes/rss.md</code>. Resolve it, then choose Resume. <span class="act"><button class="btn s sm">Resume</button></span></div>
+            <div class="body"><div class="cols" style="grid-template-columns:240px 1fr"><nav class="side" data-density="compact" aria-label="Knowledge base"><div class="search"><div class="inp"><span class="ph">Search the KB</span></div></div><div class="side-h">Files</div><div class="tree" style="display:grid;gap:8px;padding:var(--jx-space-3)"><span class="skel w60"></span><span class="skel w80"></span><span class="skel w40"></span><span class="skel w60"></span></div></nav><div class="pane"><div class="editor"><span class="skel w60" style="height:22px;margin-bottom:14px"></span><span class="skel w90" style="margin-bottom:8px"></span><span class="skel w80"></span></div></div></div></div></div></div>
+        <figcaption><b>Sync paused + loading.</b> The blocking strip appears in every app, and editing continues locally. Tree and page show skeletons while loading.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half"><div class="titlebar"><i></i><i></i><i></i><span>Notes</span></div>
+          <div class="app" data-app="notes"><div class="hdr"><span class="glyph-app"></span><span class="name">Notes</span><div class="mid"></div></div><div></div>
+            <div class="body"><div class="cols" style="grid-template-columns:260px 1fr"><nav class="side" data-density="compact" aria-label="Knowledge base"><div class="search"><div class="inp">⌕ zettelkasten</div></div><div class="side-h">0 results</div><div class="empty" style="padding:var(--jx-space-5) var(--jx-space-3)"><span>No pages match "zettelkasten".</span><span style="font-size:var(--jx-text-sm)">Try fewer words, or <code>title:</code> to search titles only.</span><button class="btn s sm">Create "Zettelkasten" in Notes/</button></div></nav><div class="pane"></div></div></div></div></div>
+        <figcaption><b>No results.</b> Says what was searched, gives one search tip, and offers to create the page.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half" style="width:420px"><div class="titlebar"><i></i><i></i><i></i><span>Chat · Notes · The quiet economics…</span></div>
+          <div class="app" data-app="notes"><div class="hdr" style="height:40px"><span class="glyph-app" style="width:18px;height:18px"></span><span class="name" style="font-size:var(--jx-text-base)">Chat</span><span style="color:var(--jx-fg-muted);font-size:var(--jx-text-sm)">· Quiet economics…</span><div class="mid"></div><div class="right"><button class="btn g sm">Dock back</button></div></div><div></div>
+            <div class="body"><div class="chat"><div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span></div><div class="transcript"><div class="msg u">What's the core claim?</div><div class="msg ai"><div class="who"><span class="rg claude">C</span><b>Claude</b></div>Maintenance loses because it's funded from the operating pool…</div></div><div class="composer"><div class="inp area" style="min-height:40px"><span class="ph">Reply…</span></div></div></div></div></div></div>
+        <figcaption><b>Popped out</b> (shell decision 2). Its own window, same session, in sage chrome so Mission Control can identify it. "Dock back" returns it to the rail.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+</body>
+</html>

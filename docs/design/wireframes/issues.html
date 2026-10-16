@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia Issues Wireframes</title>
+<!-- Preview only: the apps self-host these faces via @fontsource (kit §2). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="wire.css">
+<script src="wire.js" defer></script>
+<style>
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* header controls */
+.hdr .tabs { border-bottom: 0; padding: 0; align-self: stretch; }
+.hdr .tab { height: 48px; font-size: var(--jx-text-sm); }
+.hdr .filter { height: 28px; width: 260px; font-size: var(--jx-text-sm); }
+.hdr .sep { width: 1px; height: 20px; background: var(--jx-border); flex: none; }
+/* board: the horizontal-column silhouette */
+.board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(214px, 1fr); gap: var(--jx-space-3); padding: var(--jx-space-3) var(--jx-space-4); overflow-x: auto; min-height: 0; height: 100%; }
+.col { background: var(--jx-surface-sunken); border-radius: var(--jx-radius-lg); display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+.col-h { display: flex; align-items: center; gap: 6px; padding: 0 var(--jx-space-2) 0 var(--jx-space-3); height: 36px; font-size: var(--jx-text-sm); }
+.col-h b { font-weight: 600; }
+.col-h .iconbtn { margin-left: auto; color: var(--jx-fg-muted); width: 24px; height: 24px; }
+.col-b { overflow: auto; min-height: 0; padding: 0 var(--jx-space-2) var(--jx-space-2); display: grid; gap: var(--jx-space-2); align-content: start; }
+.col-b .more { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); text-align: center; padding: 2px; }
+.card { background: var(--jx-surface); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); padding: var(--jx-row-pad-y) var(--jx-row-pad-x) 6px; display: grid; gap: 4px; font-size: var(--jx-row-text); line-height: var(--jx-row-leading); }
+.card.sel { background: var(--jx-row-bg-selected); border-color: var(--jx-accent); }
+.card.sel .ct { font-weight: var(--jx-row-title-weight-selected); }
+.card .num, .num { font-family: var(--jx-font-mono); font-size: var(--jx-text-xs); color: var(--jx-fg-muted); }
+.card .cm { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; font-size: var(--jx-text-xs); color: var(--jx-row-meta-fg); }
+.card .cm .sp, .meta-end { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; }
+.av { width: 18px; height: 18px; border-radius: 50%; background: var(--jx-surface-hover); border: 1px solid var(--jx-border-strong); display: inline-grid; place-items: center; font-size: 9px; font-weight: 600; color: var(--jx-fg); flex: none; }
+.av.none { border-style: dashed; color: var(--jx-fg-subtle); background: transparent; }
+.pr { font-size: var(--jx-text-xs); color: var(--jx-success); }
+/* triage drawer */
+.drawer { display: grid; grid-template-rows: auto minmax(0, 1fr) 286px; border-left: 1px solid var(--jx-border); background: var(--jx-surface); min-height: 0; }
+.dr-h { padding: var(--jx-space-3) var(--jx-space-4) var(--jx-space-2); border-bottom: 1px solid var(--jx-border); display: grid; gap: 4px; }
+.dr-h .top { display: flex; gap: 6px; align-items: center; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.dr-h .top .iconbtn { margin-left: auto; }
+.dr-h h3 { margin: 0; font-size: var(--jx-text-lg); line-height: var(--jx-leading-lg); font-weight: 600; font-variation-settings: "opsz" 36; }
+.dr-b { overflow: auto; min-height: 0; padding: var(--jx-space-3) var(--jx-space-4); display: grid; gap: var(--jx-space-3); align-content: start; }
+.excerpt { margin: 0; font-size: var(--jx-text-sm); color: var(--jx-fg); border-left: 2px solid var(--jx-border-strong); padding-left: var(--jx-space-3); }
+.kicker { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.kicker .sp { margin-left: auto; text-transform: none; letter-spacing: 0; }
+.tl { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.tl li { display: flex; gap: 8px; align-items: baseline; }
+.tl li::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--jx-border-strong); flex: none; transform: translateY(-1px); }
+.tl li b { color: var(--jx-fg); font-weight: 500; }
+.tl .when { margin-left: auto; white-space: nowrap; font-size: var(--jx-text-xs); }
+.sugs { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); overflow: hidden; }
+.sug { display: grid; grid-template-columns: 88px 1fr auto; gap: 2px 10px; align-items: center; padding: var(--jx-row-pad-y) var(--jx-row-pad-x); border-bottom: 1px solid var(--jx-row-divider); font-size: var(--jx-row-text); line-height: var(--jx-row-leading); background: var(--jx-row-bg); }
+.sug:last-child { border-bottom: 0; }
+.sug .k { color: var(--jx-fg-muted); font-size: var(--jx-text-xs); }
+.sug .v { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.sug .why { grid-column: 2 / 3; color: var(--jx-row-meta-fg); font-size: var(--jx-text-xs); }
+.sug .acts { grid-row: span 2; display: flex; gap: 4px; }
+.sug.done { background: var(--jx-success-bg); }
+.sug.done .acts { font-size: var(--jx-text-xs); color: var(--jx-success); }
+.drawer .chat { border-top: 1px solid var(--jx-border); }
+.drawer .msg { font-size: var(--jx-text-sm); }
+/* list view */
+.lv { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; }
+.bulk { display: flex; align-items: center; gap: 8px; padding: 6px var(--jx-space-4); background: var(--jx-accent-subtle); border-bottom: 1px solid var(--jx-border); font-size: var(--jx-text-sm); }
+.bulk b { font-weight: 600; }
+.bulk .sp { margin-left: auto; color: var(--jx-fg-muted); font-size: var(--jx-text-xs); }
+.irow { grid-template-columns: 20px 52px minmax(0, 1fr) 200px 40px 48px; align-items: center; gap: 0 10px; }
+.irow .lb { display: flex; gap: 4px; overflow: hidden; }
+.irow .m { text-align: right; }
+.irow input { margin: 0; accent-color: var(--jx-accent); }
+.ihead { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); font-weight: 600; background: var(--jx-surface-sunken); }
+/* detail */
+.detail { padding: var(--jx-space-4) var(--jx-space-5); display: grid; gap: var(--jx-space-3); align-content: start; }
+.detail h3 { margin: 0; font-size: var(--jx-text-xl); line-height: var(--jx-leading-xl); font-weight: 600; font-variation-settings: "opsz" 48; }
+.detail .meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.cmt { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); }
+.cmt .ch { padding: 4px var(--jx-space-3); border-bottom: 1px solid var(--jx-border); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); display: flex; gap: 6px; align-items: center; background: var(--jx-surface-sunken); }
+.cmt .ch b { color: var(--jx-fg); font-weight: 500; }
+.cmt p { margin: 0; padding: var(--jx-space-2) var(--jx-space-3); font-size: var(--jx-text-sm); }
+.ev { font-size: var(--jx-text-sm); color: var(--jx-fg-muted); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding-left: var(--jx-space-3); }
+.ev b { color: var(--jx-fg); font-weight: 500; }
+/* narrow */
+.frame.narrow .board-n { display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+.frame.narrow .tabs { overflow-x: auto; }
+.frame.narrow .tab { font-size: var(--jx-text-sm); }
+.frame.narrow .col-b { padding: var(--jx-space-3); gap: var(--jx-space-2); }
+.frame.narrow .card { padding: 8px 10px; }
+.frame.narrow .hdr { gap: 8px; padding: 0 var(--jx-space-3); }
+.sheet { position: absolute; inset: 40px 0 0; background: var(--jx-surface); border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0; box-shadow: var(--jx-panel-raised-shadow); z-index: 5; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--jx-border-strong); margin: 8px auto 0; }
+.sheet .dr-h { padding-inline: var(--jx-space-4); }
+.sheet .sug { grid-template-columns: 1fr auto; }
+.sheet .sug .k { grid-column: 1 / 2; }
+.sheet .sug .why { grid-column: 1 / 2; }
+.sheet .sug .acts { grid-row: 1 / span 3; grid-column: 2; }
+.sheet-chat { border-top: 1px solid var(--jx-border); padding: var(--jx-space-2) var(--jx-space-3) var(--jx-space-3); display: grid; gap: 6px; background: var(--jx-bg); }
+.sheet-chat .chat-h { padding: 0; height: 28px; border: 0; }
+/* half frames */
+.frame.half .board { grid-auto-columns: minmax(150px, 1fr); padding: var(--jx-space-3); gap: var(--jx-space-2); }
+.frame.half .hdr .filter { width: 150px; }
+.frame.half .kbtn { min-width: 0; }
+.frame.half .irow { grid-template-columns: 20px 44px minmax(0, 1fr) 120px 40px; }
+.prog { display: grid; gap: 6px; padding: var(--jx-space-3) var(--jx-space-4); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); font-size: var(--jx-text-sm); }
+.prog .bar { height: 4px; border-radius: 2px; background: var(--jx-surface-sunken); overflow: hidden; }
+.prog .bar i { display: block; height: 100%; width: 66%; background: var(--jx-accent); }
+.prog .row-inline .sp { margin-left: auto; display: flex; gap: 6px; }
+.muted-board { opacity: .5; }
+.ok { color: var(--jx-success); }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>Issues</h1>
+      <p><code>/issues</code>. Product screen at lower fidelity, built from real components; it informs the Issues spec later. Issues runs in compact density and is the one Jesinia app shaped like horizontal columns: a board you triage with an agent. Chat lives inside the triage drawer (shell decision 2) instead of a separate rail.</p>
+    </div>
+    <div class="row-inline">
+      <nav class="doc-nav" aria-label="Wireframes"><a href="README.md">Index</a><a href="launcher.html">Launcher</a><a href="settings.html">Settings</a><a href="notes.html">Notes</a><a href="rss.html">RSS</a><a href="review.html">Review</a><a href="issues.html">Issues</a><a href="overview.html">Mission Control</a></nav>
+      <button class="theme-toggle" type="button">Theme: system</button>
+    </div>
+  </header>
+
+  <!-- ===================== BOARD ===================== -->
+  <section class="screen" aria-labelledby="s-board">
+    <h2 id="s-board">Board</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues · dalbrecht/jesinia</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid">
+                <span class="sep"></span>
+                <button class="btn s sm" type="button">dalbrecht/jesinia ▾</button>
+                <div class="tabs" role="tablist" aria-label="View"><span class="tab on" role="tab" aria-selected="true">Board</span><span class="tab" role="tab" aria-selected="false">List</span></div>
+                <label class="vh" for="flt-board">Filter issues</label>
+                <input class="inp filter" id="flt-board" type="search" placeholder="Filter: label, assignee, text">
+              </div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot" title="All good"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="board" aria-label="Board columns">
+                <div class="col">
+                  <div class="col-h"><b>Triage</b><span class="badge neutral">4</span><button class="iconbtn" type="button" aria-label="New issue in Triage">+</button></div>
+                  <div class="col-b">
+                    <div class="card"><div class="ct"><span class="num">#412</span> Sync pauses forever after a rebase conflict</div><div class="cm"><span class="av none" title="Unassigned">?</span><span class="sp">2h</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#411</span> Feeds with CDATA titles show raw tags</div><div class="cm"><span class="badge marigold">rss</span><span class="sp"><span class="av none" title="Unassigned">?</span>5h</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#409</span> ⌘K palette loses focus after closing a sheet</div><div class="cm"><span class="badge plum">ui</span><span class="sp"><span class="av none" title="Unassigned">?</span>1d</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#408</span> Codex still shows "not logged in" after <code>codex login</code></div><div class="cm"><span class="badge neutral">runner</span><span class="sp"><span class="av none" title="Unassigned">?</span>2d</span></div></div>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="col-h"><b>Backlog</b><span class="badge neutral">12</span><button class="iconbtn" type="button" aria-label="New issue in Backlog">+</button></div>
+                  <div class="col-b">
+                    <div class="card"><div class="ct"><span class="num">#377</span> Sync stalls when cycle.py hits a dirty index</div><div class="cm"><span class="badge clay">bug</span><span class="badge cornflower">kbsync</span><span class="sp"><span class="av">DA</span>3w</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#366</span> Export a note as PDF</div><div class="cm"><span class="badge fern">enhancement</span><span class="sp"><span class="av none" title="Unassigned">?</span>4w</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#351</span> Remember pane widths per app</div><div class="cm"><span class="badge plum">ui</span><span class="sp"><span class="av">DA</span>5w</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#340</span> Keyboard shortcut cheat sheet in ⌘K</div><div class="cm"><span class="badge plum">ui</span><span class="badge fern">enhancement</span><span class="sp">6w</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#333</span> OPML import skips nested folders</div><div class="cm"><span class="badge marigold">rss</span><span class="badge clay">bug</span><span class="sp"><span class="av">CB</span>7w</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#329</span> Show the last sync error in Settings</div><div class="cm"><span class="badge cornflower">kbsync</span><span class="sp">7w</span></div></div>
+                    <div class="more">6 more</div>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="col-h"><b>In progress</b><span class="badge neutral">3</span><button class="iconbtn" type="button" aria-label="New issue in In progress">+</button></div>
+                  <div class="col-b">
+                    <div class="card"><div class="ct"><span class="num">#398</span> Compact density tokens for Issues</div><div class="cm"><span class="badge plum">ui</span><span class="sp"><span class="av">DA</span>4d</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#392</span> Review narrative collapses when the window is narrow</div><div class="cm"><span class="badge clay">bug</span><span class="sp"><span class="av">DA</span>6d</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#388</span> KB index skips files that start with a BOM</div><div class="cm"><span class="badge clay">bug</span><span class="sp"><span class="av">CB</span>1w</span></div></div>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="col-h"><b>In review</b><span class="badge neutral">2</span><button class="iconbtn" type="button" aria-label="New issue in In review">+</button></div>
+                  <div class="col-b">
+                    <div class="card"><div class="ct"><span class="num">#401</span> Settings: Git sync section</div><div class="cm"><span class="badge cornflower">kbsync</span><span class="pr">PR #402</span><span class="sp"><span class="av">DA</span>2d</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#395</span> Chat pop-out keeps the runner choice</div><div class="cm"><span class="badge neutral">runner</span><span class="pr">PR #400</span><span class="sp"><span class="av">DA</span>3d</span></div></div>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="col-h"><b>Done</b><span class="badge neutral">7 this week</span><button class="iconbtn" type="button" aria-label="New issue in Done">+</button></div>
+                  <div class="col-b">
+                    <div class="card"><div class="ct"><span class="num">#390</span> Launcher status strip</div><div class="cm"><span class="badge plum">ui</span><span class="sp"><span class="av">DA</span>1d</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#384</span> Theme toggle follows the system setting</div><div class="cm"><span class="badge plum">ui</span><span class="sp"><span class="av">DA</span>2d</span></div></div>
+                    <div class="card"><div class="ct"><span class="num">#381</span> Feed refresh backs off on 429</div><div class="cm"><span class="badge marigold">rss</span><span class="sp"><span class="av">CB</span>4d</span></div></div>
+                    <div class="more">4 more</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280. Board.</b> Five status columns side by side, each with a count. Compact cards show number, title, label badges, assignee initials, and age. Triage cards have no labels or assignee yet, which is the point of triage.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues · dalbrecht/jesinia</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid">
+                <span class="sep"></span>
+                <button class="btn s sm" type="button">dalbrecht/jesinia ▾</button>
+                <div class="tabs" role="tablist" aria-label="View"><span class="tab on" role="tab" aria-selected="true">Board</span><span class="tab" role="tab" aria-selected="false">List</span></div>
+                <label class="vh" for="flt-drawer">Filter issues</label>
+                <input class="inp filter" id="flt-drawer" type="search" placeholder="Filter: label, assignee, text">
+              </div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot" title="All good"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="cols" style="grid-template-columns: minmax(0, 1fr) 400px">
+                <div class="board" aria-label="Board columns">
+                  <div class="col">
+                    <div class="col-h"><b>Triage</b><span class="badge neutral">4</span><button class="iconbtn" type="button" aria-label="New issue in Triage">+</button></div>
+                    <div class="col-b">
+                      <div class="card sel" aria-current="true"><div class="ct"><span class="num">#412</span> Sync pauses forever after a rebase conflict</div><div class="cm"><span class="av none" title="Unassigned">?</span><span class="sp">2h</span></div></div>
+                      <div class="card"><div class="ct"><span class="num">#411</span> Feeds with CDATA titles show raw tags</div><div class="cm"><span class="badge marigold">rss</span><span class="sp">5h</span></div></div>
+                      <div class="card"><div class="ct"><span class="num">#409</span> ⌘K palette loses focus after closing a sheet</div><div class="cm"><span class="badge plum">ui</span><span class="sp">1d</span></div></div>
+                      <div class="card"><div class="ct"><span class="num">#408</span> Codex still shows "not logged in" after login</div><div class="cm"><span class="badge neutral">runner</span><span class="sp">2d</span></div></div>
+                    </div>
+                  </div>
+                  <div class="col">
+                    <div class="col-h"><b>Backlog</b><span class="badge neutral">12</span><button class="iconbtn" type="button" aria-label="New issue in Backlog">+</button></div>
+                    <div class="col-b">
+                      <div class="card"><div class="ct"><span class="num">#377</span> Sync stalls when cycle.py hits a dirty index</div><div class="cm"><span class="badge clay">bug</span><span class="badge cornflower">kbsync</span><span class="sp"><span class="av">DA</span>3w</span></div></div>
+                      <div class="card"><div class="ct"><span class="num">#366</span> Export a note as PDF</div><div class="cm"><span class="badge fern">enhancement</span><span class="sp">4w</span></div></div>
+                      <div class="card"><div class="ct"><span class="num">#351</span> Remember pane widths per app</div><div class="cm"><span class="badge plum">ui</span><span class="sp"><span class="av">DA</span>5w</span></div></div>
+                      <div class="card"><div class="ct"><span class="num">#340</span> Keyboard shortcut cheat sheet in ⌘K</div><div class="cm"><span class="badge plum">ui</span><span class="sp">6w</span></div></div>
+                    </div>
+                  </div>
+                  <div class="col">
+                    <div class="col-h"><b>In progress</b><span class="badge neutral">3</span><button class="iconbtn" type="button" aria-label="New issue in In progress">+</button></div>
+                    <div class="col-b">
+                      <div class="card"><div class="ct"><span class="num">#398</span> Compact density tokens for Issues</div><div class="cm"><span class="badge plum">ui</span><span class="sp"><span class="av">DA</span>4d</span></div></div>
+                      <div class="card"><div class="ct"><span class="num">#392</span> Review narrative collapses when narrow</div><div class="cm"><span class="badge clay">bug</span><span class="sp"><span class="av">DA</span>6d</span></div></div>
+                    </div>
+                  </div>
+                  <div class="col">
+                    <div class="col-h"><b>In review</b><span class="badge neutral">2</span><button class="iconbtn" type="button" aria-label="New issue in In review">+</button></div>
+                    <div class="col-b">
+                      <div class="card"><div class="ct"><span class="num">#401</span> Settings: Git sync section</div><div class="cm"><span class="pr">PR #402</span><span class="sp"><span class="av">DA</span>2d</span></div></div>
+                    </div>
+                  </div>
+                  <div class="col">
+                    <div class="col-h"><b>Done</b><span class="badge neutral">7</span><button class="iconbtn" type="button" aria-label="New issue in Done">+</button></div>
+                    <div class="col-b">
+                      <div class="card"><div class="ct"><span class="num">#390</span> Launcher status strip</div><div class="cm"><span class="sp"><span class="av">DA</span>1d</span></div></div>
+                    </div>
+                  </div>
+                </div>
+
+                <aside class="drawer" aria-label="Triage #412">
+                  <div class="dr-h">
+                    <div class="top"><span class="num">#412</span><span>opened 2h ago by <b>contributor-b</b></span><button class="iconbtn" type="button" aria-label="Close triage drawer">×</button></div>
+                    <h3>Sync pauses forever after a rebase conflict</h3>
+                  </div>
+                  <div class="dr-b">
+                    <p class="excerpt">After a conflict during <code>git pull --rebase</code>, sync shows "paused" and never resumes, even after I resolve the file and commit. Restarting the server clears it. Traceback ends in <code>kbsync/cycle.py</code>, <code>_resume_rebase()</code>.</p>
+                    <ul class="tl" aria-label="Timeline">
+                      <li><span><b>contributor-b</b> opened with a traceback</span><span class="when">2h</span></li>
+                      <li><span><b>contributor-b</b> commented "Happens on 0.4.1 and main"</span><span class="when">1h</span></li>
+                    </ul>
+                    <div class="kicker">Agent suggestions <span class="rg claude" style="width:16px;height:16px;font-size:10px">C</span><span class="sp"><button class="btn p sm" type="button">Accept all</button></span></div>
+                    <div class="sugs" role="list" aria-label="Suggestions for #412">
+                      <div class="sug" role="listitem"><span class="k">Labels</span><span class="v"><span class="badge clay">bug</span><span class="badge cornflower">kbsync</span></span><span class="acts"><button class="btn s sm" type="button">Accept</button><button class="btn g sm" type="button">Dismiss</button></span><span class="why">Mentions rebase conflict handling in kbsync</span></div>
+                      <div class="sug" role="listitem"><span class="k">Priority</span><span class="v"><span class="badge wn">P2</span></span><span class="acts"><button class="btn s sm" type="button">Accept</button><button class="btn g sm" type="button">Dismiss</button></span><span class="why">Sync stops, but restarting recovers it; no data lost</span></div>
+                      <div class="sug" role="listitem"><span class="k">Assignee</span><span class="v"><span class="av">DA</span>dalbrecht</span><span class="acts"><button class="btn s sm" type="button">Accept</button><button class="btn g sm" type="button">Dismiss</button></span><span class="why">Wrote most of cycle.py; owns #377</span></div>
+                      <div class="sug" role="listitem"><span class="k">Possible duplicate</span><span class="v"><a href="#">#377</a> Sync stalls on dirty index</span><span class="acts"><button class="btn s sm" type="button">Mark duplicate</button><button class="btn g sm" type="button">Dismiss</button></span><span class="why">Same stack trace in cycle.py</span></div>
+                    </div>
+                  </div>
+                  <div class="chat">
+                    <div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span><span style="color:var(--jx-fg-muted)">about #412</span><span class="sp"><button class="iconbtn" type="button" aria-label="Pop out chat">⧉</button></span></div>
+                    <div class="transcript">
+                      <div class="msg u">Is #377 really the same bug?</div>
+                      <div class="tool">issues.read #377 · 3 comments</div>
+                      <div class="msg ai"><p>Likely. Both tracebacks end in <code>_resume_rebase()</code> and both clear on restart. #377 has the cause (a stale lock flag). I'd close #412 as a duplicate and copy its repro steps to #377.</p></div>
+                    </div>
+                    <div class="composer"><div class="inp area" style="min-height:40px"><span class="ph">Ask Claude about #412…</span></div></div>
+                  </div>
+                </aside>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280. Board with triage drawer.</b> Selecting a Triage card opens a 400px drawer: title, body excerpt, timeline, then agent suggestions with Accept and Dismiss on each. Chat sits under the suggestions, scoped to the issue, with the runner picker and pop-out. The board keeps scrolling sideways behind it.</figcaption>
+      </figure>
+    </div>
+    <ol class="notes">
+      <li><b>Compact density.</b> The app root sets <code>data-density="compact"</code>, so cards, rows, and suggestion rows use the compact row tokens (5px / 10px padding, small text). Issues is operational, so more issues per screen wins over air.</li>
+      <li><b>Board silhouette.</b> Full-width horizontal columns make Issues recognizable in Mission Control even when the text is unreadable: Notes is a document, RSS three panes, Review a split, Issues a row of columns.</li>
+      <li><b>Suggestions are advisory.</b> Each suggestion gets its own Accept and Dismiss, plus Accept all. Nothing changes on GitHub until you accept. Each row says why ("Same stack trace in cycle.py"), so you can judge it in a glance.</li>
+      <li><b>Chat inside the drawer</b> (shell decision 2, per-app placement). Issues has no chat rail; the conversation belongs to the issue you are triaging. ⧉ pops it out into its own window; the runner picker lives in the chat header (shell decision 5).</li>
+      <li><b>Keyboard.</b> ←/→ move between columns, ↑/↓ (or j/k) within a column, Enter opens the drawer, <kbd>a</kbd> accepts the focused suggestion, <kbd>⇧A</kbd> accepts all.</li>
+    </ol>
+  </section>
+
+  <!-- ===================== LIST + DETAIL ===================== -->
+  <section class="screen" aria-labelledby="s-list">
+    <h2 id="s-list">List view and issue detail</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues · dalbrecht/jesinia</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid">
+                <span class="sep"></span>
+                <button class="btn s sm" type="button">dalbrecht/jesinia ▾</button>
+                <div class="tabs" role="tablist" aria-label="View"><span class="tab" role="tab" aria-selected="false">Board</span><span class="tab on" role="tab" aria-selected="true">List</span></div>
+                <label class="vh" for="flt-list">Filter issues</label>
+                <input class="inp filter" id="flt-list" type="search" value="is:open label:bug">
+              </div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot" title="All good"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="lv">
+                <div class="bulk" role="toolbar" aria-label="Bulk actions"><b>3 selected</b><span style="color:var(--jx-fg-muted)">·</span><button class="btn p sm" type="button"><span class="rg claude" style="width:14px;height:14px;font-size:9px">C</span>Triage with Claude</button><button class="btn s sm" type="button">Add label ▾</button><button class="btn s sm" type="button">Close</button><button class="btn g sm" type="button">Clear</button><span class="sp">Space toggles · ⇧↓ extends · ⌘A selects all</span></div>
+                <div class="row irow ihead" aria-hidden="true"><span></span><span>#</span><span>Title</span><span>Labels</span><span>Who</span><span class="m">Age</span></div>
+                <div class="list scroll" role="listbox" aria-multiselectable="true" aria-label="Open issues labeled bug">
+                  <div class="row irow sel" role="option" aria-selected="true"><input type="checkbox" id="cb-412" checked tabindex="-1" aria-label="Select #412"><span class="num">#412</span><span class="t">Sync pauses forever after a rebase conflict</span><span class="lb"><span class="badge clay">bug</span></span><span class="av none" title="Unassigned">?</span><span class="m">2h</span></div>
+                  <div class="row irow sel" role="option" aria-selected="true"><input type="checkbox" id="cb-411" checked tabindex="-1" aria-label="Select #411"><span class="num">#411</span><span class="t">Feeds with CDATA titles show raw tags</span><span class="lb"><span class="badge clay">bug</span><span class="badge marigold">rss</span></span><span class="av none" title="Unassigned">?</span><span class="m">5h</span></div>
+                  <div class="row irow sel" role="option" aria-selected="true"><input type="checkbox" id="cb-409" checked tabindex="-1" aria-label="Select #409"><span class="num">#409</span><span class="t">⌘K palette loses focus after closing a sheet</span><span class="lb"><span class="badge clay">bug</span><span class="badge plum">ui</span></span><span class="av none" title="Unassigned">?</span><span class="m">1d</span></div>
+                  <div class="row irow" role="option" aria-selected="false"><input type="checkbox" id="cb-392" tabindex="-1" aria-label="Select #392"><span class="num">#392</span><span class="t">Review narrative collapses when the window is narrow</span><span class="lb"><span class="badge clay">bug</span><span class="badge plum">ui</span></span><span class="av">DA</span><span class="m">6d</span></div>
+                  <div class="row irow" role="option" aria-selected="false"><input type="checkbox" id="cb-388" tabindex="-1" aria-label="Select #388"><span class="num">#388</span><span class="t">KB index skips files that start with a BOM</span><span class="lb"><span class="badge clay">bug</span></span><span class="av">CB</span><span class="m">1w</span></div>
+                  <div class="row irow" role="option" aria-selected="false"><input type="checkbox" id="cb-377" tabindex="-1" aria-label="Select #377"><span class="num">#377</span><span class="t">Sync stalls when cycle.py hits a dirty index</span><span class="lb"><span class="badge clay">bug</span><span class="badge cornflower">kbsync</span></span><span class="av">DA</span><span class="m">3w</span></div>
+                  <div class="row irow" role="option" aria-selected="false"><input type="checkbox" id="cb-333" tabindex="-1" aria-label="Select #333"><span class="num">#333</span><span class="t">OPML import skips nested folders</span><span class="lb"><span class="badge clay">bug</span><span class="badge marigold">rss</span></span><span class="av">CB</span><span class="m">7w</span></div>
+                  <div class="row irow" role="option" aria-selected="false"><input type="checkbox" id="cb-318" tabindex="-1" aria-label="Select #318"><span class="num">#318</span><span class="t">Settings page scrolls to top after saving a runner path</span><span class="lb"><span class="badge clay">bug</span><span class="badge plum">ui</span></span><span class="av none" title="Unassigned">?</span><span class="m">2mo</span></div>
+                  <div class="row irow" role="option" aria-selected="false"><input type="checkbox" id="cb-302" tabindex="-1" aria-label="Select #302"><span class="num">#302</span><span class="t">Duplicate page ids aren't reported when one file is in .trash</span><span class="lb"><span class="badge clay">bug</span><span class="badge cornflower">kbsync</span></span><span class="av">DA</span><span class="m">2mo</span></div>
+                  <div class="row irow" role="option" aria-selected="false"><input type="checkbox" id="cb-297" tabindex="-1" aria-label="Select #297"><span class="num">#297</span><span class="t">Codex transcript drops tool output longer than 64 KB</span><span class="lb"><span class="badge clay">bug</span><span class="badge neutral">runner</span></span><span class="av none" title="Unassigned">?</span><span class="m">3mo</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280. List, multiple selection.</b> A compact listbox with checkboxes in the leading slot. Selecting rows brings up the bulk bar: "Triage with Claude" runs suggestions for all selected issues; Add label and Close act on GitHub directly.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues · #377</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn g sm" type="button">← Board</button></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body scroll">
+              <div class="detail">
+                <div>
+                  <h3>Sync stalls when cycle.py hits a dirty index <span class="num">#377</span></h3>
+                  <div class="meta"><span class="badge ok">Open</span><span class="badge clay">bug</span><span class="badge cornflower">kbsync</span><span class="badge wn">P2</span><span>·</span><span class="av">DA</span>dalbrecht<span>·</span><span>Backlog</span><span>·</span><span>opened 3w ago</span></div>
+                </div>
+                <div class="cmt"><div class="ch"><b>dalbrecht</b> opened · 3w</div><p>When the index is dirty at the start of a cycle, <code>_resume_rebase()</code> sets the lock flag and returns early. Nothing clears it until restart.</p></div>
+                <div class="ev"><b>dalbrecht</b> added <span class="badge clay">bug</span><span class="badge cornflower">kbsync</span> · 3w</div>
+                <div class="cmt"><div class="ch"><b>contributor-b</b> commented · 2w</div><p>Same here after resolving a conflict in <code>Notes/rss.md</code>.</p></div>
+                <div class="ev"><b>dalbrecht</b> linked <a href="#">PR #403</a> Clear the lock flag when a rebase ends <span class="badge neutral">Draft</span> · 1h</div>
+                <div class="ev"><b>Claude</b> suggested #412 as a duplicate · 40m</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Issue detail.</b> Title, status and labels, then a single timeline that mixes comments, label events, linked PRs, and accepted agent suggestions. Opens from the board (Enter) or the list.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ===================== NARROW ===================== -->
+  <section class="screen" aria-labelledby="s-narrow">
+    <h2 id="s-narrow">Narrow</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Issues</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn s sm" type="button">jesinia ▾</button></div>
+              <div class="right"><button class="iconbtn" type="button" aria-label="Filter">⚲</button><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="board-n">
+                <div class="tabs" role="tablist" aria-label="Column"><span class="tab on" role="tab" aria-selected="true">Triage 4</span><span class="tab" role="tab" aria-selected="false">Backlog 12</span><span class="tab" role="tab" aria-selected="false">In progress 3</span><span class="tab" role="tab" aria-selected="false">In review 2</span><span class="tab" role="tab" aria-selected="false">Done 7</span></div>
+                <div class="col-b scroll">
+                  <div class="card"><div class="ct"><span class="num">#412</span> Sync pauses forever after a rebase conflict</div><div class="cm"><span class="av none" title="Unassigned">?</span><span class="sp">2h</span></div></div>
+                  <div class="card"><div class="ct"><span class="num">#411</span> Feeds with CDATA titles show raw tags</div><div class="cm"><span class="badge marigold">rss</span><span class="sp">5h</span></div></div>
+                  <div class="card"><div class="ct"><span class="num">#409</span> ⌘K palette loses focus after closing a sheet</div><div class="cm"><span class="badge plum">ui</span><span class="sp">1d</span></div></div>
+                  <div class="card"><div class="ct"><span class="num">#408</span> Codex still shows "not logged in" after login</div><div class="cm"><span class="badge neutral">runner</span><span class="sp">2d</span></div></div>
+                  <button class="btn s sm" type="button" style="justify-self:start"><span class="rg claude" style="width:14px;height:14px;font-size:9px">C</span>Triage all 4 with Claude</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow, 390. Board.</b> One column at a time. The tabs switch columns and show counts; swipe left/right does the same.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Issues</span></div>
+          <div class="app relative" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn s sm" type="button">jesinia ▾</button></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body"></div>
+            <div class="scrim"></div>
+            <div class="sheet" role="dialog" aria-label="Triage #412">
+              <span class="grab"></span>
+              <div class="dr-h">
+                <div class="top"><span class="num">#412</span><span>opened 2h ago</span><button class="iconbtn" type="button" aria-label="Close triage sheet">×</button></div>
+                <h3>Sync pauses forever after a rebase conflict</h3>
+              </div>
+              <div class="dr-b">
+                <p class="excerpt">After a conflict during a rebase pull, sync shows "paused" and never resumes. Restarting clears it.</p>
+                <div class="kicker">Agent suggestions<span class="sp"><button class="btn p sm" type="button">Accept all</button></span></div>
+                <div class="sugs" role="list" aria-label="Suggestions for #412 (narrow)">
+                  <div class="sug done" role="listitem"><span class="k">Labels</span><span class="v"><span class="badge clay">bug</span><span class="badge cornflower">kbsync</span></span><span class="acts">✓ Added</span><span class="why">Mentions rebase conflict handling in kbsync</span></div>
+                  <div class="sug" role="listitem"><span class="k">Priority</span><span class="v"><span class="badge wn">P2</span></span><span class="acts"><button class="btn s sm" type="button">Accept</button><button class="btn g sm" type="button" aria-label="Dismiss priority">×</button></span><span class="why">Restart recovers it</span></div>
+                  <div class="sug" role="listitem"><span class="k">Assignee</span><span class="v"><span class="av">DA</span>dalbrecht</span><span class="acts"><button class="btn s sm" type="button">Accept</button><button class="btn g sm" type="button" aria-label="Dismiss assignee">×</button></span><span class="why">Owns cycle.py</span></div>
+                  <div class="sug" role="listitem"><span class="k">Possible duplicate</span><span class="v"><a href="#">#377</a></span><span class="acts"><button class="btn s sm" type="button">Mark</button><button class="btn g sm" type="button" aria-label="Dismiss duplicate">×</button></span><span class="why">Same stack trace in cycle.py</span></div>
+                </div>
+              </div>
+              <div class="sheet-chat">
+                <div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span><span class="sp"><button class="iconbtn" type="button" aria-label="Expand chat">⌃</button></span></div>
+                <div class="inp"><span class="ph">Ask Claude about #412…</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow, 390. Triage sheet.</b> The drawer becomes a full-height sheet. Accepted suggestions turn green and stay in place. Chat collapses to a composer at the bottom and expands upward.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ===================== STATES ===================== -->
+  <section class="screen" aria-labelledby="s-states">
+    <h2 id="s-states">States</h2>
+    <div class="states">
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn s sm" type="button">Choose a repo ▾</button></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="empty">
+                <b>No repo yet</b>
+                <span>Choose a repo to see its issues.</span>
+                <button class="btn p" type="button">Choose a repo</button>
+                <span class="help">Recent: dalbrecht/jesinia · dalbrecht/kbsync</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Empty.</b> No repo chosen. One sentence, one action, plus recent repos from <code>gh</code>.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn s sm" type="button">dalbrecht/jesinia ▾</button></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="board" aria-label="Loading columns" aria-busy="true">
+                <div class="col"><div class="col-h"><b>Triage</b></div><div class="col-b"><div class="card"><span class="skel w90"></span><span class="skel w40"></span></div><div class="card"><span class="skel w80"></span><span class="skel w40"></span></div></div></div>
+                <div class="col"><div class="col-h"><b>Backlog</b></div><div class="col-b"><div class="card"><span class="skel w80"></span><span class="skel w60"></span></div><div class="card"><span class="skel w90"></span><span class="skel w40"></span></div><div class="card"><span class="skel w60"></span><span class="skel w40"></span></div></div></div>
+                <div class="col"><div class="col-h"><b>In progress</b></div><div class="col-b"><div class="card"><span class="skel w90"></span><span class="skel w60"></span></div></div></div>
+                <div class="col"><div class="col-h"><b>In review</b></div><div class="col-b"><div class="card"><span class="skel w80"></span><span class="skel w40"></span></div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Loading.</b> Column headers render at once; cards are skeletons until the GitHub fetch returns. Counts appear with the data.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn s sm" type="button" disabled>dalbrecht/jesinia ▾</button></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot bad"></span></div>
+            </div>
+            <div class="strip danger"><b>× GitHub isn't connected.</b> Run <code>gh auth login</code>, then Check again. <span class="act"><button class="btn s sm" type="button">Check again</button></span></div>
+            <div class="body">
+              <div class="empty">
+                <b>Issues needs GitHub</b>
+                <span>Jesinia reads issues through the <code>gh</code> CLI on this machine.</span>
+                <a href="#">How to connect GitHub</a>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>GitHub auth missing</b> is blocking for this app: danger strip, red status dot, picker disabled. The fix is a terminal command, so the copy names it exactly.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues · dalbrecht/jesinia</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid">
+                <div class="tabs" role="tablist" aria-label="View"><span class="tab" role="tab" aria-selected="false">Board</span><span class="tab on" role="tab" aria-selected="true">List</span></div>
+                <label class="vh" for="flt-bulk">Filter issues</label>
+                <input class="inp filter" id="flt-bulk" type="search" placeholder="Filter: label, assignee, text">
+              </div>
+              <div class="right"><span class="kbtn"><span class="lbl">⌘K</span></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="lv" style="grid-template-rows: auto 1fr">
+                <div class="prog" role="status" aria-live="polite">
+                  <div class="row-inline"><span class="rg claude">C</span><b>Claude is triaging 3 issues</b><span style="color:var(--jx-fg-muted)">2 of 3</span><span class="sp"><button class="btn s sm" type="button">Review suggestions</button><button class="btn g sm" type="button">Stop</button></span></div>
+                  <div class="bar"><i></i></div>
+                </div>
+                <div class="list scroll" role="list" aria-label="Triage progress">
+                  <div class="row irow" role="listitem"><span class="ok">✓</span><span class="num">#412</span><span class="t">Sync pauses forever after a rebase conflict</span><span class="lb"><span class="badge neutral">4 suggestions</span></span><span class="m">done</span></div>
+                  <div class="row irow" role="listitem"><span class="ok">✓</span><span class="num">#411</span><span class="t">Feeds with CDATA titles show raw tags</span><span class="lb"><span class="badge neutral">2 suggestions</span></span><span class="m">done</span></div>
+                  <div class="row irow" role="listitem"><span class="spin" style="color:var(--jx-accent)"></span><span class="num">#409</span><span class="t">⌘K palette loses focus after closing a sheet</span><span class="lb"><span class="badge plum">ui</span></span><span class="m">reading<span class="cursor"></span></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Bulk triage in progress.</b> Suggestions stream in per issue with a "2 of 3" count. You can review finished ones while the rest run, or stop. Nothing is applied until you accept.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues · dalbrecht/jesinia</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn s sm" type="button">dalbrecht/jesinia ▾</button></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div>
+            </div>
+            <div class="strip"><b>! Sync paused:</b> merge conflict in <code>Notes/rss.md</code>. Resolve it, then choose Resume. <span class="act"><button class="btn s sm" type="button">Resume</button><button class="btn g sm" type="button">Details</button></span></div>
+            <div class="body">
+              <div class="board" aria-label="Board columns (sync paused)">
+                <div class="col"><div class="col-h"><b>Triage</b><span class="badge neutral">4</span></div><div class="col-b"><div class="card"><div class="ct"><span class="num">#412</span> Sync pauses forever after a rebase conflict</div></div><div class="card"><div class="ct"><span class="num">#411</span> Feeds with CDATA titles show raw tags</div></div></div></div>
+                <div class="col"><div class="col-h"><b>Backlog</b><span class="badge neutral">12</span></div><div class="col-b"><div class="card"><div class="ct"><span class="num">#377</span> Sync stalls on a dirty index</div></div><div class="card"><div class="ct"><span class="num">#366</span> Export a note as PDF</div></div></div></div>
+                <div class="col"><div class="col-h"><b>In progress</b><span class="badge neutral">3</span></div><div class="col-b"><div class="card"><div class="ct"><span class="num">#398</span> Compact density tokens</div></div></div></div>
+                <div class="col"><div class="col-h"><b>In review</b><span class="badge neutral">2</span></div><div class="col-b"><div class="card"><div class="ct"><span class="num">#401</span> Settings: Git sync</div></div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Sync paused</b> (shell decision 3). The same warn strip shown in every app. Issues keeps working, since issues live on GitHub, not in the KB.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+</body>
+</html>

@@ -626,9 +626,149 @@ function ChatTranscript(props: ChatTranscriptProps): JSX.Element;
 
 ---
 
-## 9. Open questions for later tasks
+## 9. Shell components (added in Task 5)
 
-- **Command palette (⌘K)** and **menus/popovers** are not in the foundation's eight. If
-  Task 5 picks global search as a palette, it will be specified as a ninth component then.
-- **Issues board columns** and **Review quiz/metrics** are app-specific components
-  (brief §10), specified in their product specs.
+The shell decisions in [the wireframes index](wireframes/README.md#shell-decisions)
+add three shared components. They follow every rule in §0.
+
+### 9.1 CommandPalette (⌘K)
+
+**Anatomy:**
+
+- A modal dialog, 640 px wide (full width minus `--jx-space-4` on narrow), placed 80 px
+  from the top, over a scrim.
+- Query field (48 px, `--jx-text-lg`).
+- Result groups, in order:
+  - **In this app**: app-provided results, omitted on the launcher and in Settings.
+  - **Knowledge base**: the `search` service.
+  - **Commands**: open an app, open a Settings section, Sync now, New session, toggle
+    theme.
+- Each item: a label, optional secondary text (a path, a shortcut) aligned right, and a
+  leading glyph for commands that open another app.
+- Footer with key hints.
+
+**Tokens:**
+
+| Part | Tokens |
+|---|---|
+| Container | `--jx-panel-raised-bg`, `--jx-panel-raised-shadow`, `--jx-radius-lg` |
+| Active item | `--jx-row-bg-selected` |
+| Group label | `--jx-text-xs`, `--jx-fg-muted` |
+| Scrim | `--jx-paper-950` at 25% over the page. This is the one sanctioned translucent primitive use, defined as `--jx-scrim` in Task 22 |
+
+**Behavior:**
+
+- Opens on ⌘K from anywhere, including from inside text fields. There is no palette
+  field in the title bar: apps with their own search field show nothing extra, and
+  other apps show a ⌕ icon button (wireframes README, shell decision 3).
+- Empty query shows recent pages and the top commands.
+- Results update on input with a 100 ms debounce. KB results arrive asynchronously, and
+  the other groups never wait for them.
+- Max 6 items per group, with "Show all n" as the last item.
+- Opening an app uses a URL, so the browser or PWA decides between window and tab.
+
+**Keyboard:**
+
+| Key | Action |
+|---|---|
+| ↑ / ↓ | Move the active item across groups |
+| Enter | Run the active item |
+| ⌘Enter | Open the active item in a new window |
+| Escape | Close; focus returns to the invoking element |
+| Tab | Stays inside the dialog (focus trap) |
+
+**ARIA:**
+
+- The palette is `role="dialog"` with `aria-modal="true"` and `aria-label="Command palette"`.
+- The field is `role="combobox"`, with `aria-expanded` and `aria-controls` pointing to a
+  `role="listbox"`.
+- Each group is `role="group"` with `aria-label`; items are `role="option"`.
+- `aria-activedescendant` tracks the active item, so focus stays in the field.
+- The result count is announced politely ("8 results").
+
+**Props**
+
+```ts
+type PaletteItem = { id: string; label: string; detail?: string; group: "app" | "kb" | "command";
+  icon?: ReactNode; onRun: (opts: { newWindow: boolean }) => void };
+
+function CommandPalette(props: {
+  appSearch?: (q: string, signal: AbortSignal) => Promise<PaletteItem[]>; // the "In this app" group
+  commands?: PaletteItem[];                                               // app commands merged with shell commands
+}): JSX.Element; // mounted once by AppShell; owns the ⌘K binding
+```
+
+### 9.2 Banner (blocking system conditions)
+
+**Anatomy:**
+
+- A full-width strip directly under the app header, one line (it wraps on narrow).
+- Contents: status icon, a bold cause ("Sync paused:"), the detail and fix, and up to two
+  actions (a `secondary` `sm` primary action and a `ghost` `sm` secondary one) aligned
+  right.
+
+**Tones:**
+
+| Tone | Used for | Tokens |
+|---|---|---|
+| `warn` | Sync paused | `--jx-warn-bg` fill, `--jx-warn` icon and cause, `--jx-fg` detail |
+| `danger` | KB missing or unwritable; every runner unavailable in an app that needs one | `--jx-danger-bg`, `--jx-danger`, `--jx-fg` |
+
+**Rules:**
+
+- Only *blocking* conditions get a banner (shell decision 3).
+- Banners stack, most severe first, with at most 2 visible plus a "+n more" ghost button
+  that opens the status popover.
+- A banner can't be dismissed while its condition holds. It leaves on its own when the
+  condition clears, and a success toast confirms ("Sync resumed").
+- No colored edge; tone comes from fill, icon, and words.
+
+**ARIA:**
+
+- The container is `role="region"` with `aria-label="System status"`.
+- A banner that appears after page load is announced once via `role="alert"` (danger)
+  or `role="status"` (warn). Banners present at load aren't announced.
+
+**Props**
+
+```ts
+function Banner(props: { tone: "warn" | "danger"; cause: string; children: ReactNode;
+  action?: { label: string; onAction: () => void };
+  secondaryAction?: { label: string; onAction: () => void } }): JSX.Element;
+```
+
+### 9.3 StatusIndicator (header dot and popover)
+
+**Anatomy:**
+
+- A 28 px ghost icon button in the app header containing a 9 px dot:
+  - `--jx-success`: all clear.
+  - `--jx-warn`: minor issues.
+  - `--jx-danger`: a blocking condition is also present.
+- Clicking opens a popover (a `raised` Panel, 340 px) listing each condition. Each item
+  has an icon, a bold title, a one-line fix, and a link to the relevant Settings section.
+
+**Minor conditions** (no banner): duplicate page ids, missing linked pages, one runner
+unavailable while another works, a feed or GitHub fetch failing.
+
+**Keyboard:** Enter or Space opens the popover. Escape closes it and returns focus to
+the dot. Tab moves through the links inside.
+
+**ARIA:**
+
+- The button has `aria-haspopup="dialog"` and `aria-expanded`.
+- Its `aria-label` summarizes the state: "Status: all clear", or "Status: 2 issues".
+- The dot's color is never the only signal: the label carries the count, and the
+  popover lists every item.
+
+**Props**
+
+```ts
+type StatusItem = { id: string; severity: "minor" | "blocking"; title: string; detail: string; href?: string };
+function StatusIndicator(props: { items: StatusItem[] }): JSX.Element;
+```
+
+## 10. Not in the foundation set
+
+**Issues board columns**, the **Review quiz and metrics** widgets, and the **RSS feed
+tree** are app-specific components (brief §10), specified in their product specs.
