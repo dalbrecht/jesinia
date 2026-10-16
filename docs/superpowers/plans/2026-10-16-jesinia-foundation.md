@@ -910,7 +910,7 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 - [x] **Step 2:** KB path set to the real KB repo; Settings shows mode "push"; `jesinia sync now` → `skipped` on a clean tree; edit a page → `pushed`.
 - [x] **Step 3:** From Claude Code and from Codex, `kb_search` returns results via MCP.
 - [ ] **Step 4:** Notes flow with a real runner writes a correct page; open it in the Pigeonpile Wiki and confirm it renders.
-- [x] **Step 5:** `make ci` green on `main`; `./setup --uninstall` leaves the KB intact. Record results in `docs/specs/2026-10-16-jesinia-foundation-design.md` status → "Implemented".
+- [ ] **Step 5:** `make ci` green on `main`; `./setup --uninstall` leaves the KB intact. Record results in `docs/specs/2026-10-16-jesinia-foundation-design.md` status → "Implemented".
 
 ---
 
