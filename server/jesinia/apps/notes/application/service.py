@@ -8,8 +8,10 @@ provenance comments and a back-link to the subject.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import re
+from collections import defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -89,6 +91,7 @@ class NotesService:
         self.log = log
         self.folder = folder
         self.now = now
+        self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def _related(self, id: PageId, title: str) -> str:
         if self.search is None:
@@ -129,10 +132,20 @@ class NotesService:
         session = self.sessions.get(session_id)
         if session.subject.kind != "kb":
             raise NotSubjectSessionError(f"session {session_id} is not about a KB page")
-        if by_agent and self.log.count_for_session(session_id) >= MAX_AGENT_SAVES:
-            raise TooManySavesError(
-                f"this session already saved {MAX_AGENT_SAVES} notes; save more from the Notes app"
-            )
+        # Count, write and record under one per-session lock, so concurrent agent calls
+        # cannot slip past the cap.
+        async with self._locks[session_id]:
+            if by_agent and self.log.count_for_session(session_id) >= MAX_AGENT_SAVES:
+                raise TooManySavesError(
+                    f"this session already saved {MAX_AGENT_SAVES} notes; "
+                    "save more from the Notes app"
+                )
+            return await self._write_note(session, title, user_text, agent_text, model)
+
+    async def _write_note(
+        self, session: Session, title: str, user_text: str, agent_text: str, model: str
+    ) -> PageWithRev:
+        session_id = session.id
         at = self.now()
         parts = [_inert(user_text.strip())] if user_text.strip() else []
         model = _MODEL.sub("-", model)[:80] or "unknown"
