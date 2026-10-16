@@ -7,6 +7,8 @@ import type { Conflict, Health, Runners, SyncStatus } from "./types";
 export type ServerStatus = {
   loading: boolean;
   signedOut: boolean;
+  /** The last status fetch got no answer (Jesinia stopped or restarting). */
+  unreachable: boolean;
   health: Health | null;
   sync: SyncStatus | null;
   conflicts: Conflict[];
@@ -20,6 +22,7 @@ export function useServerStatus(opts: { runners?: boolean } = {}): ServerStatus 
   const client = useClient();
   const [loading, setLoading] = useState(true);
   const [signedOut, setSignedOut] = useState(false);
+  const [unreachable, setUnreachable] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
@@ -27,17 +30,24 @@ export function useServerStatus(opts: { runners?: boolean } = {}): ServerStatus 
   const wantRunners = opts.runners ?? true;
 
   const refresh = useCallback(async () => {
-    const [h, s, c, r] = await Promise.all([
-      client.GET("/healthz"),
-      client.GET("/api/kbsync/status"),
-      client.GET("/api/kb/conflicts"),
-      wantRunners ? client.GET("/api/agents/runners") : Promise.resolve(null),
-    ]);
-    if (h.data) setHealth(h.data as Health);
-    if (s.data) setSync(s.data as unknown as SyncStatus);
-    if (c.data) setConflicts(c.data as Conflict[]);
-    if (r?.data) setRunners(r.data as Runners);
-    setLoading(false);
+    try {
+      const [h, s, c, r] = await Promise.all([
+        client.GET("/healthz"),
+        client.GET("/api/kbsync/status"),
+        client.GET("/api/kb/conflicts"),
+        wantRunners ? client.GET("/api/agents/runners") : Promise.resolve(null),
+      ]);
+      if (h.data) setHealth(h.data as Health);
+      if (s.data) setSync(s.data as unknown as SyncStatus);
+      if (c.data) setConflicts(c.data as Conflict[]);
+      if (r?.data) setRunners(r.data as Runners);
+      setUnreachable(false);
+    } catch {
+      // A stopped server rejects the fetch rather than answering with an error status.
+      setUnreachable(true);
+    } finally {
+      setLoading(false);
+    }
   }, [client, wantRunners]);
 
   useEffect(() => {
@@ -58,5 +68,5 @@ export function useServerStatus(opts: { runners?: boolean } = {}): ServerStatus 
     };
   }, [client, refresh]);
 
-  return { loading, signedOut, health, sync, conflicts, runners, refresh, setSync };
+  return { loading, signedOut, unreachable, health, sync, conflicts, runners, refresh, setSync };
 }
