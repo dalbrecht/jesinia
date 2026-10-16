@@ -226,3 +226,49 @@ async def test_failed_link_update_leaves_row_for_scan_to_repair(
     assert kb.index.links_to(target.page.id) == []  # row and links rolled back together
     await scan(kb)
     assert kb.index.links_to(target.page.id) == [src.page.id]
+
+
+async def test_many_same_titled_pages_never_share_a_file(kb: KbService) -> None:
+    pages = [await kb.write(PageDraft(None, "Same", N, f"body {i}")) for i in range(5)]
+    paths = {kb.resolve(p.page.id) for p in pages}
+    assert len(paths) == 5
+    for i, p in enumerate(pages):
+        assert (await kb.read(p.page.id)).page.body == f"body {i}"
+
+
+async def test_external_save_during_write_is_not_overwritten(
+    kb: KbService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jesinia.services.kb.infrastructure.fs import LocalFiles
+
+    p = await kb.write(PageDraft(None, "Race", N, "v1"))
+    f = kb.root / "Notes/Race.md"  # type: ignore[operator]
+    original = LocalFiles.write_atomic
+
+    def editor_saves_first(self: LocalFiles, disk: str, data: bytes, **kw: object) -> float:
+        f.write_text(f.read_text().replace("v1", "user"))
+        return original(self, disk, data, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(LocalFiles, "write_atomic", editor_saves_first)
+    with pytest.raises(StaleWrite):
+        await kb.update_body(p.page.id, "agent", expected_rev=p.rev)
+    with pytest.raises(StaleWrite):
+        await kb.write(PageDraft(p.page.id, "Race", N, "agent"), expected_rev=p.rev)
+    assert "user" in f.read_text() and "agent" not in f.read_text()
+
+
+async def test_failed_move_keeps_page_readable_at_old_path(
+    kb: KbService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jesinia.services.kb.infrastructure.fs import LocalFiles
+
+    p = await kb.write(PageDraft(None, "Before", N, "body"))
+
+    def full_disk(self: LocalFiles, src: str, dst: str) -> None:
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(LocalFiles, "rename", full_disk)
+    with pytest.raises(OSError):
+        await kb.move(p.page.id, N, title="After")
+    r = await kb.read(p.page.id)
+    assert r.page.path == PurePosixPath("Notes/Before.md") and r.page.title == "After"

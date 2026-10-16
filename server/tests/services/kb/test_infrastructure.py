@@ -155,3 +155,51 @@ def test_index_reset(tmp_path: Path) -> None:
     idx.reset()
     assert idx.all() == [] and idx.conflicts() == []
     conn.close()
+
+
+def test_create_and_rename_never_clobber(tmp_path: Path) -> None:
+    fs = LocalFiles(tmp_path)
+    fs.write_atomic("a.md", b"a", create=True)
+    with pytest.raises(FileExistsError):
+        fs.write_atomic("a.md", b"other", create=True)
+    fs.write_atomic("b.md", b"b", create=True)
+    with pytest.raises(FileExistsError):
+        fs.rename("a.md", "b.md")
+    assert (tmp_path / "a.md").read_bytes() == b"a" and (tmp_path / "b.md").read_bytes() == b"b"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+
+def test_case_only_rename(tmp_path: Path) -> None:
+    fs = LocalFiles(tmp_path)
+    fs.write_atomic("note.md", b"x", create=True)
+    fs.rename("note.md", "Note.md")
+    assert [p.name for p in tmp_path.iterdir()] == ["Note.md"]
+
+
+def test_expected_rev_checked_before_replace(tmp_path: Path) -> None:
+    import hashlib
+
+    from jesinia.services.kb.application.errors import StaleWrite
+
+    fs = LocalFiles(tmp_path)
+    fs.write_atomic("a.md", b"v1")
+    (tmp_path / "a.md").write_bytes(b"external")
+    with pytest.raises(StaleWrite):
+        fs.write_atomic("a.md", b"v2", expected_rev=hashlib.sha256(b"v1").hexdigest())
+    assert (tmp_path / "a.md").read_bytes() == b"external" and len(list(tmp_path.iterdir())) == 1
+    fs.write_atomic("a.md", b"v3", expected_rev=hashlib.sha256(b"external").hexdigest())
+    assert (tmp_path / "a.md").read_bytes() == b"v3"
+
+
+def test_volume_without_hard_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_links(src: object, dst: object) -> None:
+        raise PermissionError("hard links not supported")
+
+    monkeypatch.setattr(os, "link", no_links)
+    fs = LocalFiles(tmp_path)
+    fs.write_atomic("a.md", b"a", create=True)
+    fs.rename("a.md", "b.md")
+    assert (tmp_path / "b.md").read_bytes() == b"a"
+    fs.write_atomic("c.md", b"c", create=True)
+    with pytest.raises(FileExistsError):
+        fs.rename("c.md", "b.md")

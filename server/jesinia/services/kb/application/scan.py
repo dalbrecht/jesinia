@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Literal
 
-from jesinia.services.kb.application.errors import KbError
+from jesinia.services.kb.application.errors import KbError, StaleWrite
 from jesinia.services.kb.application.service import Change, KbService, nfc
 from jesinia.services.kb.domain.frontmatter import page_from, parse_document, serialize_page
 from jesinia.services.kb.domain.links import link_targets
@@ -82,11 +82,13 @@ def _visit(
     if doc.kind == "plain":
         if is_reserved(rel):
             return "skipped"
-        if fs.read(disk) != data:
-            return "skipped"  # changed under us; the next scan will adopt it
         page = Page(new_page_id(), rel.stem, rel, doc.body, {}, {})
+        original = hashlib.sha256(data).hexdigest()
         data = serialize_page(page).encode()
-        mtime = fs.write_atomic(disk, data)
+        try:
+            mtime = fs.write_atomic(disk, data, expected_rev=original)
+        except StaleWrite:
+            return "skipped"  # changed under us; the next scan will adopt it
         adopted.append(rel)
         doc = parse_document(data.decode("utf-8"))
     page = page_from(doc, rel)
@@ -116,6 +118,9 @@ async def scan(svc: KbService) -> ScanReport:
             log.warning("scan skipped %s: %s", rel, exc)
             errors.append((rel, str(exc)))
 
+    # Rows as they were before this scan: an id whose path is taken over by another page
+    # (put() drops the displaced row) must still be reported missing below.
+    before = index.all()
     duplicates: dict[PageId, list[PurePosixPath]] = {}
     seen: set[PageId] = set()
     for id, hits in by_id.items():
@@ -140,7 +145,7 @@ async def scan(svc: KbService) -> ScanReport:
     # A file that exists but failed to read or parse this time is not missing: keep its row.
     failed = {path for path, _ in errors}
     missing: list[PageId] = []
-    for row in index.all():
+    for row in before:
         if row.id not in seen and row.path not in failed:
             missing.append(row.id)
             index.add_missing(row.id, row.path)

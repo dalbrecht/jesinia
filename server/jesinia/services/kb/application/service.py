@@ -36,6 +36,7 @@ from jesinia.services.kb.domain.paths import (
     is_hidden,
     is_page_candidate,
     is_reserved,
+    sanitize_title,
 )
 
 log = logging.getLogger(__name__)
@@ -135,31 +136,65 @@ class KbService:
         return nfc(folder)
 
     def _target(self, folder: PurePosixPath, title: str, id: PageId) -> PurePosixPath:
+        """A free path for the page: the title, else title + id prefix, else the full id."""
         siblings = [(r.title, r.id) for r in self._index.all() if r.path.parent == folder]
-        path = folder / filename_for(title, id, siblings)
-        existing = self._index.by_path(path)
+        name, hex_id = sanitize_title(title), id.replace("-", "")
+        candidates = [
+            filename_for(title, id, siblings),
+            f"{name} [{hex_id[:8]}].md",
+            f"{name} [{hex_id}].md",
+            *(f"{name} [{hex_id}] {n}.md" for n in range(2, 100)),
+        ]
         fs = self._fs()
-        if (existing and existing.id != id) or (existing is None and fs.exists(str(path))):
-            stem = path.stem
-            path = folder / f"{stem} [{id.replace('-', '')[:8]}].md"
-        self._fs().contain(path)
-        return path
+        for candidate in candidates:
+            path = folder / candidate
+            existing = self._index.by_path(path)
+            taken = existing.id != id if existing else fs.exists(str(path))
+            if not taken:
+                fs.contain(path)
+                return path
+        raise StaleWrite(f"no free file name for {title!r} in {folder}")  # pragma: no cover
 
     async def _emit(self, id: PageId, path: PurePosixPath, change: Change) -> None:
         await self.emit(id, path, change, "jesinia")
 
-    def _store(self, page: Page, disk: str, data: bytes) -> PageWithRev:
-        mtime = self._fs().write_atomic(disk, data)
-        rev = sha256(data)
+    def _index_put(
+        self, page: Page, path: PurePosixPath, disk: str, rev: str, mtime: float
+    ) -> None:
         # The file is the source of truth and is already written. The index is derived:
         # if updating it fails, report success anyway. Row and links change in one
         # transaction, so a failure leaves the old mtime and the next scan re-reads the file.
         try:
-            self._index.put(
-                page.id, page.path, disk, rev, page.title, mtime, link_targets(page.body)
-            )
+            self._index.put(page.id, path, disk, rev, page.title, mtime, link_targets(page.body))
         except Exception:
             log.exception("KB index update failed for %s; the next scan will repair it", page.id)
+
+    def _store(
+        self,
+        page: Page,
+        disk: str,
+        data: bytes,
+        *,
+        expected_rev: str | None,
+        old_path: PurePosixPath | None = None,
+    ) -> PageWithRev:
+        """Write ``data`` at ``disk``, then (when ``page.path`` differs from ``old_path``)
+        move it there. ``expected_rev=None`` creates a new file and never replaces one.
+
+        Content is committed before the path changes, and both steps are atomic: if the
+        move fails, the page stays readable at its old path with the new content.
+        """
+        fs = self._fs()
+        mtime = fs.write_atomic(disk, data, expected_rev=expected_rev, create=expected_rev is None)
+        rev = sha256(data)
+        if old_path is not None and page.path != old_path:
+            try:
+                fs.rename(disk, str(page.path))
+            except BaseException:
+                self._index_put(page, old_path, disk, rev, mtime)
+                raise
+            disk = str(page.path)
+        self._index_put(page, page.path, disk, rev, mtime)
         return PageWithRev(page, rev)
 
     def _current(self, id: PageId) -> tuple[str, bytes]:
@@ -219,7 +254,9 @@ class KbService:
             async with self._locks[id]:
                 path = self._target(folder, draft.title, id)
                 page = Page(id, draft.title, path, draft.body, dict(draft.jesinia), {})
-                result = self._store(page, str(path), serialize_page(page).encode())
+                result = self._store(
+                    page, str(path), serialize_page(page).encode(), expected_rev=None
+                )
             await self._emit(id, path, "created")
             return result
 
@@ -228,17 +265,17 @@ class KbService:
             disk, data = self._current(id)
             if expected_rev is None or sha256(data) != expected_rev:
                 raise StaleWrite(f"{id}: changed since read (or no base revision given)")
+            base_rev = expected_rev
             row = self._index.get(id)
             assert row is not None
             current = page_from(parse_document(data.decode("utf-8")), row.path)
             moved = draft.title != current.title or folder != row.path.parent
             path = self._target(folder, draft.title, id) if moved else row.path
-            if path != row.path:
-                self._fs().contain(path.parent)
-                self._fs().rename(disk, str(path))
-                disk = str(path)
             page = Page(id, draft.title, path, draft.body, dict(draft.jesinia), current.foreign)
-            result = self._store(page, disk, serialize_page(page).encode())
+            result = self._store(
+                page, disk, serialize_page(page).encode(), expected_rev=base_rev,
+                old_path=row.path,
+            )  # fmt: skip
         await self._emit(id, path, "moved" if path != row.path else "updated")
         return result
 
@@ -253,7 +290,7 @@ class KbService:
             assert row is not None
             text = replace_body(data.decode("utf-8"), body)
             page = page_from(parse_document(text), row.path)
-            result = self._store(page, disk, text.encode())
+            result = self._store(page, disk, text.encode(), expected_rev=expected_rev)
         await self._emit(id, row.path, "updated")
         return result
 

@@ -162,3 +162,32 @@ async def test_unreadable_known_page_is_not_marked_missing(
     assert report.missing == [] and kb.index.get(p.page.id) is not None
     assert await kb.conflicts() == []
     assert not [e for e in events if e.payload.get("change") == "missing"]
+
+
+async def test_path_taken_over_by_another_page_reports_missing(
+    kb: KbService, events: list[Event]
+) -> None:
+    old = await kb.write(PageDraft(None, "A", N, "original"))
+    (_root(kb) / "Notes/A.md").write_text("replaced by a plain file\n")
+    report = await scan(kb)
+    assert report.missing == [old.page.id] and report.adopted == [PurePosixPath("Notes/A.md")]
+    assert any(
+        e.payload.get("change") == "missing" and e.payload["id"] == old.page.id for e in events
+    )
+    assert [c.id for c in await kb.conflicts()] == [old.page.id]
+
+
+async def test_adoption_skips_file_changed_during_write(kb: KbService, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from jesinia.services.kb.infrastructure.fs import LocalFiles
+
+    f = _root(kb) / "plain.md"
+    f.write_text("draft\n")
+    original = LocalFiles.write_atomic
+
+    def typing(self: LocalFiles, disk: str, data: bytes, **kw: object) -> float:
+        f.write_text("draft, still typing\n")
+        return original(self, disk, data, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(LocalFiles, "write_atomic", typing)
+    report = await scan(kb)
+    assert report.adopted == [] and f.read_text() == "draft, still typing\n"

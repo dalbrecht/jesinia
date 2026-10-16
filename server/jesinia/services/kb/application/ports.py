@@ -38,11 +38,17 @@ class PageFiles(Protocol):
 
     def read(self, disk: str) -> bytes: ...
 
-    def write_atomic(self, disk: str, data: bytes) -> float:
-        """Write via temp file + fsync + rename; return the new mtime."""
+    def write_atomic(
+        self, disk: str, data: bytes, *, expected_rev: str | None = None, create: bool = False
+    ) -> float:
+        """Write via temp file + fsync + rename; return the new mtime. ``create`` never
+        replaces an existing file; ``expected_rev`` is re-checked just before the replace
+        (``StaleWrite`` if the file changed)."""
         ...
 
-    def rename(self, src: str, dst: str) -> None: ...
+    def rename(self, src: str, dst: str) -> None:
+        """Move a file; never replaces an existing ``dst`` (``FileExistsError``)."""
+        ...
 
     def exists(self, disk: str) -> bool: ...
 
