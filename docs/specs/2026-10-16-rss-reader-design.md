@@ -62,17 +62,23 @@ whole KB, managed in one place, and never duplicated.
 The classic **three panes** from the wireframe:
 
 - **Feeds sidebar:**
-  - views: All unread, Saved for later, In KB;
+  - views: All unread, In KB;
   - folders, each with an unread count;
   - each feed's own count, and a warning on a feed that keeps failing;
-  - **+ Add feed** and **Import OPML** at the bottom.
+  - **+ Add feed** at the bottom. OPML import and export live in **Settings → RSS** (design
+    pass).
 - **List:** headlines with a one-line snippet, source and age, newest first, in Desk density.
   Read items dim, and kept items show an "In KB" badge.
 - **Reader:** the selected post in the serif reading style (ADR 0008). It shows the feed's own
   content. When that's only a summary, a **Load full article** button fetches and extracts
   the original on demand, and the result is cached in `rss.sqlite` **(builder's call)**:
   - a byline: feed, author, date, reading time;
-  - **Engage**, **Keep**, **Save for later**, **Open original ↗**.
+  - a toolbar on top with **Open original ↗**, **Engage** and **Keep**, always visible at the
+    top right (design pass);
+  - actions along the bottom: Previous, Next, Mark unread.
+- **One way to hold on to a post (design pass):** Keep. There is no separate star or "Save for
+  later": the two were redundant.
+- **No on-screen key guide (design pass):** the keys work; `?` lists them.
 
 The narrow layout follows the wireframe: list, then reader as a full screen, then the chat as
 a sheet.
@@ -85,10 +91,9 @@ a sheet.
 | `Enter` / `o` | open the original in a new tab |
 | `n` | **Keep** (quick note, §3.1) |
 | `e` | **Engage** (chat, §3.2) |
-| `s` | save for later / unsave |
 | `m` | toggle read |
 | `Shift+A` | mark everything above the selection as read |
-| `g` then `a` / `s` / `i` | go to All unread / Saved / In KB |
+| `g` then `a` / `i` | go to All unread / In KB |
 | `/` | search the feed list and headlines |
 | `?` | show the key map |
 
@@ -100,7 +105,7 @@ Keys are disabled while a text field has focus **(builder's call)**.
   mark-on-scroll, because it surprises people at volume.
 - **Unread counts are capped in the UI at "999+"**, and folders can be collapsed to hide them
   (anti-goal: nagging).
-- Read state, saved-for-later, and post metadata live in `rss.sqlite`, never in KB files
+- Read state and post metadata live in `rss.sqlite`, never in KB files
   (foundation §5.2).
 
 ## 3. Keeping a post
@@ -208,8 +213,9 @@ Takeaway: …
 - **Formats:** RSS 2.0, Atom and JSON Feed.
 - **Adding a feed:** paste a site or feed URL. Feed autodiscovery finds `<link rel=alternate>`
   on a site.
-- **OPML:** import and export. Import keeps folders; export writes the current list
-  **(user: bring back a Google Reader-sized list)**.
+- **OPML:** import and export in **Settings → RSS** (design pass), alongside retention and the
+  kept-posts folder. Import keeps folders; export writes the current list **(user: bring back a
+  Google Reader-sized list)**.
 - **Folders:** one level, as in Google Reader **(builder's call)**.
 
 ### 4.2 Polling (builder's call)
@@ -235,8 +241,8 @@ Post GUIDs are deduplicated per feed, with link + title as the fallback.
 
 ### 4.4 Retention (builder's call)
 
-- **Unkept, unsaved posts:** pruned 30 days after publication; the window is configurable.
-- **Saved and kept posts:** never pruned.
+- **Unkept posts:** pruned 30 days after publication (or after they were first seen, when the feed gives no date); the window is configurable.
+- **Kept posts:** never pruned.
 - **Search:** the headline search (`/`) covers what's retained. Anything kept is in the KB and
   searchable there forever.
 
@@ -304,7 +310,7 @@ The screen lives in Settings, because tags are KB-wide **(builder's call)**:
 - **Rename:** rewrites `#old` to `#new` in every page that uses it, and adds `old` as an
   alias.
 - **Merge:** pick two or more tags into one; aliases are kept.
-- **Retire:** keeps the tag in pages but hides it from suggestions.
+- **Retire:** keeps the tag in pages but hides it from suggestions. A retired tag can be restored (design pass).
 - **Uncataloged tags:** hashtags found in pages but not in the catalog (hand edits, the Wiki,
   agents), each with **Adopt**, **Merge into…** or **Ignore**.
 
@@ -340,6 +346,9 @@ in the catalog shows up as *uncataloged* (§5.4).
 - **Article extraction** is a new infrastructure helper in `fetch`: readability to HTML to
   Markdown, sanitised with the existing allowlist. The library choice is the plan's, under
   the dependency rules (license-compatible with AGPL, pinned).
+- **Layout patterns from the design pass** (`docs/design/wireframes/design-pass-2026-10-16.md`):
+  Settings uses an outline of sections on the left and a view pane with a toolbar on top and
+  actions at the bottom; Settings gains an **RSS** section (OPML, retention, kept-posts folder).
 - **The PWA** is `web/apps/rss/`, from the Notes template (`AppShell`, `data-app="rss"`,
   manifest, service worker). It uses the RSS icons already exported in
   `docs/design/icons/rss/export/`; RSS is added to `SHIPPED` and set `built` in `apps.ts`.
