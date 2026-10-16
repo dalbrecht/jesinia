@@ -447,3 +447,31 @@ async def test_save_note_refuses_near_duplicate_and_invalid_tags(env: Env) -> No
     )
     assert ok.status_code == 201
     assert "Tags: #sqlite #wal-mode" in (env.root / "Notes/Fine.md").read_text()
+
+
+async def test_save_note_writes_the_canonical_tag_for_an_alias(env: Env) -> None:
+    await env.tags.add("sqlite")
+    await env.tags.add("sql-db", force=True)
+    await env.tags.merge(["sql-db"], "sqlite", {})  # sql-db becomes an alias of sqlite
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+    n = await env.notes.service.save_note(
+        s.id, title="Alias", user_text="", agent_text="t", model="m", tags=["SQL-DB", "sqlite"]
+    )
+    assert n.page.body.startswith("Tags: #sqlite\n\n")
+
+
+async def test_save_note_refused_part_way_adds_nothing_to_the_catalog(env: Env) -> None:
+    from jesinia.services.kb.application.errors import NearDuplicate
+
+    await env.tags.add("sqlite")
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+    with pytest.raises(NearDuplicate) as near:
+        await env.notes.service.save_note(
+            s.id, title="Refused", user_text="", agent_text="t", model="m",
+            tags=["sqlite", "database", "databases"],
+        )  # fmt: skip
+    assert near.value.near == ["database"]  # near the first new tag of this same save
+    assert [info.tag for info in await env.tags.catalog()] == ["sqlite"]
+    assert not (env.root / "Notes/Refused.md").exists()

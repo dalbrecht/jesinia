@@ -21,12 +21,11 @@ from typing import Protocol
 from jesinia.services.agents.application.packs import ContextPack, UntrustedDoc
 from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.agents.domain.session import Session, Subject
-from jesinia.services.kb.application.errors import TagExists
 from jesinia.services.kb.application.service import KbService, PageDraft, PageWithRev
 from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.domain.page import PageId
 from jesinia.services.kb.domain.provenance import inert, provenance_label, wrap_ai
-from jesinia.services.kb.domain.tags import normalise_tag, render_tag_line
+from jesinia.services.kb.domain.tags import render_tag_line
 from jesinia.services.search.application.service import SearchService
 
 log = logging.getLogger(__name__)
@@ -142,8 +141,9 @@ class NotesService:
     ) -> PageWithRev:
         """Write the note; ``tags`` go on a ``Tags:`` line after the user's text.
 
-        A tag not yet in the catalog is added first (``TagService.add``), so a near-duplicate
-        or invalid tag raises ``NearDuplicate`` / ``InvalidTag`` and nothing is written.
+        Tags are written by their canonical catalog name. New ones are added to the catalog
+        first (``TagService.ensure``); a near-duplicate or invalid tag raises
+        ``NearDuplicate`` / ``InvalidTag`` and nothing is written, note or catalog.
         """
         session = self.sessions.get(session_id)
         if session.subject.kind != "kb":
@@ -167,20 +167,11 @@ class NotesService:
                     f"this session already saved {MAX_AGENT_SAVES} notes; "
                     "save more from the Notes app"
                 )
-            wanted = await self._catalogue(tags)
+            # Canonical names (aliases resolved); new tags are catalogued all-or-nothing.
+            wanted = await self.tags.ensure(tags) if tags else []
             note = await self._write_note(session, title, user_text, agent_text, model, wanted)
             self._saves[session_id] = saved + 1
             return note
-
-    async def _catalogue(self, tags: Sequence[str]) -> list[str]:
-        """Normalised, unique ``tags``, each one in the catalog (new ones added now)."""
-        wanted = list(dict.fromkeys(normalise_tag(tag) for tag in tags))
-        for tag in wanted:
-            try:
-                await self.tags.add(tag)
-            except TagExists:
-                pass  # already catalogued (or an alias): use it as it is
-        return wanted
 
     async def _write_note(
         self,

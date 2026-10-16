@@ -326,6 +326,31 @@ class TagService:
                 raise NearDuplicate(wanted, near)
             await self._save(loaded, with_entry(catalog, CatalogEntry(wanted, text)))
 
+    async def ensure(self, tags: Iterable[str]) -> list[str]:
+        """The canonical catalog names for ``tags`` (aliases resolved, duplicates dropped),
+        adding the ones not in the catalog in a single write.
+
+        All or nothing: every tag is validated and near-checked (against the catalog and the
+        other new tags) before anything is written, so ``InvalidTag`` or ``NearDuplicate``
+        leaves the catalog untouched.
+        """
+        wanted = [_tag(raw) for raw in tags]
+        async with self._catalog_lock:
+            loaded = await self._load()
+            catalog = loaded.catalog
+            names: dict[str, None] = {}
+            for tag in wanted:
+                canonical = catalog.resolve(tag)
+                if canonical is None:
+                    if near := self._near(catalog, tag, None):
+                        raise NearDuplicate(tag, near)
+                    catalog = with_entry(catalog, CatalogEntry(tag))
+                    canonical = tag
+                names.setdefault(canonical, None)
+            if catalog is not loaded.catalog:
+                await self._save(loaded, catalog)
+        return list(names)
+
     async def adopt(self, tag: str) -> None:
         """Approve a tag already used in pages (from the uncataloged list)."""
         await self.add(tag, force=True)

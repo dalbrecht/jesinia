@@ -432,3 +432,23 @@ async def test_rename_never_rewrites_link_anchors(kb: KbService) -> None:
     preview = await tags.preview_rename("sqlite", "databases")
     await tags.apply_rename("sqlite", "databases", {p.id: p.rev for p in preview.pages})
     assert (await kb.read(a)).page.body == body.replace("but #sqlite", "but #databases")
+
+
+async def test_ensure_resolves_aliases_and_adds_new_tags_all_or_nothing(kb: KbService) -> None:
+    tags = TagService(kb, None)
+    await tags.add("sqlite")
+    await tags.merge(["sqlite3"], "sqlite", {})
+    before = await _catalog_text(kb)
+    assert await tags.ensure(["#SQLite3", "sqlite"]) == ["sqlite"]
+    assert await _catalog_text(kb) == before  # nothing new: no write
+    with pytest.raises(InvalidTag):
+        await tags.ensure(["wal-mode", "no!good"])
+    with pytest.raises(NearDuplicate):
+        await tags.ensure(["database", "databases"])
+    assert [t.tag for t in await tags.catalog()] == ["sqlite"]
+    assert await tags.ensure(["wal-mode", "Wal-Mode", "sqlite3", "database"]) == [
+        "wal-mode",
+        "sqlite",
+        "database",
+    ]
+    assert [t.tag for t in await tags.catalog()] == ["sqlite", "wal-mode", "database"]
