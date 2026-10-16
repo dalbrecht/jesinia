@@ -260,22 +260,26 @@ class TagService:
             for entry in _approved(loaded.catalog)
         ]
 
-    async def check(self, raw: str) -> TagCheck:
-        """Normalise ``raw`` and say whether it, or something close, is already a tag."""
+    async def check(self, raw: str, *, advise: bool = True) -> TagCheck:
+        """Normalise ``raw`` and say whether it, or something close, is already a tag.
+
+        The advisor (an agent run) is asked for a same-meaning tag only when ``advise`` is
+        set, the tag is not in the catalog and the catalog has approved tags to compare with.
+        """
         tag = _tag(raw)
         catalog = (await self._load()).catalog
         canonical = catalog.resolve(tag)
         same: str | None = None
-        if canonical is None:
+        if advise and canonical is None and _approved(catalog):
             answer = await self._advise(lambda a: a.same_meaning(tag, _approved(catalog)), None)
             same = catalog.resolve(answer) if answer else None
         return TagCheck(
             tag, canonical is not None, canonical, self._near(catalog, tag, canonical), same
         )
 
-    async def suggest(self, text: str, *, limit: int = 5) -> list[Suggestion]:
-        """Catalog tags mentioned in ``text`` first, then the advisor's; never retired or
-        ignored ones. A tag outside the catalog is flagged ``new``."""
+    async def suggest(self, text: str, *, limit: int = 5, advise: bool = True) -> list[Suggestion]:
+        """Catalog tags mentioned in ``text`` first, then (when ``advise``) the advisor's;
+        never retired or ignored ones. A tag outside the catalog is flagged ``new``."""
         catalog = (await self._load()).catalog
         live = [entry for entry in _approved(catalog) if not entry.retired]
         words = f" {_phrase(text)} "
@@ -284,7 +288,7 @@ class TagService:
         picked: dict[str, Suggestion] = {
             tag: Suggestion(tag, False) for _, _, tag in sorted(mentioned)
         }
-        if len(picked) < limit:
+        if advise and len(picked) < limit:
             for raw in await self._advise(lambda a: a.suggest(text, live), list[str]()):
                 tag = normalise_tag(raw)
                 entry = catalog.entries.get(tag)

@@ -155,7 +155,12 @@ export function Chat({ page, runners, onSaved }: ChatProps) {
       </div>
       {state.lastReply ? (
         <div className={s.tagBar}>
-          <TagPicker text={`${state.lastUserText}\n\n${state.lastReply.text}`} value={tags} onChange={setTags} />
+          <TagPicker
+            text={`${state.lastUserText}\n\n${state.lastReply.text}`}
+            context={page.id}
+            value={tags}
+            onChange={setTags}
+          />
         </div>
       ) : null}
       <div className={s.composer}>

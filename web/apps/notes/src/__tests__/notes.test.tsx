@@ -145,6 +145,9 @@ describe("Notes", () => {
     expect(save).toBeDisabled();
     agent("turn_done", { model: "fake-model" });
     await waitFor(() => expect(save).toBeEnabled());
+    // A finished turn alone never asks for suggestions (they may run an agent): the user does.
+    expect(calls.some((c) => c.url.endsWith("/api/kb/tags/suggest"))).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Suggest tags" }));
     await userEvent.click(await screen.findByRole("button", { name: "#topic" }));
     const suggest = calls.find((c) => c.url.endsWith("/api/kb/tags/suggest"));
     expect(await suggest?.json()).toMatchObject({ text: "What is this?\n\nIt is a topic." });

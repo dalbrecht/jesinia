@@ -75,4 +75,5 @@ The skills in `skills/` (Claude Code plugin, Codex snippet) teach agents to:
 - avoid writing provenance markers by hand, and pass `provenance` to `kb_write` when
   creating a page they wrote.
 - call `tags_suggest` or `tags_check` before writing tags, reuse catalog tags, and never
-  invent a near-duplicate of an existing tag.
+  invent a near-duplicate of an existing tag (the tools answer from the catalog alone;
+  the agent judges same-meaning tags itself from `tags_list`).

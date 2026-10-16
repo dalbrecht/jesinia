@@ -41,9 +41,10 @@ repository; this skill is the working summary.
   you.
 - Tags are inline `#tags` in the body (lowercase, letters, digits and `-`, like
   `#wal-mode`). The KB-wide catalog is the `Tags` page.
-- Before writing tags, call `tags_suggest` with the text (it prefers catalog tags) or
+- Before writing tags, call `tags_suggest` with the text (catalog tags it mentions) or
   `tags_check` for a tag you have in mind. Use the catalog's spelling, and when
-  `tags_check` reports a `near` or `same_meaning` tag, use that one. Never invent a
+  `tags_check` reports a `near` tag, use that one. These tools answer from the catalog
+  alone: judge same-meaning tags yourself from `tags_list` meanings and aliases. Never invent a
   near-duplicate of an existing tag (`#databases` when `#database` exists); ask the user
   if a genuinely new tag is needed.
 

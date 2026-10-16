@@ -15,7 +15,11 @@ from jesinia.services.agents.infrastructure.fake import FakeRunner
 from jesinia.services.agents.infrastructure.store import SqliteSessionStore
 from jesinia.services.agents.module import AgentsModule
 from jesinia.services.kb.domain.tag_catalog import CatalogEntry
-from jesinia.services.kb.infrastructure.agent_advisor import AgentTagAdvisor
+from jesinia.services.kb.infrastructure.agent_advisor import (
+    ASK_TIMEOUT,
+    SAME_MEANING_TIMEOUT,
+    AgentTagAdvisor,
+)
 from jesinia.services.kb.module import KbModule
 from tests.conftest import bearer, lifespan_client
 
@@ -32,11 +36,13 @@ class ScriptedSessions:
     def __init__(self, reply: str | BaseException) -> None:
         self.reply = reply
         self.asks: list[tuple[str, ContextPack, str]] = []
+        self.timeouts: list[float] = []
 
     async def one_shot(
         self, runner: str, pack: ContextPack, prompt: str, *, timeout: float = 45.0
     ) -> str:
         self.asks.append((runner, pack, prompt))
+        self.timeouts.append(timeout)
         if isinstance(self.reply, BaseException):
             raise self.reply
         return self.reply
@@ -144,3 +150,16 @@ async def test_kb_module_without_agents_suggests_from_the_catalog(
         c.headers.update(bearer(kb_cfg.token))
         r = await c.post("/api/kb/tags/suggest", json={"text": "Something new."})
         assert r.status_code == 200 and r.json() == []
+
+
+async def test_same_meaning_asks_with_a_short_timeout_and_degrades_on_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assert SAME_MEANING_TIMEOUT == 10.0 and ASK_TIMEOUT > SAME_MEANING_TIMEOUT
+    sessions = ScriptedSessions('["sqlite"]')
+    await _advisor(sessions).suggest("text", CATALOG)
+    await _advisor(sessions).same_meaning("x", CATALOG)
+    assert sessions.timeouts == [ASK_TIMEOUT, SAME_MEANING_TIMEOUT]
+    slow = _advisor(ScriptedSessions(TimeoutError("no reply in 10s")))
+    assert await slow.same_meaning("x", CATALOG) is None
+    assert "TimeoutError" in caplog.text and "no reply in 10s" in caplog.text

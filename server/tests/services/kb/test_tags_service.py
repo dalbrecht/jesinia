@@ -35,6 +35,7 @@ class FakeAdvisor:
         self.meaning = meaning
         self.fail = fail
         self.seen: list[list[CatalogEntry]] = []
+        self.meaning_asks: list[str] = []
 
     async def suggest(self, text: str, catalog: list[CatalogEntry]) -> list[str]:
         self.seen.append(catalog)
@@ -43,6 +44,7 @@ class FakeAdvisor:
         return list(self.tags)
 
     async def same_meaning(self, tag: str, catalog: list[CatalogEntry]) -> str | None:
+        self.meaning_asks.append(tag)
         if self.fail:
             raise RuntimeError("runner exploded")
         return self.meaning
@@ -470,3 +472,21 @@ async def test_catalog_page_does_not_count_as_a_use(kb: KbService) -> None:
     await _page(kb, "A", "#used")
     assert kb.index.tag_counts() == {"used": 1}
     assert kb.index.pages_with_tag("approved") == []
+
+
+async def test_check_skips_the_advisor_when_the_catalog_is_empty(kb: KbService) -> None:
+    advisor = FakeAdvisor(meaning="anything")
+    tags = TagService(kb, advisor)
+    assert await tags.check("ml") == TagCheck("ml", False, None, [], None)
+    await tags.ignore("noise")  # an ignored entry is not an approved tag
+    assert (await tags.check("ml")).same_meaning is None
+    assert advisor.meaning_asks == []
+
+
+async def test_check_and_suggest_can_answer_from_the_catalog_alone(kb: KbService) -> None:
+    advisor = FakeAdvisor(["brand-new"], meaning="machine-learning")
+    tags = TagService(kb, advisor)
+    await tags.add("machine-learning")
+    assert (await tags.check("ml", advise=False)).same_meaning is None
+    assert await tags.suggest("text", advise=False) == []
+    assert advisor.meaning_asks == [] and advisor.seen == []

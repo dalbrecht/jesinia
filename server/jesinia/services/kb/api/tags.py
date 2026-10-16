@@ -194,19 +194,22 @@ def build_tags_router(host: TagsHost) -> APIRouter:
 
 
 def build_tags_tools(host: TagsHost) -> Sequence[ToolDef]:
-    """Read-only tools: creating, renaming or retiring a tag stays a user action (§5.5)."""
+    """Read-only tools: creating, renaming or retiring a tag stays a user action (§5.5).
+
+    They answer from the catalog alone: the calling agent is its own advisor, so a tool call
+    never spawns a second agent run."""
 
     async def tags_list(args: BaseModel, call: CallContext) -> object:
         return [TagInfoOut.of(t).model_dump() for t in await host.tags.catalog()]
 
     async def tags_suggest(args: BaseModel, call: CallContext) -> object:
         a = SuggestIn.model_validate(args.model_dump())
-        found = await host.tags.suggest(a.text, limit=a.limit)
+        found = await host.tags.suggest(a.text, limit=a.limit, advise=False)
         return [SuggestionOut.of(s).model_dump() for s in found]
 
     async def tags_check(args: BaseModel, call: CallContext) -> object:
         a = TagNameIn.model_validate(args.model_dump())
-        return TagCheckOut.of(await host.tags.check(a.tag)).model_dump()
+        return TagCheckOut.of(await host.tags.check(a.tag, advise=False)).model_dump()
 
     return [
         ToolDef(
@@ -218,15 +221,16 @@ def build_tags_tools(host: TagsHost) -> Sequence[ToolDef]:
         ),
         ToolDef(
             "tags_suggest",
-            "Suggest tags for a text: catalog tags first; a tag marked new is not in the "
-            "catalog, and only the user can add it.",
+            "Suggest catalog tags mentioned in a text (from the catalog alone: judge meaning "
+            "yourself). Only the user can add a new tag.",
             SuggestIn,
             tags_suggest,
             False,
         ),
         ToolDef(
             "tags_check",
-            "Normalise a tag and check it against the catalog (exact, alias and near matches).",
+            "Normalise a tag and check it against the catalog (exact, alias and near "
+            "spelling matches; judge same-meaning tags yourself from tags_list).",
             TagNameIn,
             tags_check,
             False,

@@ -19,11 +19,12 @@ function check(answers: Record<string, object>) {
 function setup(routes: Routes, { text = "Notes about SQLite in WAL mode.", initial = [] as string[] } = {}) {
   const changes = vi.fn();
   const env = fakeClient(routes);
-  function Host() {
+  function Host({ subject, context }: { subject: string; context: string }) {
     const [tags, setTags] = useState<string[]>(initial);
     return (
       <TagPicker
-        text={text}
+        text={subject}
+        context={context}
         value={tags}
         onChange={(next) => {
           changes(next);
@@ -32,13 +33,31 @@ function setup(routes: Routes, { text = "Notes about SQLite in WAL mode.", initi
       />
     );
   }
-  render(
+  const view = (subject: string, context: string) => (
     <ClientProvider client={env.client}>
-      <Host />
-    </ClientProvider>,
+      <Host subject={subject} context={context} />
+    </ClientProvider>
   );
-  return { ...env, changes };
+  const { rerender, unmount } = render(view(text, "page-1"));
+  return {
+    ...env,
+    changes,
+    unmount,
+    rerender: (subject: string, context = "page-1") => rerender(view(subject, context)),
+  };
 }
+
+/** A response the test releases by hand, to act while the request is in flight. */
+function deferred() {
+  let release: (response: Response) => void = () => {};
+  const response = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  return { route: () => response, release };
+}
+
+const suggestNow = () => userEvent.click(screen.getByRole("button", { name: "Suggest tags" }));
+const suggests = (calls: Request[]) => calls.filter((c) => c.url.includes("/api/kb/tags/suggest"));
 
 const checks = (calls: Request[]) => calls.filter((c) => c.url.includes("/api/kb/tags/check"));
 
@@ -51,6 +70,7 @@ describe("TagPicker", () => {
       ],
       "GET /api/kb/tags/check": check({ "wal-mode": { normalised: "wal-mode", ...NOT_FOUND } }),
     });
+    await suggestNow();
     const known = await screen.findByRole("button", { name: "#sqlite" });
     expect(screen.getByRole("button", { name: "#wal-mode new" })).toBeInTheDocument();
     const suggest = calls.find((c) => c.url.endsWith("/api/kb/tags/suggest"));
@@ -102,6 +122,7 @@ describe("TagPicker", () => {
       },
       { initial: ["sqlite"] },
     );
+    await suggestNow();
     const box = screen.getByRole("textbox", { name: "Add a tag" });
     expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
     await userEvent.type(box, "sqlite3{Enter}");
@@ -126,8 +147,64 @@ describe("TagPicker", () => {
   it("asks for no suggestions without text", async () => {
     const { calls } = setup({}, { text: "  " });
     expect(screen.getByRole("textbox", { name: "Add a tag" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Suggest tags" })).toBeDisabled();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toHaveLength(0);
     expect(screen.queryByRole("list", { name: "Tags" })).not.toBeInTheDocument();
+  });
+
+  it("asks for suggestions only when the user does, and drops them when the text changes", async () => {
+    const { calls, rerender } = setup({ "POST /api/kb/tags/suggest": [{ tag: "sqlite", new: false }] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(suggests(calls)).toHaveLength(0); // a new reply alone never runs the advisor
+    rerender("A later reply.");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(suggests(calls)).toHaveLength(0);
+    await suggestNow();
+    expect(await screen.findByRole("button", { name: "#sqlite" })).toBeInTheDocument();
+    expect(await suggests(calls)[0]?.json()).toEqual({ text: "A later reply.", limit: 5 });
+    rerender("Another reply.");
+    expect(screen.queryByRole("group", { name: "Suggested tags" })).not.toBeInTheDocument();
+    expect(suggests(calls)).toHaveLength(1);
+  });
+
+  it("drops suggestions that arrive after the text changed", async () => {
+    const slow = deferred();
+    const { rerender } = setup({ "POST /api/kb/tags/suggest": slow.route });
+    await suggestNow();
+    rerender("Another reply.");
+    slow.release(Response.json([{ tag: "stale", new: false }]));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByRole("button", { name: "#stale" })).not.toBeInTheDocument();
+  });
+
+  it("adds nothing when the context switches before the check answers", async () => {
+    const slow = deferred();
+    const { changes, rerender } = setup({ "GET /api/kb/tags/check": slow.route });
+    await userEvent.type(screen.getByRole("textbox", { name: "Add a tag" }), "wal-mode{Enter}");
+    rerender("Notes on another page.", "page-2");
+    slow.release(Response.json({ normalised: "wal-mode", ...NOT_FOUND }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(changes).not.toHaveBeenCalled();
+    expect(screen.queryByRole("list", { name: "Tags" })).not.toBeInTheDocument();
+  });
+
+  it("adds nothing when it unmounts before the check answers", async () => {
+    const slow = deferred();
+    const { changes, unmount } = setup({ "GET /api/kb/tags/check": slow.route });
+    await userEvent.type(screen.getByRole("textbox", { name: "Add a tag" }), "wal-mode{Enter}");
+    unmount();
+    slow.release(Response.json({ normalised: "wal-mode", ...NOT_FOUND }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(changes).not.toHaveBeenCalled();
+  });
+
+  it("still adds a checked tag when only the text changed meanwhile", async () => {
+    const slow = deferred();
+    const { changes, rerender } = setup({ "GET /api/kb/tags/check": slow.route });
+    await userEvent.type(screen.getByRole("textbox", { name: "Add a tag" }), "wal-mode{Enter}");
+    rerender("A newer reply on the same page.");
+    slow.release(Response.json({ normalised: "wal-mode", ...NOT_FOUND }));
+    await waitFor(() => expect(changes).toHaveBeenLastCalledWith(["wal-mode"]));
   });
 });

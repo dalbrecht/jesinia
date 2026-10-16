@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 MAX_SUGGESTIONS = 5
 MAX_TEXT = 20_000  # characters of the text sent to the agent
 ASK_TIMEOUT = 45.0
+# A same-meaning check runs while the user is choosing a tag: a slow answer is no answer.
+SAME_MEANING_TIMEOUT = 10.0
 
 ROLE = (
     "You help keep the user's knowledge base tags consistent. A tag is lowercase words "
@@ -98,17 +100,19 @@ class AgentTagAdvisor:
         runner: Callable[[], str | None],
         *,
         timeout: float = ASK_TIMEOUT,
+        same_meaning_timeout: float = SAME_MEANING_TIMEOUT,
     ) -> None:
         self._sessions = sessions
         self._runner = runner
         self._timeout = timeout
+        self._same_meaning_timeout = same_meaning_timeout
 
-    async def _ask(self, pack: ContextPack, prompt: str) -> list[str]:
+    async def _ask(self, pack: ContextPack, prompt: str, timeout: float) -> list[str]:
         sessions, runner = self._sessions(), self._runner()
         if sessions is None or runner is None:
             return []
         try:
-            reply = await sessions.one_shot(runner, pack, prompt, timeout=self._timeout)
+            reply = await sessions.one_shot(runner, pack, prompt, timeout=timeout)
         # Secondary feature: whatever the agent run raises, tag operations carry on.
         except Exception as exc:  # noqa: BLE001 - see above
             log.warning("tag advisor ask via %s failed (%s: %s)", runner, type(exc).__name__, exc)
@@ -120,12 +124,14 @@ class AgentTagAdvisor:
             ROLE + _render_catalog(catalog),
             untrusted={"text.md": UntrustedDoc("text-to-tag", text[:MAX_TEXT])},
         )
-        return (await self._ask(pack, SUGGEST_PROMPT))[:MAX_SUGGESTIONS]
+        return (await self._ask(pack, SUGGEST_PROMPT, self._timeout))[:MAX_SUGGESTIONS]
 
     async def same_meaning(self, tag: str, catalog: list[CatalogEntry]) -> str | None:
         names = {name: entry.tag for entry in catalog for name in (entry.tag, *entry.aliases)}
         prompt = SAME_MEANING_PROMPT.format(tag=normalise_tag(tag))
-        for answer in await self._ask(ContextPack(ROLE + _render_catalog(catalog)), prompt):
+        pack = ContextPack(ROLE + _render_catalog(catalog))
+        # On timeout (or any failure) ``_ask`` logs the cause and this is "no match".
+        for answer in await self._ask(pack, prompt, self._same_meaning_timeout):
             if answer in names:
                 return names[answer]
         return None

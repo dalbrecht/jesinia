@@ -11,9 +11,12 @@ from fastapi import FastAPI
 
 from jesinia.core.app import create_app
 from jesinia.core.config import Config, load_config
-from jesinia.core.idempotency import IDEMPOTENCY_HEADER
+from jesinia.core.idempotency import IDEMPOTENCY_HEADER, IdempotencyStore
 from jesinia.core.module import CallContext, ToolDef
+from jesinia.services.kb.api.tags import build_tags_tools
+from jesinia.services.kb.application.service import KbService
 from jesinia.services.kb.application.tags import TagService
+from jesinia.services.kb.domain.tag_catalog import CatalogEntry
 from jesinia.services.kb.module import KbModule
 from tests.conftest import BASE_URL, bearer, lifespan_client
 
@@ -288,3 +291,46 @@ async def test_tools_match_the_routes(client: httpx.AsyncClient, module: KbModul
     assert await call("tags_suggest", text="sqlite") == [{"tag": "sqlite", "new": False}]
     checked = await call("tags_check", tag="SQLite")
     assert isinstance(checked, dict) and checked["canonical"] == "sqlite"
+
+
+class _RecordingAdvisor:
+    def __init__(self) -> None:
+        self.asks = 0
+
+    async def suggest(self, text: str, catalog: list[CatalogEntry]) -> list[str]:
+        self.asks += 1
+        return ["advisor-tag"]
+
+    async def same_meaning(self, tag: str, catalog: list[CatalogEntry]) -> str | None:
+        self.asks += 1
+        return "sqlite"
+
+
+class _Host:
+    def __init__(self, tags: TagService) -> None:
+        self._tags = tags
+
+    @property
+    def tags(self) -> TagService:
+        return self._tags
+
+    @property
+    def idempotency(self) -> IdempotencyStore:
+        raise NotImplementedError
+
+
+async def test_mcp_tools_answer_from_the_catalog_alone(kb: KbService) -> None:
+    """The calling agent is its own advisor: the tools never spawn another agent."""
+    advisor = _RecordingAdvisor()
+    service = TagService(kb, advisor)
+    await service.add("sqlite")
+    tools = {t.name: t for t in build_tags_tools(_Host(service))}
+
+    async def call(name: str, **args: object) -> object:
+        tool = tools[name]
+        return await tool.handler(tool.input_model(**args), CallContext("s-1"))
+
+    assert await call("tags_suggest", text="nothing matches") == []
+    checked = await call("tags_check", tag="lite-db")
+    assert isinstance(checked, dict) and checked["same_meaning"] is None
+    assert advisor.asks == 0
