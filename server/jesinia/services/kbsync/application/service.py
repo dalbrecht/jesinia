@@ -25,6 +25,7 @@ from jesinia.core.events import Event, EventBus
 from jesinia.services.kbsync.application.detect import detect
 from jesinia.services.kbsync.application.ports import Git
 from jesinia.services.kbsync.domain.message import commit_message, parse_name_status
+from jesinia.services.kbsync.domain.redact import redact
 from jesinia.services.kbsync.domain.state import GitState
 
 Outcome = Literal["skipped", "committed", "pushed", "conflict", "blocked", "error"]
@@ -183,7 +184,7 @@ class SyncService:
         if staged:
             r = await git.run("commit", "-q", "-m", commit_message(staged), check=False)
             if r.code != 0:
-                return SyncResult("error", f"commit failed: {r.err.strip()}")
+                return SyncResult("error", f"commit failed: {redact(r.err)}")
             committed = True
 
         if state.mode != "push":
@@ -198,10 +199,10 @@ class SyncService:
                     "conflict",
                     "Sync paused: the KB has a merge conflict. Resolve it, then choose Resume.",
                 )
-            return SyncResult("error", f"pull failed: {pull.err.strip()}")
+            return SyncResult("error", f"pull failed: {redact(pull.err)}")
         push = await git.run("push", "-q", check=False)
         if push.code != 0:
-            return SyncResult("error", f"push failed: {push.err.strip()}")
+            return SyncResult("error", f"push failed: {redact(push.err)}")
         return SyncResult("pushed", "committed and pushed" if committed else "pushed")
 
     async def _rebasing(self) -> bool:

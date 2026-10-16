@@ -8,11 +8,14 @@ import os
 from pathlib import Path
 
 from jesinia.services.kbsync.application.ports import GitResult
+from jesinia.services.kbsync.domain.redact import redact
 
 
 class GitError(RuntimeError):
     def __init__(self, args: tuple[str, ...], result: GitResult) -> None:
-        super().__init__(f"git {' '.join(args)} failed ({result.code}): {result.err.strip()}")
+        super().__init__(
+            f"git {redact(' '.join(args))} failed ({result.code}): {redact(result.err)}"
+        )
         self.args_ = args
         self.result = result
 
