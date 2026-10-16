@@ -277,6 +277,18 @@ describe("Notes", () => {
     expect(await screen.findByText("Couldn't save (500).")).toBeInTheDocument();
   });
 
+  it("a page deleted on disk shows as missing", async () => {
+    let gone = false;
+    setup({
+      "GET /api/kb/pages/p1": () => (gone ? Response.json({ detail: "gone" }, { status: 404 }) : Response.json(PAGE)),
+    });
+    expect(await screen.findByRole("textbox", { name: "Edit Topic" })).toBeInTheDocument();
+    gone = true;
+    kbChanged("p1", "external", "deleted");
+    expect(await screen.findByText("This page isn't in the KB any more.")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Edit Topic" })).not.toBeInTheDocument();
+  });
+
   it("follows browser history and offers [[ link completion", async () => {
     setup();
     await screen.findByRole("heading", { name: "Topic", level: 1 });
@@ -436,5 +448,19 @@ describe("Notes", () => {
     failSearch = true;
     await userEvent.type(screen.getByRole("searchbox", { name: "Search notes" }), "zz");
     expect(await screen.findByText("Search failed: offline")).toHaveAttribute("role", "alert");
+  });
+
+  it("a search the server rejects shows its error, not an empty result", async () => {
+    let detail: string | null = "search index is locked";
+    setup({
+      "GET /api/search": () => Response.json(detail === null ? {} : { detail }, { status: 500 }),
+    });
+    const box = await screen.findByRole("searchbox", { name: "Search notes" });
+    await userEvent.type(box, "zz");
+    expect(await screen.findByText("Search failed: search index is locked")).toHaveAttribute("role", "alert");
+    expect(screen.queryByText(/No pages match/)).not.toBeInTheDocument();
+    detail = null;
+    await userEvent.type(box, "y");
+    expect(await screen.findByText("Search failed: HTTP 500")).toHaveAttribute("role", "alert");
   });
 });

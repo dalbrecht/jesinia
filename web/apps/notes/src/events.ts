@@ -136,6 +136,11 @@ export function reduce(state: ChatState, e: AgentEvent, now = new Date().toISOSt
     }
     case "text": {
       const chunk = str(e.data.text);
+      if (e.origin === "terminal") {
+        // agents_session_note: a whole progress note with no turn_done to follow.
+        messages.push({ id: `e${e.seq}`, kind: "agent", markdown: chunk, streaming: false, at: now });
+        return { ...state, messages };
+      }
       if (last?.kind === "agent" && last.streaming) {
         messages[messages.length - 1] = { ...last, markdown: last.markdown + chunk };
       } else {

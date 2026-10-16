@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Shapes and calls the Notes PWA uses (the KB routes are shared, spec ADR 0008 §5).
-import type { JesiniaClient } from "@jesinia/client";
+import { errorText, type JesiniaClient } from "@jesinia/client";
 
 export type Page = {
   id: string;
@@ -49,6 +49,8 @@ export async function search(client: JesiniaClient, q: string, signal?: AbortSig
     params: { query: { q, source: ["kb"], limit: 30 } },
     ...(signal ? { signal } : {}),
   });
+  // A failed search must not read as "no matches"; the caller shows the message.
+  if (!r.response.ok) throw new Error(errorText(r.error, `HTTP ${r.response.status}`));
   return (r.data as Hit[] | undefined) ?? [];
 }
 
