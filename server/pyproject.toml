@@ -7,6 +7,7 @@ license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.118",
+    "feedparser>=6.0",
     "httpx>=0.28",
     "mcp>=1.15",
     "nh3>=0.2",
@@ -101,3 +102,8 @@ name = "clean architecture inside each service and app"
 type = "layers"
 containers = ["jesinia.services.*", "jesinia.apps.*"]
 layers = ["(api)", "(infrastructure)", "(application)", "(domain)"]
+
+[[tool.mypy.overrides]]
+# feedparser ships no type information; it is wrapped in a typed adapter in apps/rss/infrastructure/parse.py.
+module = ["feedparser"]
+ignore_missing_imports = true
