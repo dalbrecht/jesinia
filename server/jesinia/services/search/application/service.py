@@ -51,6 +51,16 @@ class IndexedDoc:
     url: str | None
     path: str | None
     authoritative: bool
+    meta: str = ""  # searchable metadata (a KB page's `jesinia:` block, flattened)
+
+
+def flatten_meta(value: object) -> str:
+    """``{"kind": "note", "tags": ["a"]}`` → ``"kind note tags a"`` for full-text search."""
+    if isinstance(value, dict):
+        return " ".join(f"{k} {flatten_meta(v)}".strip() for k, v in value.items())
+    if isinstance(value, list | tuple):
+        return " ".join(flatten_meta(v) for v in value)
+    return "" if value is None else str(value)
 
 
 class SearchIndex(Protocol):
@@ -110,7 +120,16 @@ class SearchService:
             self._index.delete(KB_SOURCE, id)
             return
         self._index.upsert(
-            IndexedDoc(KB_SOURCE, id, p.page.title, p.page.body, None, str(p.page.path), True)
+            IndexedDoc(
+                KB_SOURCE,
+                id,
+                p.page.title,
+                p.page.body,
+                None,
+                str(p.page.path),
+                True,
+                flatten_meta(p.page.jesinia),
+            )
         )
 
     async def reindex(self) -> int:

@@ -11,17 +11,9 @@ import os
 from asyncio import create_subprocess_exec as spawn
 from pathlib import Path
 
-from jesinia.services.kbsync.application.ports import GitResult
-from jesinia.services.kbsync.domain.redact import redact
+from jesinia.services.kbsync.application.ports import GitError, GitResult
 
-
-class GitError(RuntimeError):
-    def __init__(self, args: tuple[str, ...], result: GitResult) -> None:
-        super().__init__(
-            f"git {redact(' '.join(args))} failed ({result.code}): {redact(result.err)}"
-        )
-        self.args_ = args
-        self.result = result
+__all__ = ["GitError", "GitRunner"]
 
 
 class GitRunner:

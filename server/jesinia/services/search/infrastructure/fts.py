@@ -27,8 +27,8 @@ class FtsIndex:
                 "DELETE FROM docs WHERE source = ? AND key = ?", (doc.source, doc.key)
             )
             self.conn.execute(
-                "INSERT INTO docs (source, key, title, body, url, path, authoritative) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO docs (source, key, title, body, url, path, meta, authoritative) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     doc.source,
                     doc.key,
@@ -36,6 +36,7 @@ class FtsIndex:
                     doc.body,
                     doc.url,
                     doc.path,
+                    doc.meta,
                     int(doc.authoritative),
                 ),
             )
@@ -51,8 +52,9 @@ class FtsIndex:
     def match(self, fts_query: str, limit: int, sources: Sequence[str] | None) -> list[SearchHit]:
         sql = (
             "SELECT source, key, title, path, url, authoritative, "
-            f"snippet(docs, 3, '{_OPEN}', '{_CLOSE}', '…', 16), "
-            "bm25(docs, 0, 0, 8.0, 1.0, 0, 0, 0) AS score "
+            # -1: the snippet comes from whichever column matched (body, path or metadata).
+            f"snippet(docs, -1, '{_OPEN}', '{_CLOSE}', '…', 16), "
+            "bm25(docs, 0, 0, 8.0, 1.0, 0, 2.0, 1.0, 0) AS score "
             "FROM docs WHERE docs MATCH ?"
         )
         params: list[object] = [fts_query]

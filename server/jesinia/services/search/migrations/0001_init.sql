@@ -6,7 +6,8 @@ CREATE VIRTUAL TABLE docs USING fts5(
     title,
     body,
     url UNINDEXED,
-    path UNINDEXED,
+    path,
+    meta,
     authoritative UNINDEXED,
     tokenize = 'porter unicode61 remove_diacritics 2'
 );

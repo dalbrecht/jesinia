@@ -104,3 +104,19 @@ def test_malformed_fts_query_returns_nothing(tmp_path) -> None:  # type: ignore[
     conn = open_db(tmp_path, SEARCH_DB)
     assert FtsIndex(conn).match('"unbalanced', 5, None) == []
     conn.close()
+
+
+async def test_kb_path_and_metadata_are_searchable(env: Env) -> None:
+    await env.kb.write(
+        PageDraft(None, "Plain", PurePosixPath("Projects/Greenhouse"), "nothing here",
+                  {"kind": "note", "source": "rss:gardening", "tags": ["seedlings"]})
+    )  # fmt: skip
+    by_path = await env.search.query("greenhouse")
+    assert [h.title for h in by_path] == ["Plain"] and "<mark>" in by_path[0].snippet
+    assert [h.title for h in await env.search.query("seedlings")] == ["Plain"]
+
+
+def test_flatten_meta() -> None:
+    from jesinia.services.search.application.service import flatten_meta
+
+    assert flatten_meta({"a": 1, "b": ["x", {"c": None}], "d": None}) == "a 1 b x c d"

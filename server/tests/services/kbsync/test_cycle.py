@@ -227,3 +227,37 @@ async def test_no_root(tmp_path: Path) -> None:
     assert (await sync.run_cycle("manual")).outcome == "skipped"
     with pytest.raises(ValueError):
         await sync.init_repo()
+
+
+async def test_rebase_started_during_quiet_wait_blocks(env: Env) -> None:
+    env.activity = env.clock.now()
+    (env.work / "Notes/a.md").write_text("x\n")
+    real_sleep = env.clock.sleep
+
+    async def user_starts_rebase(seconds: float) -> None:
+        (env.work / ".git/rebase-merge").mkdir(exist_ok=True)
+        await real_sleep(seconds)
+
+    env.clock.sleep = user_starts_rebase  # type: ignore[method-assign]
+    before = fingerprint(env.work)
+    r = await env.sync.run_cycle("timer")
+    assert r.outcome == "blocked" and fingerprint(env.work) == before
+    assert not any(c[0] == "add" for c in env.spy.calls)
+
+
+async def test_checked_git_failure_becomes_error_result(env: Env) -> None:
+    (env.work / "Notes/a.md").write_text("x\n")
+    real = env.spy.run
+
+    async def failing(*args: str, check: bool = True) -> GitResult:
+        if args[:2] == ("diff", "--cached"):
+            return await real("diff", "--cached", "--no-such-flag", check=True)
+        return await real(*args, check=check)
+
+    env.spy.run = failing  # type: ignore[method-assign]
+    r = await env.sync.run_cycle("manual")
+    assert r.outcome == "error" and r.message.startswith("git failed:")
+    st = env.sync.status()
+    assert st.consecutive_failures == 1 and st.last_result == r
+    assert st.next_run == env.clock.now() + timedelta(minutes=5)
+    assert env.events and env.events[-1].payload["last_result"]["outcome"] == "error"  # type: ignore[index]

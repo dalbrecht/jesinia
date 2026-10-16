@@ -23,7 +23,7 @@ from typing import Literal, Protocol
 
 from jesinia.core.events import Event, EventBus
 from jesinia.services.kbsync.application.detect import detect
-from jesinia.services.kbsync.application.ports import Git
+from jesinia.services.kbsync.application.ports import Git, GitError
 from jesinia.services.kbsync.domain.message import commit_message, parse_name_status
 from jesinia.services.kbsync.domain.redact import redact
 from jesinia.services.kbsync.domain.state import GitState
@@ -139,7 +139,12 @@ class SyncService:
 
     async def run_cycle(self, trigger: Trigger) -> SyncResult:
         async with self._lock:
-            result = await self._cycle(trigger)
+            try:
+                result = await self._cycle(trigger)
+            except (GitError, OSError) as exc:
+                # A checked git command failed (index lock, permissions, git missing):
+                # record it like any other failure so status, backoff and events update.
+                result = SyncResult("error", f"git failed: {redact(str(exc))}")
             now = self.clock.now()
             self._last_run, self._last_result = now, result
             if result.outcome == "error":
@@ -177,6 +182,11 @@ class SyncService:
         git = self.git
         if trigger != "shutdown":
             await self._wait_for_quiet()
+            # The user may have started a rebase or merge (or detached HEAD) while we
+            # waited: never touch the index in those states.
+            state = await self.refresh()
+            if state.blocked:
+                return SyncResult("blocked", state.problem_text or "blocked")
 
         await git.run("add", "-A")
         staged = parse_name_status((await git.run("diff", "--cached", "--name-status", "-M")).out)
