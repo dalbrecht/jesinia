@@ -645,6 +645,9 @@ stable.
 | `--jx-danger` | `--jx-danger-bg` | 4.5 | 7.43 | 10.29 | Error banner text |
 | `--jx-fg` | `--jx-danger-bg` | 4.5 | 15.39 | 16.69 | Body text in error banner |
 | `--jx-danger-solid-fg` | `--jx-danger-solid` | 4.5 | 7.97 | 7.44 | Danger button label |
+| `--jx-success` | `--jx-surface-raised` | 4.5 | 7.10 | 8.55 | Toast success icon/text |
+| `--jx-warn` | `--jx-surface-raised` | 4.5 | 7.70 | 8.11 | Toast warning icon/text |
+| `--jx-danger` | `--jx-surface-raised` | 4.5 | 7.97 | 8.03 | Toast error icon/text |
 | `--jx-label-marigold-fg` | `--jx-label-marigold-bg` | 4.5 | 9.46 | 11.20 | Label pill: marigold |
 | `--jx-label-plum-fg` | `--jx-label-plum-bg` | 4.5 | 9.73 | 11.24 | Label pill: plum |
 | `--jx-label-cornflower-fg` | `--jx-label-cornflower-bg` | 4.5 | 9.48 | 11.24 | Label pill: cornflower |
