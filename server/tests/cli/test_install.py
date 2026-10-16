@@ -12,6 +12,8 @@ from jesinia.cli import main
 from jesinia.cli.install import System, render_plist
 from jesinia.core.config import load_config
 
+HEALTHY = {"ok": True, "modules": {"kb": {"ok": True, "detail": "ok"}}}
+
 
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -128,7 +130,7 @@ def test_wait_healthy_times_out(tmp_home: Path, monkeypatch: pytest.MonkeyPatch)
     with respx.mock:
         respx.get("http://127.0.0.1:4870/healthz").mock(side_effect=ConnectError("x"))
         assert inst._wait_healthy(Spy(), cfg) is False
-        respx.get("http://127.0.0.1:4870/healthz").mock(return_value=Response(200))
+        respx.get("http://127.0.0.1:4870/healthz").mock(return_value=Response(200, json=HEALTHY))
         assert inst._wait_healthy(Spy(), cfg) is True
     monkeypatch.setattr(inst, "HEALTH_TIMEOUT", 5.0)
     slept: list[float] = []
@@ -136,7 +138,7 @@ def test_wait_healthy_times_out(tmp_home: Path, monkeypatch: pytest.MonkeyPatch)
     spy.sleep = slept.append
     with respx.mock:
         respx.get("http://127.0.0.1:4870/healthz").mock(
-            side_effect=[ConnectError("x"), Response(200)]
+            side_effect=[ConnectError("x"), Response(200, json=HEALTHY)]
         )
         assert inst._wait_healthy(spy, cfg) is True and slept == [0.5]
 
@@ -228,3 +230,32 @@ def test_private_write_cleans_up_on_failure(
     with pytest.raises(OSError):
         inst._write_private(tmp_path / "config.toml", "secret")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_degraded_server_is_not_healthy(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import respx
+    from httpx import Response
+
+    cfg = load_config(tmp_home / "c/config.toml")
+    monkeypatch.setattr(inst, "HEALTH_TIMEOUT", 0.0)
+    degraded = {
+        "ok": False,
+        "modules": {
+            "kb": {"ok": False, "detail": "migration failed"},
+            "agents": {"ok": False, "detail": "x"},
+        },
+    }
+    optional_only = {
+        "ok": False,
+        "modules": {"kb": {"ok": True, "detail": "ok"}, "agents": {"ok": False, "detail": "x"}},
+    }
+    with respx.mock:
+        respx.get("http://127.0.0.1:4870/healthz").mock(return_value=Response(200, json=degraded))
+        assert inst._wait_healthy(Spy(), cfg) is False
+        respx.get("http://127.0.0.1:4870/healthz").mock(
+            return_value=Response(200, json=optional_only)
+        )
+        assert inst._wait_healthy(Spy(), cfg) is True
+        respx.get("http://127.0.0.1:4870/healthz").mock(return_value=Response(200, text="not json"))
+        assert inst._wait_healthy(Spy(), cfg) is False
+    assert inst.unhealthy_modules([]) == ["?"]

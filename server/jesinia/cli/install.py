@@ -195,14 +195,31 @@ def refresh_registrations(cfg: Config, sys: System | None = None) -> None:
 # -- install / uninstall ----------------------------------------------------------------
 
 
+# Modules that may legitimately be unavailable on a fresh machine (no agent CLI logged
+# in, no GitHub token): they don't fail an install. Everything else must report ok.
+OPTIONAL_MODULES = frozenset({"agents", "github"})
+
+
+def unhealthy_modules(body: object) -> list[str]:
+    """Required modules that /healthz reports as not ok (``["?"]`` if unreadable)."""
+    modules = body.get("modules") if isinstance(body, dict) else None
+    if not isinstance(modules, dict):
+        return ["?"]
+    return sorted(
+        name
+        for name, m in modules.items()
+        if name not in OPTIONAL_MODULES and not (isinstance(m, dict) and m.get("ok") is True)
+    )
+
+
 def _wait_healthy(sys: System, cfg: Config) -> bool:
     deadline = time.monotonic() + HEALTH_TIMEOUT
     while True:
         try:
             r = httpx.get(f"http://127.0.0.1:{cfg.port}/healthz", timeout=2, trust_env=False)
-            if r.status_code == 200:
+            if r.status_code == 200 and not unhealthy_modules(r.json()):
                 return True
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             pass
         if time.monotonic() >= deadline:
             return False
