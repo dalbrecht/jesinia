@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from jesinia.apps.notes.module import NOTES_DB
 from jesinia.core.db import ModuleDb
 from jesinia.core.module import Module
 from jesinia.services.agents.module import SESSIONS_DB, AgentsModule
@@ -25,4 +26,4 @@ def modules() -> list[Module]:
     ]
 
 
-DATABASES: tuple[ModuleDb, ...] = (KB_DB, SEARCH_DB, SESSIONS_DB, GITHUB_DB, FETCH_DB)
+DATABASES: tuple[ModuleDb, ...] = (KB_DB, SEARCH_DB, SESSIONS_DB, GITHUB_DB, FETCH_DB, NOTES_DB)

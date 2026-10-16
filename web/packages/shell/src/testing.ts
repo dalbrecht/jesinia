@@ -54,7 +54,7 @@ export function baseRoutes(over: Routes = {}): Routes {
     "GET /healthz": HEALTHY,
     "GET /api/kbsync/status": syncStatus(),
     "GET /api/kb/conflicts": [],
-    "GET /api/agents/runners": { claude: { available: true, version: "2.1.301", detail: "ok" } },
+    "GET /api/agents/runners": { "claude-code": { available: true, version: "2.1.301", detail: "ok" } },
     "GET /api/kb/path": { path: "/Users/me/kb", problem: null, pages: 12 },
     ...over,
   };

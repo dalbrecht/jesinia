@@ -841,7 +841,7 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
   - Routes `POST /api/notes/sessions {page_id, runner}`, `POST /api/notes/sessions/{id}/save`; MCP `notes_save` (`writes=True`).
   - Editing and browsing (ADR 0008 §5) use the shared KB routes from Task 12 (`GET /api/kb/tree`, `PATCH /api/kb/pages/{id}/body`, `PUT /api/kb/pages`, `POST /api/kb/pages/{id}/move`); the Notes module adds no KB routes and never touches the filesystem directly.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
 
 ```python
 async def test_save_note_format(env):
@@ -856,7 +856,7 @@ async def test_pack_wraps_subject_as_untrusted(env, tmp_session_dir): ...
 async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 ```
 
-- [ ] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(notes): tracer app backend`.
+- [x] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(notes): tracer app backend`.
 
 ### Task 25: Notes PWA and end-to-end flow
 

@@ -11,7 +11,7 @@ describe("Launcher", () => {
     const { client } = fakeClient(
       baseRoutes({
         "GET /api/agents/runners": {
-          claude: { available: true, version: "2.1.301", detail: "ok" },
+          "claude-code": { available: true, version: "2.1.301", detail: "ok" },
           codex: { available: false, version: null, detail: "not logged in" },
         },
         "POST /api/kbsync/run": {
