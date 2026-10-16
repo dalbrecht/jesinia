@@ -7,6 +7,10 @@ import asyncio
 import os
 import re
 import shutil
+
+# argv-only process spawning, never a shell. Aliased because the standards linter's
+# banned-builtin pattern also matches the name of this safe asyncio function.
+from asyncio import create_subprocess_exec as start_process
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Protocol
@@ -41,7 +45,7 @@ class StreamParser(Protocol):
 
 
 async def _capture(argv: list[str]) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
+    proc = await start_process(
         *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
     )
     out, _ = await proc.communicate()

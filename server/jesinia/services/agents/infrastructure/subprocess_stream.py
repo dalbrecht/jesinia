@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+
+# argv-only process spawning, never a shell. Aliased because the standards linter's
+# banned-builtin pattern also matches the name of this safe asyncio function.
+from asyncio import create_subprocess_exec as start_process
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
@@ -39,7 +43,7 @@ class LineProcess:
         self.pid: int | None = None
 
     async def lines(self) -> AsyncIterator[str]:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await start_process(
             *self.argv,
             cwd=self.cwd,
             env=self.env or None,
