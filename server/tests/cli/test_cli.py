@@ -18,7 +18,7 @@ from jesinia.services.agents.module import SESSIONS_DB
 from jesinia.services.search.module import SEARCH_DB
 
 Cli = Callable[[list[str]], Result]
-BASE = "http://127.0.0.1:4870"
+BASE = "http://127.0.0.1:5374"
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def kb(tmp_path: Path) -> Path:
 def test_config_set_and_get(cli: Cli, kb: Path) -> None:
     assert cli(["config", "set", "kb.path", str(kb)]).exit_code == 0
     assert cli(["config", "get", "kb.path"]).stdout.strip() == str(kb)
-    assert cli(["config", "get", "server.port"]).stdout.strip() == "4870"
+    assert cli(["config", "get", "server.port"]).stdout.strip() == "5374"
     assert cli(["config", "get", "kbsync.interval"]).stdout.strip() == "4h"
     assert cli(["config", "get", "kbsync.quiet"]).stdout.strip() == "30s"
     assert cli(["config", "get", "folders.note"]).stdout.strip() == "Notes"
@@ -202,7 +202,7 @@ def test_serve_runs_uvicorn_with_json_logs(
             if h not in before:
                 root.removeHandler(h)
                 h.close()
-    assert seen["host"] == "127.0.0.1" and seen["port"] == 4870
+    assert seen["host"] == "127.0.0.1" and seen["port"] == 5374
     line = (home / "logs/server.log").read_text().splitlines()[-1]
     assert json.loads(line)["msg"] == "hello"
 
@@ -330,7 +330,7 @@ def test_doctor_server_rejects_non_jesinia_responses(tmp_path: Path) -> None:
         httpx.Response(500, json=healthy_body()),
     ):
         line = server_check(tmp_path, response)
-        assert line.startswith("fail server: port 4870 is not answering as Jesinia"), line
+        assert line.startswith("fail server: port 5374 is not answering as Jesinia"), line
 
 
 def test_doctor_server_fails_on_malformed_module_entries(tmp_path: Path) -> None:

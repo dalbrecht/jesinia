@@ -9,7 +9,7 @@ describe("createClient", () => {
       if (req.url.endsWith("/healthz")) return Response.json({ ok: true, modules: {} });
       return Response.json({ detail: "authentication required" }, { status: 401 });
     });
-    const client = createClient({ baseUrl: "http://127.0.0.1:4870", fetch });
+    const client = createClient({ baseUrl: "http://127.0.0.1:5374", fetch });
     const health = await client.GET("/healthz");
     expect(health.data).toEqual({ ok: true, modules: {} });
     const signedOut = vi.fn();

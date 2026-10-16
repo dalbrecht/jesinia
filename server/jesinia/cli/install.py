@@ -24,6 +24,10 @@ from jesinia.core.config import Config, load_config, save_config
 from jesinia.core.paths import ENV_HOME, config_path, default_data_dir, default_log_dir
 
 LABEL = "com.jesinia.server"
+UPDATER = "com.jesinia.updater"
+UPDATE_INTERVAL = 15 * 60
+PLUGIN = "jesinia@jesinia"
+SNIPPET_BEGIN, SNIPPET_END = "<!-- jesinia:begin", "<!-- jesinia:end -->"
 MCP_NAME = "jesinia"
 REPO = Path(__file__).resolve().parents[3]
 HEALTH_TIMEOUT = 20.0
@@ -37,7 +41,8 @@ def render_plist(
     ssh_auth_sock: str | None,
     extra_env: Mapping[str, str] | None = None,
 ) -> str:
-    """The LaunchAgent: run ``jesinia serve`` at login; restart only after a crash."""
+    """The LaunchAgent: run ``jesinia serve`` at login and keep it running (launchd
+    restarts it whenever it exits, at most every 10 s)."""
     env = {"PATH": path_env, **(extra_env or {})}
     if ssh_auth_sock:
         env["SSH_AUTH_SOCK"] = ssh_auth_sock
@@ -45,12 +50,44 @@ def render_plist(
         "Label": LABEL,
         "ProgramArguments": [str(uv), "run", "--project", str(repo / "server"), "jesinia", "serve"],
         "RunAtLoad": True,
-        "KeepAlive": {"SuccessfulExit": False},
+        "KeepAlive": True,
+        "ThrottleInterval": 10,
         "ProcessType": "Interactive",
         "WorkingDirectory": str(repo),
         "EnvironmentVariables": env,
         "StandardOutPath": str(log_dir / "launchd.out.log"),
         "StandardErrorPath": str(log_dir / "launchd.err.log"),
+    }
+    return plistlib.dumps(plist).decode()
+
+
+def render_updater_plist(
+    uv: Path,
+    repo: Path,
+    log_dir: Path,
+    path_env: str,
+    extra_env: Mapping[str, str] | None = None,
+    interval: int = UPDATE_INTERVAL,
+) -> str:
+    """The update agent: every ``interval`` seconds (and at login), ``jesinia update``."""
+    plist = {
+        "Label": UPDATER,
+        "ProgramArguments": [
+            str(uv),
+            "run",
+            "--project",
+            str(repo / "server"),
+            "jesinia",
+            "update",
+        ],
+        "RunAtLoad": True,
+        "StartInterval": interval,
+        "ProcessType": "Background",
+        "LowPriorityIO": True,
+        "WorkingDirectory": str(repo),
+        "EnvironmentVariables": {"PATH": path_env, **(extra_env or {})},
+        "StandardOutPath": str(log_dir / "update.log"),
+        "StandardErrorPath": str(log_dir / "update.log"),
     }
     return plistlib.dumps(plist).decode()
 
@@ -111,8 +148,8 @@ class System:
         return self.yes or self.dry_run or self.confirm(question)
 
 
-def plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+def plist_path(label: str = LABEL) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
 def _domain() -> str:
@@ -138,6 +175,42 @@ def register_claude(sys: System, cfg: Config, claude: str) -> None:
         [claude, "mcp", "add", "--scope", "user", "--transport", "http", MCP_NAME,
          mcp_url(cfg), "--header", f"Authorization: Bearer {cfg.token}"]
     )  # fmt: skip
+    # Skills and /jesinia-note: a local marketplace in this checkout (skills/claude-code).
+    sys.run(
+        [claude, "plugin", "marketplace", "add", str(REPO / "skills" / "claude-code")], check=False
+    )
+    sys.run([claude, "plugin", "install", PLUGIN, "--scope", "user"], check=False)
+
+
+def _codex_agents_md(sys: System) -> Path:
+    home = sys.environ.get("CODEX_HOME")
+    return (Path(home) if home else Path.home() / ".codex") / "AGENTS.md"
+
+
+def _without_snippet(text: str) -> str:
+    start = text.find(SNIPPET_BEGIN)
+    end = text.find(SNIPPET_END)
+    if start == -1 or end == -1:
+        return text
+    return (text[:start].rstrip("\n") + "\n" + text[end + len(SNIPPET_END) :].lstrip("\n")).strip(
+        "\n"
+    )
+
+
+def set_codex_instructions(sys: System, present: bool) -> None:
+    """Add (or remove) Jesinia's managed block in Codex's global AGENTS.md."""
+    path = _codex_agents_md(sys)
+    if sys.dry_run:
+        sys.echo(f"would {'update' if present else 'clean'} the Jesinia section of {path}")
+        return
+    text = _without_snippet(path.read_text(encoding="utf-8")) if path.exists() else ""
+    if present:
+        snippet = (REPO / "skills" / "codex" / "AGENTS.snippet.md").read_text(encoding="utf-8")
+        text = (text + "\n\n" if text else "") + snippet.strip() + "\n"
+    elif not path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text if text.endswith("\n") or not text else text + "\n", encoding="utf-8")
 
 
 def register_codex(sys: System, cfg: Config, codex: str) -> None:
@@ -151,6 +224,7 @@ def register_codex(sys: System, cfg: Config, codex: str) -> None:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     block = f'\n[mcp_servers.{MCP_NAME}.http_headers]\nAuthorization = "Bearer {cfg.token}"\n'
     _write_private(path, text.rstrip("\n") + "\n" + block)
+    set_codex_instructions(sys, True)
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -172,8 +246,12 @@ def _write_private(path: Path, text: str) -> None:
 def unregister(sys: System) -> None:
     if claude := sys.which("claude"):
         sys.run([claude, "mcp", "remove", "--scope", "user", MCP_NAME], check=False)
+        sys.run([claude, "plugin", "uninstall", PLUGIN], check=False)
+        sys.run([claude, "plugin", "marketplace", "remove", "jesinia"], check=False)
     if codex := sys.which("codex"):
         sys.run([codex, "mcp", "remove", MCP_NAME], check=False)
+    # A file edit, not a codex command: clean it up even if the CLI is gone.
+    set_codex_instructions(sys, False)
 
 
 def refresh_registrations(cfg: Config, sys: System | None = None) -> None:
@@ -233,12 +311,70 @@ def _wait_healthy(sys: System, cfg: Config) -> bool:
         sys.sleep(0.5)
 
 
-def install(kb_path: Path, sys: System) -> int:
+SHIM_MARK = "# jesinia command shim (managed by `jesinia install`)"
+
+
+def shim_path() -> Path:
+    return Path.home() / ".local" / "bin" / "jesinia"
+
+
+def write_shim(sys: System, uv: str) -> None:
+    """``~/.local/bin/jesinia`` → this checkout's CLI. Never replaces someone else's file."""
+    path = shim_path()
+    if path.exists() and SHIM_MARK not in path.read_text(encoding="utf-8", errors="replace"):
+        sys.echo(f"note: {path} exists and isn't Jesinia's; left alone")
+        return
+    project = REPO / "server"
+    script = f'#!/bin/sh\n{SHIM_MARK}\nexec "{uv}" run --quiet --project "{project}" jesinia "$@"\n'
+    sys.write(path, script, 0o755)
+    if not sys.dry_run and str(path.parent) not in sys.environ.get("PATH", "").split(":"):
+        sys.echo(f"note: add {path.parent} to your PATH to run `jesinia` directly")
+
+
+def remove_shim(sys: System) -> None:
+    path = shim_path()
+    if path.exists() and SHIM_MARK in path.read_text(encoding="utf-8", errors="replace"):
+        sys.remove(path)
+
+
+def _set_auto_update(
+    sys: System, uv: str, cfg: Config, extra: Mapping[str, str], remote: str | None
+) -> None:
+    """``remote`` None removes the update agent; otherwise it is pinned in the agent's env."""
+    sys.run(["launchctl", "bootout", f"{_domain()}/{UPDATER}"], check=False)
+    if remote is None:
+        sys.remove(plist_path(UPDATER))
+        return
+    # Pin the remote the user installed from: the updater refuses to pull if it changes.
+    env = {**extra, "JESINIA_UPDATE_REMOTE": remote} if remote else dict(extra)
+    # No SSH_AUTH_SOCK here: the path changes every login, so `jesinia update` asks
+    # launchd for the current one before fetching.
+    plist = render_updater_plist(
+        Path(uv), REPO, cfg.log_dir, sys.environ.get("PATH", "/usr/bin:/bin"), env
+    )
+    sys.write(plist_path(UPDATER), plist)
+    sys.run(["launchctl", "bootstrap", _domain(), str(plist_path(UPDATER))])
+
+
+def install(kb_path: Path, sys: System, *, auto_update: bool | None = None) -> int:
+    """``auto_update``: True installs the update agent, False removes it, None keeps it."""
     kb = kb_path.expanduser().resolve()
     uv = sys.which("uv")
     if uv is None:
         sys.echo("error: uv is not on PATH (brew install uv)")
         return 1
+    remote = ""
+    if auto_update:
+        # Checked before touching anything: an updater with no pinned remote would follow
+        # whatever `origin` later points at, which is exactly what pinning prevents.
+        code, remote = sys.run(["git", "-C", str(REPO), "remote", "get-url", "origin"], check=False)
+        if not sys.dry_run and (code != 0 or not remote):
+            sys.echo(
+                f"error: auto-update needs an `origin` remote in {REPO} to pin, and "
+                "`git remote get-url origin` failed or was empty; add one with "
+                "`git remote add origin <url>`, or install without --auto-update"
+            )
+            return 1
     path = config_path()
     if sys.dry_run and not path.exists():
         sys.echo(f"would create: {path} (mode 600, new token)")
@@ -264,6 +400,8 @@ def install(kb_path: Path, sys: System) -> int:
     sys.write(plist_path(), plist)
     sys.run(["launchctl", "bootout", f"{_domain()}/{LABEL}"], check=False)
     sys.run(["launchctl", "bootstrap", _domain(), str(plist_path())])
+    if auto_update is not None:
+        _set_auto_update(sys, uv, cfg, extra, remote if auto_update else None)
     if sys.dry_run:
         sys.echo(f"would wait up to {HEALTH_TIMEOUT:.0f}s for http://127.0.0.1:{cfg.port}/healthz")
     elif not _wait_healthy(sys, cfg):
@@ -278,6 +416,9 @@ def install(kb_path: Path, sys: System) -> int:
             if not sys.dry_run:
                 sys.echo(f"{label}: registered")
 
+    if sys.ask(f"Add a `jesinia` command to {shim_path().parent}?"):
+        write_shim(sys, uv)
+
     if sys.dry_run:
         sys.echo("would print a one-time login link")
         return 0
@@ -290,9 +431,11 @@ def install(kb_path: Path, sys: System) -> int:
 
 
 def uninstall(sys: System, *, purge_data: bool) -> int:
-    sys.run(["launchctl", "bootout", f"{_domain()}/{LABEL}"], check=False)
-    sys.remove(plist_path())
+    for label in (UPDATER, LABEL):
+        sys.run(["launchctl", "bootout", f"{_domain()}/{label}"], check=False)
+        sys.remove(plist_path(label))
     unregister(sys)
+    remove_shim(sys)
     if not purge_data:
         sys.echo(f"kept data in {default_data_dir()} (use --purge-data to remove it)")
         return 0

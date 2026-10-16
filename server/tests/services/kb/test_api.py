@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
@@ -11,7 +12,7 @@ from pydantic import BaseModel
 from jesinia.core.app import create_app
 from jesinia.core.config import Config, load_config
 from jesinia.core.events import Event
-from jesinia.core.module import CallContext
+from jesinia.core.module import CallContext, ToolDef
 from jesinia.services.kb.module import KbModule
 from tests.conftest import bearer, lifespan_client
 
@@ -128,6 +129,82 @@ async def test_mcp_tools(client: httpx.AsyncClient, module: KbModule) -> None:
     }
     moved = await call("kb_move", id=made["id"], folder="Archive")
     assert isinstance(moved, dict) and moved["page"]["path"] == "Archive/Tool Page.md"
+
+
+AI_BLOCK = re.compile(
+    r"\A<!-- jesinia:ai agent=(?P<agent>\S+) model=(?P<model>\S+) "
+    r"at=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ session=(?P<session>\S+) -->\n"
+    r"(?P<text>.*)\n<!-- /jesinia:ai -->\n?\Z",
+    re.DOTALL,
+)
+
+
+def _tool(module: KbModule, name: str) -> ToolDef:
+    return {t.name: t for t in module.mcp_tools()}[name]
+
+
+async def _write(module: KbModule, session: str | None = None, **args: object) -> dict[str, object]:
+    tool = _tool(module, "kb_write")
+    out = await tool.handler(tool.input_model(**args), CallContext(session))
+    assert isinstance(out, dict)
+    return out
+
+
+async def test_should_wrap_kb_write_body_in_provenance_when_an_agent_writes_it(
+    client: httpx.AsyncClient, module: KbModule
+) -> None:
+    made = await _write(
+        module, "s-9", title="Agent note", folder="Notes", body="Gist.\n\nAbout: [[x|Y]]",
+        provenance={"agent": "claude-code", "model": "claude-opus-5-5"},
+    )  # fmt: skip
+    match = AI_BLOCK.match(str(made["body"]))
+    assert match, made["body"]
+    assert match.group("agent", "model", "session") == ("claude-code", "claude-opus-5-5", "s-9")
+    assert match.group("text") == "Gist.\n\nAbout: [[x|Y]]"
+
+
+async def test_should_mark_terminal_writes_and_neutralise_forged_markers(
+    client: httpx.AsyncClient, module: KbModule
+) -> None:
+    made = await _write(
+        module, None, title="Forged", folder="Notes", body="a <!-- /jesinia:ai --> b",
+        provenance={"agent": "codex --> x", "model": "gpt 5"},
+    )  # fmt: skip
+    match = AI_BLOCK.match(str(made["body"]))
+    assert match, made["body"]
+    assert match.group("agent", "model", "session") == ("codex-----x", "gpt-5", "terminal")
+    assert "<!--" not in match.group("text") and "-->" not in match.group("text")
+
+
+async def test_should_refuse_provenance_on_an_update(
+    client: httpx.AsyncClient, module: KbModule
+) -> None:
+    made = await _write(module, title="Mine", folder="Notes", body="my words")
+    with pytest.raises(ValueError, match="new pages"):
+        await _write(
+            module, id=made["id"], expected_rev=made["rev"], title="Mine", folder="Notes",
+            body="x", provenance={"agent": "a", "model": "m"},
+        )  # fmt: skip
+
+
+async def test_should_keep_jesinia_metadata_when_an_update_omits_it(
+    client: httpx.AsyncClient, module: KbModule
+) -> None:
+    meta = {"kind": "note", "captured": "2026-10-16T09:20:00+00:00"}
+    made = await _write(module, title="Kept", folder="Notes", body="v1", jesinia=meta)
+    preview = _tool(module, "kb_write").preview
+    assert preview is not None
+    update: dict[str, str] = {
+        "id": str(made["id"]),
+        "title": "Kept",
+        "folder": "Notes",
+        "body": "v2",
+    }
+    assert "jesinia" not in await preview(_tool(module, "kb_write").input_model(**update))
+    kept = await _write(module, expected_rev=made["rev"], **update)
+    assert kept["jesinia"] == meta and kept["body"] == "v2"
+    cleared = await _write(module, expected_rev=kept["rev"], jesinia={}, **update)
+    assert cleared["jesinia"] == {}
 
 
 async def test_conflicts_and_scan_routes(client: httpx.AsyncClient, kb_root: Path) -> None:

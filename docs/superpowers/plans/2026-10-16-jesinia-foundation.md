@@ -888,9 +888,9 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 - Consumes: MCP tool names from Tasks 12, 13, 15, 18, 24; `docs/conventions/kb-format.md` (Task 27 — write skills to reference it by path; smoke runs after Task 27).
 - Produces: plugin `jesinia` (MCP server config uses `${JESINIA_TOKEN}` header from env — `install` exports it via the agent's own config mechanism, never a committed file).
 
-- [ ] **Step 1: Failing test** `test_skill_files.py`: every `SKILL.md` has front-matter `name` + `description`; every MCP tool name mentioned in skills exists in the live tool list (start app in-process, list tools); every `docs/...` path referenced exists.
-- [ ] **Step 2: Write skills.** `jesinia-kb-conventions`: always use `kb_*` tools, never edit KB files directly; folder rules; `[[id|Title]]` links via `kb_link`; `#tags`; provenance comments for agent-written spans; pass `expected_rev` from `kb_read`; on `StaleWrite` re-read and merge. `jesinia-notes`: attach via `agents_session_attach`, read the pack dir, post progress with `agents_session_note`, save with `notes_save`.
-- [ ] **Step 3: Run test** — PASS. **Step 4: `smoke.sh`** runs `claude -p` and `codex exec` against a temp server + fixture KB asking each to create a note; asserts the file exists with provenance comments; skips a CLI that is absent. Commit `feat(skills): Claude Code plugin and Codex snippet for the KB`.
+- [x] **Step 1: Failing test** `test_skill_files.py`: every `SKILL.md` has front-matter `name` + `description`; every MCP tool name mentioned in skills exists in the live tool list (start app in-process, list tools); every `docs/...` path referenced exists.
+- [x] **Step 2: Write skills.** `jesinia-kb-conventions`: always use `kb_*` tools, never edit KB files directly; folder rules; `[[id|Title]]` links via `kb_link`; `#tags`; provenance comments for agent-written spans; pass `expected_rev` from `kb_read`; on `StaleWrite` re-read and merge. `jesinia-notes`: attach via `agents_session_attach`, read the pack dir, post progress with `agents_session_note`, save with `notes_save`.
+- [x] **Step 3: Run test** — PASS. **Step 4: `smoke.sh`** runs `claude -p` and `codex exec` against a temp server + fixture KB asking each to create a note; asserts the file exists with provenance comments; skips a CLI that is absent. Commit `feat(skills): Claude Code plugin and Codex snippet for the KB`.
 
 ### Task 27: Conventions docs, ADRs, operations, README
 
@@ -899,10 +899,10 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 - Modify: `README.md`
 - Test: `scripts/check_docs.py` + `server/tests/test_docs.py`
 
-- [ ] **Step 1: Failing test** `test_docs.py`: every relative link in `docs/**/*.md` and `README.md` resolves; every ADR has `Status`, `Date`, `Context`, `Decision`, `Consequences`; `kb-format.md` contains the exact provenance comment format and collision-suffix rule from Global Constraints.
-- [ ] **Step 2: Write docs** — content from spec §§3–7, §9–10 restated as conventions (not as a design narrative); `kb-format.md` includes the Pigeonpile-compatibility section with ADR 0007 results; `operations.md` includes setup, uninstall, logs, `doctor`, upgrade (`git pull && ./setup`), the verified agent-registration commands from Task 21, and troubleshooting for: KB path missing, sync paused on conflict (exact resolve steps: `cd <kb> && git pull --rebase`, resolve, `git rebase --continue`, then Resume), runner logged out.
-- [ ] **Step 3: README** — what Jesinia is (one paragraph), 5-minute quickstart (`git clone … && ./setup`), links to docs, AGPL notice.
-- [ ] **Step 4: Run** `make ci` — PASS. Commit `docs: conventions, ADRs, operations guide, README`.
+- [x] **Step 1: Failing test** `test_docs.py`: every relative link in `docs/**/*.md` and `README.md` resolves; every ADR has `Status`, `Date`, `Context`, `Decision`, `Consequences`; `kb-format.md` contains the exact provenance comment format and collision-suffix rule from Global Constraints.
+- [x] **Step 2: Write docs** — content from spec §§3–7, §9–10 restated as conventions (not as a design narrative); `kb-format.md` includes the Pigeonpile-compatibility section with ADR 0007 results; `operations.md` includes setup, uninstall, logs, `doctor`, upgrade (`git pull && ./setup`), the verified agent-registration commands from Task 21, and troubleshooting for: KB path missing, sync paused on conflict (exact resolve steps: `cd <kb> && git pull --rebase`, resolve, `git rebase --continue`, then Resume), runner logged out.
+- [x] **Step 3: README** — what Jesinia is (one paragraph), 5-minute quickstart (`git clone … && ./setup`), links to docs, AGPL notice.
+- [x] **Step 4: Run** `make ci` — PASS. Commit `docs: conventions, ADRs, operations guide, README`.
 
 ### Task 28: Foundation acceptance
 

@@ -47,7 +47,7 @@ def req(tmp_path: Path) -> TurnRequest:
                 "mcpServers": {
                     "jesinia": {
                         "type": "http",
-                        "url": "http://127.0.0.1:4870/mcp",
+                        "url": "http://127.0.0.1:5374/mcp",
                         "headers": {"Authorization": "Bearer sess-token"},
                     }
                 }

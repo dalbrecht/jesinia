@@ -2,28 +2,85 @@
 
 Jesinia is a personal knowledge base plus a small suite of local apps that feed it. A
 Python server on your Mac serves the apps as installable web apps at
-`http://127.0.0.1:4870/`, connects them to your own AI agents (Claude Code, Codex), and
-keeps your Markdown files on disk as the source of truth.
+`http://127.0.0.1:5374/`. It connects them to your own AI agents (Claude Code and Codex,
+through their existing logins), and keeps your Markdown files on disk as the source of
+truth, committed and pushed with git.
 
-> **Status:** under construction. The foundation is being built from
-> [the spec](docs/specs/2026-10-16-jesinia-foundation-design.md) and
-> [the plan](docs/superpowers/plans/2026-10-16-jesinia-foundation.md). A real quickstart
-> replaces this section when `./setup` lands.
+The first app is **Notes**: browse and search your KB, edit pages in place, talk a page
+through with an agent, and save what's worth keeping as a note with clear AI provenance.
+RSS, Review and Issues come next.
+
+## Quickstart
+
+You need macOS, git, [uv](https://docs.astral.sh/uv/) and Node 22+
+(`brew install uv node`). Claude Code and/or Codex are optional, for chat.
+
+```bash
+git clone --recurse-submodules https://github.com/dalbrecht/jesinia.git ~/apps/jesinia
+cd ~/apps/jesinia
+./setup --kb-path ~/kb --auto-update
+```
+
+Setup:
+
+1. checks your tools and builds the apps;
+2. starts the server under launchd, which keeps it running and starts it at login;
+3. asks before connecting Claude Code and Codex;
+4. prints a one-time login link.
+
+Open the link, then use **Install** in Chrome or Edge to give Jesinia and Notes their
+own windows.
+
+- `--kb-path` is your Markdown folder (default `~/kb`). Existing files are indexed in
+  place, never moved. If it is a git repository with a remote, Jesinia commits and pushes
+  your changes every 4 hours.
+- `--auto-update` keeps this checkout on the latest `main` (checked every 15 minutes,
+  rolled back if a build fails). Leave it off in a checkout you develop in.
+- `--dry-run` shows what setup would do and changes nothing.
+
+Need a new login link later? Run `jesinia status`. Something wrong? Run
+`jesinia doctor`. To remove Jesinia, run `./setup --uninstall`; your KB is never touched.
+
+The [operations guide](docs/operations.md) covers everything else:
+
+- what setup changes on your Mac;
+- every command;
+- where files live;
+- updating;
+- agent registration;
+- uninstalling;
+- troubleshooting.
+
+## Using it with agents
+
+After setup, Claude Code and Codex can use your KB from the terminal through Jesinia's
+MCP tools (`kb_search`, `kb_read`, `kb_write`, …). The Claude Code plugin adds skills
+and a `/jesinia-note` command. Writes that an agent proposes from a Notes chat wait for
+your approval, with a preview of the change. See
+[agents](docs/conventions/agents.md).
+
+## Documentation
+
+- [Operations guide](docs/operations.md): install, update, uninstall, troubleshooting.
+- [Conventions](docs/README.md): the KB format, architecture, agents, sync, security
+  and design system.
+- [Decisions (ADRs)](docs/README.md) and the
+  [foundation spec](docs/specs/2026-10-16-jesinia-foundation-design.md).
 
 ## Develop
 
-Requirements: macOS, [uv](https://docs.astral.sh/uv/), Node 22+ with Corepack (pnpm),
-and git.
-
 ```bash
-git clone --recurse-submodules https://github.com/dalbrecht/jesinia.git
-cd jesinia
+git clone --recurse-submodules https://github.com/dalbrecht/jesinia.git ~/projects/jesinia
+cd ~/projects/jesinia
 make install
-make ci
+make ci          # lint, types, tests, coverage gates, audits, standards
+make test-e2e    # Playwright against a throwaway server
 ```
 
-`make help` lists every target. The Makefile is the only entry point.
+`make help` lists every target; the Makefile is the only entry point. Adding an app?
+Start with [adding an app](docs/conventions/adding-an-app.md).
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE). Every source file carries an SPDX header.
+[AGPL-3.0-or-later](LICENSE). Every source file carries an SPDX header. If you run a
+modified Jesinia for other people over a network, you must offer them the source.

@@ -23,7 +23,7 @@ from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.agents.domain.session import Session, Subject
 from jesinia.services.kb.application.service import KbService, PageDraft, PageWithRev
 from jesinia.services.kb.domain.page import PageId
-from jesinia.services.kb.domain.provenance import wrap_ai
+from jesinia.services.kb.domain.provenance import inert, provenance_label, wrap_ai
 from jesinia.services.search.application.service import SearchService
 
 log = logging.getLogger(__name__)
@@ -65,17 +65,11 @@ class NotSubjectSessionError(ValueError):
 
 
 MAX_AGENT_SAVES = 10  # per session: notes_save is pre-authorized, so bound what it can do
-_MODEL = re.compile(r"[^\w.:/@+-]")
 
 
 def _plain(snippet: str) -> str:
     """Search snippet HTML → plain text (unescape first, then strip any tags)."""
     return " ".join(_TAG.sub("", html.unescape(snippet)).split())
-
-
-def _inert(text: str) -> str:
-    """Neutralise HTML comment markers so text cannot open or close a provenance block."""
-    return text.replace("<!--", "&lt;!--").replace("-->", "--&gt;")
 
 
 def _link_title(title: str) -> str:
@@ -171,9 +165,9 @@ class NotesService:
     ) -> PageWithRev:
         session_id = session.id
         at = self.now()
-        parts = [_inert(user_text.strip())] if user_text.strip() else []
-        model = _MODEL.sub("-", model)[:80] or "unknown"
-        text = _inert(agent_text.strip())
+        parts = [inert(user_text.strip())] if user_text.strip() else []
+        model = provenance_label(model)
+        text = inert(agent_text.strip())
         parts.append(wrap_ai(text, agent=session.runner, model=model, at=at, session=session_id))
         parts.append(f"About: [[{session.subject.ref}|{_link_title(session.subject.title)}]]")
         body = "\n\n".join(parts) + "\n"

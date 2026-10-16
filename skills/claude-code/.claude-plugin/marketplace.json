@@ -1,0 +1,12 @@
+{
+  "name": "jesinia",
+  "owner": { "name": "Jesinia" },
+  "description": "The Jesinia plugin, installed from your local Jesinia checkout by `jesinia install`.",
+  "plugins": [
+    {
+      "name": "jesinia",
+      "source": "./",
+      "description": "KB conventions, Notes sessions, and /jesinia-note for the Jesinia MCP server."
+    }
+  ]
+}

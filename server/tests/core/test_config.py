@@ -19,7 +19,7 @@ from jesinia.core.paths import config_path, default_data_dir, default_log_dir
 
 def test_defaults_and_token_created_0600(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "config.toml")
-    assert cfg.port == 4870 and cfg.kbsync_interval == timedelta(hours=4)
+    assert cfg.port == 5374 and cfg.kbsync_interval == timedelta(hours=4)
     assert cfg.kbsync_quiet == timedelta(seconds=30)
     assert cfg.kb_path is None and dict(cfg.folders) == {"note": "Notes"}
     assert len(cfg.token) >= 43
@@ -164,7 +164,7 @@ def test_minimal_file_uses_defaults(tmp_path: Path) -> None:
     p = tmp_path / "config.toml"
     p.write_text('[server]\ntoken = "abc"\n')
     cfg = load_config(p)
-    assert cfg.token == "abc" and cfg.port == 4870 and cfg.kb_path is None
+    assert cfg.token == "abc" and cfg.port == 5374 and cfg.kb_path is None
     assert cfg.kbsync_interval == timedelta(hours=4) and dict(cfg.folders) == {"note": "Notes"}
 
 
@@ -195,7 +195,7 @@ def test_unknown_keys_fail_fast(tmp_path: Path, extra: str) -> None:
         "[folders]\nnote = true\n",
         "[kb]\npath = 5\n",
         "[kbsync]\ninterval = 4\n",
-        '[server]\nport = "4870"\n',
+        '[server]\nport = "5374"\n',
         "[server]\nport = true\n",
     ],
 )

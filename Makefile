@@ -8,7 +8,7 @@ PNPM := cd web && pnpm  # run inside web/ so Corepack reads its packageManager p
 .DEFAULT_GOAL := help
 .PHONY: help install build test test-py test-js test-e2e lint fmt fmt-check coverage-check \
         typecheck spdx imports audit audit-py audit-js hooks ci-py ci-js ci lint-standards sync-standards doctor \
-        gen-client e2e-browsers e2e-server
+        gen-client e2e-browsers e2e-server docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -79,6 +79,9 @@ coverage-check: ## Python tests with the per-module coverage gate (>= 95% per fi
 spdx: ## Check every source file has the SPDX header
 	python3 scripts/check_spdx.py .
 
+docs: ## Check doc links, ADR sections, and the exact KB-format rules
+	python3 scripts/check_docs.py .
+
 audit: audit-py audit-js ## Scan Python and JS dependencies for known vulnerabilities
 
 audit-py: # audits the exact locked set exported from uv.lock
@@ -101,6 +104,7 @@ ci-py: ## Everything CI runs for Python
 	$(UV) run lint-imports
 	$(MAKE) coverage-check
 	python3 scripts/check_spdx.py .
+	python3 scripts/check_docs.py .
 	$(MAKE) audit-py
 
 ci-js: ## Everything CI runs for JS
