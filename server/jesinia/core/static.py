@@ -34,8 +34,10 @@ def static_router(root: Path = STATIC) -> APIRouter:
         first, _, rest = path.partition("/")
         if first in RESERVED:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
-        app_dir = root / first
-        if first and first not in LAUNCHER_ROUTES and app_dir.is_dir():
+        app_dir = (root / first).resolve()
+        # A non-normalized ".." first segment must not pick a base outside the root.
+        is_app = app_dir.parent == root.resolve() and app_dir.is_dir()
+        if first and first not in LAUNCHER_ROUTES and is_app:
             base, rel = app_dir, rest
         else:
             base, rel = root / LAUNCHER, path if first not in LAUNCHER_ROUTES else rest

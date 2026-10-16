@@ -8,7 +8,7 @@ PNPM := cd web && pnpm  # run inside web/ so Corepack reads its packageManager p
 .DEFAULT_GOAL := help
 .PHONY: help install build test test-py test-js test-e2e lint fmt fmt-check coverage-check \
         typecheck spdx imports audit audit-py audit-js hooks ci-py ci-js ci lint-standards sync-standards doctor \
-        gen-client e2e-browsers
+        gen-client e2e-browsers e2e-server
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -37,6 +37,15 @@ e2e-browsers: ## Install the Playwright browser the e2e tests use (CI)
 
 test-e2e: ## Run end-to-end tests (Playwright)
 	$(PNPM) run test:e2e
+
+# Playwright's webServer runs this, so the JS toolchain never starts Python itself.
+e2e-server: ## Build the launcher and serve a throwaway e2e instance (needs E2E_HOME, E2E_PORT)
+	@test -n "$(E2E_HOME)" && test -n "$(E2E_PORT)" || { echo "set E2E_HOME and E2E_PORT"; exit 2; }
+	$(PNPM) --filter @jesinia/launcher build
+	bash web/tests/e2e/fixture.sh
+	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set server.port "$(E2E_PORT)" >/dev/null
+	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set kbsync.quiet 1s >/dev/null
+	JESINIA_HOME="$(E2E_HOME)/data" exec $(UV) run jesinia serve
 
 lint: ## Lint Python and JS
 	$(UV) run ruff check . ../scripts

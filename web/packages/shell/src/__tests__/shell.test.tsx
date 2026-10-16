@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  APPS,
   AppShell,
   appCommands,
   applyTheme,
@@ -37,7 +38,12 @@ class FakeSource {
 const assign = vi.fn();
 const open = vi.fn();
 
+function setNotesBuilt(built: boolean) {
+  for (const a of APPS) if (a.id === "notes") a.built = built;
+}
+
 afterEach(() => {
+  setNotesBuilt(false);
   assign.mockReset();
   open.mockReset();
   localStorage.clear();
@@ -113,6 +119,7 @@ describe("AppShell", () => {
   });
 
   it("palette: shell commands, app commands, KB results", async () => {
+    setNotesBuilt(true);
     const appRun = vi.fn();
     const calls = setup(
       {
@@ -155,6 +162,10 @@ describe("AppShell", () => {
     await userEvent.type(screen.getByRole("combobox"), "budget");
     await userEvent.click(await screen.findByText("Budget"));
     expect(assign).toHaveBeenCalledWith("/notes/page/p1");
+    openPalette();
+    await userEvent.type(screen.getByRole("combobox"), "budget");
+    fireEvent.click(await screen.findByText("Budget"), { metaKey: true });
+    expect(open).toHaveBeenCalledWith("/notes/page/p1", "_blank", "noopener");
     const search = calls.find((c) => c.url.includes("/api/search"));
     expect(new URL(search?.url ?? "").searchParams.get("source")).toBe("kb");
   });
@@ -221,8 +232,9 @@ describe("AppShell edge cases", () => {
     await userEvent.click(screen.getByText("Sync now"));
     fireEvent.keyDown(window, { key: "k", metaKey: true });
     await userEvent.type(screen.getByRole("combobox"), "no");
-    fireEvent.click(await screen.findByText("No path"), { metaKey: true });
-    expect(open).toHaveBeenCalledWith("/notes/page/p2", "_blank", "noopener");
+    // Notes isn't built, so the palette offers no KB results to route into it.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(screen.queryByText("No path")).toBeNull();
   });
 
   it("creates its own client when none is given", async () => {
