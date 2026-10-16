@@ -1,0 +1,8 @@
+{
+  "name": "jesinia",
+  "version": "0.1.0",
+  "description": "Work in your Jesinia knowledge base through its MCP tools: KB conventions, Notes sessions, and a /jesinia-note command.",
+  "author": { "name": "Jesinia" },
+  "license": "AGPL-3.0-or-later",
+  "keywords": ["knowledge-base", "notes", "markdown", "mcp"]
+}
