@@ -906,9 +906,9 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 
 ### Task 28: Foundation acceptance
 
-- [ ] **Step 1:** On the author's Mac, from a fresh clone: `./setup` → server running under launchd (`launchctl print gui/$UID/com.jesinia.server` shows running).
-- [ ] **Step 2:** KB path set to the real KB repo; Settings shows mode "push"; `jesinia sync now` → `skipped` on a clean tree; edit a page → `pushed`.
-- [ ] **Step 3:** From Claude Code and from Codex, `kb_search` returns results via MCP.
+- [x] **Step 1:** On the author's Mac, from a fresh clone: `./setup` → server running under launchd (`launchctl print gui/$UID/com.jesinia.server` shows running).
+- [x] **Step 2:** KB path set to the real KB repo; Settings shows mode "push"; `jesinia sync now` → `skipped` on a clean tree; edit a page → `pushed`.
+- [x] **Step 3:** From Claude Code and from Codex, `kb_search` returns results via MCP.
 - [ ] **Step 4:** Notes flow with a real runner writes a correct page; open it in the Pigeonpile Wiki and confirm it renders.
 - [ ] **Step 5:** `make ci` green on `main`; `./setup --uninstall` leaves the KB intact. Record results in `docs/specs/2026-10-16-jesinia-foundation-design.md` status → "Implemented".
 

@@ -1,6 +1,6 @@
 # Jesinia — Foundation Design
 
-- **Status:** Draft for review (amended by ADR 0008)
+- **Status:** Built; acceptance pending one manual check (the Pigeonpile Wiki render, §15). Amended by ADR 0008.
 - **Date:** 2026-10-16
 - **Author:** Don Albrecht (with Claude)
 - **License of this project:** AGPL-3.0-or-later
@@ -561,3 +561,21 @@ Each is its own spec → plan → PRs:
   `/healthz` check, `--uninstall`.
 - **Compatibility fixture:** the §5.6 round-trip, run manually against the Pigeonpile Wiki
   and recorded in its ADR.
+
+## 15. Acceptance (2026-10-16)
+
+Run on the author's Mac against `main` at 63248d4, installed from a fresh clone in
+`~/apps/jesinia` with `./setup --kb-path ~/kb --auto-update` (port 5374, ADR 0009). The KB is
+a new repository with a private GitHub remote.
+
+| Plan Task 28 step | Result |
+|---|---|
+| 1. Server under launchd | `com.jesinia.server` running (KeepAlive); `com.jesinia.updater` loaded, first run exited 0. `jesinia status`: all seven modules ok. |
+| 2. Sync | Mode `push`. `jesinia sync now`: `pushed` (adoption of the first page), then `skipped` on a clean tree; after an edit, `pushed`, and `origin/main` matched. |
+| 3. MCP from both agents | `kb_search` returned the KB page from Claude Code (`claude -p`) and from Codex (`codex exec`). Headless Codex needs the tool approved, since `kb_search` asks for approval by default. |
+| 4. Notes with a real runner | A Claude Code session on a page, one question, Save note: wrote `Notes/Note on Welcome (acceptance).md` with Jesinia front matter (`kind: note`, `captured`), the reply inside a `jesinia:ai` provenance block, and a back-link. **Pending:** confirming that page renders in the Pigeonpile Wiki (a manual check in that app). |
+| 5. CI and uninstall | CI green on `main` (63248d4). `./setup --uninstall --dry-run` touches only the LaunchAgents, agent registrations and the command shim, never the KB; the macOS `./setup smoke` job checks a real uninstall keeps KB files. |
+
+Follow-ups noted during acceptance: model names with brackets (Claude Code reports
+`claude-opus-5-5[1m]`) are sanitised to `claude-opus-5-5-1m-` in provenance (#15); the server
+LaunchAgent still records the setup shell's `SSH_AUTH_SOCK` (the updater now resolves it per run; #16).
