@@ -1,0 +1,239 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review queue</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../wire.css">
+<script src="../wire.js" defer></script>
+<style>
+.crumb { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.loadpr { display: flex; gap: 6px; align-items: center; padding: var(--jx-space-2) var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.loadpr input { flex: 1; font: inherit; font-size: var(--jx-text-sm); padding: 5px 8px; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); background: var(--jx-bg); color: var(--jx-fg); }
+.repos { align-content: start; } .repos .row { grid-template-columns: 1fr auto; }
+.grp { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--jx-row-divider); }
+.q { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 8px var(--jx-space-3); border-bottom: 1px solid var(--jx-row-divider); }
+.q.sel { background: var(--jx-row-bg-selected); }
+.q .t { font-weight: 500; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q .meta { grid-column: 1; color: var(--jx-fg-muted); font-size: var(--jx-text-sm); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.q .right { grid-row: 1 / span 2; grid-column: 2; display: grid; justify-items: end; gap: 4px; align-content: center; }
+.verdict { font-size: var(--jx-text-sm); font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.v-ok { color: var(--jx-success); } .v-no { color: var(--jx-danger); } .v-look { color: var(--jx-warn); }
+.ev { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); display: flex; gap: 8px; }
+.pill { font-size: var(--jx-text-xs); border: 1px solid var(--jx-border); border-radius: 999px; padding: 0 7px; background: var(--jx-surface); color: var(--jx-fg-muted); white-space: nowrap; }
+.pill.wait { border-color: var(--jx-warn); color: var(--jx-warn); }
+.pill.fail { border-color: var(--jx-danger); color: var(--jx-danger); }
+.pill.ok { border-color: var(--jx-success); color: var(--jx-success); }
+.pill.deep { border-color: var(--jx-app); color: var(--jx-app); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dot.run { background: var(--jx-warn); } .dot.pass { background: var(--jx-success); } .dot.fail { background: var(--jx-danger); }
+.cov { font-variant-numeric: tabular-nums; }
+.collapsed { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); padding: 8px var(--jx-space-3); }
+figure { margin: 0 0 var(--jx-space-6); } figcaption { margin-top: var(--jx-space-2); color: var(--jx-fg-muted); font-size: var(--jx-text-sm); max-width: 900px; }
+
+.wtabs { display: flex; align-items: flex-end; gap: 2px; padding: 6px var(--jx-space-3) 0; background: var(--jx-surface-sunken); border-bottom: 1px solid var(--jx-border); }
+.wtab { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid transparent; border-bottom: 0; border-radius: var(--jx-radius-md) var(--jx-radius-md) 0 0; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wtab.on { background: var(--jx-bg); border-color: var(--jx-border); color: var(--jx-fg); font-weight: 600; margin-bottom: -1px; }
+.wtab .x { color: var(--jx-fg-subtle); }
+.wtab .vd { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.stabs { display: flex; gap: 4px; padding: var(--jx-space-3) var(--jx-space-3) 0; border-bottom: 1px solid var(--jx-border); }
+.stab { display: flex; gap: 8px; align-items: center; padding: 8px 14px; font-size: var(--jx-text-sm); font-weight: 500; color: var(--jx-fg-muted); border-bottom: 3px solid transparent; }
+.stab.on { color: var(--jx-fg); border-bottom-color: var(--jx-app); }
+.stab .n { font-variant-numeric: tabular-nums; background: var(--jx-surface-sunken); border-radius: 999px; padding: 0 7px; font-size: var(--jx-text-xs); }
+.stab.on .n { background: var(--jx-app); color: var(--jx-paper-0); }
+.secintro { display: flex; align-items: center; gap: 12px; margin: var(--jx-space-3); padding: var(--jx-space-3) var(--jx-space-4); border: 1px solid var(--jx-border); border-left: 4px solid var(--jx-success); border-radius: var(--jx-radius-md); background: var(--jx-surface); font-size: var(--jx-text-sm); }
+.secintro b { font-size: var(--jx-text-base); }
+.secintro .sp { margin-left: auto; display: flex; gap: 6px; }
+.cards { display: grid; gap: 8px; padding: 0 var(--jx-space-3) var(--jx-space-3); }
+.cards .q { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); padding: 10px 12px; }
+.cards .q.sel { border-color: var(--jx-app); box-shadow: 0 0 0 1px var(--jx-app); }
+.mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 var(--jx-space-3) var(--jx-space-3); }
+.mini div { border: 1px dashed var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: 8px 10px; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.mini b { color: var(--jx-fg); }
+.cols > .pane:last-child { display: grid; grid-template-rows: auto auto minmax(0, 1fr); align-content: start; }
+.cols > .pane:last-child > .scroll { align-content: start; }
+
+/* Review: wide diff + narrative column. Page-local layout only; all values are tokens. */
+.crumb { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.crumb .sep { color: var(--jx-fg-subtle); }
+.rv { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; height: 100%; }
+.prbar { display: flex; align-items: center; gap: 12px; padding: var(--jx-space-2) var(--jx-space-4); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); min-width: 0; }
+.prbar .tt { font-weight: 600; font-size: var(--jx-text-lg); font-variation-settings: "opsz" 48; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prbar .meta { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prbar .sp { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.plus { color: var(--jx-success); } .minus { color: var(--jx-danger); }
+.rv .tabs { background: var(--jx-surface); }
+.tabs.scrollx { overflow-x: auto; flex-wrap: nowrap; }
+.split { grid-template-columns: minmax(0, 3fr) 6px minmax(0, 2fr); }
+.rightcol { display: grid; grid-template-rows: minmax(0, 1fr) 6px minmax(0, 1fr); min-height: 0; }
+.hhandle { height: 6px; cursor: row-resize; border-top: 1px solid var(--jx-border); position: relative; }
+.hhandle::after { content: ""; position: absolute; left: 50%; top: 1px; width: 28px; height: 3px; transform: translateX(-50%); border-radius: 3px; background: var(--jx-border-strong); }
+.fileh { display: flex; align-items: center; gap: 8px; padding: 6px var(--jx-space-3); font-family: var(--jx-font-mono); font-size: var(--jx-text-sm); background: var(--jx-surface); border-block: 1px solid var(--jx-border); position: sticky; top: 0; }
+.fileh .sp { margin-left: auto; font-family: var(--jx-font-ui); color: var(--jx-fg-muted); }
+.diff .hunk { white-space: normal; padding: 0; }
+.diff .fileh { white-space: normal; padding: 6px var(--jx-space-3); }
+.diff .hunk.cur { background: var(--jx-accent-subtle); }
+.diff .hunk.cur .h { background: var(--jx-highlight); color: var(--jx-fg); }
+.walk { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+.steph { display: flex; align-items: center; gap: 8px; padding: var(--jx-space-3) var(--jx-space-4) var(--jx-space-2); }
+.steph .n { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; }
+.stepb { padding: 0 var(--jx-space-4) var(--jx-space-3); }
+.stepb h3 { margin: 0 0 var(--jx-space-2); font-size: var(--jx-text-lg); font-weight: 600; font-variation-settings: "opsz" 48; }
+.stepb p { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0 0 var(--jx-space-2); }
+.stepnav { display: flex; align-items: center; gap: 6px; padding: var(--jx-space-2) var(--jx-space-4); border-top: 1px solid var(--jx-border); }
+.stepnav .dots { display: flex; gap: 4px; margin-inline: auto; }
+.stepnav .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--jx-border-strong); display: block; }
+.stepnav .dots i.on { background: var(--jx-app); }
+.repos .row { grid-template-columns: 1fr auto; }
+.prrow .t { font-weight: var(--jx-weight-medium); }
+.chg { color: var(--jx-warn); font-size: var(--jx-text-sm); }
+.tabbody { padding: var(--jx-space-5) var(--jx-space-6); display: grid; gap: var(--jx-space-4); align-content: start; max-width: 860px; }
+.tabbody h3 { margin: 0; font-size: var(--jx-text-lg); font-weight: 600; }
+.tabbody .lede { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0; }
+.frame.half .tabbody { padding: var(--jx-space-4); gap: var(--jx-space-3); }
+.mtable { width: 100%; border-collapse: collapse; font-size: var(--jx-text-sm); }
+.mtable th { text-align: left; font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--jx-border); }
+.mtable td { padding: 8px; border-bottom: 1px solid var(--jx-border); vertical-align: top; }
+.mtable td.c { font-weight: 500; white-space: nowrap; }
+.mtable td.r { color: var(--jx-fg-muted); }
+.score { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.bar { width: 80px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; display: block; }
+.bar > span { display: block; height: 100%; background: var(--jx-app); }
+.quiz fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; }
+.quiz legend { font-family: var(--jx-font-read); font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); font-weight: 600; margin-bottom: var(--jx-space-2); padding: 0; }
+.opt { display: flex; gap: 10px; align-items: flex-start; padding: var(--jx-space-2) var(--jx-space-3); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); }
+.opt input { margin-top: 4px; accent-color: var(--jx-accent); }
+.opt.picked { border-color: var(--jx-accent); background: var(--jx-accent-subtle); }
+.feedback { padding: var(--jx-space-2) var(--jx-space-3); background: var(--jx-success-bg); border-radius: var(--jx-radius-sm); font-size: var(--jx-text-sm); }
+.feedback b { color: var(--jx-success); }
+.qprog { display: flex; align-items: center; gap: 10px; color: var(--jx-fg-muted); font-size: var(--jx-text-sm); }
+.qprog .bar { width: 140px; }
+.rec { display: flex; align-items: center; gap: 10px; }
+.rec .verdict { font-size: var(--jx-text-xl); font-weight: 600; font-variation-settings: "opsz" 72; }
+.reasons { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); }
+.advisory { border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: var(--jx-space-2) var(--jx-space-3); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); background: var(--jx-surface-sunken); }
+.advisory b { color: var(--jx-fg); font-weight: 500; }
+.inline-err { border: 1px solid var(--jx-danger); background: var(--jx-danger-bg); border-radius: var(--jx-radius-md); padding: var(--jx-space-3); display: grid; gap: 8px; font-size: var(--jx-text-sm); }
+.inline-err b { color: var(--jx-danger); font-weight: 600; }
+.reflist { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: var(--jx-text-sm); }
+.reflist li { display: flex; gap: 8px; align-items: baseline; }
+.reflist .why { color: var(--jx-fg-muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--jx-space-3); }
+.toggle { display: flex; gap: 6px; padding: var(--jx-space-2) var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.sheet { position: absolute; inset: 64px 0 0 0; background: var(--jx-bg); border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0; box-shadow: var(--jx-shadow-2); z-index: 5; display: grid; grid-template-rows: auto 1fr; overflow: hidden; border-top: 1px solid var(--jx-border); }
+.sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--jx-border-strong); margin: 6px auto; }
+.frame.narrow .prbar { flex-wrap: wrap; gap: 4px 8px; padding: var(--jx-space-2) var(--jx-space-3); }
+.frame.narrow .prbar .tt { font-size: var(--jx-text-base); white-space: normal; }
+.frame.narrow .stepb, .frame.narrow .steph, .frame.narrow .stepnav { padding-inline: var(--jx-space-3); }
+.frame.narrow .row .t { white-space: normal; }
+.chatbtn { position: absolute; right: 12px; bottom: 12px; z-index: 3; box-shadow: var(--jx-shadow-2); }
+
+.covbar { display: flex; align-items: center; gap: 10px; padding: 8px var(--jx-space-4); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); font-size: var(--jx-text-sm); }
+.covbar .meter { width: 120px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; }
+.covbar .meter span { display: block; height: 100%; width: 82%; background: var(--jx-app); }
+.covbar b { font-variant-numeric: tabular-nums; }
+.covbar .sp { margin-left: auto; display: flex; gap: 6px; }
+.notwalked { margin: var(--jx-space-2) var(--jx-space-4) var(--jx-space-3); border: 1px dashed var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: 8px 10px; font-size: var(--jx-text-sm); display: grid; gap: 4px; }
+.notwalked .r { display: flex; gap: 8px; align-items: center; }
+.notwalked code { font-size: var(--jx-text-xs); }
+.notwalked .why { color: var(--jx-fg-muted); }
+.notwalked .sp { margin-left: auto; }
+.stabs2 { display: flex; gap: 2px; padding: 0 var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.stabs2 .stab { padding: 9px 14px; }
+.ctx { display: block; font-size: var(--jx-text-xs); color: var(--jx-fg-muted); padding: 0 var(--jx-space-4) var(--jx-space-2); }
+.chatdock { border-top: 1px solid var(--jx-border); padding: 8px var(--jx-space-4); display: flex; gap: 8px; align-items: center; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); background: var(--jx-surface); }
+.chatdock input { flex: 1; font: inherit; padding: 5px 8px; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); background: var(--jx-bg); color: var(--jx-fg); }
+.rvbody { display: grid; grid-template-rows: auto auto auto minmax(0,1fr); min-height: 0; height: 100%; }
+
+.book { display: grid; grid-template-columns: 280px minmax(0,1fr); min-height: 0; height: 100%; }
+.outline { border-right: 1px solid var(--jx-border); background: var(--jx-surface); display: grid; grid-template-rows: auto minmax(0,1fr) auto; min-height: 0; }
+.outline .oh { padding: var(--jx-space-3); border-bottom: 1px solid var(--jx-border); display: grid; gap: 4px; }
+.outline .oh .t { font-weight: 600; }
+.outline .oh .m { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); }
+.outline ol { list-style: none; margin: 0; padding: var(--jx-space-2) 0; overflow: auto; }
+.outline .part { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; }
+.outline li.e { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; align-items: baseline; padding: 5px var(--jx-space-3); font-size: var(--jx-text-sm); }
+.outline li.e.sub { padding-left: 30px; }
+.outline li.e.on { background: var(--jx-row-bg-selected); box-shadow: inset 3px 0 0 var(--jx-app); font-weight: 600; }
+.outline li.e .st { color: var(--jx-fg-subtle); font-size: 11px; }
+.outline li.e .st.done { color: var(--jx-success); }
+.outline li.e .k { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); white-space: nowrap; }
+.outline li.e .k.bad { color: var(--jx-danger); }
+.outline .of { border-top: 1px solid var(--jx-border); padding: var(--jx-space-3); font-size: var(--jx-text-sm); display: grid; gap: 6px; }
+.view { display: grid; grid-template-rows: auto minmax(0,1fr) auto; min-height: 0; }
+.vtool { display: flex; align-items: center; gap: 8px; padding: 6px var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); font-size: var(--jx-text-sm); flex-wrap: wrap; }
+.vtool .sep { width: 1px; height: 18px; background: var(--jx-border); }
+.vtool .sp { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.vtool .meter { width: 80px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; display: inline-block; }
+.vtool .meter span { display: block; height: 100%; width: 82%; background: var(--jx-app); }
+.page { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); min-height: 0; }
+.page .narr { overflow: auto; padding: var(--jx-space-5) var(--jx-space-5); border-right: 1px solid var(--jx-border); }
+.page .narr h2 { margin: 0 0 var(--jx-space-2); font-size: var(--jx-text-xl); font-weight: 600; font-variation-settings: "opsz" 72; }
+.page .narr p { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0 0 var(--jx-space-3); }
+.vact { display: flex; align-items: center; gap: 8px; padding: var(--jx-space-2) var(--jx-space-3); border-top: 1px solid var(--jx-border); background: var(--jx-surface); }
+.vact .sp { margin-left: auto; display: flex; gap: 6px; }
+.btn.danger { border-color: var(--jx-danger); color: var(--jx-danger); }
+
+.req { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); padding: 10px 12px; margin-bottom: 10px; background: var(--jx-surface); display: grid; gap: 6px; font-size: var(--jx-text-sm); }
+.req .st { font-weight: 600; }
+.req .st.ok { color: var(--jx-success); } .req .st.part { color: var(--jx-warn); } .req .st.no { color: var(--jx-danger); }
+.req .was { color: var(--jx-fg-muted); border-left: 3px solid var(--jx-border-strong); padding-left: 8px; font-style: italic; }
+.prev { opacity: .75; border-left: 3px dashed var(--jx-border-strong); padding-left: 10px; font-size: var(--jx-text-sm); }
+.modal { position: relative; margin: 30px auto; max-width: 720px; background: var(--jx-bg); border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-lg); box-shadow: var(--jx-panel-raised-shadow); display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.modal .mh { padding: 12px 16px; border-bottom: 1px solid var(--jx-border); font-weight: 600; }
+.modal .mb { padding: 12px 16px; display: grid; gap: 10px; font-size: var(--jx-text-sm); }
+.modal .mf { padding: 10px 16px; border-top: 1px solid var(--jx-border); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.warnbox { border: 1px solid var(--jx-warn); background: var(--jx-warn-bg); border-radius: var(--jx-radius-md); padding: 10px 12px; display: grid; gap: 6px; }
+.warnbox b { color: var(--jx-warn); }
+.cmt { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-sm); padding: 8px 10px; background: var(--jx-surface); }
+.cmt code { font-size: var(--jx-text-xs); }
+.cmt.block { border-color: var(--jx-danger); }
+mark.b { background: var(--jx-danger-bg); color: var(--jx-danger); font-weight: 600; padding: 0 2px; }
+.scrim { position: absolute; inset: 0; background: color-mix(in oklch, var(--jx-paper-950) 55%, transparent); z-index: 4; display: grid; align-items: start; overflow: auto; }
+</style></head><body><main class="doc">
+<header class="doc-head"><div><h1>Follow-ups, stacks and posting</h1><p>Design pass, screens 3–5 of 6, in the book layout: outline left; view pane with a toolbar on top and actions at the bottom.</p></div><button class="theme-toggle" type="button">Theme: system</button></header>
+<figure><div class="frame desktop"><div class="titlebar"><i></i><i></i><i></i><span>Review · Jesinia</span></div>
+<div class="app" data-app="review"><div class="hdr"><a class="home" href="#"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">c65llc/platform<span class="sep">/</span><b>#808</b> · round 2</span></div><div class="right"><span class="kbtn"><span class="lbl">Load a PR, search, or jump to…</span><kbd>⌘K</kbd></span><span class="sdot"></span><button class="iconbtn">⚙</button></div></div>
+<div class="wtabs" role="tablist"><span class="wtab">☰ Queue</span><span class="wtab"><span class="vd" style="background:var(--jx-warn)"></span>platform#812 billing: prorate… <span class="x">✕</span></span><span class="wtab on"><span class="vd" style="background:var(--jx-danger)"></span>platform#808 auth: rotate… <span class="x">✕</span></span><span class="wtab"><span class="vd" style="background:var(--jx-success)"></span>jesinia#55–57 Stack: KB tags <span class="x">✕</span></span></div>
+<div class="body" style="position:relative"><div class="book"><nav class="outline"><div class="oh"><span class="t">auth: rotate session keys</span><span class="m">#808 · dev-a · round 2 · 3 new commits since your review · CI passing</span></div><ol><li class="part">Your requests · 3 of 4 addressed</li><li class="e on"><span class="st">●</span><span>1. Keys must be rotated atomically</span><span class="k">addressed</span></li><li class="e "><span class="st">○</span><span>2. Old keys valid for one grace period</span><span class="k">addressed</span></li><li class="e "><span class="st">○</span><span>3. Log rotation without key material</span><span class="k">partly</span></li><li class="e "><span class="st">○</span><span>4. Add a test for clock skew</span><span class="k bad">not addressed</span></li><li class="part">New since your last look</li><li class="e "><span class="st">○</span><span>5. Retry on KMS throttling</span><span class="k">1 minor</span></li><li class="part">After you read</li><li class="e "><span class="st">○</span><span>Findings</span><span class="k">0 · 2</span></li><li class="e "><span class="st">○</span><span>Your comments</span><span class="k">2 drafts</span></li><li class="e "><span class="st">○</span><span>Recommendation</span><span class="k">request changes</span></li></ol><div class="of"><span>Previous review: round 1, 2 days ago</span><button class="btn g sm">Show round 1 alongside</button></div></nav><section class="view"><div class="vtool"><span class="verdict v-no">✕ Request changes</span><span class="sep"></span><span>Re-review · round 2</span><span class="sep"></span><span>Covers <b>100%</b> of new changes</span><span class="sp"><button class="btn g sm">Previous review: inline ▾</button><button class="btn g sm">💬 Ask</button><button class="btn g sm">GitHub ↗</button></span></div><div class="page" style="grid-template-columns:1fr"><article class="narr" style="border-right:0">
+<h2>Your requests</h2>
+<div class="req"><span class="st ok">✓ Addressed: keys must be rotated atomically</span><span class="was">You wrote (round 1): "If the write of the new key fails after the old one is revoked, every session drops."</span><span>The new commit writes the new key first and revokes the old one in the same transaction (<code>auth/keys.py</code> 40–58).</span></div>
+<div class="req"><span class="st ok">✓ Addressed: old keys valid for one grace period</span><span><code>GRACE = timedelta(minutes=10)</code>, checked in <code>verify()</code>.</span></div>
+<div class="req"><span class="st part">◐ Partly: log rotation without key material</span><span>The key id is logged; but the exception path still formats the whole key object (<code>auth/keys.py</code> 77).</span></div>
+<div class="req"><span class="st no">✕ Not addressed: add a test for clock skew</span><span>No test touches skew; the grace check compares naive datetimes.</span></div>
+<div class="prev">Round 1 walkthrough, step 2 (shown inline): "Rotation revokes before it writes, which…"</div>
+</article></div><div class="vact"><button class="btn g sm">← Back</button><button class="btn s sm">Next request →</button><span class="sp"><button class="btn g sm">Draft follow-up comment</button><button class="btn danger sm">Request changes…</button><button class="btn p sm">Approve…</button></span></div></section></div></div></div></div><figcaption><b>Re-review (round 2).</b> The outline starts with your requests, each marked addressed, partly, or not addressed, then what is new since your last look. The page quotes what you wrote in round 1 above how the new commits answer it; the previous walkthrough can be shown inline (dashed) or side by side, and the footer opens round 1 alongside.</figcaption></figure>
+<figure><div class="frame desktop"><div class="titlebar"><i></i><i></i><i></i><span>Review · Jesinia</span></div>
+<div class="app" data-app="review"><div class="hdr"><a class="home" href="#"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">dalbrecht/jesinia<span class="sep">/</span><b>#55–#57</b> · stack</span></div><div class="right"><span class="kbtn"><span class="lbl">Load a PR, search, or jump to…</span><kbd>⌘K</kbd></span><span class="sdot"></span><button class="iconbtn">⚙</button></div></div>
+<div class="wtabs" role="tablist"><span class="wtab">☰ Queue</span><span class="wtab"><span class="vd" style="background:var(--jx-warn)"></span>platform#812 billing: prorate… <span class="x">✕</span></span><span class="wtab"><span class="vd" style="background:var(--jx-danger)"></span>platform#808 auth: rotate… <span class="x">✕</span></span><span class="wtab on"><span class="vd" style="background:var(--jx-success)"></span>jesinia#55–57 Stack: KB tags <span class="x">✕</span></span></div>
+<div class="body" style="position:relative"><div class="book"><nav class="outline"><div class="oh"><span class="t">Stack: KB-wide tags (3 PRs)</span><span class="m">#55 → #56 → #57 · you · +2,910 −204 · 41 files · CI passing on all 3</span></div><ol><li class="part">The whole stack</li><li class="e on"><span class="st">●</span><span>Overview: what the stack does</span><span class="k"></span></li><li class="e "><span class="st">○</span><span>Stack walkthrough</span><span class="k">88%</span></li><li class="part">#55 tag grammar and catalog</li><li class="e "><span class="st done">✓</span><span>Walkthrough</span><span class="k">100%</span></li><li class="e "><span class="st">○</span><span>Findings</span><span class="k">0 · 1</span></li><li class="part">#56 tag service, REST and MCP</li><li class="e "><span class="st">○</span><span>Walkthrough</span><span class="k">84%</span></li><li class="e "><span class="st">○</span><span>Findings</span><span class="k bad">1 important</span></li><li class="part">#57 Settings → Tags</li><li class="e "><span class="st">○</span><span>Walkthrough</span><span class="k">91%</span></li><li class="e "><span class="st">○</span><span>Findings</span><span class="k">0 · 2</span></li><li class="part">Across the stack</li><li class="e "><span class="st">○</span><span>Cross-PR findings</span><span class="k">1 · 0</span></li><li class="e "><span class="st">○</span><span>Recommendation per PR</span><span class="k"></span></li></ol><div class="of"><span>Own PRs: verdicts read “ready to request review”</span></div></nav><section class="view"><div class="vtool"><span class="verdict v-ok">✓ Ready to request review (2 of 3)</span><span class="sep"></span><span class="pill deep">Deep · stack</span><span class="sep"></span><span>Stack covers <b>88%</b></span><span class="sp"><button class="btn g sm">💬 Ask</button><button class="btn g sm">GitHub ↗</button></span></div><div class="page" style="grid-template-columns:1fr"><article class="narr" style="border-right:0">
+<h2>What the stack does</h2>
+<p>Three PRs that add a KB-wide tag catalog: #55 defines what a tag is and stores the catalog as a page, #56 adds the service, REST and MCP tools on top, and #57 adds the Settings screen. Each builds on the one before.</p>
+<table class="mtable"><tr><th>PR</th><th>Verdict</th><th>Findings</th><th>Walkthrough</th></tr>
+<tr><td class="c">#55 grammar and catalog</td><td class="v-ok">✓ Ready</td><td>0 · 1</td><td>100%</td></tr>
+<tr><td class="c">#56 service, REST, MCP</td><td class="v-look">◐ Closer look</td><td>1 important</td><td>84%</td></tr>
+<tr><td class="c">#57 Settings → Tags</td><td class="v-ok">✓ Ready</td><td>0 · 2</td><td>91%</td></tr></table>
+<p style="margin-top:12px"><b>Across the stack:</b> #57's merge dialog relies on #56 not checking the target in <code>rename/preview</code>; if that changes, merge previews break.</p>
+</article></div><div class="vact"><button class="btn s sm">Start the stack walkthrough →</button><span class="sp"><button class="btn g sm">Comment on all…</button><button class="btn p sm">Post all…</button></span></div></section></div></div></div></div><figcaption><b>A stack as one unit.</b> The outline has the whole stack first (overview, stack walkthrough), then each PR as a part with its own walkthrough and findings, then cross-PR findings. The page summarises each PR's verdict, findings and coverage. These are your own PRs, so verdicts read “ready to request review” and only Comment is offered on GitHub; Post all sends one review per PR after one confirmation.</figcaption></figure>
+<figure><div class="frame desktop"><div class="titlebar"><i></i><i></i><i></i><span>Review · Jesinia</span></div>
+<div class="app" data-app="review"><div class="hdr"><a class="home" href="#"><span class="glyph-app"></span><span class="name">Review</span></a><div class="mid"><span class="crumb">c65llc/platform<span class="sep">/</span><b>#812</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Load a PR, search, or jump to…</span><kbd>⌘K</kbd></span><span class="sdot"></span><button class="iconbtn">⚙</button></div></div>
+<div class="wtabs" role="tablist"><span class="wtab">☰ Queue</span><span class="wtab on"><span class="vd" style="background:var(--jx-warn)"></span>platform#812 billing: prorate… <span class="x">✕</span></span><span class="wtab"><span class="vd" style="background:var(--jx-danger)"></span>platform#808 auth: rotate… <span class="x">✕</span></span><span class="wtab"><span class="vd" style="background:var(--jx-success)"></span>jesinia#55–57 Stack: KB tags <span class="x">✕</span></span></div>
+<div class="body" style="position:relative"><div class="book"><nav class="outline"><div class="oh"><span class="t">billing: prorate mid-cycle plan changes</span><span class="m">#812 · contractor-b</span></div><ol><li class="part">After you read</li><li class="e on"><span class="st">●</span><span>Your comments</span><span class="k">5 drafts</span></li><li class="e "><span class="st">○</span><span>Recommendation</span><span class="k">closer look</span></li></ol><div class="of"><span>Read 16 of 16</span></div></nav><section class="view"><div class="vtool"><span class="verdict v-look">◐ Needs a closer look</span></div><div class="page" style="grid-template-columns:1fr"><article class="narr"><h2>Your comments</h2><p>…</p></article></div><div class="vact"><span class="sp"><button class="btn danger sm">Request changes…</button><button class="btn p sm">Approve…</button></span></div></section></div><div class="scrim"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="pt">
+<div class="mh" id="pt">Approve platform#812 on GitHub</div>
+<div class="mb">
+<div class="warnbox"><b>⚠ You're approving, but a comment says BLOCKING</b><span>The comment on <code>billing/webhooks.py:88</code> contains “BLOCKING”. Approving while a comment is blocking usually means the action is wrong.</span><label><input type="checkbox"> Approve anyway</label><span><button class="btn danger sm">Request changes instead</button></span></div>
+<div class="warnbox"><b>⚠ There are 2 newer commits</b><span>This review covers <code>a1b2c3d</code>; the PR head is now <code>9f8e7d6</code>. The review will be posted against <code>a1b2c3d</code>.</span><label><input type="checkbox"> Approve anyway</label><span><button class="btn g sm">Review the new commits first</button></span></div>
+<b>What will be posted</b>
+<div class="cmt"><b>Review body</b><br>Looks good overall; one rounding question and one webhook issue inline.</div>
+<div class="cmt"><code>billing/proration.py:45</code><br>Rounding happens once on the difference; invoices round per side. Can we match them?</div>
+<div class="cmt block"><code>billing/webhooks.py:88</code><br><mark class="b">BLOCKING</mark>: the retry posts the proration twice if the first attempt times out after commit.</div>
+<span style="color:var(--jx-fg-muted)">3 more comments · <a href="#">edit drafts</a></span>
+</div>
+<div class="mf"><span style="margin-right:auto;color:var(--jx-fg-muted)">Posted as one review. Nothing is sent until you choose Approve.</span><button class="btn g sm">Cancel</button><button class="btn p sm" disabled>Approve</button></div>
+</div></div></div></div></div><figcaption><b>Posting confirmation.</b> Shows exactly what will be posted. Two warnings must each be confirmed before Approve unlocks: a comment containing BLOCKING, and newer commits than the one reviewed (with a one-click “Review the new commits first”).</figcaption></figure>
+</main></body></html>

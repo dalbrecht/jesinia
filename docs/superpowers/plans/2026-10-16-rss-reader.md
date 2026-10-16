@@ -46,7 +46,7 @@ tagged KB pages, plus a KB-wide tag catalog shared by every app and agent.
   - a blank line, then `Tags: #a #b`;
   - the AI takeaway block, only if engaged;
   - `## Article`, then the article Markdown.
-- **Derived state stays out of KB files.** Read and saved state, posts and polling state live
+- **Derived state stays out of KB files.** Read state, posts and polling state live
   in `rss.sqlite`. Tag and source lookups live in `kb.sqlite`.
 - **Tag grammar:**
   - `#` followed by a letter or digit, then letters, digits or `-` (Unicode letters allowed);
@@ -67,19 +67,30 @@ tagged KB pages, plus a KB-wide tag catalog shared by every app and agent.
   - at most 8 concurrent fetches and 1 per host;
   - a feed shows a warning after 3 consecutive failures;
   - feeds are retried with backoff and never dropped.
-- **Retention:** unkept, unsaved posts are pruned 30 days after `published`
-  (`rss.retention`, a duration); saved and kept posts are never pruned.
+- **Retention:** unkept posts are pruned 30 days after `published`, or after `first_seen_at`
+  when the feed gives no valid date (`rss.retention`, a duration); kept posts are never pruned.
 - **Archived images:**
   - at most 20 images and 10 MB per page, saved to `_assets/<page-id>/`;
   - each such folder holds a `.gitignore` containing `*` (images stay local, out of git).
 - **Keyboard:**
   - `j`/`k` next/previous, `Enter`/`o` open original, `n` Keep, `e` Engage;
-  - `s` saved toggle, `m` read toggle, `Shift+A` mark above read;
-  - `g a`/`g s`/`g i` go to views, `/` search, `?` help;
+  - `m` read toggle, `Shift+A` mark above read;
+  - `g a`/`g i` go to views, `/` search, `?` help;
   - keys are inactive while a text field has focus.
 - **Unread counts** show `999+` above 999.
 - **UI copy** follows brief §9: plain, sentence case, the cause plus the fix, and no
   exclamation marks.
+- **Idempotency (repo rule):** every non-idempotent mutating route (POST/PATCH that writes)
+  requires an `Idempotency-Key` header. A repeated key with the same route returns the stored
+  status and body without acting again; a missing key is a 400. The PWAs send
+  `crypto.randomUUID()` per user action. Built once in Task 7A (`core/idempotency.py`) and used
+  by every later mutating route.
+- **Design pass (2026-10-16, `docs/design/wireframes/design-pass-2026-10-16.md`):**
+  - RSS: Engage and Keep always visible at the reader's top right; Keep is the only way to hold
+    a post (no star, no saved-for-later, no `s` key); no on-screen key guide; OPML import and
+    export live in Settings → RSS.
+  - Settings: an outline of sections on the left, a view pane with a toolbar on top and actions
+    along the bottom; new **RSS** section; retired tags can be restored.
 - **Every PR:** run the local `make ci` → push → open the PR → `@codex review`. Allow at most
   3 Codex rounds; fix each finding, reply and resolve. Merge with squash only when green.
   Merge commits on stacked branches use `chore(merge): …` titles.
@@ -341,7 +352,8 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     - the catalog goes in the role prompt;
     - the reply is parsed as a JSON array of tags;
     - anything unparsable gives `[]`.
-- `kb/module.py` wires the advisor when `agents` is started. The runner is the first
+- `kb/module.py` wires the advisor with a lazy lookup of `ctx.services["agents"]` at call
+  time, because `kb` starts before `agents` in `registry.py`. The runner is the first
   available one, preferring `claude-code`.
 
 - [ ] **Step 1: Failing tests:**
@@ -428,7 +440,38 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     near-duplicates.
 - [ ] **Step 6: Run** `make ci`. Expected: PASS. **Commit**
   `feat(notes): tag suggestions on Save note; tag docs`.
-- [ ] **Step 7: Open PR 1** (`feat(kb): KB-wide tag catalog`), then the Codex loop and merge.
+
+### Task 7A: Idempotency keys and tag restore
+
+**Files:**
+- Create: `server/jesinia/core/idempotency.py`, `server/jesinia/core/migrations/` (or the
+  module DB helper's equivalent) for an `idempotency(key, route, status, body, created_at,
+  PRIMARY KEY(key, route))` table in each owning module's database.
+- Modify: the tag mutation routes (`/api/kb/tags` add, rename, merge, retire, adopt, ignore);
+  `TagService` (`restore(tag)`); `web/apps/launcher/src/settings/Tags.tsx` (Restore button on
+  retired rows; every mutating call sends an `Idempotency-Key`); `web/packages/client` helper
+  `withIdempotency()`.
+- Test: `server/tests/core/test_idempotency.py`, extended tag API tests, `tags.test.tsx`.
+
+**Interfaces:**
+- **`idempotent(store) -> Depends`:** a FastAPI dependency plus response hook. It requires
+  `Idempotency-Key` (1–200 chars), looks up `(key, route)`, and returns the stored response if
+  present; otherwise it runs the handler and stores the status and JSON body. Keys older than
+  7 days are pruned daily.
+- **`TagService.restore(tag) -> None`** clears `retired`; `POST /api/kb/tags/restore {tag}`.
+
+- [ ] **Step 1: Failing tests:**
+  - `test_repeated_key_returns_stored_response_without_acting`;
+  - `test_missing_key_is_400`;
+  - `test_same_key_different_route_is_independent`;
+  - `test_rename_retry_does_not_rewrite_twice`;
+  - `test_restore_unretires_a_tag`;
+  - web: mutating calls send a key; Restore shows on retired rows.
+- [ ] **Step 2: Run.** Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `make ci`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat(core): idempotency keys; restore retired tags`.
+- [ ] **Step 6: Open PR 1** (`feat(kb): KB-wide tag catalog`), then the Codex loop and merge.
 
 ## PR 2: RSS backend (Tasks 8–12)
 
@@ -444,7 +487,10 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 **Interfaces:**
 - **`parse_feed(body: bytes, url: str) -> ParsedFeed`:**
   - `ParsedFeed(title, site_url, items: list[ParsedItem])`, where
-    `ParsedItem(guid, url, title, author, published_at, snippet, content_html, discussion_url)`;
+    `ParsedItem(guid, url, title, author, published_at, snippet, content_html, discussion_url, is_summary)`;
+  - `is_summary` is true when the item has no full content (`content:encoded` / Atom
+    `content`) and only a summary/description;
+  - `published_at` is `None` when the feed's date is missing or invalid;
   - the GUID falls back to `url + title`;
   - `snippet` is plain text of at most 280 characters;
   - `content_html` is sanitised with the `fetch` allowlist (`nh3`);
@@ -482,7 +528,8 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `feeds(id, url UNIQUE, title, site_url, folder_id NULL, interval_s, next_poll_at,
     etag, last_modified, fail_count, last_error, last_ok_at)`;
   - `posts(id, feed_id, guid, url, title, author, published_at, snippet, content_html,
-    discussion_url NULL, full_md NULL, read, saved, kept_page_id NULL, archive_state NULL,
+    discussion_url NULL, is_summary, first_seen_at, full_md NULL, read, kept_page_id NULL,
+    archive_state NULL,
     archive_error NULL,
     UNIQUE(feed_id, guid))`;
   - indexes on `(read, published_at)` and on `url`.
@@ -501,7 +548,8 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     `FeedView(id, title, url, folder, unread, warning: str | None)`.
 - **REST `/api/rss`:**
   - `GET /feeds`, `POST /feeds`, `DELETE /feeds/{id}`, `PATCH /feeds/{id}`;
-  - `POST /opml` (upload), `GET /opml`;
+  - `POST /opml` (upload), `GET /opml` (used by Settings → RSS);
+  - every POST/PATCH/DELETE here uses the Task 7A idempotency dependency;
   - `PATCH /folders/{id}`.
 
 - [ ] **Step 1: Failing tests:**
@@ -537,7 +585,9 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - the next poll is at `min(12 h, 30 min × 2^fail_count)`;
   - `last_error` holds the cause;
   - at `fail_count >= 3` the feed shows `warning`.
-- **Concurrency:** `asyncio.Semaphore(8)`. Per-host pacing comes from `fetch`. The
+- **Concurrency:** `asyncio.Semaphore(8)` globally, plus a host-scoped `asyncio.Semaphore(1)`
+  held around each complete fetch, so at most one request per host is in flight (fetch's
+  `_pace` only spaces request starts). The
   `ETag`/`Last-Modified` values are passed through.
 
 - [ ] **Step 1: Failing tests (fake clock, fake fetch):**
@@ -547,7 +597,8 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     cause; a blocked internal redirect hits `FetchBlocked`; one feed's error doesn't stop the
     others);
   - `test_new_items_dedupe_by_guid_per_feed`;
-  - `test_refresh_polls_everything_now`.
+  - `test_refresh_polls_everything_now`;
+  - `test_one_request_in_flight_per_host` (two feeds on one slow host never overlap).
 - [ ] **Step 2: Run.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run.** Expected: PASS.
@@ -574,15 +625,14 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     `article(url) -> Article | None`, composing `get` and the injected extractor. `FetchModule`
     injects `TrafilaturaExtractor`, so the application layer never imports infrastructure.
 - **`PostService`:**
-  - `list(view: Literal["unread","saved","kept","all"], feed_id: int | None, folder_id: int | None, before: tuple[str,int] | None, limit: int = 100) -> Page[PostView]`,
+  - `list(view: Literal["unread","kept","all"], feed_id: int | None, folder_id: int | None, before: tuple[str,int] | None, limit: int = 100) -> Page[PostView]`,
     keyset-paginated newest first;
   - `set_read(ids, read: bool)`;
   - `mark_read_above(post_id, view, feed_id, folder_id)`;
-  - `set_saved(id, saved)`;
   - `full_article(id) -> str`, which caches `full_md` and raises `ArticleUnavailable(cause)`;
   - `search(q, limit=50)`, a `LIKE` search over title and snippet of retained posts;
-  - `prune(now)`, which removes unread or read posts older than the retention window that
-    are neither saved nor kept.
+  - `prune(now)`, which removes posts older than the retention window (by `published_at`, else
+    `first_seen_at`) that aren't kept.
   - The prune job runs daily.
 - **REST:**
   - `GET /api/rss/posts?view&feed&folder&before`;
@@ -597,7 +647,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 - [ ] **Step 1: Failing tests:**
   - `test_views_and_keyset_pagination`;
   - `test_mark_read_above_respects_the_current_view`;
-  - `test_prune_keeps_saved_and_kept`;
+  - `test_prune_keeps_kept_and_prunes_undated_by_first_seen`;
   - `test_full_article_caches_and_reports_cause`;
   - `test_extract_article_returns_markdown_and_images` (from a fixture HTML);
   - `test_mcp_tools_are_read_only`.
@@ -631,12 +681,11 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - **An existing page for the same source:** append `\n\n_Kept again {date}:_ {note}`
     after the note block, merge tags into the `Tags:` line, and leave the article
     untouched.
-  - Then it sets `archive_state = "archiving"` and schedules `archive(page_id, post_id)`.
-- **Idempotency:** `POST …/keep` requires an `Idempotency-Key` header (the PWA sends a
-  `crypto.randomUUID()` per Keep action). `rss.sqlite` table
-  `keep_requests(key PRIMARY KEY, post_id, result_json, created_at)` stores the result. A
-  repeated key returns the stored `KeepResult` without writing again, and a missing key is a
-  400. Keys older than 7 days are pruned with the daily job.
+  - Then, **only for a newly created page or one whose archive isn't done**, it sets
+    `archive_state = "archiving"` and schedules `archive(page_id, post_id)`. Keeping again never
+    re-archives, so later edits to the archived article are preserved.
+- **Idempotency:** Keep, Engage, takeaway and archive retry use the Task 7A dependency (no
+  separate `keep_requests` table).
 - **Recovery:** on module start, every post with `archive_state = "archiving"` is
   rescheduled, so a restart mid-archive resumes instead of showing "Archiving…" forever.
 - **`archive`:**
@@ -670,6 +719,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `test_keep_retry_with_same_idempotency_key_writes_once`;
   - `test_stranded_archiving_posts_resume_on_start`;
   - `test_hn_keep_records_discussion`;
+  - `test_keep_again_does_not_rearchive`;
   - `test_takeaway_is_returned_not_written`;
   - `test_engaged_keep_wraps_takeaway_in_provenance`;
   - `test_keep_is_refused_while_the_kb_is_unavailable` (a 503 with the KB's cause, and
@@ -712,7 +762,9 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   opens the reader full-screen with a back button, and the chat opens as a bottom sheet.
 - **`Reader`:**
   - the serif reading style (`@jesinia/design` `read` class) and a byline;
-  - a **Load full article** button when `content_html` is short (under 1,500 characters) or
+  - a toolbar with **Open original ↗**, **Engage** and **Keep** always visible at the top
+    right, and Previous / Next / Mark unread along the bottom (design pass); no key guide;
+  - a **Load full article** button when `is_summary` is true, or `content_html` is short (under 1,500 characters), or
     the feed marks it as a summary;
   - an "Archiving…" / "In KB" / "Archive incomplete — Retry" status.
 
@@ -767,7 +819,11 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 
 **Files:**
 - Create:
-  - `web/apps/rss/src/ManageFeeds.tsx`, covering add (URL or site), OPML import/export,
+  - `web/apps/launcher/src/settings/Rss.tsx` (Settings → RSS: OPML import/export, retention,
+    kept-posts folder), and convert the launcher Settings page to the design-pass layout:
+    an outline of sections on the left, a view pane with a toolbar on top and actions at the
+    bottom (existing sections move in unchanged);
+  - `web/apps/rss/src/ManageFeeds.tsx`, covering add (URL or site),
     folders, and the per-feed error with Retry;
   - `web/tests/e2e/rss.spec.ts`;
   - fixture feeds under `web/tests/e2e/fixtures/feeds/`, served by `make e2e-server`.
@@ -784,7 +840,8 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
      tag `fixture`, then `⌘↵`. Open Notes, search "fixture", and see the Sources page.
   2. Settings → Tags: rename `#fixture` to `#fixtures`, preview 1 page, Apply. The page body
      has `#fixtures`.
-  3. Import an OPML with 2 feeds into a folder and see the folder with counts.
+  3. In Settings → RSS, import an OPML with 2 feeds into a folder; back in RSS, see the folder
+     with counts.
 
 - [ ] **Step 1: Write the e2e spec and the ManageFeeds vitest tests.** Expected: FAIL.
 - [ ] **Step 2: Implement.**
