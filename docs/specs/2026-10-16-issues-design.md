@@ -295,8 +295,9 @@ and touch sensors, such as `@dnd-kit` (MIT), wrapped once in `@jesinia/design` a
   - `initiative` sits above epics, with the same rule and its own label.
   - An epic needs **priority** but not type or area. Its readiness is derived: ready when every
     *direct* child is ready.
-  - Children in another repo are allowed (GitHub supports them) but get a warning, "won't fit
-    one PR".
+  - Children in another repo **under the same owner** are allowed but get a warning, "won't fit
+    one PR". Children from another owner are refused, since GitHub's sub-issue API requires
+    the same owner. A drop like that shows "can't drop here" with the reason.
 - **Applying an approval:**
   - Each approval runs as one **ordered series** of calls for that issue, in this order:
     1. labels;
@@ -343,8 +344,8 @@ and touch sensors, such as `@dnd-kit` (MIT), wrapped once in `@jesinia/design` a
   - A new theme passes the tag catalog's instant, catalog-only near-duplicate check, with no
     agent involved, so a drag never waits on a runner.
 - **Assignees:** not suggested or written. Assignment belongs to the later dispatch tool.
-- **Duplicates:** accepting a duplicate closes the issue as a duplicate (`state_reason`) with a
-  comment linking the original, as an approved change in the series above.
+- **Duplicates:** accepting a duplicate closes the issue as a duplicate (`state_reason: duplicate` with
+  `duplicate_issue_id`) and a comment linking the original, as an approved change in the series above.
 
 ## 7. Architecture
 
@@ -374,7 +375,9 @@ and touch sensors, such as `@dnd-kit` (MIT), wrapped once in `@jesinia/design` a
 
 - **GitHub auth missing:** the wireframe's blocking state.
 - **A write rejected by GitHub:** for example the label doesn't exist, or there are no rights.
-  The suggestion stays a draft, with the cause shown and nothing partly applied.
+  The ordered series for that issue stops at the failing step (§6.2). Earlier steps that
+  succeeded are kept and reported, the failed and remaining steps are shown with the cause,
+  and Retry runs only those.
 - **The runner is unavailable:** manual triage keeps working, and suggestions say they're
   waiting.
 
