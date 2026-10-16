@@ -31,3 +31,5 @@ class ParsedFeed:
     title: str
     site_url: str
     items: list[ParsedItem]
+    # Set when the parser recovered from malformed input; carries the original cause.
+    warning: str | None = None

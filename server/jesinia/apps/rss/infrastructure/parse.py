@@ -18,7 +18,7 @@ import feedparser
 import nh3
 
 from jesinia.apps.rss.domain.feed import FeedParseError, ParsedFeed, ParsedItem
-from jesinia.services.fetch.infrastructure.sanitize import sanitize_html
+from jesinia.services.fetch.api.content import sanitize_html
 
 MAX_ITEMS = 500
 SNIPPET_MAX = 280
@@ -48,10 +48,25 @@ class _RawFeed:
     title: str | None
     site_url: str | None
     entries: list[_RawEntry]
+    warning: str | None = None
+    cause: BaseException | None = None
 
 
 def _text(value: object) -> str | None:
     return value.strip() or None if isinstance(value, str) else None
+
+
+def _safe_url(candidate: str | None, base: str) -> str | None:
+    """Resolve against ``base``; keep only absolute http(s) URLs with a host."""
+    if not candidate:
+        return None
+    try:
+        resolved = urljoin(base, candidate)
+        parts = urlparse(resolved)
+        has_host = bool(parts.hostname)
+    except ValueError:
+        return None
+    return resolved if parts.scheme in ("http", "https") and has_host else None
 
 
 def _plain_text(html: str) -> str:
@@ -89,7 +104,11 @@ def _read_feedparser(body: bytes) -> _RawFeed:
                 comments_url=_text(entry.get("comments")),
             )
         )
-    return _RawFeed(_text(feed.get("title")), _text(feed.get("link")), entries)
+    cause = parsed.get("bozo_exception") if parsed.get("bozo") else None
+    warning = f"{type(cause).__name__}: {cause}" if cause is not None else None
+    if warning is None and parsed.get("bozo"):
+        warning = "feed was malformed"
+    return _RawFeed(_text(feed.get("title")), _text(feed.get("link")), entries, warning, cause)
 
 
 def _json_date(value: object) -> datetime | None:
@@ -141,8 +160,12 @@ def _read_json_feed(body: bytes) -> _RawFeed:
     return _RawFeed(_text(document.get("title")), _text(document.get("home_page_url")), entries)
 
 
+def _sort_key(entry: _RawEntry) -> datetime:
+    return entry.published_at or datetime.min.replace(tzinfo=UTC)
+
+
 def _build_item(raw: _RawEntry, feed_url: str, is_hacker_news: bool) -> ParsedItem:
-    url = raw.link or feed_url
+    url = _safe_url(raw.link, feed_url) or feed_url
     title = raw.title or ""
     sanitised = sanitize_html(raw.content_html, url) if raw.content_html else None
     return ParsedItem(
@@ -153,7 +176,7 @@ def _build_item(raw: _RawEntry, feed_url: str, is_hacker_news: bool) -> ParsedIt
         published_at=raw.published_at,
         snippet=_snippet(raw.summary_html or raw.content_html),
         content_html=sanitised,
-        discussion_url=raw.comments_url if is_hacker_news else None,
+        discussion_url=_safe_url(raw.comments_url, feed_url) if is_hacker_news else None,
         is_summary=raw.content_html is None,
     )
 
@@ -161,17 +184,22 @@ def _build_item(raw: _RawEntry, feed_url: str, is_hacker_news: bool) -> ParsedIt
 def parse_feed(body: bytes, url: str) -> ParsedFeed:
     """Parse ``body`` fetched from ``url``; keep the newest ``MAX_ITEMS`` entries.
 
-    Raises ``FeedParseError`` when the document is neither a feed nor JSON Feed.
+    Only ever handed bytes: nothing here reads files or fetches network resources. Raises
+    ``FeedParseError`` (chained to the parser's own cause) when the document is unreadable.
     """
     is_json = body.lstrip()[:1] in (b"{", b"[")
     raw = _read_json_feed(body) if is_json else _read_feedparser(body)
     if not is_json and not raw.entries and raw.title is None:
-        raise FeedParseError("document is not an RSS or Atom feed")
+        raise FeedParseError(raw.warning or "document is not an RSS or Atom feed") from raw.cause
     is_hacker_news = urlparse(url).hostname == HN_HOST
-    items = [_build_item(entry, url, is_hacker_news) for entry in raw.entries]
-    # Stable sort, so undated feeds keep their own order.
-    items.sort(key=lambda item: item.published_at or datetime.min.replace(tzinfo=UTC), reverse=True)
-    return ParsedFeed(title=raw.title or url, site_url=raw.site_url or url, items=items[:MAX_ITEMS])
+    # Stable sort, so undated feeds keep their own order; trim before the costly per-item work.
+    newest = sorted(raw.entries, key=_sort_key, reverse=True)[:MAX_ITEMS]
+    return ParsedFeed(
+        title=raw.title or url,
+        site_url=_safe_url(raw.site_url, url) or url,
+        items=[_build_item(entry, url, is_hacker_news) for entry in newest],
+        warning=raw.warning,
+    )
 
 
 class _FeedLinkFinder(HTMLParser):
@@ -190,7 +218,7 @@ class _FeedLinkFinder(HTMLParser):
             and values.get("type", "").lower() in FEED_LINK_TYPES
             and values.get("href")
         ):
-            self.found = urljoin(self._base, values["href"])
+            self.found = _safe_url(values["href"], self._base)
 
 
 def discover(html: bytes, base: str) -> str | None:

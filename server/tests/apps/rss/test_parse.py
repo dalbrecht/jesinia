@@ -185,3 +185,114 @@ def test_reader_implements_the_feed_reader_port() -> None:
     reader: FeedReader = FeedparserReader()
     assert reader.parse(load("atom.xml"), "https://a.example.com/f").title == "Atom Example"
     assert reader.discover(load("html-with-link-alternate.html"), "https://e.com/") is not None
+
+
+def _rss_with_link(link: str, comments: str = "") -> bytes:
+    extra = f"<comments>{comments}</comments>" if comments else ""
+    return (
+        '<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>'
+        f"<link>{link}</link><item><title>a</title><link>{link}</link>{extra}</item>"
+        "</channel></rss>"
+    ).encode()
+
+
+@pytest.mark.parametrize(
+    ("link", "expected"),
+    [
+        ("javascript:alert(1)", "https://e.com/feed"),
+        ("data:text/html,hi", "https://e.com/feed"),
+        ("/relative/path", "https://e.com/relative/path"),
+        ("//cdn.example.org/x", "https://cdn.example.org/x"),
+        ("http://", "https://e.com/feed"),
+    ],
+)
+def test_item_and_site_urls_are_normalised_to_http_urls(link: str, expected: str) -> None:
+    feed = parse_feed(_rss_with_link(link), "https://e.com/feed")
+    assert feed.items[0].url == expected
+    assert feed.site_url == expected
+
+
+@pytest.mark.parametrize(
+    ("comments", "expected"),
+    [
+        ("javascript:alert(1)", None),
+        ("data:text/html,hi", None),
+        ("/item?id=1", "https://news.ycombinator.com/item?id=1"),
+        ("//news.ycombinator.com/item?id=2", "https://news.ycombinator.com/item?id=2"),
+    ],
+)
+def test_discussion_url_is_normalised_or_dropped(comments: str, expected: str | None) -> None:
+    body = _rss_with_link("https://a.example.org/x", comments)
+    feed = parse_feed(body, "https://news.ycombinator.com/rss")
+    assert feed.items[0].discussion_url == expected
+
+
+@pytest.mark.parametrize(
+    "href",
+    ["javascript:alert(1)", "data:application/rss+xml,x", "http://"],
+)
+def test_discover_rejects_non_http_feed_links(href: str) -> None:
+    page = f'<link rel="alternate" type="application/rss+xml" href="{href}">'.encode()
+    assert discover(page, "https://e.com/") is None
+
+
+def test_discover_resolves_protocol_relative_links() -> None:
+    page = b'<link rel="alternate" type="application/rss+xml" href="//f.example.org/x.xml">'
+    assert discover(page, "https://e.com/") == "https://f.example.org/x.xml"
+
+
+def test_truncated_feed_keeps_valid_items_and_reports_warning() -> None:
+    body = load("rss2.xml")
+    truncated = body[: body.index(b"<item>", body.index(b"</item>")) + 30]
+    feed = parse_feed(truncated, "https://example.com/feed.xml")
+    assert feed.items[0].guid == "post-1"
+    assert feed.warning is not None and feed.warning != ""
+
+
+def test_clean_feed_has_no_warning() -> None:
+    assert parse_feed(load("atom.xml"), "https://a.example.com/f").warning is None
+
+
+def test_unparseable_document_chains_the_parser_cause() -> None:
+    with pytest.raises(FeedParseError) as caught:
+        parse_feed(b"<<<definitely not xml", "https://e.com/f")
+    assert caught.value.__cause__ is not None or "not an RSS" in str(caught.value)
+
+
+def test_invalid_json_chains_its_cause() -> None:
+    with pytest.raises(FeedParseError) as caught:
+        parse_feed(b"{oops", "https://e.com/f")
+    assert isinstance(caught.value.__cause__, ValueError)
+
+
+def test_parse_only_trims_to_newest_before_building_items() -> None:
+    feed = parse_feed(_many_items(MAX_ITEMS + 5), "https://e.com/feed")
+    assert [item.guid for item in feed.items[:2]] == [f"g{MAX_ITEMS + 4}", f"g{MAX_ITEMS + 3}"]
+
+
+def _many_items(count: int) -> bytes:
+    entries = "".join(
+        f"<item><title>t{n}</title><link>https://e.com/{n}</link><guid>g{n}</guid>"
+        f"<pubDate>Mon, 12 Oct 2026 {n // 3600:02d}:{n // 60 % 60:02d}:{n % 60:02d} GMT</pubDate>"
+        "</item>"
+        for n in range(count)
+    )
+    return (
+        '<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>'
+        f"<link>https://e.com/</link>{entries}</channel></rss>"
+    ).encode()
+
+
+def test_file_url_body_is_not_read_or_fetched() -> None:
+    with pytest.raises(FeedParseError):
+        parse_feed(b"file:///etc/hosts", "https://e.com/feed")
+
+
+def test_external_entity_is_ignored() -> None:
+    body = (
+        b'<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY x SYSTEM "file:///etc/hosts">]>'
+        b'<rss version="2.0"><channel><title>T &x;</title><link>https://e.com/</link>'
+        b"<item><title>a &x;</title><link>https://e.com/a</link></item></channel></rss>"
+    )
+    feed = parse_feed(body, "https://e.com/feed")
+    assert "localhost" not in feed.title and "localhost" not in feed.items[0].title
