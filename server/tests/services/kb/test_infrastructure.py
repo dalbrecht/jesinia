@@ -109,3 +109,24 @@ def test_walk_skips_symlinks(tmp_path: Path) -> None:
     (tmp_path / "ld").symlink_to(tmp_path / "d")
     (tmp_path / "d" / "x.md").write_text("x")
     assert list(LocalFiles(tmp_path).walk()) == ["a.md", "d/x.md"]
+
+
+def test_rename_refuses_symlink_source(tmp_path: Path) -> None:
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / "real.md").write_text("real")
+    (root / "link.md").symlink_to(root / "real.md")
+    fs = LocalFiles(root)
+    with pytest.raises(PathOutsideKb):
+        fs.rename("link.md", "moved.md")
+    assert (root / "real.md").read_text() == "real" and not (root / "moved.md").exists()
+
+
+def test_index_reset(tmp_path: Path) -> None:
+    conn = open_db(tmp_path, KB_DB)
+    idx = SqliteIndex(conn)
+    idx.put(A, PurePosixPath("a.md"), "a.md", "r", "A", 1.0)
+    idx.set_duplicates({A: [PurePosixPath("a.md"), PurePosixPath("b.md")]})
+    idx.reset()
+    assert idx.all() == [] and idx.conflicts() == []
+    conn.close()

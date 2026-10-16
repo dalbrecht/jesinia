@@ -49,6 +49,11 @@ class SqliteIndex:
             self.conn.execute("DELETE FROM pages WHERE id = ?", (id,))
             self.conn.execute("DELETE FROM links WHERE src = ?", (id,))
 
+    def reset(self) -> None:
+        with transaction(self.conn):
+            for table in ("pages", "links", "conflicts"):
+                self.conn.execute(f"DELETE FROM {table}")
+
     def all(self) -> list[IndexRow]:
         return [_row(r) for r in self.conn.execute(f"SELECT {_COLS} FROM pages ORDER BY path")]
 

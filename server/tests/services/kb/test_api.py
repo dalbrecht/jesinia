@@ -205,3 +205,12 @@ async def test_watcher_emits_external_change(
     ext = [e for e in seen if e.payload.get("origin") == "external"]
     assert ext and ext[0].payload["id"] == p["id"] and ext[0].payload["change"] == "updated"
     assert module.watcher is not None and module.watcher.last_activity is not None
+
+
+async def test_change_root_resets_index(client: httpx.AsyncClient, tmp_path: Path) -> None:
+    await _create(client, "Old KB page")
+    other = tmp_path / "other-kb"
+    other.mkdir()
+    r = await client.put("/api/kb/path", json={"path": str(other)})
+    assert r.status_code == 200 and r.json()["missing"] == []
+    assert (await client.get("/api/kb/conflicts")).json() == []

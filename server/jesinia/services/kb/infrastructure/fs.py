@@ -61,6 +61,9 @@ class LocalFiles:
         return path.stat().st_mtime
 
     def rename(self, src: str, dst: str) -> None:
+        for name in (src, dst):
+            if os.path.islink(self.root / name):
+                raise PathOutsideKb(f"{name} is a symlink; Jesinia never moves links")
         target = self._abs(dst)
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(self._abs(src), target)

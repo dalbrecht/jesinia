@@ -66,6 +66,10 @@ class PageIndex(Protocol):
 
     def set_links(self, src: PageId, dsts: Iterable[PageId]) -> None: ...
 
+    def reset(self) -> None:
+        """Forget everything (a different KB root)."""
+        ...
+
     def links_to(self, dst: PageId) -> list[PageId]: ...
 
     def set_duplicates(self, dups: dict[PageId, list[PurePosixPath]]) -> None:

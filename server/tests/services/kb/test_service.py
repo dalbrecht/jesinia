@@ -181,3 +181,25 @@ async def test_unavailable_when_no_kb_path(kb_unset: KbService) -> None:
     with pytest.raises(KbUnavailable):
         await kb_unset.write(PageDraft(None, "x", N, ""))
     assert kb_unset.root is None
+
+
+async def test_index_failure_after_write_still_succeeds(
+    kb: KbService, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import sqlite3
+
+    def locked(*a: object, **k: object) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(kb.index, "put", locked)
+    p = await kb.write(PageDraft(None, "Durable", N, "body"))
+    assert (kb.root / "Notes/Durable.md").read_text().endswith("body")  # type: ignore[operator]
+    assert p.page.title == "Durable" and "next scan will repair" in caplog.text
+
+
+async def test_relink_skips_malformed_linker(kb: KbService) -> None:
+    a = await kb.write(PageDraft(None, "T", N, "t"))
+    b = await kb.write(PageDraft(None, "L", N, f"[[{a.page.id}|T]]"))
+    (kb.root / "Notes/L.md").write_bytes(b"---\nid: " + b.page.id.encode() + b"\n---\n\xff\xfe")  # type: ignore[operator]
+    r = await kb.move(a.page.id, N, title="T2")
+    assert r.page.page.title == "T2" and r.skipped == [b.page.id] and r.relinked == []

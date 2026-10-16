@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import unicodedata
 from collections import defaultdict
 from collections.abc import Mapping
@@ -14,6 +15,7 @@ from typing import Literal
 
 from jesinia.core.events import Event, EventBus
 from jesinia.services.kb.application.errors import (
+    KbError,
     KbUnavailable,
     PageNotFound,
     PathOutsideKb,
@@ -30,6 +32,8 @@ from jesinia.services.kb.domain.frontmatter import (
 from jesinia.services.kb.domain.links import link_targets, retitle_links
 from jesinia.services.kb.domain.page import Page, PageId, new_page_id
 from jesinia.services.kb.domain.paths import filename_for, is_hidden, is_reserved
+
+log = logging.getLogger(__name__)
 
 Change = Literal["created", "updated", "moved", "missing"]
 
@@ -140,8 +144,13 @@ class KbService:
     def _store(self, page: Page, disk: str, data: bytes) -> PageWithRev:
         mtime = self._fs().write_atomic(disk, data)
         rev = sha256(data)
-        self._index.put(page.id, page.path, disk, rev, page.title, mtime)
-        self._index.set_links(page.id, link_targets(page.body))
+        # The file is the source of truth and is already written. The index is derived:
+        # if updating it fails, report success anyway and let the next scan repair it.
+        try:
+            self._index.put(page.id, page.path, disk, rev, page.title, mtime)
+            self._index.set_links(page.id, link_targets(page.body))
+        except Exception:
+            log.exception("KB index update failed for %s; the next scan will repair it", page.id)
         return PageWithRev(page, rev)
 
     def _current(self, id: PageId) -> tuple[str, bytes]:
@@ -264,6 +273,8 @@ class KbService:
                     if body != linker.page.body:
                         await self.update_body(src, body, expected_rev=row.rev)
                         relinked.append(src)
-                except (StaleWrite, PageNotFound):
+                except (KbError, OSError, ValueError):
+                    # Stale, missing, unreadable, or malformed linkers are left alone; the
+                    # rename itself already succeeded.
                     skipped.append(src)
         return MoveResult(moved, relinked, skipped)

@@ -135,3 +135,17 @@ async def test_bad_id_frontmatter_is_reported(kb: KbService) -> None:
     (_root(kb) / "odd.md").write_text("---\nid: x\njesinia: [1]\n---\nbody\n")
     report = await scan(kb)
     assert [p for p, _ in report.errors] == [PurePosixPath("odd.md")]
+
+
+async def test_invalid_utf8_is_reported_not_rewritten(kb: KbService) -> None:
+    raw = b"caf\xe9 latin-1 bytes\n"
+    (_root(kb) / "latin.md").write_bytes(raw)
+    report = await scan(kb)
+    assert report.adopted == [] and [p for p, _ in report.errors] == [PurePosixPath("latin.md")]
+    assert (_root(kb) / "latin.md").read_bytes() == raw
+
+
+async def test_adopted_page_emits_created(kb: KbService, events: list[Event]) -> None:
+    (_root(kb) / "Plain.md").write_text("hello\n")
+    await scan(kb)
+    assert events[-1].payload["change"] == "created" and events[-1].payload["path"] == "Plain.md"

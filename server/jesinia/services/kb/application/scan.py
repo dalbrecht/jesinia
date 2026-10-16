@@ -75,7 +75,8 @@ def _visit(
         by_id[known.id].append(_Found(known.id, rel, disk, known.rev, known.title, mtime, None))
         return "page"
     data = fs.read(disk)
-    doc = parse_document(data.decode("utf-8", errors="replace"))
+    # Strict: a non-UTF-8 file is reported, never "repaired" (that would corrupt it).
+    doc = parse_document(data.decode("utf-8"))
     if doc.kind == "foreign":
         return "foreign"
     if doc.kind == "plain":
@@ -135,8 +136,6 @@ async def scan(svc: KbService) -> ScanReport:
             change = "updated"
         else:
             continue
-        if keep.path in adopted:
-            continue  # adoption is reported via the scan report, not as an external edit
         await svc.emit(id, keep.path, change, "external")
 
     missing: list[PageId] = []

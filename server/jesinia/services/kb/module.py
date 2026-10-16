@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
 
@@ -48,6 +49,7 @@ class KbModule:
         self._watcher: KbWatcher | None = None
         self._last: ScanReport | None = None
         self._problem: str | None = None
+        self._root: Path | None = None
 
     @property
     def service(self) -> KbService:
@@ -84,6 +86,9 @@ class KbModule:
         if self._problem is not None or root is None:
             self._svc.set_files(None)
             return
+        if self._root is not None and root.resolve() != self._root.resolve():
+            self._svc.index.reset()  # a different KB: its pages are not "missing"
+        self._root = root
         self._svc.set_files(LocalFiles(root))
         self._last = await scan(self._svc)
         self._watcher = KbWatcher(root, self._on_paths)
@@ -124,8 +129,9 @@ class KbModule:
         problem = self._usable(root) if root.is_absolute() else "the KB path must be absolute"
         if problem is not None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, problem)
-        cfg = set_value(self._ctx.cfg.data_dir / "config.toml", "kb.path", str(root))
-        self._ctx.cfg = cfg
+        set_value(self._ctx.cfg.data_dir / "config.toml", "kb.path", str(root))
+        # Only kb_path changes in memory; never swap other live settings (e.g. the token).
+        self._ctx.cfg = replace(self._ctx.cfg, kb_path=root)
         await self._attach(root)
         bus: EventBus = self._ctx.bus
         await bus.publish(Event("kb.root_changed", {"path": str(root)}))
