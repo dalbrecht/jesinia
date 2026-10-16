@@ -7,7 +7,9 @@ license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.118",
+    "pyyaml>=6.0.2",
     "uvicorn>=0.37",
+    "watchfiles>=1.1",
 ]
 
 [dependency-groups]
@@ -20,6 +22,7 @@ dev = [
     "httpx>=0.28",
     "pytest-asyncio>=1.2",
     "pip-audit>=2.9",
+    "types-pyyaml>=6.0",
 ]
 
 [build-system]
@@ -41,6 +44,10 @@ extend-include = ["../scripts/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Error names are part of the planned service interfaces (e.g. StaleWrite, PageNotFound).
+"**/application/errors.py" = ["N818"]
 
 [tool.ruff.format]
 # Compatible with Black style

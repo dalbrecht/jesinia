@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""KB service errors."""
+
+
+class KbError(Exception):
+    """Base class for KB service errors."""
+
+
+class KbUnavailable(KbError):
+    """No KB path is configured (or it is missing)."""
+
+
+class PageNotFound(KbError):
+    """No page with that id is indexed, or its file is gone."""
+
+
+class StaleWrite(KbError):
+    """The file changed since the writer read it (or no base revision was given)."""
+
+
+class PathOutsideKb(KbError):
+    """The target resolves outside the KB root (``..``, absolute, or a symlink)."""
+
+
+class ReservedPath(KbError):
+    """The target is in a suite-reserved (``Journal``, ``Drafts``) or hidden folder."""
