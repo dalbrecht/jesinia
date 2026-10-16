@@ -26,3 +26,19 @@ class FetchCache(Protocol):
     def put(self, url: str, entry: CachedFetch) -> None: ...
 
     def prune(self, older_than: timedelta) -> int: ...
+
+
+@dataclass(frozen=True)
+class Article:
+    """A page's main text as Markdown. Links and images are absolute http(s) URLs;
+    ``image_urls`` lists the images in the order they appear."""
+
+    title: str | None
+    markdown: str
+    image_urls: list[str]
+
+
+class ArticleExtractor(Protocol):
+    def extract(self, html: bytes, url: str) -> Article | None:
+        """The article in ``html`` (fetched from ``url``), or None if it has no main text."""
+        ...

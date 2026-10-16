@@ -16,6 +16,7 @@ from jesinia.services.fetch.application.ports import Resolver
 from jesinia.services.fetch.application.service import FetchService, system_resolve
 from jesinia.services.fetch.domain.address import is_public
 from jesinia.services.fetch.infrastructure.cache import SqliteFetchCache
+from jesinia.services.fetch.infrastructure.extract import TrafilaturaExtractor
 from jesinia.services.fetch.infrastructure.transport import guarded_transport
 
 FETCH_DB = ModuleDb("fetch", DbClass.CACHE, files("jesinia.services.fetch.migrations"))
@@ -47,6 +48,7 @@ class FetchModule:
             resolve=self._resolve,
             allowed=self._allowed,
             transport=guarded_transport(self._resolve, self._allowed),
+            extractor=TrafilaturaExtractor(),
         )
 
     async def stop(self) -> None:

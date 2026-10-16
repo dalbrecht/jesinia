@@ -21,7 +21,13 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from jesinia.services.fetch.application.ports import CachedFetch, FetchCache, Resolver
+from jesinia.services.fetch.application.ports import (
+    Article,
+    ArticleExtractor,
+    CachedFetch,
+    FetchCache,
+    Resolver,
+)
 from jesinia.services.fetch.domain.address import is_public
 
 MAX_REDIRECTS = 5
@@ -74,10 +80,13 @@ class FetchService:
         min_interval: float = 1.0,
         transport: httpx.AsyncBaseTransport | None = None,
         allowed: Callable[[str], bool] = is_public,
+        extractor: ArticleExtractor | None = None,
     ) -> None:
         """``allowed`` decides which resolved addresses may be fetched; only the
-        end-to-end test server widens it (to loopback, for fixture feeds)."""
+        end-to-end test server widens it (to loopback, for fixture feeds). ``extractor``
+        turns a fetched page into an article for ``article``."""
         self._cache = cache
+        self._extractor = extractor
         self._allowed = allowed
         self._resolve = resolve
         self._min_interval = min_interval
@@ -138,6 +147,20 @@ class FetchService:
                         self._cache.put(url, CachedFetch(etag, modified, 200, content_type, body))
                     return FetchResult(url, resp.status_code, content_type, body, False)
         raise FetchBlocked(f"too many redirects (more than {MAX_REDIRECTS})")
+
+    async def article(self, url: str) -> Article | None:
+        """The main text of the page at ``url``, or None when it has none.
+
+        Raises ``FetchError`` when the page cannot be fetched (blocked, too large, or an
+        HTTP error status) or no extractor is configured.
+        """
+        if self._extractor is None:
+            raise FetchError("article extraction is not available")
+        result = await self.get(url)
+        if result.status != 200:
+            raise FetchError(f"{url} answered HTTP {result.status}")
+        # Extraction parses the whole page: keep it off the event loop.
+        return await asyncio.to_thread(self._extractor.extract, result.body, result.url)
 
 
 def _is_ip(host: str) -> bool:

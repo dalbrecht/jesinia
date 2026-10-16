@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Protocol
 
 from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedFeed, ParsedItem
+from jesinia.apps.rss.domain.post import Counts, Cursor, PostView, View
+from jesinia.services.fetch.application.ports import Article
 from jesinia.services.fetch.application.service import FetchResult
 
 
@@ -27,6 +29,14 @@ class FeedFetcher(Protocol):
 
     async def get(self, url: str) -> FetchResult:
         """Fetch ``url``; raises ``FetchError`` when the URL is blocked or too large."""
+        ...
+
+
+class ArticleFetcher(Protocol):
+    """The ``fetch`` service's article extraction (a guarded GET, then the extractor)."""
+
+    async def article(self, url: str) -> Article | None:
+        """The page's main text, or None if it has none; raises ``FetchError``."""
         ...
 
 
@@ -101,3 +111,48 @@ class FeedStore(Protocol):
     def feed_views(self) -> list[FeedView]:
         """Every feed with its folder name and unread count, in folder then title order."""
         ...
+
+
+class PostStore(Protocol):
+    """Posts and their read state in ``rss.sqlite``. Lists are newest first: by publication
+    time, else first sighting, then by id."""
+
+    def posts(
+        self,
+        view: View,
+        feed_id: int | None,
+        folder_id: int | None,
+        before: Cursor | None,
+        limit: int,
+    ) -> list[PostView]:
+        """Up to ``limit`` posts in ``view`` (and the feed or folder), after ``before``."""
+        ...
+
+    def post(self, post_id: int) -> PostView | None: ...
+
+    def full_md(self, post_id: int) -> str | None:
+        """The cached full article, if it was loaded."""
+        ...
+
+    def set_full_md(self, post_id: int, markdown: str) -> None: ...
+
+    def set_read(self, ids: Sequence[int], read: bool) -> int:
+        """Set the read state of the posts that exist; how many there were."""
+        ...
+
+    def mark_read_from(
+        self, view: View, feed_id: int | None, folder_id: int | None, start: Cursor
+    ) -> int:
+        """Mark read every post in the view at or above ``start``; how many matched."""
+        ...
+
+    def search(self, text: str, limit: int) -> list[PostView]:
+        """Posts whose title or snippet contains ``text`` (literally, ignoring case)."""
+        ...
+
+    def prune(self, cutoff: datetime, now: datetime) -> int:
+        """Delete unkept posts dated before ``cutoff`` (remembering their GUIDs, so the feed
+        cannot bring them back); how many were deleted."""
+        ...
+
+    def counts(self) -> Counts: ...

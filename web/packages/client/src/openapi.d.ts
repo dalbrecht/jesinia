@@ -772,6 +772,117 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rss/posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Posts
+         * @description Newest first; ``before`` is the previous page's ``next_before``.
+         */
+        get: operations["list_posts_api_rss_posts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/posts/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search Posts
+         * @description Headlines and snippets of retained posts (kept ones are searchable in the KB).
+         */
+        get: operations["search_posts_api_rss_posts_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/posts/{post_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Patch Post */
+        patch: operations["patch_post_api_rss_posts__post_id__patch"];
+        trace?: never;
+    };
+    "/api/rss/posts/read-above": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read Above */
+        post: operations["read_above_api_rss_posts_read_above_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/posts/{post_id}/article": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Full Article
+         * @description The original article as Markdown, extracted on first request and cached.
+         */
+        get: operations["full_article_api_rss_posts__post_id__article_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Counts */
+        get: operations["counts_api_rss_counts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -793,6 +904,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ArticleOut */
+        ArticleOut: {
+            /** Markdown */
+            markdown: string;
+        };
         /** BodyIn */
         BodyIn: {
             /** Body */
@@ -810,6 +926,14 @@ export interface components {
             paths: string[];
             /** Detected At */
             detected_at: string;
+        };
+        /** CountsOut */
+        CountsOut: {
+            /** Feeds */
+            feeds: components["schemas"]["UnreadOut"][];
+            /** Folders */
+            folders: components["schemas"]["UnreadOut"][];
+            views: components["schemas"]["ViewCountsOut"];
         };
         /** FeedIn */
         FeedIn: {
@@ -897,6 +1021,11 @@ export interface components {
             existing: number;
             /** Failed */
             failed: components["schemas"]["ImportFailureOut"][];
+        };
+        /** MarkedOut */
+        MarkedOut: {
+            /** Marked */
+            marked: number;
         };
         /** MergeIn */
         MergeIn: {
@@ -1006,6 +1135,78 @@ export interface components {
             new_items: number;
             /** Failed */
             failed: number;
+        };
+        /** PostOut */
+        PostOut: {
+            /** Id */
+            id: number;
+            /** Feed Id */
+            feed_id: number;
+            /** Feed Title */
+            feed_title: string;
+            /** Url */
+            url: string;
+            /** Title */
+            title: string;
+            /** Author */
+            author: string | null;
+            /** Published At */
+            published_at: string | null;
+            /**
+             * First Seen At
+             * Format: date-time
+             */
+            first_seen_at: string;
+            /** Snippet */
+            snippet: string;
+            /** Content Html */
+            content_html: string | null;
+            /** Discussion Url */
+            discussion_url: string | null;
+            /** Is Summary */
+            is_summary: boolean;
+            /** Read */
+            read: boolean;
+            /** Kept Page Id */
+            kept_page_id: string | null;
+            /** Archive State */
+            archive_state: string | null;
+            /** Archive Error */
+            archive_error: string | null;
+            /** Has Full Article */
+            has_full_article: boolean;
+        };
+        /** PostPageOut */
+        PostPageOut: {
+            /** Items */
+            items: components["schemas"]["PostOut"][];
+            /**
+             * Next Before
+             * @description Pass as ``before`` for the next page
+             */
+            next_before: string | null;
+        };
+        /** PostPatchIn */
+        PostPatchIn: {
+            /** Read */
+            read: boolean;
+        };
+        /** ReadAboveIn */
+        ReadAboveIn: {
+            /**
+             * Post Id
+             * @description The selected post: it and every post above it are marked
+             */
+            post_id: number;
+            /**
+             * View
+             * @enum {string}
+             */
+            view: "unread" | "kept" | "all";
+            /** Feed */
+            feed?: number | null;
+            /** Folder */
+            folder?: number | null;
         };
         /** RenameIn */
         RenameIn: {
@@ -1212,6 +1413,13 @@ export interface components {
             /** Count */
             count: number;
         };
+        /** UnreadOut */
+        UnreadOut: {
+            /** Id */
+            id: number;
+            /** Unread */
+            unread: number;
+        };
         /** UntrustedIn */
         UntrustedIn: {
             /** Source */
@@ -1231,6 +1439,15 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** ViewCountsOut */
+        ViewCountsOut: {
+            /** Unread */
+            unread: number;
+            /** Kept */
+            kept: number;
+            /** All */
+            all: number;
         };
     };
     responses: never;
@@ -3403,6 +3620,413 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    list_posts_api_rss_posts_get: {
+        parameters: {
+            query?: {
+                view?: "unread" | "kept" | "all";
+                feed?: number | null;
+                folder?: number | null;
+                before?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostPageOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    search_posts_api_rss_posts_search_get: {
+        parameters: {
+            query: {
+                q: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostOut"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    patch_post_api_rss_posts__post_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                post_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostPatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    read_above_api_rss_posts_read_above_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadAboveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkedOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    full_article_api_rss_posts__post_id__article_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                post_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArticleOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    counts_api_rss_counts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
             /** @description Bad Gateway */

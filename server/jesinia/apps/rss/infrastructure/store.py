@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import datetime
 
 from jesinia.apps.rss.application.ports import NewFeed, PollState
 from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedItem, feed_warning
+from jesinia.apps.rss.domain.post import TOMBSTONE_TTL, Counts, Cursor, PostView, View, utc_text
 
 _FEED_COLUMNS = (
     "id, url, title, site_url, folder_id, interval_s, next_poll_at, fail_count, last_error, "
@@ -37,19 +38,23 @@ def _feed(row: _FeedRow) -> Feed:
     )
 
 
+@contextmanager
+def _transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    conn.execute("BEGIN")
+    try:
+        yield
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+
+
 class SqliteFeedStore:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
-    @contextmanager
-    def _transaction(self) -> Iterator[None]:
-        self._conn.execute("BEGIN")
-        try:
-            yield
-        except BaseException:
-            self._conn.execute("ROLLBACK")
-            raise
-        self._conn.execute("COMMIT")
+    def _transaction(self) -> AbstractContextManager[None]:
+        return _transaction(self._conn)
 
     def _one_feed(self, where: str, value: object) -> Feed | None:
         row = self._conn.execute(
@@ -111,6 +116,7 @@ class SqliteFeedStore:
         return moved.rowcount == 1
 
     def add_posts(self, feed_id: int, items: Sequence[ParsedItem], now: datetime) -> int:
+        guids = [(utc_text(now), feed_id, item.guid) for item in items]
         rows = [
             (
                 feed_id,
@@ -118,20 +124,28 @@ class SqliteFeedStore:
                 item.url,
                 item.title,
                 item.author,
-                item.published_at.isoformat() if item.published_at is not None else None,
+                utc_text(item.published_at) if item.published_at is not None else None,
                 item.snippet,
                 item.content_html,
                 item.discussion_url,
                 int(item.is_summary),
-                now.isoformat(),
+                utc_text(now),
+                feed_id,
+                item.guid,
             )
             for item in items
         ]
         with self._transaction():
+            # A pruned item the feed still offers stays pruned, and its tombstone stays fresh.
+            self._conn.executemany(
+                "UPDATE pruned_posts SET seen_at = ? WHERE feed_id = ? AND guid = ?", guids
+            )
             cursor = self._conn.executemany(
                 "INSERT INTO posts (feed_id, guid, url, title, author, published_at, snippet, "
                 "content_html, discussion_url, is_summary, first_seen_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (feed_id, guid) DO NOTHING",
+                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS "
+                "(SELECT 1 FROM pruned_posts WHERE feed_id = ? AND guid = ?) "
+                "ON CONFLICT (feed_id, guid) DO NOTHING",
                 rows,
             )
         return max(cursor.rowcount, 0)
@@ -192,3 +206,171 @@ class SqliteFeedStore:
             )
             for row in rows
         ]
+
+
+# A post's place in the newest-first order (``PostView.cursor`` in SQL).
+_AT = "COALESCE(p.published_at, p.first_seen_at)"
+_POST_COLUMNS = (
+    "p.id, p.feed_id, f.title, p.url, p.title, p.author, p.published_at, p.first_seen_at, "
+    "p.snippet, p.content_html, p.discussion_url, p.is_summary, p.read, p.kept_page_id, "
+    "p.archive_state, p.archive_error, p.full_md IS NOT NULL"
+)
+_FROM = "FROM posts p JOIN feeds f ON f.id = p.feed_id"
+# Fixed SQL per view: callers never put text of their own into a query.
+_VIEW_WHERE: dict[str, str] = {
+    "unread": "p.read = 0",
+    "kept": "p.kept_page_id IS NOT NULL",
+    "all": "1",
+}
+_LIKE_ESCAPE = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+
+
+# The row shape ``_POST_COLUMNS`` selects.
+_PostRow = tuple[
+    int, int, str, str, str, str | None, str | None, str, str, str | None, str | None,
+    int, int, str | None, str | None, str | None, int,
+]  # fmt: skip
+
+
+def _post(row: _PostRow) -> PostView:
+    (id_, feed_id, feed_title, url, title, author, published, seen, snippet, content,
+     discussion, is_summary, read, kept, archive_state, archive_error, has_full) = row  # fmt: skip
+    return PostView(
+        id=id_,
+        feed_id=feed_id,
+        feed_title=feed_title,
+        url=url,
+        title=title,
+        author=author,
+        published_at=datetime.fromisoformat(published) if published is not None else None,
+        first_seen_at=datetime.fromisoformat(seen),
+        snippet=snippet,
+        content_html=content,
+        discussion_url=discussion,
+        is_summary=bool(is_summary),
+        read=bool(read),
+        kept_page_id=kept,
+        archive_state=archive_state,
+        archive_error=archive_error,
+        has_full_article=bool(has_full),
+    )
+
+
+def _scope(
+    view: View, feed_id: int | None, folder_id: int | None
+) -> tuple[list[str], list[object]]:
+    """The WHERE terms (and their parameters) selecting a view within a feed or folder."""
+    where = [_VIEW_WHERE[view]]
+    params: list[object] = []
+    if feed_id is not None:
+        where.append("p.feed_id = ?")
+        params.append(feed_id)
+    if folder_id is not None:
+        where.append("f.folder_id = ?")
+        params.append(folder_id)
+    return where, params
+
+
+class SqlitePostStore:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def _transaction(self) -> AbstractContextManager[None]:
+        return _transaction(self._conn)
+
+    def posts(
+        self,
+        view: View,
+        feed_id: int | None,
+        folder_id: int | None,
+        before: Cursor | None,
+        limit: int,
+    ) -> list[PostView]:
+        where, params = _scope(view, feed_id, folder_id)
+        if before is not None:
+            where.append(f"({_AT} < ? OR ({_AT} = ? AND p.id < ?))")
+            params += [before[0], before[0], before[1]]
+        rows = self._conn.execute(
+            f"SELECT {_POST_COLUMNS} {_FROM} WHERE {' AND '.join(where)} "
+            f"ORDER BY {_AT} DESC, p.id DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return [_post(row) for row in rows]
+
+    def post(self, post_id: int) -> PostView | None:
+        row = self._conn.execute(
+            f"SELECT {_POST_COLUMNS} {_FROM} WHERE p.id = ?", (post_id,)
+        ).fetchone()
+        return _post(row) if row is not None else None
+
+    def full_md(self, post_id: int) -> str | None:
+        row = self._conn.execute("SELECT full_md FROM posts WHERE id = ?", (post_id,)).fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+
+    def set_full_md(self, post_id: int, markdown: str) -> None:
+        self._conn.execute("UPDATE posts SET full_md = ? WHERE id = ?", (markdown, post_id))
+
+    def set_read(self, ids: Sequence[int], read: bool) -> int:
+        marks = ",".join("?" * len(ids))
+        updated = self._conn.execute(
+            f"UPDATE posts SET read = ? WHERE id IN ({marks})", (int(read), *ids)
+        )
+        return updated.rowcount
+
+    def mark_read_from(
+        self, view: View, feed_id: int | None, folder_id: int | None, start: Cursor
+    ) -> int:
+        where, params = _scope(view, feed_id, folder_id)
+        where.append(f"({_AT} > ? OR ({_AT} = ? AND p.id >= ?))")
+        params += [start[0], start[0], start[1]]
+        marked = self._conn.execute(
+            f"UPDATE posts SET read = 1 WHERE id IN (SELECT p.id {_FROM} WHERE "
+            f"{' AND '.join(where)})",
+            params,
+        )
+        return marked.rowcount
+
+    def search(self, text: str, limit: int) -> list[PostView]:
+        pattern = f"%{text.translate(_LIKE_ESCAPE)}%"
+        rows = self._conn.execute(
+            f"SELECT {_POST_COLUMNS} {_FROM} "
+            "WHERE p.title LIKE ? ESCAPE '\\' OR p.snippet LIKE ? ESCAPE '\\' "
+            f"ORDER BY {_AT} DESC, p.id DESC LIMIT ?",
+            (pattern, pattern, limit),
+        ).fetchall()
+        return [_post(row) for row in rows]
+
+    def prune(self, cutoff: datetime, now: datetime) -> int:
+        old = "FROM posts WHERE kept_page_id IS NULL AND COALESCE(published_at, first_seen_at) < ?"
+        with self._transaction():
+            self._conn.execute(
+                "DELETE FROM pruned_posts WHERE seen_at < ?", (utc_text(now - TOMBSTONE_TTL),)
+            )
+            self._conn.execute(
+                f"INSERT INTO pruned_posts (feed_id, guid, seen_at) SELECT feed_id, guid, ? {old} "
+                "ON CONFLICT (feed_id, guid) DO UPDATE SET seen_at = excluded.seen_at",
+                (utc_text(now), utc_text(cutoff)),
+            )
+            deleted = self._conn.execute(f"DELETE {old}", (utc_text(cutoff),))
+        return deleted.rowcount
+
+    def counts(self) -> Counts:
+        feeds = self._conn.execute(
+            "SELECT f.id, (SELECT COUNT(*) FROM posts p WHERE p.feed_id = f.id AND p.read = 0) "
+            "FROM feeds f ORDER BY f.id"
+        ).fetchall()
+        folders = self._conn.execute(
+            "SELECT d.id, (SELECT COUNT(*) FROM posts p JOIN feeds f ON f.id = p.feed_id "
+            "WHERE f.folder_id = d.id AND p.read = 0) FROM folders d ORDER BY d.position"
+        ).fetchall()
+        unread, kept, total = self._conn.execute(
+            "SELECT COALESCE(SUM(read = 0), 0), COALESCE(SUM(kept_page_id IS NOT NULL), 0), "
+            "COUNT(*) FROM posts"
+        ).fetchone()
+        return Counts(
+            feeds={int(r[0]): int(r[1]) for r in feeds},
+            folders={int(r[0]): int(r[1]) for r in folders},
+            unread=int(unread),
+            kept=int(kept),
+            all=int(total),
+        )
