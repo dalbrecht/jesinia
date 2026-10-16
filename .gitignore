@@ -42,3 +42,6 @@ server/.audit-requirements.txt
 # Playwright
 web/test-results/
 web/playwright-report/
+
+# Brainstorming companion scratch files
+.superpowers/
