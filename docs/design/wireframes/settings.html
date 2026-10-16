@@ -272,6 +272,47 @@ select.inp { appearance: auto; }
                           <div class="row agent"><span class="rg codex">X</span><span class="t">Codex</span><span class="badge wn">! Not logged in</span><span class="mm">Run <code>codex login</code>, then Check again.</span></div>
                         </div>
                         <button class="btn g sm fw" type="button">Check again</button>
+                        <div class="field">
+                          <label for="n-runner">Default runner</label>
+                          <select class="inp" id="n-runner"><option selected>Claude Code</option><option>Codex</option></select>
+                          <span class="help">New chats start with this runner. Switching in a chat starts a new session.</span>
+                        </div>
+                        <p class="sub-h">Per-app default</p>
+                        <div class="field" data-app="notes"><label for="n-r-notes"><span class="dotapp"></span>Notes</label><select class="inp" id="n-r-notes"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                        <div class="field" data-app="rss"><label for="n-r-rss"><span class="dotapp"></span>RSS</label><select class="inp" id="n-r-rss"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                        <div class="field" data-app="review"><label for="n-r-review"><span class="dotapp"></span>Review</label><select class="inp" id="n-r-review"><option>Use default (Claude Code)</option><option>Claude Code</option><option selected>Codex</option></select></div>
+                        <div class="field" data-app="issues"><label for="n-r-issues"><span class="dotapp"></span>Issues</label><select class="inp" id="n-r-issues"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                      </div>
+                    </section>
+
+                    <section class="panel" id="n-conflicts" aria-labelledby="n-conflicts-h">
+                      <div class="ph-title" id="n-conflicts-h">Conflicts <span class="sp"><span class="badge wn">2 to review</span></span></div>
+                      <div class="pb">
+                        <p class="muted">Jesinia never deletes or renames your files. Fix these in your editor.</p>
+                        <div class="list">
+                          <div class="row conf">
+                            <span class="t">Duplicate id: <code>id: maintenance</code></span>
+                            <span class="paths">
+                              <span><code>Notes/maintenance.md</code><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                              <span><code>Sources/maintenance-economics.md</code><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                            </span>
+                          </div>
+                          <div class="row conf">
+                            <span class="t">Missing page: <code>[[Funding models]]</code></span>
+                            <span class="paths">
+                              <span><span>Linked from <code>Notes/maintenance.md</code>, line 18.</span><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="panel" id="n-security" aria-labelledby="n-security-h">
+                      <div class="ph-title" id="n-security-h">Security</div>
+                      <div class="pb">
+                        <p>The login token lets browsers and agents talk to Jesinia on this Mac. Rotate it if a login link was shared by mistake.</p>
+                        <p class="muted">You'll need a new login link from <code>jesinia status</code>, and Claude Code and Codex are re-registered with the new token.</p>
+                        <button class="btn d fw" type="button">Rotate token</button>
                       </div>
                     </section>
                   </div>
@@ -280,7 +321,7 @@ select.inp { appearance: auto; }
             </div>
           </div>
         </div>
-        <figcaption><b>Narrow, 390.</b> The section nav becomes a scrolling tab row; panels stack; primary actions go full width.</figcaption>
+        <figcaption><b>Narrow, 390.</b> The section nav becomes a scrolling tab row, and all five panels stack in the same order as desktop (scroll for Agents, Conflicts, and Security). Primary actions go full width.</figcaption>
       </figure>
     </div>
     <ol class="notes">

@@ -107,5 +107,5 @@ there.
 | error | KB missing | invalid path | mid-stream error | feed 404 | GitHub auth | GitHub auth |
 | streaming | n/a | n/a | ✓ | ✓ | ✓ | bulk triage |
 | sync paused | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| runner unavailable | popover | agents panel | ✓ | ✓ | ✓ | n/a (Claude default) |
+| runner unavailable | popover | agents panel | ✓ | ✓ | ✓ | ✓ (default runner; and none available) |
 | pending write | n/a | n/a | ✓ (also on the open page) | n/a (Save to KB is the user's action) | n/a | suggestions use Accept/Dismiss |

@@ -568,6 +568,55 @@
         </div>
         <figcaption><b>Sync paused</b> (shell decision 3). The same warn strip shown in every app. Issues keeps working, since issues live on GitHub, not in the KB.</figcaption>
       </figure>
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues · dalbrecht/jesinia</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn s sm" type="button">dalbrecht/jesinia ▾</button></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;min-height:0;height:100%">
+                <div class="board" aria-label="Board columns (runner unavailable)">
+                <div class="col"><div class="col-h"><b>Triage</b><span class="badge neutral">4</span></div><div class="col-b"><div class="card sel"><div class="ct"><span class="num">#412</span> Sync pauses forever after a rebase conflict</div></div><div class="card"><div class="ct"><span class="num">#411</span> Feeds with CDATA titles show raw tags</div></div></div></div>
+                <div class="col"><div class="col-h"><b>Backlog</b><span class="badge neutral">12</span></div><div class="col-b"><div class="card"><div class="ct"><span class="num">#377</span> Sync stalls on a dirty index</div></div></div></div>
+                </div>
+                <aside style="border-left:1px solid var(--jx-border);background:var(--jx-surface);display:grid;align-content:start;gap:var(--jx-space-3);padding:var(--jx-space-3);font-size:var(--jx-text-sm)" aria-label="Triage #412">
+                  <b style="font-size:var(--jx-text-base)">#412 Sync pauses forever after a rebase conflict</b>
+                  <div style="background:var(--jx-warn-bg);border-radius:var(--jx-radius-md);padding:var(--jx-space-3);display:grid;gap:8px"><span><b style="color:var(--jx-warn)">! Claude isn't available:</b> not logged in. Run <code>claude login</code>, or switch to Codex for suggestions and chat.</span><span class="row-inline"><button class="btn s sm" type="button">Switch to Codex</button><button class="btn g sm" type="button">Check again</button></span></div>
+                  <div style="color:var(--jx-fg-muted)">Agent suggestions appear here once a runner is available. You can still label, assign, and close by hand.</div>
+                  <div class="row-inline"><button class="btn s sm" type="button">Add label</button><button class="btn s sm" type="button">Assign</button></div>
+                </aside>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Runner unavailable</b> (the app's default, Claude). This is minor: the dot turns amber, and the triage drawer offers to switch to Codex for this session. Manual triage keeps working.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Issues · dalbrecht/jesinia</span></div>
+          <div class="app" data-app="issues" data-density="compact">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">Issues</span></a>
+              <div class="mid"><button class="btn s sm" type="button">dalbrecht/jesinia ▾</button></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot bad"></span></div>
+            </div>
+            <div class="strip danger"><b>× No agent available:</b> Claude Code and Codex are both logged out. Run <code>claude login</code> or <code>codex login</code>. <span class="act"><button class="btn s sm" type="button">Check again</button><button class="btn g sm" type="button">Open Settings</button></span></div>
+            <div class="body">
+              <div class="board" aria-label="Board columns (no runner)">
+                <div class="col"><div class="col-h"><b>Triage</b><span class="badge neutral">4</span></div><div class="col-b"><div class="card"><div class="ct"><span class="num">#412</span> Sync pauses forever after a rebase conflict</div></div><div class="card"><div class="ct"><span class="num">#411</span> Feeds with CDATA titles show raw tags</div></div></div></div>
+                <div class="col"><div class="col-h"><b>Backlog</b><span class="badge neutral">12</span></div><div class="col-b"><div class="card"><div class="ct"><span class="num">#377</span> Sync stalls on a dirty index</div></div></div></div>
+                <div class="col"><div class="col-h"><b>In progress</b><span class="badge neutral">3</span></div><div class="col-b"><div class="card"><div class="ct"><span class="num">#398</span> Compact density tokens</div></div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>No runner at all</b> is blocking for Issues' agent features (shell decision 5): a danger strip and a red dot. "Triage with…" actions are disabled with this reason in their tooltip. The board, list, and manual triage keep working.</figcaption>
+      </figure>
     </div>
   </section>
 </main>
