@@ -3,7 +3,7 @@
 # Python (server/, uv) and JS (web/, pnpm) toolchains stay separate.
 
 UV   := uv --directory server
-PNPM := pnpm --dir web
+PNPM := cd web && pnpm  # run inside web/ so Corepack reads its packageManager pin
 
 .DEFAULT_GOAL := help
 .PHONY: help install build test test-py test-js test-e2e lint fmt fmt-check coverage-check \
