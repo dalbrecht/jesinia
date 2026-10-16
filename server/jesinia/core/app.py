@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 
 from jesinia.core.auth import auth_router, require_owner
 from jesinia.core.config import Config
@@ -50,13 +50,27 @@ def create_app(cfg: Config, modules: Sequence[Module]) -> FastAPI:
     app = FastAPI(title="Jesinia", version="0.1.0", lifespan=lifespan)
     app.state.ctx = ctx
     app.include_router(auth_router())
+
+    def available(name: str):  # type: ignore[no-untyped-def]
+        def check() -> None:
+            if name in failed:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, f"{name} is unavailable: {failed[name]}"
+                )
+
+        return check
+
     for module in modules:
         router = module.router()
         if router is not None:
             # HTTP routes serve the PWAs (the owner). Agent sessions reach Jesinia only
             # through MCP, where write confirmation applies (spec §4.3), so their session
             # tokens are refused here.
-            app.include_router(router, dependencies=[Depends(require_owner)])
+            # A module whose start() failed answers 503 instead of reaching half-initialized
+            # handlers.
+            app.include_router(
+                router, dependencies=[Depends(require_owner), Depends(available(module.name))]
+            )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, object]:

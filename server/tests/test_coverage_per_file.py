@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
-from coverage_per_file import below_minimum, main
+from coverage_per_file import below_minimum, main, minimum_for
 
 
 def _report(**pcts: float) -> dict[str, object]:
@@ -27,3 +27,11 @@ def test_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main([str(bad), "75"]) == 0
     assert main([str(bad)]) == 1 and "80.0% < 95%: a" in capsys.readouterr().out
     assert main([]) == 2
+
+
+def test_core_and_domain_need_100() -> None:
+    assert minimum_for("jesinia/core/config.py") == 100.0
+    assert minimum_for("jesinia/services/kb/domain/page.py") == 100.0
+    assert minimum_for("jesinia/services/kb/application/service.py") == 95.0
+    report = _report(**{"jesinia/core/x.py": 99.0, "jesinia/services/s/application/y.py": 96.0})
+    assert below_minimum(report, 95.0) == [("jesinia/core/x.py", 99.0)]

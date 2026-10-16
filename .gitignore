@@ -32,3 +32,8 @@ server/jesinia/static/
 # OS / editor
 .DS_Store
 .coverage.json
+
+# Local environment (never commit secrets; see AGENTS.md)
+.env
+.env.*
+!.env.example

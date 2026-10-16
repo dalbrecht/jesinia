@@ -54,8 +54,7 @@ def _statements(sql: str) -> list[str]:
     for line in sql.splitlines(keepends=True):
         buf += line
         if sqlite3.complete_statement(buf):
-            if buf.strip():
-                out.append(buf)
+            out.append(buf)
             buf = ""
     if buf.strip() and not all(
         ln.strip().startswith("--") or not ln.strip() for ln in buf.splitlines()

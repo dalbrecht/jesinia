@@ -132,3 +132,15 @@ async def test_stop_failure_is_logged_and_others_still_stop(
     async with lifespan_client(create_app(cfg, [good, bad])):
         pass
     assert good.stopped and "failed to stop" in caplog.text
+
+
+class ExplodingWithRoutes(Healthy):
+    async def start(self, ctx: AppContext) -> None:
+        raise RuntimeError("db locked")
+
+
+async def test_failed_module_routes_answer_503(cfg: Config) -> None:
+    async with lifespan_client(create_app(cfg, [ExplodingWithRoutes("bad"), Healthy("ok")])) as c:
+        r = await c.get("/api/bad/hello", headers=bearer(cfg.token))
+        assert r.status_code == 503 and "db locked" in r.json()["detail"]
+        assert (await c.get("/api/ok/hello", headers=bearer(cfg.token))).status_code == 200

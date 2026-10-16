@@ -86,3 +86,15 @@ async def test_run_now_does_not_overlap_scheduled_run() -> None:
 
 async def test_stop_without_start_is_safe() -> None:
     await Scheduler().stop()
+
+
+async def test_start_twice_and_jobs_added_after_start() -> None:
+    async def job() -> None:
+        return None
+
+    s = Scheduler()
+    s.every("a", timedelta(hours=1), job)
+    await s.start()
+    await s.start()  # already running: no second task
+    s.every("b", timedelta(hours=1), job)  # never started
+    await s.stop()

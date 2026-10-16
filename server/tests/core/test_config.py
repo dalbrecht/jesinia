@@ -158,3 +158,19 @@ def test_jesinia_home_overrides_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert default_data_dir() == tmp_path / "jh"
     assert default_log_dir() == tmp_path / "jh" / "logs"
     assert config_path() == tmp_path / "jh" / "config.toml"
+
+
+def test_minimal_file_uses_defaults(tmp_path: Path) -> None:
+    p = tmp_path / "config.toml"
+    p.write_text('[server]\ntoken = "abc"\n')
+    cfg = load_config(p)
+    assert cfg.token == "abc" and cfg.port == 4870 and cfg.kb_path is None
+    assert cfg.kbsync_interval == timedelta(hours=4) and dict(cfg.folders) == {"note": "Notes"}
+
+
+@pytest.mark.parametrize("text", ["server = 5\n", "[server]\nport = 1\n", '[server]\ntoken = ""\n'])
+def test_invalid_structure_rejected(tmp_path: Path, text: str) -> None:
+    p = tmp_path / "config.toml"
+    p.write_text(text)
+    with pytest.raises(ConfigError):
+        load_config(p)

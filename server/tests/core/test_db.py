@@ -78,3 +78,16 @@ def test_creates_data_dir(tmp_path: Path, fake_migrations: Path) -> None:
     target = tmp_path / "nested" / "data"
     open_db(target, ModuleDb("t", DbClass.DERIVED, fake_migrations)).close()
     assert (target / "t.sqlite").exists()
+
+
+def test_trailing_statement_without_semicolon(tmp_path: Path) -> None:
+    d = tmp_path / "m"
+    d.mkdir()
+    (d / "0001_a.sql").write_text(
+        "-- leading comment\nCREATE TABLE a (id INTEGER);\nCREATE TABLE b (id INTEGER)"
+    )
+    (d / "0002_b.sql").write_text("CREATE TABLE c (id INTEGER);\n-- trailing comment only\n")
+    conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, d))
+    tables = {r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
+    assert {"a", "b", "c"} <= tables
+    conn.close()
