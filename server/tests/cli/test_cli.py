@@ -385,6 +385,7 @@ def test_registry_runs_every_module_in_order() -> None:
         "github",
         "fetch",
         "notes",
+        "rss",
     ]
 
 
