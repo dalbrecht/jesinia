@@ -1,6 +1,6 @@
 # Jesinia — Foundation Design
 
-- **Status:** Implemented (amended by ADR 0008; acceptance in §15)
+- **Status:** Built; acceptance pending one manual check (the Pigeonpile Wiki render, §15). Amended by ADR 0008.
 - **Date:** 2026-10-16
 - **Author:** Don Albrecht (with Claude)
 - **License of this project:** AGPL-3.0-or-later
