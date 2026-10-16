@@ -136,6 +136,13 @@ class SqliteSessionStore:
         result = json.loads(r[5]) if r[5] is not None else None
         return PendingWrite(r[0], r[1], r[2], json.loads(r[3]), r[4], result)
 
+    def pending_in_state(self, state: PendingState) -> list[PendingWrite]:
+        rows = self.conn.execute(
+            "SELECT id FROM pending_writes WHERE state = ? ORDER BY created_at", (state,)
+        )
+        found = [self.get_pending(str(r[0])) for r in rows.fetchall()]
+        return [p for p in found if p is not None]
+
     def claim_pending(self, id: str, state: PendingState) -> bool:
         with transaction(self.conn):
             cur = self.conn.execute(

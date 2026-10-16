@@ -315,3 +315,16 @@ async def test_restart_recovers_a_session_stranded_mid_turn(tmp_path: Path) -> N
     await again.send(s.id, "hello again")  # no longer stuck as busy
     await again.wait_idle(s.id)
     assert again.get(s.id).status == "idle"
+
+
+async def test_restart_fails_writes_stranded_mid_approval(tmp_path: Path) -> None:
+    svc = make(tmp_path, FakeRunner([]))
+    s = await svc.create(SUBJ, "fake", pack())
+    p = await svc.request_write(s.id, TOOLS["kb_write"], In())
+    assert svc.store.claim_pending(p.id, "approving")  # then the server died
+    again = make(tmp_path, FakeRunner([]))
+    await again.recover()
+    stuck = again.store.get_pending(p.id)
+    assert stuck is not None and stuck.state == "failed" and "restarted" in str(stuck.result)
+    assert again.store.events(s.id)[-1].kind == "pending_resolved"
+    assert (await again.approve(s.id, p.id)).state == "failed"

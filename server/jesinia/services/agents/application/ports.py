@@ -38,6 +38,8 @@ class SessionStore(Protocol):
 
     def resolve_pending(self, id: str, state: PendingState, result: object | None) -> None: ...
 
+    def pending_in_state(self, state: PendingState) -> list[PendingWrite]: ...
+
     def claim_pending(self, id: str, state: PendingState) -> bool:
         """Move a write from ``pending`` to ``state`` atomically; False if it already left
         ``pending`` (a repeated or racing approve/reject)."""

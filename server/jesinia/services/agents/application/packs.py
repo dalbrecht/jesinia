@@ -8,6 +8,7 @@ instructions (spec §4.3, §7.5).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -41,9 +42,16 @@ def _safe_name(name: str) -> str:
     return str(rel)
 
 
+# Any spelling a parser might read as the fence tag: case, whitespace, `<` / `</`.
+_FENCE = re.compile(r"<(\s*/?\s*)(untrusted[\s_-]*data)", re.IGNORECASE)
+
+
 def wrap_untrusted(doc: UntrustedDoc) -> str:
-    source = doc.source.replace('"', "%22")
-    return f'<untrusted-data source="{source}">\n{doc.text}\n</untrusted-data>\n'
+    """Fence ``doc`` as data. Fence tags inside the text are neutralised, so content can
+    never close the block early and pose as trusted instructions."""
+    source = doc.source.replace('"', "%22").replace("<", "%3C").replace(">", "%3E")
+    text = _FENCE.sub(r"&lt;\1\2", doc.text)
+    return f'<untrusted-data source="{source}">\n{text}\n</untrusted-data>\n'
 
 
 def write_pack(pack: ContextPack, dir: Path) -> None:

@@ -118,6 +118,18 @@ class SessionService:
                 "error",
                 {"message": "Jesinia restarted during this turn. Send your message again."},
             )
+        # A write claimed but never resolved: it may or may not have happened. Say so.
+        for p in self.store.pending_in_state("approving"):
+            result = {
+                "error": "Jesinia restarted while applying this change; check the page "
+                "before asking again."
+            }
+            self.store.resolve_pending(p.id, "failed", result)
+            await self._append(
+                p.session_id,
+                "pending_resolved",
+                {"pending_id": p.id, "state": "failed", "result": result},
+            )
         return len(stranded)
 
     def restore_tokens(self) -> int:
