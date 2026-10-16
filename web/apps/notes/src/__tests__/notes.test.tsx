@@ -31,16 +31,13 @@ function agent(kind: string, data: Record<string, unknown> = {}) {
     ),
   );
 }
-function kbChanged(id: string, origin = "external") {
-  const src = [...FakeSource.all].reverse().find((s) => s.url.includes("kb.page_changed") && !s.url.includes("kbsync"));
-  act(() =>
-    src?.listeners.get("kb.page_changed")?.(
-      new MessageEvent("kb.page_changed", {
-        data: JSON.stringify({ id, origin, change: "updated" }),
-        lastEventId: String(++seq),
-      }),
-    ),
-  );
+function kbChanged(id: string, origin = "external", change = "updated") {
+  const sources = FakeSource.all.filter((s) => s.url.includes("kb.page_changed") && !s.url.includes("kbsync"));
+  const event = new MessageEvent("kb.page_changed", {
+    data: JSON.stringify({ id, origin, change }),
+    lastEventId: String(++seq),
+  });
+  act(() => sources.forEach((src) => src.listeners.get("kb.page_changed")?.(event)));
 }
 
 const PAGE = {
@@ -384,5 +381,60 @@ describe("Notes", () => {
     await act(async () => release(Response.json({ ...PAGE, body: "xHello body", rev: "r9" })));
     expect(screen.getByRole("heading", { name: "Other", level: 1 })).toBeInTheDocument();
     expect(screen.getByTestId("save-state")).toHaveTextContent("Saved");
+  });
+  it("a chat session created for the previous page is discarded after a page switch", async () => {
+    let release: (r: Response) => void = () => {};
+    const { calls } = setup({
+      "GET /api/kb/pages/p2": { ...PAGE, id: "p2", title: "Other", path: "Ideas/Other.md", body: "other", rev: "o1" },
+      "POST /api/notes/sessions": () => new Promise<Response>((resolve) => (release = resolve)),
+    });
+    expect(await screen.findByRole("heading", { name: "Topic", level: 1 })).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "What is this?{Enter}");
+    window.history.pushState(null, "", "/notes/page/p2");
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    expect(await screen.findByRole("heading", { name: "Other", level: 1 })).toBeInTheDocument();
+    await act(async () =>
+      release(
+        Response.json({ id: "s1", runner: "fake", status: "idle", subject: { kind: "kb", ref: "p1", title: "Topic" } }),
+      ),
+    );
+    expect(calls.some((c) => c.url.endsWith("/api/agents/sessions/s1/messages"))).toBe(false);
+    expect(FakeSource.all.some((src) => src.url.includes("/api/agents/sessions/s1/"))).toBe(false);
+    expect(screen.getByRole("combobox", { name: "Runner" })).toBeEnabled();
+  });
+  it("edits during an in-flight save are queued and sent from the new revision", async () => {
+    const releases: ((r: Response) => void)[] = [];
+    const { calls } = setup({
+      "PATCH /api/kb/pages/p1/body": () => new Promise<Response>((resolve) => releases.push(resolve)),
+    });
+    const editor = await screen.findByRole("textbox", { name: "Edit Topic" });
+    const { EditorView } = await import("@codemirror/view");
+    const view = EditorView.findFromDOM(editor);
+    if (!view) throw new Error("no editor view");
+    act(() => view.dispatch({ changes: { from: 0, insert: "a" }, userEvent: "input.type" }));
+    fireEvent.blur(view.contentDOM);
+    act(() => view.dispatch({ changes: { from: 0, insert: "b" }, userEvent: "input.type" }));
+    fireEvent.blur(view.contentDOM); // queued, not a second concurrent request
+    const patches = () => calls.filter((c) => c.method === "PATCH");
+    expect(patches()).toHaveLength(1);
+    await act(async () => releases[0]?.(Response.json({ ...PAGE, body: "aHello body", rev: "r2" })));
+    await waitFor(() => expect(patches()).toHaveLength(2));
+    expect(await patches()[1]?.json()).toMatchObject({ body: "baHello body", expected_rev: "r2" });
+    await act(async () => releases[1]?.(Response.json({ ...PAGE, body: "baHello body", rev: "r3" })));
+    await waitFor(() => expect(screen.getByTestId("save-state")).toHaveTextContent("Saved"));
+  });
+  it("the tree reloads on any KB page change, and search failures surface", async () => {
+    let failSearch = false;
+    const { calls } = setup({
+      "GET /api/search": () => (failSearch ? Promise.reject(new Error("offline")) : Response.json([])),
+    });
+    expect(await screen.findByRole("heading", { name: "Topic", level: 1 })).toBeInTheDocument();
+    const trees = () => calls.filter((c) => c.url.endsWith("/api/kb/tree")).length;
+    const before = trees();
+    kbChanged("p9", "jesinia", "created");
+    await waitFor(() => expect(trees()).toBe(before + 1));
+    failSearch = true;
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search notes" }), "zz");
+    expect(await screen.findByText("Search failed: offline")).toHaveAttribute("role", "alert");
   });
 });

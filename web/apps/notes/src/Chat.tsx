@@ -2,7 +2,7 @@
 import { errorText, subscribe } from "@jesinia/client";
 import { Button, ChatTranscript, Input, useToast } from "@jesinia/design";
 import { RUNNER_NAMES, useClient, type Runners } from "@jesinia/shell";
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { EMPTY, EVENT_KINDS, markApproving, reduce, type AgentEvent, type ChatState } from "./events";
 import s from "./notes.module.css";
 
@@ -30,11 +30,16 @@ export function Chat({ page, runners, onSaved }: ChatProps) {
   const [saving, setSaving] = useState(false);
   const [state, dispatch] = useReducer(reducer, EMPTY);
   const chosen = runner || available[0]?.[0] || "";
+  const currentPage = useRef<string | null>(page.id);
 
   // A new page starts a new conversation.
   useEffect(() => {
+    currentPage.current = page.id;
     setSession(null);
     dispatch({ type: "reset" });
+    return () => {
+      currentPage.current = null; // switching pages may unmount the chat while it loads
+    };
   }, [page.id]);
 
   useEffect(() => {
@@ -51,7 +56,10 @@ export function Chat({ page, runners, onSaved }: ChatProps) {
     if (!t || !chosen || state.busy) return;
     let id = session;
     if (!id) {
-      const r = await client.POST("/api/notes/sessions", { body: { page_id: page.id, runner: chosen } });
+      const forPage = page.id;
+      const r = await client.POST("/api/notes/sessions", { body: { page_id: forPage, runner: chosen } });
+      // The user switched pages while this was in flight: that session belongs to the old page.
+      if (currentPage.current !== forPage) return;
       if (!r.response.ok) {
         toast.show({
           tone: "danger",

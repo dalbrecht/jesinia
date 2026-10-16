@@ -38,7 +38,8 @@ export function usePage(id: string | null): OpenPage {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirty = useRef(false);
   const conflicted = useRef(false); // while open, only "Keep mine" may write
-  const saving = useRef(false);
+  const saving = useRef(new Set<string>()); // pages with a save in flight
+  const queued = useRef(new Map<string, string>()); // text to send once that save lands
   const openGeneration = useRef(0); // bumped on every page switch
   const [, force] = useState(0);
 
@@ -47,29 +48,54 @@ export function usePage(id: string | null): OpenPage {
       if (timer.current) clearTimeout(timer.current);
       timer.current = null;
       if (!id || !dirty.current || (conflicted.current && !resolving)) return;
+      // One save per page at a time: a second request would carry the same base revision
+      // and conflict with the first. Queue the latest text; the running save sends it next.
+      if (saving.current.has(id)) {
+        queued.current.set(id, text.current);
+        return;
+      }
       const generation = openGeneration.current;
       setState("saving");
-      saving.current = true;
-      const sent = text.current;
-      const r = await saveBody(client, id, sent, rev.current).finally(() => {
-        saving.current = false;
-      });
-      // The user switched pages while this save was in flight: it still landed, but it
-      // must not touch the newly opened page's state.
-      if (generation !== openGeneration.current) return;
-      if (r.ok) {
-        rev.current = r.page.rev;
-        setPage(r.page);
-        dirty.current = text.current !== sent;
-        setState(dirty.current ? "dirty" : "saved");
-        setError(null);
-      } else if ("conflict" in r) {
-        conflicted.current = true;
-        setTheirs(r.conflict);
-        setState("conflict");
-      } else {
-        setError(r.error);
-        setState("error");
+      saving.current.add(id);
+      let sent = text.current;
+      let base = rev.current;
+      try {
+        for (;;) {
+          queued.current.delete(id);
+          const r = await saveBody(client, id, sent, base);
+          // The user switched pages while this save was in flight: it still landed, but it
+          // must not touch the newly opened page's state.
+          const isCurrent = generation === openGeneration.current;
+          if (!r.ok) {
+            if (!isCurrent) return;
+            if ("conflict" in r) {
+              conflicted.current = true;
+              setTheirs(r.conflict);
+              setState("conflict");
+            } else {
+              setError(r.error);
+              setState("error");
+            }
+            return;
+          }
+          if (isCurrent) {
+            rev.current = r.page.rev;
+            setPage(r.page);
+          }
+          const next = queued.current.get(id);
+          if (next === undefined || next === sent) {
+            if (isCurrent) {
+              dirty.current = text.current !== sent;
+              setState(dirty.current ? "dirty" : "saved");
+              setError(null);
+            }
+            return;
+          }
+          sent = next;
+          base = r.page.rev;
+        }
+      } finally {
+        saving.current.delete(id);
       }
     },
     [client, id],
@@ -110,9 +136,9 @@ export function usePage(id: string | null): OpenPage {
       (e) => {
         // Any writer counts (an approved agent write, another window, an editor); only
         // our own acknowledged save matches rev.current and is ignored below.
-        if (e.data.id !== id || saving.current) return;
+        if (e.data.id !== id || saving.current.has(id)) return;
         void getPage(client, id).then((p) => {
-          if (!p || p.rev === rev.current || saving.current) return;
+          if (!p || p.rev === rev.current || saving.current.has(id)) return;
           if (dirty.current) {
             conflicted.current = true;
             setTheirs({ rev: p.rev, body: p.body });

@@ -286,6 +286,6 @@ async def test_previews_use_the_real_target_resolution(app_env: AppEnv) -> None:
         if line.startswith("data: ") and '"pending_write"' in line
     ]
     assert targets[0] == {"action": "create", "path": "Notes/A B c.md", "title": "A/B: c"}
-    assert (
-        targets[1]["path"].startswith("Notes/Taken [") and "id will be added" in targets[1]["note"]
-    )
+    # The id is only chosen at write time, so the preview names it instead of guessing.
+    assert targets[1]["path"] == "Notes/Taken [new page id].md"
+    assert "id will be added" in targets[1]["note"]

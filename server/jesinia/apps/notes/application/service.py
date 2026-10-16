@@ -95,6 +95,9 @@ class NotesService:
         self.folder = folder
         self.now = now
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Saves per session counted here too: the cap must not depend on notes.sqlite,
+        # which is a best-effort derived log.
+        self._saves: defaultdict[str, int] = defaultdict(int)
 
     async def _related(self, id: PageId, title: str) -> str:
         if self.search is None:
@@ -138,12 +141,15 @@ class NotesService:
         # Count, write and record under one per-session lock, so concurrent agent calls
         # cannot slip past the cap.
         async with self._locks[session_id]:
-            if by_agent and self.log.count_for_session(session_id) >= MAX_AGENT_SAVES:
+            saved = max(self._saves[session_id], self.log.count_for_session(session_id))
+            if by_agent and saved >= MAX_AGENT_SAVES:
                 raise TooManySavesError(
                     f"this session already saved {MAX_AGENT_SAVES} notes; "
                     "save more from the Notes app"
                 )
-            return await self._write_note(session, title, user_text, agent_text, model)
+            note = await self._write_note(session, title, user_text, agent_text, model)
+            self._saves[session_id] = saved + 1
+            return note
 
     async def _write_note(
         self, session: Session, title: str, user_text: str, agent_text: str, model: str

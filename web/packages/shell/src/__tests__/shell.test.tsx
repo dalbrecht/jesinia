@@ -38,12 +38,13 @@ class FakeSource {
 const assign = vi.fn();
 const open = vi.fn();
 
+const NOTES_BUILT = APPS.some((a) => a.id === "notes" && a.built);
 function setNotesBuilt(built: boolean) {
   for (const a of APPS) if (a.id === "notes") a.built = built;
 }
 
 afterEach(() => {
-  setNotesBuilt(false);
+  setNotesBuilt(NOTES_BUILT);
   assign.mockReset();
   open.mockReset();
   localStorage.clear();
@@ -187,6 +188,7 @@ describe("AppShell", () => {
 
 describe("AppShell edge cases", () => {
   it("tolerates failing endpoints, opens other apps, and collapses extra banners", async () => {
+    setNotesBuilt(true);
     vi.stubGlobal("EventSource", FakeSource);
     Object.defineProperty(window, "location", {
       configurable: true,
@@ -233,9 +235,23 @@ describe("AppShell edge cases", () => {
     await userEvent.click(screen.getByText("Sync now"));
     fireEvent.keyDown(window, { key: "k", metaKey: true });
     await userEvent.type(screen.getByRole("combobox"), "no");
-    // Notes isn't built, so the palette offers no KB results to route into it.
-    await new Promise((r) => setTimeout(r, 300));
-    expect(screen.queryByText("No path")).toBeNull();
+    fireEvent.click(await screen.findByText("No path"), { metaKey: true });
+    expect(open).toHaveBeenCalledWith("/notes/page/p2", "_blank", "noopener");
+  });
+
+  it("offers no KB results while Notes is unbuilt", async () => {
+    setNotesBuilt(false);
+    const calls = setup({
+      "GET /api/search": [
+        { source: "kb", key: "p3", title: "Hidden", snippet: "", path: null, authoritative: true, score: 1, url: null },
+      ],
+    });
+    await screen.findByText("ready");
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await userEvent.type(screen.getByRole("combobox"), "hid");
+    await new Promise((r) => setTimeout(r, 300)); // past the palette's debounce
+    expect(screen.queryByText("Hidden")).toBeNull();
+    expect(calls.some((c) => c.url.includes("/api/search"))).toBe(false);
   });
 
   it("creates its own client when none is given", async () => {

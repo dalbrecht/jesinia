@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { subscribe } from "@jesinia/client";
 import { Input } from "@jesinia/design";
 import { useClient } from "@jesinia/shell";
 import { useEffect, useState } from "react";
@@ -76,10 +77,21 @@ export function Sidebar({
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<Hit[] | null>(null);
   const [nodes, setNodes] = useState<TreeNode[]>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [kbChanges, setKbChanges] = useState(0);
+
+  // Agent writes, other windows and external editors create, move and remove pages too.
+  useEffect(
+    () =>
+      subscribe("/api/events?topics=kb.page_changed", () => setKbChanges((n) => n + 1), {
+        events: ["kb.page_changed"],
+      }),
+    [],
+  );
 
   useEffect(() => {
     void tree(client).then(setNodes);
-  }, [client, refreshKey]);
+  }, [client, refreshKey, kbChanges]);
 
   useEffect(() => {
     const query = q.trim();
@@ -89,7 +101,17 @@ export function Sidebar({
     }
     const ctl = new AbortController();
     const t = setTimeout(() => {
-      void search(client, query, ctl.signal).then((h) => !ctl.signal.aborted && setHits(h));
+      // Aborting (typing on, unmounting) rejects the request; only real failures surface.
+      search(client, query, ctl.signal).then(
+        (h) => {
+          if (ctl.signal.aborted) return;
+          setHits(h);
+          setSearchError(null);
+        },
+        (e: unknown) => {
+          if (!ctl.signal.aborted) setSearchError(`Search failed: ${e instanceof Error ? e.message : String(e)}`);
+        },
+      );
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       clearTimeout(t);
@@ -128,6 +150,11 @@ export function Sidebar({
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
+      {searchError ? (
+        <p className={s.error} role="alert">
+          {searchError}
+        </p>
+      ) : null}
       {hits === null ? (
         <Tree nodes={nodes} current={current} open={open} />
       ) : hits.length === 0 ? (
