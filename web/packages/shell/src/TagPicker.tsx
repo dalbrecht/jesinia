@@ -82,8 +82,9 @@ export function TagPicker({ text, context, value, onChange }: TagPickerProps) {
     try {
       const r = await client.POST("/api/kb/tags/suggest", { body: { text: wanted, limit: SUGGESTIONS } });
       if (!isCurrent()) return;
-      // Suggestions are a convenience: when they fail, the box still adds tags by name.
-      setSuggestions(r.data ?? []);
+      // The box still adds tags by name when this fails, but the failure is shown, not hidden.
+      if (r.data) setSuggestions(r.data);
+      else setError(errorText(r.error, "Couldn't get suggestions."));
     } catch (cause) {
       if (isCurrent()) setError(`Couldn't get suggestions: ${causeText(cause)}`);
     } finally {

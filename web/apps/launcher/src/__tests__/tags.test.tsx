@@ -17,6 +17,14 @@ function renderTags(over = {}) {
     baseRoutes({
       "GET /api/kb/tags": CATALOG,
       "GET /api/kb/tags/uncataloged": UNCATALOGED,
+      "GET /api/kb/tags/check": (req: Request) =>
+        Response.json({
+          normalised: new URL(req.url).searchParams.get("tag"),
+          exists: false,
+          canonical: null,
+          near: [],
+          same_meaning: null,
+        }),
       ...over,
     }),
   );
@@ -503,7 +511,7 @@ describe("Settings → Tags", () => {
     const tags = await section();
     const rust = (await tags.findByText("#rust")).closest("li") as HTMLElement;
     await userEvent.click(within(rust).getByRole("button", { name: "Ignore" }));
-    expect((await screen.findAllByText("That didn't work.")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("That didn't work: offline")).length).toBeGreaterThan(0);
     fail = false;
     await userEvent.click(within(rust).getByRole("button", { name: "Ignore" }));
     await screen.findAllByText("Ignored #rust.");
@@ -570,5 +578,76 @@ describe("Settings → Tags", () => {
     await userEvent.click(await dialog.findByRole("button", { name: "Apply" }));
     expect(await dialog.findByText("Couldn't apply that change: offline")).toBeInTheDocument();
     expect(dialog.getByRole("button", { name: "Apply" })).not.toHaveAttribute("aria-busy");
+  });
+
+  it("add checks the tag first and offers the same-meaning tag before anything is added", async () => {
+    const calls = renderTags({
+      "GET /api/kb/tags/check": () =>
+        Response.json({
+          normalised: "ml",
+          exists: false,
+          canonical: null,
+          near: [],
+          same_meaning: "machine-learning",
+        }),
+      "POST /api/kb/tags": new Response(null, { status: 204 }),
+    });
+    const tags = await section();
+    await tags.findByText("#sqlite");
+    await userEvent.type(tags.getByLabelText("New tag"), "ml");
+    await userEvent.click(tags.getByRole("button", { name: "Add tag" }));
+    expect(await tags.findByText("Use #machine-learning?")).toBeInTheDocument();
+    expect(callsTo(calls, "POST", "/api/kb/tags")).toHaveLength(0);
+    await userEvent.click(tags.getByRole("button", { name: "Add anyway" }));
+    await screen.findAllByText("Added #ml.");
+    expect(await posted(calls, "/api/kb/tags")).toEqual({ tag: "ml", meaning: "", force: true });
+  });
+
+  it("a slow merge preview that finishes after the sources changed is discarded", async () => {
+    let release: (response: Response) => void = () => {};
+    const slow = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    renderTags({
+      "POST /api/kb/tags/rename/preview": () => slow,
+      "POST /api/kb/tags/merge": { updated: [], skipped_changed: [] },
+    });
+    const tags = await section();
+    const row = (await tags.findByText("#sqlite")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Merge into…" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    await userEvent.type(dialog.getByLabelText("Merge into"), "python");
+    await userEvent.click(dialog.getByRole("button", { name: "Preview" }));
+    await userEvent.type(dialog.getByLabelText("Also merge"), "old{Enter}");
+    release(Response.json({ pages: [{ id: "p1", title: "Stale page", rev: "r1" }], skipped_reserved: [] }));
+    await waitFor(() => expect(dialog.getByRole("button", { name: "Preview" })).not.toHaveAttribute("aria-busy"));
+    expect(dialog.queryByText("Stale page")).toBeNull();
+    expect(dialog.queryByRole("button", { name: "Apply" })).toBeNull();
+  });
+
+  it.each(["retire", "restore", "adopt", "ignore"] as const)("an offline %s shows the cause", async (action) => {
+    renderTags({ [`POST /api/kb/tags/${action}`]: () => Promise.reject(new TypeError("offline")) });
+    const tags = await section();
+    const name = action === "restore" ? "old" : action === "retire" ? "python" : "rust";
+    const row = (await tags.findByText(`#${name}`)).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: action.charAt(0).toUpperCase() + action.slice(1) }));
+    expect((await screen.findAllByText("That didn't work: offline")).length).toBeGreaterThan(0);
+  });
+
+  it("add shows why the check failed, whether refused or offline", async () => {
+    let offline = false;
+    renderTags({
+      "GET /api/kb/tags/check": () =>
+        offline
+          ? Promise.reject(new TypeError("offline"))
+          : Response.json({ detail: "Not a valid tag." }, { status: 400 }),
+    });
+    const tags = await section();
+    await userEvent.type(await tags.findByLabelText("New tag"), "bad tag");
+    await userEvent.click(tags.getByRole("button", { name: "Add tag" }));
+    expect(await tags.findByText("Not a valid tag.")).toBeInTheDocument();
+    offline = true;
+    await userEvent.click(tags.getByRole("button", { name: "Add tag" }));
+    expect(await tags.findByText("Couldn't check that tag: offline")).toBeInTheDocument();
   });
 });

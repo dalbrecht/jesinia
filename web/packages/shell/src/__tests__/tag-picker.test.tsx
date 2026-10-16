@@ -156,6 +156,12 @@ describe("TagPicker", () => {
     expect(screen.getByRole("button", { name: "Add" })).toBeEnabled();
   });
 
+  it("shows the server's message when suggestions fail with an error response", async () => {
+    setup({ "POST /api/kb/tags/suggest": () => Response.json({ detail: "Agent unavailable." }, { status: 503 }) });
+    await suggestNow();
+    expect(await screen.findByText("Agent unavailable.")).toBeInTheDocument();
+  });
+
   it("clears the suggesting state when the suggest request is rejected", async () => {
     setup({ "POST /api/kb/tags/suggest": () => Promise.reject(new Error("offline")) });
     await suggestNow();
