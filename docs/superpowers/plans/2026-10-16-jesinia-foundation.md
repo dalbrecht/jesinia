@@ -796,6 +796,7 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
   - `start_session` builds `ContextPack(role_prompt=NOTES_ROLE, files={}, untrusted={"subject.md": UntrustedDoc(f"kb:{id}", <page markdown>), "related.md": UntrustedDoc("kb:search", <top 5 search hits as a list of `[[id|Title]]` + snippet>)})` — KB content used as context is wrapped as untrusted per spec §4.3; `preauthorized_tools={"notes_save"}`.
   - `save_note` writes to folder `cfg.folders["note"]` (`Notes`), body = `user_text` + blank line + `wrap_ai(agent_text, agent=<runner>, model=model, at=now, session=session_id)` + `\n\nAbout: [[<subject id>|<subject title>]]\n`; `jesinia: {kind: "note", captured: now-local-ISO}`; records `(session_id, note_id, subject_id)` in `notes.sqlite` (`DbClass.DERIVED`; rebuildable from note bodies' links).
   - Routes `POST /api/notes/sessions {page_id, runner}`, `POST /api/notes/sessions/{id}/save`; MCP `notes_save` (`writes=True`).
+  - Editing and browsing (ADR 0008 §5): `GET /api/kb/tree` (from `kb.tree`), `PUT /api/kb/pages/{id} {body, front_matter, base_version}` → `409 {current_version, current_body}` on a changed-on-disk conflict, `POST /api/kb/pages {folder, title}` for new notes, `POST /api/kb/pages/{id}/move {path}` (rewrites inbound links).
 
 - [ ] **Step 1: Failing tests:**
 
@@ -823,11 +824,14 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 
 **Interfaces:**
 - Consumes: Task 23 client/shell, Task 22 `ChatTranscript`, Task 24 routes, Task 18 SSE + pending routes.
+- Editor: CodeMirror 6 (MIT) Markdown with live styling (markers only on the caret line), `[[` autocomplete, provenance comments folded into read-only chips, autosave (~1 s idle, blur, page switch) with `base_version`; file tree and grouped search results per the Task 5 wireframes (ADR 0008 §5).
 
 - [ ] **Step 1: Failing tests:** unit — search box debounces 200 ms and lists hits; chat streams deltas into one agent message; Save note disabled until an agent turn completes. e2e (`notes.spec.ts`, fake runner scripted to call `kb_write` once and then reply):
   1. search fixture page → open → start chat with runner "fake" → see streamed reply;
   2. the agent's `kb_write` shows a pending-write card → Reject → file not created;
-  3. Save note → file appears in fixture KB `Notes/` with provenance comments and back-link (assert by reading the file).
+  3. Save note → file appears in fixture KB `Notes/` with provenance comments and back-link (assert by reading the file);
+  4. edit a page in the editor → autosave writes it (front-matter and existing provenance comments byte-identical apart from the edit);
+  5. change the file on disk while a local edit is unsaved → the changed-on-disk bar appears and "Keep mine" writes the local version.
 - [ ] **Step 2–4:** FAIL → implement per Task 5 wireframes → PASS.
 - [ ] **Step 5: Manual check** with real `claude` and `codex` runners on the author's Mac; record result in the PR description. Commit `feat(notes): tracer PWA with end-to-end test`.
 
