@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia RSS Wireframes</title>
+<!-- Preview only: the apps self-host these faces via @fontsource (kit §2). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="wire.css">
+<script src="wire.js" defer></script>
+<style>
+/* RSS silhouette: feeds sidebar | Desk list | serif reader (| chat rail). Marigold only in the title bar and glyph. */
+.rss3 { grid-template-columns: 220px 360px 1fr; }
+.rss-eng { grid-template-columns: 52px 320px 1fr 6px 380px; }
+.feeds { background: var(--jx-surface); border-right: 1px solid var(--jx-border); display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+.feeds .fl { overflow: auto; padding: var(--jx-space-2) 0; }
+.feeds .grp { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; display: flex; gap: 6px; align-items: center; }
+.feed { display: flex; align-items: center; gap: 8px; padding: 5px var(--jx-space-3); font-size: var(--jx-text-sm); color: var(--jx-fg); text-decoration: none; }
+.feed .fn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed .fav { width: 14px; height: 14px; border-radius: 3px; background: var(--jx-surface-sunken); border: 1px solid var(--jx-border); flex: none; }
+.feed.on { background: var(--jx-surface); font-weight: 600; }
+.feed.bad .fn { color: var(--jx-fg-muted); }
+.feed .wn { color: var(--jx-warn); font-weight: 600; }
+.feed-err { padding: 0 var(--jx-space-3) 6px 34px; font-size: var(--jx-text-xs); color: var(--jx-warn); }
+.feeds .ft { border-top: 1px solid var(--jx-border); padding: var(--jx-space-2); display: grid; gap: 2px; }
+.feeds .ft .btn { justify-content: flex-start; }
+.rail { background: var(--jx-surface); border-right: 1px solid var(--jx-border); display: grid; align-content: start; justify-items: center; gap: 6px; padding-top: var(--jx-space-3); }
+.rail .fav { width: 22px; height: 22px; border-radius: 6px; background: var(--jx-surface-sunken); border: 1px solid var(--jx-border); display: block; }
+.rail .fav.on { background: var(--jx-row-bg-selected); border-color: var(--jx-border-strong); }
+.reader-tb { gap: 6px; }
+.reader-tb .sp { gap: 6px; }
+.reader { padding: var(--jx-space-6) var(--jx-space-7) var(--jx-space-7); }
+.rss-eng .reader { padding: var(--jx-space-5) var(--jx-space-5) var(--jx-space-6); }
+.rss-eng .read h1 { font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); }
+.save { display: flex; gap: 6px; flex-wrap: wrap; padding-inline: var(--jx-space-1); }
+.composer textarea { resize: none; font: inherit; }
+.composer .row-inline { justify-content: space-between; }
+.inline-banner { background: var(--jx-warn-bg); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); padding: var(--jx-space-2) var(--jx-space-3); font-size: var(--jx-text-sm); display: grid; gap: 6px; }
+.inline-banner b { color: var(--jx-warn); font-weight: 600; }
+.subbar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 var(--jx-space-2); border-bottom: 1px solid var(--jx-border); background: var(--jx-bg); font-size: var(--jx-text-sm); }
+.subbar b { font-weight: 600; font-size: var(--jx-text-base); }
+.subbar .sp { margin-left: auto; display: flex; gap: 4px; color: var(--jx-fg-muted); }
+.narrow-reader { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+.bottombar { border-top: 1px solid var(--jx-border); background: var(--jx-surface); padding: var(--jx-space-2) var(--jx-space-3); display: flex; gap: 8px; align-items: center; }
+.bottombar .btn.p { flex: 1; justify-content: center; }
+.frame.narrow .reader { padding: var(--jx-space-4); }
+.frame.narrow .read h1 { font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; top: 64px; z-index: 5; background: var(--jx-bg); border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0; box-shadow: var(--jx-panel-raised-shadow); display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
+.sheet .grab { display: grid; justify-items: center; padding-top: 6px; }
+.sheet .grab i { width: 36px; height: 4px; border-radius: 2px; background: var(--jx-border-strong); display: block; }
+.frame.half .rss3 { grid-template-columns: 150px 1fr; }
+.frame.half .rss-split { grid-template-columns: 150px 210px 1fr; }
+.frame.half .rss-chat { grid-template-columns: 1fr 6px 300px; }
+.frame.half .reader { padding: var(--jx-space-4); }
+.frame.half .read h1 { font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); }
+.frame.half .feed { padding-block: 4px; }
+.skrow { padding: var(--jx-row-pad-y) var(--jx-row-pad-x); border-bottom: 1px solid var(--jx-row-divider); display: grid; gap: 6px; }
+.skread { padding: var(--jx-space-5); display: grid; gap: 10px; align-content: start; }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>RSS</h1>
+      <p><code>/rss/</code>. Product screen at lower fidelity; it feeds RSS's own spec later. A classic three-pane reader, with marigold only in the title bar: feeds, a Desk-density item list, and a serif reader. Engage a post to open a chat rail with the post as context, then save what matters to the KB.</p>
+    </div>
+    <div class="row-inline">
+      <nav class="doc-nav" aria-label="Wireframes"><a href="README.md">Index</a><a href="launcher.html">Launcher</a><a href="settings.html">Settings</a><a href="notes.html">Notes</a><a href="rss.html">RSS</a><a href="review.html">Review</a><a href="issues.html">Issues</a><a href="overview.html">Mission Control</a></nav>
+      <button class="theme-toggle" type="button">Theme: system</button>
+    </div>
+  </header>
+
+  <section class="screen" aria-labelledby="s-main">
+    <h2 id="s-main">Default and engaged</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a>
+              <div class="mid"><button class="btn g sm">↻ Refresh</button><span>Updated 3 min ago</span></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot" title="All good"></span><button class="iconbtn" aria-label="Mark all read">✓</button><button class="iconbtn" aria-label="Feed settings">⋯</button></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="cols rss3">
+                <nav class="feeds" aria-label="Feeds">
+                  <div class="fl">
+                    <a class="feed on" href="#"><span class="fn">All unread</span><span class="badge neutral">33</span></a>
+                    <a class="feed" href="#"><span class="fn">Starred</span><span class="badge neutral">6</span></a>
+                    <a class="feed" href="#"><span class="fn">Engaged</span><span class="badge neutral">14</span></a>
+                    <div class="grp">▾ Engineering</div>
+                    <a class="feed" href="#"><span class="fav"></span><span class="fn">Fly.io blog</span><span class="badge neutral">4</span></a>
+                    <a class="feed" href="#"><span class="fav"></span><span class="fn">Simon Willison</span><span class="badge neutral">11</span></a>
+                    <a class="feed" href="#"><span class="fav"></span><span class="fn">Julia Evans</span><span class="badge neutral">2</span></a>
+                    <a class="feed" href="#"><span class="fav"></span><span class="fn">Dan Luu</span></a>
+                    <div class="grp">▾ Ideas</div>
+                    <a class="feed" href="#"><span class="fav"></span><span class="fn">Works in Progress</span><span class="badge neutral">3</span></a>
+                    <a class="feed" href="#"><span class="fav"></span><span class="fn">The Marginalian</span><span class="badge neutral">5</span></a>
+                    <a class="feed" href="#"><span class="fav"></span><span class="fn">Aeon</span><span class="badge neutral">8</span></a>
+                  </div>
+                  <div class="ft"><button class="btn g sm">+ Add feed</button><button class="btn g sm">Import OPML</button></div>
+                </nav>
+                <div class="pane">
+                  <div class="pane-h"><b>All unread</b><span>33</span><span class="sp"><button class="btn g sm">Unread ▾</button></span></div>
+                  <div class="list scroll">
+                    <div class="row unread sel"><span class="lead"><span class="udot"></span></span><span class="t">The quiet economics of maintenance</span><span class="m">2h</span><span class="x">Why the cheapest infrastructure is the kind you already have, and who pays to keep it.</span><span class="mm">Works in Progress</span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">What SQLite's WAL mode actually guarantees</span><span class="m">4h</span><span class="x">Readers don't block writers, but checkpoints and fsync tell the rest of the story.</span><span class="mm">Fly.io blog</span></div>
+                    <div class="row"><span class="lead"></span><span class="t">On keeping a commonplace book</span><span class="m">1d</span><span class="x">Locke's index, Woolf's notebooks, and the habit of copying out what struck you.</span><span class="mm">The Marginalian <span class="badge fern">In KB</span></span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">Prompt injection is still unsolved</span><span class="m">1d</span><span class="x">A year of attacks on tool-using agents, and the mitigations that held up.</span><span class="mm">Simon Willison</span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">How DNS resolvers decide what to cache</span><span class="m">2d</span><span class="x">TTLs, negative caching, and why your change took an hour to show up.</span><span class="mm">Julia Evans</span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">The case for boring bridges</span><span class="m">2d</span><span class="x">Standard designs, built many times, outlast the signature spans.</span><span class="mm">Works in Progress</span></div>
+                    <div class="row"><span class="lead"></span><span class="t">Why we stopped using microservices for queues</span><span class="m">3d</span><span class="x">One Postgres table, SKIP LOCKED, and a lot less to page on.</span><span class="mm">Fly.io blog</span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">The attention economy of the medieval monastery</span><span class="m">3d</span><span class="x">Monks complained about distraction too. Their fixes were architectural.</span><span class="mm">Aeon</span></div>
+                  </div>
+                </div>
+                <div class="pane">
+                  <div class="pane-h reader-tb"><span>Works in Progress</span><span class="sp"><button class="btn p sm">Engage</button><button class="btn s sm">Mark unread</button><button class="btn g sm">Open original ↗</button><button class="iconbtn" aria-label="Star">☆</button></span></div>
+                  <div class="scroll">
+                    <article class="reader read">
+                      <h1>The quiet economics of maintenance</h1>
+                      <div class="byline"><span>Works in Progress</span><span>·</span><span>Sarah Constantin</span><span>·</span><span>14 Oct 2026</span><span>·</span><span>12 min</span><a href="#">Open original ↗</a></div>
+                      <p>Every city has two budgets for its roads. One pays for new ones, and gets a ribbon-cutting. The other pays to keep the old ones from falling apart, and gets almost nothing, including attention.</p>
+                      <p>The asymmetry is not irrational. New things are legible: they have a cost, a date and a photograph. Maintenance is the absence of an event. <mark>When it works, the result is that nothing happens, and nothing is very hard to fund.</mark></p>
+                      <h2>Deferred, not avoided</h2>
+                      <p>Deferring a repair does not remove its cost. It moves the cost forward and usually grows it. A pothole patched in spring costs a fraction of the resurfacing it becomes after two winters of freeze and thaw.</p>
+                      <p>The same pattern shows up in software, in water mains, and in bridges built in the 1960s that are now due all at once.</p>
+                    </article>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280, default.</b> Marigold-washed feeds sidebar (the Exposé cue), Desk-density list, serif reader. The commonplace-book row was engaged earlier and has a KB page.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a>
+              <div class="mid"><button class="btn g sm">↻ Refresh</button><span>Updated 3 min ago</span></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot" title="All good"></span><button class="iconbtn" aria-label="Mark all read">✓</button><button class="iconbtn" aria-label="Feed settings">⋯</button></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="cols rss-eng">
+                <nav class="rail" aria-label="Feeds (collapsed)"><button class="iconbtn" aria-label="Expand feeds">»</button><span class="fav on" title="All unread"></span><span class="fav" title="Engineering"></span><span class="fav" title="Ideas"></span></nav>
+                <div class="pane">
+                  <div class="pane-h"><b>All unread</b><span>32</span><span class="sp"><button class="btn g sm">Unread ▾</button></span></div>
+                  <div class="list scroll">
+                    <div class="row sel"><span class="lead"></span><span class="t">The quiet economics of maintenance</span><span class="m">2h</span><span class="x">Why the cheapest infrastructure is the kind you already have.</span><span class="mm">Works in Progress <span class="badge fern">In KB</span></span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">What SQLite's WAL mode actually guarantees</span><span class="m">4h</span><span class="x">Readers don't block writers, but checkpoints tell the rest.</span><span class="mm">Fly.io blog</span></div>
+                    <div class="row"><span class="lead"></span><span class="t">On keeping a commonplace book</span><span class="m">1d</span><span class="x">Locke's index, Woolf's notebooks, and copying out what struck you.</span><span class="mm">The Marginalian <span class="badge fern">In KB</span></span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">Prompt injection is still unsolved</span><span class="m">1d</span><span class="x">A year of attacks on tool-using agents.</span><span class="mm">Simon Willison</span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">How DNS resolvers decide what to cache</span><span class="m">2d</span><span class="x">TTLs, negative caching, and the hour-long change.</span><span class="mm">Julia Evans</span></div>
+                    <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">The case for boring bridges</span><span class="m">2d</span><span class="x">Standard designs, built many times, outlast signature spans.</span><span class="mm">Works in Progress</span></div>
+                    <div class="row"><span class="lead"></span><span class="t">Why we stopped using microservices for queues</span><span class="m">3d</span><span class="x">One Postgres table and SKIP LOCKED.</span><span class="mm">Fly.io blog</span></div>
+                  </div>
+                </div>
+                <div class="pane">
+                  <div class="pane-h reader-tb"><span>Works in Progress</span><span class="sp"><button class="btn s sm" aria-pressed="true">Engaged</button><button class="btn g sm">Mark unread</button><button class="btn g sm">Open original ↗</button></span></div>
+                  <div class="scroll">
+                    <article class="reader read">
+                      <h1>The quiet economics of maintenance</h1>
+                      <div class="byline"><span>Works in Progress</span><span>·</span><span>Sarah Constantin</span><a href="#">Open original ↗</a></div>
+                      <p>Every city has two budgets for its roads. One pays for new ones, and gets a ribbon-cutting. The other pays to keep the old ones from falling apart.</p>
+                      <p>New things are legible: they have a cost, a date and a photograph. Maintenance is the absence of an event. <mark>When it works, the result is that nothing happens, and nothing is very hard to fund.</mark></p>
+                      <h2>Deferred, not avoided</h2>
+                      <p>Deferring a repair does not remove its cost. It moves the cost forward and usually grows it.</p>
+                    </article>
+                  </div>
+                </div>
+                <div class="handle" role="separator" aria-orientation="vertical" aria-label="Resize chat"></div>
+                <aside class="chat" aria-label="Chat about this post">
+                  <div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span><span class="sp"><button class="iconbtn" aria-label="Pop out chat">⧉</button><button class="iconbtn" aria-label="Collapse chat">⇥</button></span></div>
+                  <div class="transcript">
+                    <div class="collapsed-row">Context: “The quiet economics of maintenance” · Works in Progress</div>
+                    <div class="msg u"><p>How does this connect to what I've written about tech debt?</p></div>
+                    <div class="tool">kb.search "maintenance OR tech debt" · 3 pages</div>
+                    <div class="msg ai">
+                      <div class="who"><span class="rg claude">C</span><b>Claude</b><span>· 14:22</span></div>
+                      <p>Your page <a href="#">Notes/tech-debt-ledger.md</a> argues debt is fine if it's tracked. This post adds the funding side: maintenance loses because its success is invisible.</p>
+                      <p>The highlighted line is a good fit for the "why it never gets prioritized" section you left as a TODO.</p>
+                    </div>
+                    <div class="save"><button class="btn s sm">Save to KB</button><button class="btn g sm">Save with this discussion</button></div>
+                    <div class="collapsed-row"><span class="ok">✓</span> Saved to <code>Sources/quiet-economics-of-maintenance.md</code> · <a href="#">Open in Notes</a></div>
+                  </div>
+                  <div class="composer">
+                    <textarea class="inp area" rows="2" aria-label="Message Claude" placeholder="Ask about this post…"></textarea>
+                    <div class="row-inline"><span class="composer-hint" style="font-size:var(--jx-text-xs);color:var(--jx-fg-muted)">⏎ send · ⇧⏎ new line</span><button class="btn p sm">Send</button></div>
+                  </div>
+                </aside>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280, engaged.</b> Engage opens the chat rail (~380px, resizable). Feeds collapse to a rail so the reader keeps a usable measure. After save, the row gains "In KB".</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>RSS</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a>
+              <div class="mid"></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot"></span><button class="iconbtn" aria-label="More">⋯</button></div>
+            </div>
+            <div></div>
+            <div class="body" style="grid-template-rows:auto 1fr">
+              <div class="subbar"><button class="btn g sm">‹ Feeds</button><b>All unread</b><span class="sp">33</span></div>
+              <div class="list scroll">
+                <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">The quiet economics of maintenance</span><span class="m">2h</span><span class="x">Why the cheapest infrastructure is the kind you already have.</span><span class="mm">Works in Progress</span></div>
+                <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">What SQLite's WAL mode actually guarantees</span><span class="m">4h</span><span class="x">Readers don't block writers, but checkpoints tell the rest.</span><span class="mm">Fly.io blog</span></div>
+                <div class="row"><span class="lead"></span><span class="t">On keeping a commonplace book</span><span class="m">1d</span><span class="x">Locke's index, Woolf's notebooks.</span><span class="mm">The Marginalian <span class="badge fern">In KB</span></span></div>
+                <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">Prompt injection is still unsolved</span><span class="m">1d</span><span class="x">A year of attacks on tool-using agents.</span><span class="mm">Simon Willison</span></div>
+                <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">How DNS resolvers decide what to cache</span><span class="m">2d</span><span class="x">TTLs and negative caching.</span><span class="mm">Julia Evans</span></div>
+                <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">The case for boring bridges</span><span class="m">2d</span><span class="x">Standard designs outlast signature spans.</span><span class="mm">Works in Progress</span></div>
+                <div class="row"><span class="lead"></span><span class="t">Why we stopped using microservices for queues</span><span class="m">3d</span><span class="x">One Postgres table and SKIP LOCKED.</span><span class="mm">Fly.io blog</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow, 390: list.</b> Drill-down: feeds → list → reader. "‹ Feeds" goes back up a level.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>RSS</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a>
+              <div class="mid"></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot"></span><button class="iconbtn" aria-label="More">⋯</button></div>
+            </div>
+            <div></div>
+            <div class="body narrow-reader">
+              <div class="subbar"><button class="btn g sm">‹ All unread</button><span class="sp"><button class="iconbtn" aria-label="Mark unread">●</button><button class="iconbtn" aria-label="Open original">↗</button></span></div>
+              <div class="scroll">
+                <article class="reader read">
+                  <h1>The quiet economics of maintenance</h1>
+                  <div class="byline"><span>Works in Progress</span><span>·</span><span>Sarah Constantin</span><a href="#">Open original ↗</a></div>
+                  <p>Every city has two budgets for its roads. One pays for new ones, and gets a ribbon-cutting. The other pays to keep the old ones from falling apart.</p>
+                  <p>Maintenance is the absence of an event. <mark>When it works, the result is that nothing happens, and nothing is very hard to fund.</mark></p>
+                  <p>Deferring a repair does not remove its cost. It moves the cost forward and usually grows it.</p>
+                </article>
+              </div>
+              <div class="bottombar"><button class="btn p">Engage</button><button class="iconbtn" aria-label="Star">☆</button></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow, 390: reader.</b> Toolbar actions move to the sub-bar; Engage is a full-width bottom button within thumb reach.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>RSS</span></div>
+          <div class="app relative" data-app="rss">
+            <div class="hdr">
+              <a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a>
+              <div class="mid"></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot"></span></div>
+            </div>
+            <div></div>
+            <div class="body narrow-reader">
+              <div class="subbar"><button class="btn g sm">‹ All unread</button></div>
+              <div class="scroll"><article class="reader read"><h1>The quiet economics of maintenance</h1><p>Every city has two budgets for its roads.</p></article></div>
+              <div></div>
+            </div>
+            <div class="scrim"></div>
+            <div class="sheet" role="dialog" aria-label="Chat about this post">
+              <div class="grab"><i></i></div>
+              <div class="chat">
+                <div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span><span class="sp"><button class="btn g sm">Done</button></span></div>
+                <div class="transcript">
+                  <div class="collapsed-row">Context: “The quiet economics of maintenance”</div>
+                  <div class="msg u"><p>Give me the argument in two sentences.</p></div>
+                  <div class="msg ai">
+                    <div class="who"><span class="rg claude">C</span><b>Claude</b></div>
+                    <p>Maintenance is underfunded because its success is invisible: nothing happens. Deferring it doesn't save money; it moves a larger bill forward.</p>
+                  </div>
+                  <div class="save"><button class="btn s sm">Save to KB</button></div>
+                </div>
+                <div class="composer">
+                  <textarea class="inp area" rows="2" aria-label="Message Claude (narrow)" placeholder="Ask about this post…"></textarea>
+                  <div class="row-inline"><span></span><button class="btn p sm">Send</button></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow, 390: chat sheet.</b> Engage opens a full-height sheet over the reader. Drag down or tap Done to return; the chat keeps its state.</figcaption>
+      </figure>
+    </div>
+    <ol class="notes">
+      <li><b>Desk density</b> (brief §3): sans list rows with title, one-line excerpt, and source · age; about 8 rows per laptop screen. Unread rows carry a dot and medium weight.</li>
+      <li><b>Newsreader is reserved for the reader pane.</b> Lists, sidebar, toolbar and chat stay in the UI sans. The marigold <code>mark</code> is the reader's highlight.</li>
+      <li><b>Engage → chat rail.</b> Engage starts a chat with the post as context, docked right (~380px, resizable, pop-out ⧉). Feeds collapse to a rail while it's open. On narrow it's a full-height sheet. The runner comes from Settings; the header picker switches it.</li>
+      <li><b>Save to KB</b> writes an augmented page to <code>Sources/</code> (post text, link, highlights, and optionally the discussion). It confirms inline with a collapsed row linking to the page in Notes.</li>
+      <li><b>Engaged items are marked</b> with an "In KB" fern badge in the list, and the smart view "Engaged" collects them.</li>
+    </ol>
+  </section>
+
+  <section class="screen" aria-labelledby="s-states">
+    <h2 id="s-states">States</h2>
+    <div class="states">
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="cols rss3">
+                <nav class="feeds" aria-label="Feeds (empty)"><div class="fl"><a class="feed" href="#"><span class="fn">All unread</span></a></div><div class="ft"><button class="btn g sm">+ Add feed</button><button class="btn g sm">Import OPML</button></div></nav>
+                <div class="empty"><div><b>No feeds yet</b><p style="margin:6px 0 12px">Add a feed or import an OPML file to get started.</p><div class="row-inline" style="justify-content:center"><button class="btn p">Add feed</button><button class="btn s">Import OPML</button></div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Empty.</b> First run. Both actions also live at the bottom of the sidebar.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a><div class="mid"><span class="spin"></span><span>Refreshing 12 feeds…</span></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="cols rss-split">
+                <nav class="feeds" aria-label="Feeds (loading)"><div class="fl"><div class="skrow"><span class="skel w80"></span></div><div class="skrow"><span class="skel w60"></span></div><div class="skrow"><span class="skel w80"></span></div><div class="skrow"><span class="skel w40"></span></div></div><div></div></nav>
+                <div class="pane"><div class="pane-h"><b>All unread</b></div><div class="list">
+                  <div class="skrow"><span class="skel w80"></span><span class="skel w90"></span><span class="skel w40"></span></div>
+                  <div class="skrow"><span class="skel w60"></span><span class="skel w90"></span><span class="skel w40"></span></div>
+                  <div class="skrow"><span class="skel w80"></span><span class="skel w80"></span><span class="skel w40"></span></div>
+                  <div class="skrow"><span class="skel w60"></span><span class="skel w90"></span><span class="skel w40"></span></div>
+                </div></div>
+                <div class="skread"><span class="skel w80" style="height:20px"></span><span class="skel w40"></span><span class="skel w90"></span><span class="skel w90"></span><span class="skel w80"></span><span class="skel w90"></span><span class="skel w60"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Loading.</b> Skeleton rows and a skeleton reader; the header says what's happening.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="cols rss-split">
+                <nav class="feeds" aria-label="Feeds (with error)"><div class="fl">
+                  <div class="grp">▾ Engineering</div>
+                  <a class="feed" href="#"><span class="fav"></span><span class="fn">Fly.io blog</span><span class="badge neutral">4</span></a>
+                  <a class="feed bad on" href="#"><span class="wn">!</span><span class="fn">Julia Evans</span></a>
+                  <div class="feed-err">Couldn't fetch: 404. Check the URL.</div>
+                  <a class="feed" href="#"><span class="fav"></span><span class="fn">Dan Luu</span></a>
+                </div><div></div></nav>
+                <div class="pane"><div class="pane-h"><b>Julia Evans</b></div><div class="pad" style="display:grid;gap:8px;align-content:start;font-size:var(--jx-text-sm)"><span><b style="color:var(--jx-warn)">! Couldn't fetch: 404.</b> Check the URL.</span><code style="word-break:break-all">jvns.ca/atom.xml</code><div class="row-inline"><button class="btn s sm">Edit URL</button><button class="btn g sm">Retry</button></div><span style="color:var(--jx-fg-muted)">Older items stay readable.</span></div></div>
+                <div class="skread" style="color:var(--jx-fg-muted);font-size:var(--jx-text-sm)">Select an item.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Feed error.</b> Inline on the feed row with the fix; the status dot goes amber (minor, no strip).</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="cols rss-chat">
+                <div class="scroll"><article class="reader read"><h1>What SQLite's WAL mode actually guarantees</h1><div class="byline"><span>Fly.io blog</span><span>·</span><span>Ben Johnson</span></div><p>Readers don't block writers and writers don't block readers. That's the headline, and it's true.</p></article></div>
+                <div class="handle" role="separator" aria-orientation="vertical" aria-label="Resize chat (streaming)"></div>
+                <aside class="chat" aria-label="Chat (streaming)">
+                  <div class="chat-h"><span class="who-pick"><span class="rg claude">C</span>Claude ▾</span><span class="sp"><button class="btn g sm">Stop</button></span></div>
+                  <div class="transcript">
+                    <div class="msg u"><p>Is my sync job safe while the app is reading?</p></div>
+                    <div class="msg ai"><div class="who"><span class="rg claude">C</span><b>Claude</b><span>· writing…</span></div><p>Yes for reads: in WAL mode the reader sees a consistent snapshot. The risk is the checkpoint, which needs<span class="cursor"></span></p></div>
+                  </div>
+                  <div class="composer"><textarea class="inp area" rows="1" aria-label="Message (streaming)" disabled></textarea></div>
+                </aside>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Streaming.</b> Agent text arrives with a cursor; Stop replaces the window controls until it finishes.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div></div>
+            <div></div>
+            <div class="body">
+              <div class="cols rss-chat">
+                <div class="scroll"><article class="reader read"><h1>On keeping a commonplace book</h1><div class="byline"><span>The Marginalian</span><span>·</span><span>Maria Popova</span></div><p>Locke kept an index at the back of his notebook, two letters per entry: the first letter and the first vowel of the heading.</p></article></div>
+                <div class="handle" role="separator" aria-orientation="vertical" aria-label="Resize chat (unavailable)"></div>
+                <aside class="chat" aria-label="Chat (runner unavailable)">
+                  <div class="chat-h"><span class="who-pick"><span class="rg codex">X</span>Codex ▾</span><span class="sp"><button class="iconbtn" aria-label="Pop out chat (unavailable)">⧉</button></span></div>
+                  <div class="transcript">
+                    <div class="inline-banner"><span><b>! Codex isn't available:</b> not logged in. Run <code>codex login</code>, or switch to Claude.</span><span><button class="btn s sm"><span class="rg claude">C</span>Switch to Claude</button></span></div>
+                  </div>
+                  <div class="composer"><textarea class="inp area" rows="1" aria-label="Message (unavailable)" disabled></textarea></div>
+                </aside>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Runner unavailable.</b> Inline in the chat, not a strip; one click switches runner for this chat only.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div>
+          <div class="app" data-app="rss">
+            <div class="hdr"><a class="home" href="launcher.html"><span class="glyph-app"></span><span class="name">RSS</span></a><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div></div>
+            <div class="strip"><b>! Sync paused:</b> merge conflict in <code>Sources/boring-bridges.md</code>. Resolve it, then choose Resume. <span class="act"><button class="btn s sm">Resume</button></span></div>
+            <div class="body">
+              <div class="cols rss-split">
+                <nav class="feeds" aria-label="Feeds (sync paused)"><div class="fl"><a class="feed on" href="#"><span class="fn">All unread</span><span class="badge neutral">33</span></a><a class="feed" href="#"><span class="fn">Starred</span></a><div class="grp">▾ Ideas</div><a class="feed" href="#"><span class="fav"></span><span class="fn">Aeon</span><span class="badge neutral">8</span></a></div><div></div></nav>
+                <div class="pane"><div class="pane-h"><b>All unread</b></div><div class="list">
+                  <div class="row unread sel"><span class="lead"><span class="udot"></span></span><span class="t">The quiet economics of maintenance</span><span class="m">2h</span><span class="mm">Works in Progress</span></div>
+                  <div class="row unread"><span class="lead"><span class="udot"></span></span><span class="t">What SQLite's WAL mode…</span><span class="m">4h</span><span class="mm">Fly.io blog</span></div>
+                </div></div>
+                <div class="skread" style="font-size:var(--jx-text-sm);color:var(--jx-fg-muted)">Reading keeps working. Save to KB still writes locally; it's pushed once sync resumes.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Sync paused</b> is blocking, so it gets the shared warn strip under the header. The app keeps working.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+</body>
+</html>

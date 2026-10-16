@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia Launcher Wireframes</title>
+<!-- Preview only: the apps self-host these faces via @fontsource (kit §2). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="wire.css">
+<script src="wire.js" defer></script>
+<style>
+.launch { padding: var(--jx-space-7) var(--jx-space-7) var(--jx-space-6); display: grid; gap: var(--jx-space-6); align-content: start; max-width: 1080px; margin: 0 auto; width: 100%; }
+.launch h1 { margin: 0; font-size: var(--jx-text-2xl); line-height: var(--jx-leading-2xl); font-weight: 600; font-variation-settings: "opsz" 96; letter-spacing: -0.015em; }
+.launch .sub { color: var(--jx-fg-muted); margin-top: 2px; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--jx-space-4); }
+.tile { background: var(--jx-surface); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-lg); overflow: hidden; display: grid; grid-template-rows: 56px auto; text-decoration: none; color: var(--jx-fg); }
+.tile .band { background: var(--jx-app-chrome); position: relative; }
+.tile .g { position: absolute; left: var(--jx-space-4); bottom: -18px; width: 40px; height: 40px; border-radius: 10px; background: var(--jx-app); border: 3px solid var(--jx-surface); }
+.tile .tb { padding: 28px var(--jx-space-4) var(--jx-space-4); display: grid; gap: 4px; }
+.tile .tn { font-weight: 600; font-size: var(--jx-text-lg); font-variation-settings: "opsz" 48; }
+.tile .td { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); }
+.tile .ts { margin-top: 8px; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); display: flex; gap: 6px; align-items: center; }
+.tile.soon { background: var(--jx-bg); }
+.tile.soon .band { opacity: .55; }
+.status { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-lg); background: var(--jx-surface); }
+.status > div { padding: var(--jx-space-3) var(--jx-space-4); border-right: 1px solid var(--jx-border); display: grid; gap: 4px; min-width: 0; }
+.status > div:last-child { border-right: 0; }
+.status .k { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; }
+.status .v { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.status .v code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status .s { font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.ok { color: var(--jx-success); } .wn { color: var(--jx-warn); }
+.frame.narrow .launch { padding: var(--jx-space-5) var(--jx-space-4); gap: var(--jx-space-5); }
+.frame.narrow .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--jx-space-3); }
+.frame.narrow .tile { grid-template-rows: 40px auto; }
+.frame.narrow .tile .g { width: 32px; height: 32px; bottom: -14px; }
+.frame.narrow .tile .tb { padding: 22px var(--jx-space-3) var(--jx-space-3); }
+.frame.narrow .tile .td { display: none; }
+.frame.narrow .status { grid-template-columns: 1fr; }
+.frame.narrow .status > div { border-right: 0; border-bottom: 1px solid var(--jx-border); }
+.frame.narrow .status > div:last-child { border-bottom: 0; }
+.frame.half .launch { padding: var(--jx-space-5); gap: var(--jx-space-4); }
+.frame.half .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--jx-space-2); }
+.frame.half .tile .td, .frame.half .tile .ts { display: none; }
+.popover { right: 12px; top: 44px; width: 340px; padding: var(--jx-space-2) 0; }
+.popover .pi { padding: var(--jx-space-2) var(--jx-space-4); display: grid; gap: 2px; font-size: var(--jx-text-sm); }
+.popover .pi b { font-weight: 600; font-size: var(--jx-text-base); display: flex; gap: 6px; align-items: center; }
+.popover .pi + .pi { border-top: 1px solid var(--jx-border); }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>Launcher</h1>
+      <p><code>/</code>. Foundation screen at higher fidelity. The launcher is how you move between apps (shell decision 1); each app runs as its own PWA window. It also gives a quick check that the KB, sync, and agents are healthy.</p>
+    </div>
+    <div class="row-inline">
+      <nav class="doc-nav" aria-label="Wireframes"><a href="README.md">Index</a><a href="launcher.html">Launcher</a><a href="settings.html">Settings</a><a href="notes.html">Notes</a><a href="rss.html">RSS</a><a href="review.html">Review</a><a href="issues.html">Issues</a><a href="overview.html">Mission Control</a></nav>
+      <button class="theme-toggle" type="button">Theme: system</button>
+    </div>
+  </header>
+
+  <section class="screen" aria-labelledby="s-main">
+    <h2 id="s-main">Default</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia</span></div>
+          <div class="app neutral-app">
+            <div class="hdr">
+              <a class="home" href="#"><span class="name">Jesinia</span></a>
+              <div class="mid"></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot minor" title="1 minor issue"></span><button class="iconbtn" aria-label="Settings">⚙</button></div>
+            </div>
+            <div></div>
+            <div class="body scroll">
+              <div class="launch">
+                <div><h1>Good afternoon</h1><div class="sub">Your knowledge base has 1,284 pages. 6 changed today.</div></div>
+                <div class="tiles">
+                  <a class="tile" data-app="notes" href="#"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Notes</span><span class="td">Search the KB and think about a page with your agent.</span><span class="ts">2 sessions this week</span></div></a>
+                  <a class="tile soon" data-app="rss" href="#"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">RSS</span><span class="td">Read feeds, engage a post, keep what matters.</span><span class="ts"><span class="badge neutral">Coming soon</span></span></div></a>
+                  <a class="tile soon" data-app="review" href="#"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Review</span><span class="td">Understand a pull request before you approve it.</span><span class="ts"><span class="badge neutral">Coming soon</span></span></div></a>
+                  <a class="tile soon" data-app="issues" href="#"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Issues</span><span class="td">Triage issues across your repos with agent help.</span><span class="ts"><span class="badge neutral">Coming soon</span></span></div></a>
+                </div>
+                <div class="status" aria-label="Status">
+                  <div><span class="k">Knowledge base</span><span class="v"><code>~/Documents/KB</code></span><span class="s">1,284 pages · indexed 2 min ago</span></div>
+                  <div><span class="k">Sync</span><span class="v"><span class="ok">✓</span> Commit and push</span><span class="s">Last 14:05 · next 18:05 · <a href="#">Sync now</a></span></div>
+                  <div><span class="k">Agents</span><span class="v"><span class="rg claude">C</span>Claude Code 2.1 <span class="ok">✓</span></span><span class="s"><span class="rg codex" style="width:16px;height:16px;font-size:10px">X</span> Codex: not logged in · <a href="#">How to fix</a></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280.</b> Neutral paper chrome: the launcher has no identity hue, so the four app colors are the only color on the page.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Jesinia</span></div>
+          <div class="app neutral-app">
+            <div class="hdr">
+              <a class="home" href="#"><span class="name">Jesinia</span></a>
+              <div class="mid"></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot minor"></span><button class="iconbtn" aria-label="Settings">⚙</button></div>
+            </div>
+            <div></div>
+            <div class="body scroll">
+              <div class="launch">
+                <div><h1>Good afternoon</h1><div class="sub">1,284 pages · 6 changed today</div></div>
+                <div class="tiles">
+                  <a class="tile" data-app="notes" href="#"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Notes</span><span class="ts">2 sessions</span></div></a>
+                  <a class="tile soon" data-app="rss" href="#"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">RSS</span><span class="ts"><span class="badge neutral">Soon</span></span></div></a>
+                  <a class="tile soon" data-app="review" href="#"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Review</span><span class="ts"><span class="badge neutral">Soon</span></span></div></a>
+                  <a class="tile soon" data-app="issues" href="#"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Issues</span><span class="ts"><span class="badge neutral">Soon</span></span></div></a>
+                </div>
+                <div class="status">
+                  <div><span class="k">Knowledge base</span><span class="v"><code>~/Documents/KB</code></span><span class="s">Indexed 2 min ago</span></div>
+                  <div><span class="k">Sync</span><span class="v"><span class="ok">✓</span> Commit and push</span><span class="s">Last 14:05 · <a href="#">Sync now</a></span></div>
+                  <div><span class="k">Agents</span><span class="v"><span class="rg claude">C</span>Claude Code <span class="ok">✓</span></span><span class="s">Codex: not logged in</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow, 390.</b> 2×2 tiles; descriptions drop; status stacks.</figcaption>
+      </figure>
+    </div>
+    <ol class="notes">
+      <li><b>Tiles</b> open each app in its own PWA window (or a tab if not installed). Built apps show one line of recent activity; unbuilt apps are muted with "Coming soon" and aren't links.</li>
+      <li><b>Status strip</b> has three facts: KB, sync, and agents. Each fact has an inline action ("Sync now", "How to fix") that goes to the right Settings section.</li>
+      <li><b>Header</b> has the ⌘K palette (search, plus commands like "Open Notes" and "Sync now"), the status dot, and Settings. The greeting line is the one warm touch; it can be turned off.</li>
+    </ol>
+  </section>
+
+  <section class="screen" aria-labelledby="s-states">
+    <h2 id="s-states">States</h2>
+    <div class="states">
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia</span></div>
+          <div class="app neutral-app">
+            <div class="hdr"><span class="name">Jesinia</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot bad"></span></div></div>
+            <div class="strip danger"><b>× KB folder not found:</b> <code>~/Documents/KB</code>. Choose a folder to continue. <span class="act"><button class="btn s sm">Open Settings</button></span></div>
+            <div class="body"><div class="launch"><div class="tiles">
+              <div class="tile soon" data-app="notes"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Notes</span></div></div>
+              <div class="tile soon" data-app="rss"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">RSS</span></div></div>
+              <div class="tile soon" data-app="review"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Review</span></div></div>
+              <div class="tile soon" data-app="issues"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Issues</span></div></div>
+            </div><p style="margin:0;color:var(--jx-fg-muted)">Apps that need the KB are paused until a folder is set.</p></div></div>
+          </div>
+        </div>
+        <figcaption><b>KB missing</b> is blocking. A danger strip, KB-dependent tiles muted, status dot red.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia</span></div>
+          <div class="app neutral-app">
+            <div class="hdr"><span class="name">Jesinia</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div></div>
+            <div class="strip"><b>! Sync paused:</b> merge conflict in <code>Notes/rss.md</code>. Resolve it, then choose Resume. <span class="act"><button class="btn s sm">Resume</button><button class="btn g sm">Details</button></span></div>
+            <div class="body"><div class="launch"><div class="tiles">
+              <div class="tile" data-app="notes"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Notes</span></div></div>
+              <div class="tile soon" data-app="rss"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">RSS</span></div></div>
+              <div class="tile soon" data-app="review"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Review</span></div></div>
+              <div class="tile soon" data-app="issues"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Issues</span></div></div>
+            </div></div></div>
+          </div>
+        </div>
+        <figcaption><b>Sync paused</b> is blocking: it risks lost work. The warn strip shows in every app, not just the launcher. Apps keep working.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half relative">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia</span></div>
+          <div class="app neutral-app relative">
+            <div class="hdr"><span class="name">Jesinia</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor" style="background:var(--jx-surface-hover)"></span></div></div>
+            <div></div>
+            <div class="body"><div class="launch"><div class="tiles">
+              <div class="tile" data-app="notes"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Notes</span></div></div>
+              <div class="tile soon" data-app="rss"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">RSS</span></div></div>
+              <div class="tile soon" data-app="review"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Review</span></div></div>
+              <div class="tile soon" data-app="issues"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Issues</span></div></div>
+            </div></div></div>
+            <div class="pop popover" role="dialog" aria-label="Status">
+              <div class="pi"><b><span class="wn">!</span> Codex isn't available</b>Not logged in. Run <code>codex login</code> in a terminal.</div>
+              <div class="pi"><b><span class="wn">!</span> 2 duplicate page ids</b><span>Two files share <code>id: maintenance</code>. <a href="#">Review in Settings</a></span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Minor issues</b> (shell decision 3): no strip. The header dot turns amber; clicking it opens this popover, and each item links to its fix.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half relative">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia</span></div>
+          <div class="app neutral-app relative">
+            <div class="hdr"><span class="name">Jesinia</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"><div class="launch"><span class="skel w40" style="height:22px"></span><div class="tiles">
+              <div class="tile" data-app="notes"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Notes</span></div></div>
+              <div class="tile soon" data-app="rss"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">RSS</span></div></div>
+              <div class="tile soon" data-app="review"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Review</span></div></div>
+              <div class="tile soon" data-app="issues"><div class="band"><span class="g"></span></div><div class="tb"><span class="tn">Issues</span></div></div>
+            </div><div class="status"><div><span class="skel w60"></span><span class="skel w90"></span></div><div><span class="skel w60"></span><span class="skel w80"></span></div><div><span class="skel w60"></span><span class="skel w80"></span></div></div></div></div>
+          </div>
+        </div>
+        <figcaption><b>Loading.</b> Tiles render immediately (they're static); status facts show skeletons until <code>/healthz</code> and runner checks return.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half relative">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia</span></div>
+          <div class="app neutral-app relative">
+            <div class="hdr"><span class="name">Jesinia</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"></div>
+            <div class="scrim"></div>
+            <div class="pop palette" role="dialog" aria-label="Command palette" style="width:540px;top:56px">
+              <div class="q"><span style="color:var(--jx-fg-muted)">⌕</span>sync<span class="cursor"></span></div>
+              <div class="grp">Commands</div>
+              <div class="it on">Sync now<small>Commit and push</small></div>
+              <div class="it">Open Settings · Git sync<small>⌘,</small></div>
+              <div class="grp">Knowledge base</div>
+              <div class="it">KB sync conventions<small>Notes/kb-sync.md</small></div>
+              <div class="foot"><span><kbd>↑↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>⌘K palette</b> (shell decision 4). On the launcher there's no app group, so it shows commands and KB pages. "Open Notes" and similar commands replace in-app navigation.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+</body>
+</html>

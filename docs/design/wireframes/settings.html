@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia Settings Wireframes</title>
+<!-- Preview only: the apps self-host these faces via @fontsource (kit §2). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="wire.css">
+<script src="wire.js" defer></script>
+<style>
+/* header */
+.hdr .back { color: var(--jx-fg-muted); text-decoration: none; font-size: var(--jx-text-sm); flex: none; }
+.hdr .sep { width: 1px; height: 20px; background: var(--jx-border); flex: none; }
+/* layout */
+.set { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 0; height: 100%; }
+.snav { border-right: 1px solid var(--jx-border); padding: var(--jx-space-4) var(--jx-space-2); display: grid; gap: 2px; align-content: start; }
+.snav a { display: block; padding: var(--jx-space-2) var(--jx-space-3); border-radius: var(--jx-radius-md); color: var(--jx-fg); text-decoration: none; font-size: var(--jx-row-text); }
+.snav a:hover { background: var(--jx-row-bg-hover); }
+.snav a.on { background: var(--jx-row-bg-selected); font-weight: var(--jx-row-title-weight-selected); }
+.snav .k { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: 0 var(--jx-space-3) var(--jx-space-2); }
+.col { padding: var(--jx-space-6) var(--jx-space-6) var(--jx-space-8); display: grid; gap: var(--jx-space-5); align-content: start; max-width: 720px; width: 100%; }
+.col h1 { margin: 0; font-size: var(--jx-text-xl); line-height: var(--jx-leading-xl); font-weight: 600; font-variation-settings: "opsz" 72; }
+.col .sub { color: var(--jx-fg-muted); margin-top: 2px; }
+/* inside panels */
+.inp input { border: 0; background: transparent; font: inherit; color: inherit; flex: 1; min-width: 0; padding: 0; height: 100%; }
+.inp input:focus-visible { outline: none; }
+.inp:focus-within { border-color: var(--jx-input-border-focus); }
+.inp .trail { color: var(--jx-fg-muted); display: inline-flex; align-items: center; gap: 6px; font-family: var(--jx-font-ui); font-size: var(--jx-text-xs); }
+select.inp { appearance: auto; }
+.fline { display: flex; gap: var(--jx-space-2); align-items: center; }
+.fline .inp { flex: 1; }
+.acts { display: flex; gap: var(--jx-space-2); align-items: center; flex-wrap: wrap; }
+.facts { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: var(--jx-space-2) var(--jx-space-4); margin: 0; font-size: var(--jx-text-sm); }
+.facts dt { color: var(--jx-fg-muted); }
+.facts dd { margin: 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.facts dd code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.problem { font-size: var(--jx-text-sm); padding: var(--jx-space-2) var(--jx-space-3); border-radius: var(--jx-radius-md); background: var(--jx-warn-bg); }
+.problem b { color: var(--jx-warn); font-weight: 600; }
+.panel .list { margin-inline: calc(-1 * var(--jx-panel-pad)); border-top: 1px solid var(--jx-row-divider); }
+.panel .list .row:last-child { border-bottom: 0; }
+.row.agent { grid-template-columns: auto 1fr auto; align-items: center; }
+.row.agent > .rg { grid-row: span 2; }
+.row.agent .mm code { font-size: var(--jx-text-xs); }
+.row.conf { grid-template-columns: 1fr auto; align-items: center; }
+.row.conf .paths { display: grid; gap: 2px; font-family: var(--jx-font-mono); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); grid-column: 1; }
+.row.conf .paths span { display: flex; gap: var(--jx-space-2); align-items: center; justify-content: space-between; }
+.sub-h { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; margin: 0; }
+.perapp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--jx-space-3); }
+.perapp .field label { display: flex; gap: 6px; align-items: center; font-size: var(--jx-text-sm); }
+.dotapp { width: 10px; height: 10px; border-radius: 3px; background: var(--jx-app); display: inline-block; }
+.ok { color: var(--jx-success); } .wn { color: var(--jx-warn); }
+.confirm { border: 1px solid var(--jx-danger); background: var(--jx-danger-bg); border-radius: var(--jx-radius-md); padding: var(--jx-space-3); display: grid; gap: var(--jx-space-2); }
+.confirm b { font-weight: 600; }
+.confirm p, .pb > p { margin: 0; }
+.muted { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); }
+/* narrow */
+.frame.narrow .set { display: grid; grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+.frame.narrow .tabs { overflow-x: auto; scrollbar-width: none; background: var(--jx-app-chrome); }
+.frame.narrow .col { padding: var(--jx-space-4); gap: var(--jx-space-4); }
+.frame.narrow .facts { grid-template-columns: 96px minmax(0, 1fr); }
+.frame.narrow .perapp { grid-template-columns: 1fr; }
+.frame.narrow .acts .btn, .frame.narrow .fw { width: 100%; justify-content: center; }
+.frame.narrow .row.conf { grid-template-columns: 1fr; }
+/* half-size state frames: one panel, no section nav */
+.frame.half .col { padding: var(--jx-space-4) var(--jx-space-5); gap: var(--jx-space-3); max-width: none; }
+.frame.half .panel > .pb { gap: var(--jx-space-2); }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>Settings</h1>
+      <p><code>/settings/</code>. Foundation screen at higher fidelity. One place for the KB folder, git sync, agents, file conflicts, and the login token. Neutral chrome like the launcher. Every "How to fix" link elsewhere in Jesinia lands on a section here.</p>
+    </div>
+    <div class="row-inline">
+      <nav class="doc-nav" aria-label="Wireframes"><a href="README.md">Index</a><a href="launcher.html">Launcher</a><a href="settings.html">Settings</a><a href="notes.html">Notes</a><a href="rss.html">RSS</a><a href="review.html">Review</a><a href="issues.html">Issues</a><a href="overview.html">Mission Control</a></nav>
+      <button class="theme-toggle" type="button">Theme: system</button>
+    </div>
+  </header>
+
+  <section class="screen" aria-labelledby="s-main">
+    <h2 id="s-main">Default</h2>
+    <div class="frames">
+      <figure>
+        <div class="frame desktop">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia Settings</span></div>
+          <div class="app neutral-app">
+            <div class="hdr">
+              <a class="back" href="#">← Jesinia</a>
+              <span class="sep"></span>
+              <span class="name">Settings</span>
+              <div class="mid"></div>
+              <div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot minor" title="2 minor issues"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="set">
+                <nav class="snav" aria-label="Settings sections">
+                  <div class="k">Settings</div>
+                  <a class="on" href="#d-kb" aria-current="true">Knowledge base</a>
+                  <a href="#d-sync">Git sync</a>
+                  <a href="#d-agents">Agents</a>
+                  <a href="#d-conflicts">Conflicts</a>
+                  <a href="#d-security">Security</a>
+                </nav>
+                <div class="scroll">
+                  <div class="col">
+                    <div><h1>Settings</h1><div class="sub">Changes apply to every Jesinia app.</div></div>
+
+                    <section class="panel" id="d-kb" aria-labelledby="d-kb-h">
+                      <div class="ph-title" id="d-kb-h">Knowledge base</div>
+                      <div class="pb">
+                        <div class="field">
+                          <label for="d-kbpath">KB folder</label>
+                          <div class="fline">
+                            <div class="inp mono"><input id="d-kbpath" value="~/Documents/KB"><span class="trail"><span class="ok">✓</span> Valid</span></div>
+                            <button class="btn s sm" type="button">Validate</button>
+                          </div>
+                          <span class="help">Changing the folder reindexes 1,284 pages. Your files aren't moved.</span>
+                        </div>
+                        <div class="acts"><button class="btn p" type="button">Save</button></div>
+                      </div>
+                    </section>
+
+                    <section class="panel" id="d-sync" aria-labelledby="d-sync-h">
+                      <div class="ph-title" id="d-sync-h">Git sync <span class="sp"><span class="badge ok">✓ Commit and push</span></span></div>
+                      <div class="pb">
+                        <dl class="facts">
+                          <dt>Mode</dt><dd>Commit and push <span class="muted">(detected from the remote)</span></dd>
+                          <dt>Remote</dt><dd><code>origin · git@github.com:dalbrecht/kb.git</code></dd>
+                          <dt>Branch</dt><dd><code>main</code></dd>
+                          <dt>Last run</dt><dd><span class="ok">✓</span> 14:05 · pushed 3 commits</dd>
+                          <dt>Next run</dt><dd>18:05</dd>
+                        </dl>
+                        <div class="field">
+                          <label for="d-interval">Sync interval</label>
+                          <select class="inp" id="d-interval"><option>Every hour</option><option selected>Every 4 hours</option><option>Every 12 hours</option><option>Once a day</option><option>Manual only</option></select>
+                        </div>
+                        <div class="acts"><button class="btn s" type="button">Sync now</button></div>
+                      </div>
+                    </section>
+
+                    <section class="panel" id="d-agents" aria-labelledby="d-agents-h">
+                      <div class="ph-title" id="d-agents-h">Agents</div>
+                      <div class="pb">
+                        <div class="list">
+                          <div class="row agent">
+                            <span class="rg claude">C</span>
+                            <span class="t">Claude Code</span>
+                            <span class="badge ok">✓ Available</span>
+                            <span class="mm">Version 2.1 · <code>/usr/local/bin/claude</code></span>
+                          </div>
+                          <div class="row agent">
+                            <span class="rg codex">X</span>
+                            <span class="t">Codex</span>
+                            <span class="badge wn">! Not logged in</span>
+                            <span class="mm">Run <code>codex login</code> in a terminal, then Check again. <button class="btn g sm" type="button">Check again</button></span>
+                          </div>
+                        </div>
+                        <div class="field">
+                          <label for="d-runner">Default runner</label>
+                          <select class="inp" id="d-runner"><option selected>Claude Code</option><option>Codex</option></select>
+                          <span class="help">New chats start with this runner. You can switch in any chat header; switching starts a new session.</span>
+                        </div>
+                        <p class="sub-h">Per-app default</p>
+                        <div class="perapp">
+                          <div class="field" data-app="notes"><label for="d-r-notes"><span class="dotapp"></span>Notes</label><select class="inp" id="d-r-notes"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                          <div class="field" data-app="rss"><label for="d-r-rss"><span class="dotapp"></span>RSS</label><select class="inp" id="d-r-rss"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                          <div class="field" data-app="review"><label for="d-r-review"><span class="dotapp"></span>Review</label><select class="inp" id="d-r-review"><option>Use default (Claude Code)</option><option>Claude Code</option><option selected>Codex</option></select></div>
+                          <div class="field" data-app="issues"><label for="d-r-issues"><span class="dotapp"></span>Issues</label><select class="inp" id="d-r-issues"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="panel" id="d-conflicts" aria-labelledby="d-conflicts-h">
+                      <div class="ph-title" id="d-conflicts-h">Conflicts <span class="sp"><span class="badge wn">2 to review</span></span></div>
+                      <div class="pb">
+                        <p class="muted">Jesinia never deletes or renames your files. Fix these in your editor; this list updates on the next index.</p>
+                        <div class="list">
+                          <div class="row conf">
+                            <span class="t">Duplicate id: <code>id: maintenance</code></span>
+                            <span class="paths">
+                              <span><code>Notes/maintenance.md</code><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                              <span><code>Sources/maintenance-economics.md</code><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                            </span>
+                          </div>
+                          <div class="row conf">
+                            <span class="t">Missing page: <code>[[Funding models]]</code></span>
+                            <span class="paths">
+                              <span><span>Linked from <code>Notes/maintenance.md</code>, line 18. No page has this title.</span><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="panel" id="d-security" aria-labelledby="d-security-h">
+                      <div class="ph-title" id="d-security-h">Security</div>
+                      <div class="pb">
+                        <p>The login token lets browsers and agents talk to Jesinia on this Mac. Rotate it if a login link was shared by mistake.</p>
+                        <p class="muted">You'll need a new login link from <code>jesinia status</code>, and Claude Code and Codex are re-registered with the new token.</p>
+                        <div class="acts"><button class="btn d" type="button">Rotate token</button></div>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Desktop, 1280.</b> Section nav on the left, one 720px column of panels on the right; the column scrolls (Conflicts and Security sit below the fold).</figcaption>
+      </figure>
+      <figure>
+        <div class="frame narrow">
+          <div class="titlebar"><span>Jesinia Settings</span></div>
+          <div class="app neutral-app">
+            <div class="hdr">
+              <a class="back" href="#" aria-label="Back to Jesinia">←</a>
+              <span class="name">Settings</span>
+              <div class="mid"></div>
+              <div class="right"><span class="kbtn" aria-label="Search"><span>⌕</span><span class="lbl"></span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div>
+            </div>
+            <div></div>
+            <div class="body">
+              <div class="set">
+                <nav class="tabs" aria-label="Settings sections">
+                  <a class="tab on" href="#n-kb" aria-current="true">Knowledge base</a>
+                  <a class="tab" href="#n-sync">Git sync</a>
+                  <a class="tab" href="#n-agents">Agents</a>
+                  <a class="tab" href="#n-conflicts">Conflicts</a>
+                  <a class="tab" href="#n-security">Security</a>
+                </nav>
+                <div class="scroll">
+                  <div class="col">
+                    <section class="panel" id="n-kb" aria-labelledby="n-kb-h">
+                      <div class="ph-title" id="n-kb-h">Knowledge base</div>
+                      <div class="pb">
+                        <div class="field">
+                          <label for="n-kbpath">KB folder</label>
+                          <div class="fline">
+                            <div class="inp mono"><input id="n-kbpath" value="~/Documents/KB"></div>
+                            <button class="btn s sm" type="button">Validate</button>
+                          </div>
+                          <span class="help">Changing the folder reindexes 1,284 pages. Your files aren't moved.</span>
+                        </div>
+                        <div class="acts"><button class="btn p" type="button">Save</button></div>
+                      </div>
+                    </section>
+                    <section class="panel" id="n-sync" aria-labelledby="n-sync-h">
+                      <div class="ph-title" id="n-sync-h">Git sync <span class="sp"><span class="badge ok">✓ Commit and push</span></span></div>
+                      <div class="pb">
+                        <dl class="facts">
+                          <dt>Remote</dt><dd><code>origin · github.com/dalbrecht/kb</code></dd>
+                          <dt>Last run</dt><dd><span class="ok">✓</span> 14:05 · pushed 3</dd>
+                          <dt>Next run</dt><dd>18:05</dd>
+                        </dl>
+                        <div class="field">
+                          <label for="n-interval">Sync interval</label>
+                          <select class="inp" id="n-interval"><option>Every hour</option><option selected>Every 4 hours</option><option>Once a day</option></select>
+                        </div>
+                        <div class="acts"><button class="btn s" type="button">Sync now</button></div>
+                      </div>
+                    </section>
+                    <section class="panel" id="n-agents" aria-labelledby="n-agents-h">
+                      <div class="ph-title" id="n-agents-h">Agents</div>
+                      <div class="pb">
+                        <div class="list">
+                          <div class="row agent"><span class="rg claude">C</span><span class="t">Claude Code</span><span class="badge ok">✓ Available</span><span class="mm">Version 2.1</span></div>
+                          <div class="row agent"><span class="rg codex">X</span><span class="t">Codex</span><span class="badge wn">! Not logged in</span><span class="mm">Run <code>codex login</code>, then Check again.</span></div>
+                        </div>
+                        <button class="btn g sm fw" type="button">Check again</button>
+                        <div class="field">
+                          <label for="n-runner">Default runner</label>
+                          <select class="inp" id="n-runner"><option selected>Claude Code</option><option>Codex</option></select>
+                          <span class="help">New chats start with this runner. Switching in a chat starts a new session.</span>
+                        </div>
+                        <p class="sub-h">Per-app default</p>
+                        <div class="field" data-app="notes"><label for="n-r-notes"><span class="dotapp"></span>Notes</label><select class="inp" id="n-r-notes"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                        <div class="field" data-app="rss"><label for="n-r-rss"><span class="dotapp"></span>RSS</label><select class="inp" id="n-r-rss"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                        <div class="field" data-app="review"><label for="n-r-review"><span class="dotapp"></span>Review</label><select class="inp" id="n-r-review"><option>Use default (Claude Code)</option><option>Claude Code</option><option selected>Codex</option></select></div>
+                        <div class="field" data-app="issues"><label for="n-r-issues"><span class="dotapp"></span>Issues</label><select class="inp" id="n-r-issues"><option selected>Use default (Claude Code)</option><option>Claude Code</option><option>Codex</option></select></div>
+                      </div>
+                    </section>
+
+                    <section class="panel" id="n-conflicts" aria-labelledby="n-conflicts-h">
+                      <div class="ph-title" id="n-conflicts-h">Conflicts <span class="sp"><span class="badge wn">2 to review</span></span></div>
+                      <div class="pb">
+                        <p class="muted">Jesinia never deletes or renames your files. Fix these in your editor.</p>
+                        <div class="list">
+                          <div class="row conf">
+                            <span class="t">Duplicate id: <code>id: maintenance</code></span>
+                            <span class="paths">
+                              <span><code>Notes/maintenance.md</code><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                              <span><code>Sources/maintenance-economics.md</code><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                            </span>
+                          </div>
+                          <div class="row conf">
+                            <span class="t">Missing page: <code>[[Funding models]]</code></span>
+                            <span class="paths">
+                              <span><span>Linked from <code>Notes/maintenance.md</code>, line 18.</span><button class="btn g sm" type="button">Reveal in Finder</button></span>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="panel" id="n-security" aria-labelledby="n-security-h">
+                      <div class="ph-title" id="n-security-h">Security</div>
+                      <div class="pb">
+                        <p>The login token lets browsers and agents talk to Jesinia on this Mac. Rotate it if a login link was shared by mistake.</p>
+                        <p class="muted">You'll need a new login link from <code>jesinia status</code>, and Claude Code and Codex are re-registered with the new token.</p>
+                        <button class="btn d fw" type="button">Rotate token</button>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>Narrow, 390.</b> The section nav becomes a scrolling tab row, and all five panels stack in the same order as desktop (scroll for Agents, Conflicts, and Security). Primary actions go full width.</figcaption>
+      </figure>
+    </div>
+    <ol class="notes">
+      <li><b>One column, five panels.</b> Settings is short enough to read top to bottom, so the left nav is a list of anchors (scroll-spy sets the selected row), not separate pages. Deep links like <code>/settings/#agents</code> come from the launcher status strip and the status-dot popover.</li>
+      <li><b>Buttons appear only when they can act.</b> "Resume" shows only while sync is paused and "Initialize git" only when the folder has no <code>.git</code>. The default state has just "Sync now".</li>
+      <li><b>Runner choice lives in two layers.</b> The global default sits under Agents, and each app can override it. The chat header picker is the third layer and starts a new session (shell decision 5).</li>
+      <li><b>Conflicts are read-only.</b> Each item names the file paths in mono and offers "Reveal in Finder". Jesinia never auto-deletes or renames; the list clears on the next index.</li>
+      <li><b>Security has one danger button and no primary.</b> The consequence copy sits above it, and clicking it opens an inline confirm in the panel, not a browser dialog.</li>
+    </ol>
+  </section>
+
+  <section class="screen" aria-labelledby="s-states">
+    <h2 id="s-states">States</h2>
+    <p>State frames show the affected panel only; the section nav is unchanged and omitted.</p>
+    <div class="states">
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia Settings</span></div>
+          <div class="app neutral-app">
+            <div class="hdr"><a class="back" href="#">← Jesinia</a><span class="sep"></span><span class="name">Settings</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot bad"></span></div></div>
+            <div class="strip danger"><b>× KB folder not found:</b> <code>~/Documents/KBase</code>. Choose a folder to continue.</div>
+            <div class="body"><div class="col">
+              <section class="panel" aria-labelledby="st1-h">
+                <div class="ph-title" id="st1-h">Knowledge base</div>
+                <div class="pb">
+                  <div class="field">
+                    <label for="st1-kbpath">KB folder</label>
+                    <div class="fline">
+                      <div class="inp mono invalid"><input id="st1-kbpath" value="~/Documents/KBase" aria-invalid="true" aria-describedby="st1-err"></div>
+                      <button class="btn s sm" type="button">Validate</button>
+                    </div>
+                    <span class="err" id="st1-err">That folder doesn't exist. Check the path or choose another.</span>
+                  </div>
+                  <div class="acts"><button class="btn p" type="button" disabled>Save</button></div>
+                </div>
+              </section>
+            </div></div>
+          </div>
+        </div>
+        <figcaption><b>KB path invalid.</b> Blocking: danger strip under the header and a red status dot. The error gives cause and fix; Save stays disabled until the path validates.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia Settings</span></div>
+          <div class="app neutral-app">
+            <div class="hdr"><a class="back" href="#">← Jesinia</a><span class="sep"></span><span class="name">Settings</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"><div class="col">
+              <section class="panel" aria-labelledby="st2-h">
+                <div class="ph-title" id="st2-h">Knowledge base</div>
+                <div class="pb">
+                  <div class="field">
+                    <label for="st2-kbpath">KB folder</label>
+                    <div class="fline">
+                      <div class="inp mono"><input id="st2-kbpath" value="~/Documents/Notes-KB" aria-describedby="st2-help"><span class="trail"><span class="spin" aria-hidden="true"></span> Checking…</span></div>
+                      <button class="btn s sm" type="button" disabled aria-busy="true"><span class="spin" aria-hidden="true"></span>Validating</button>
+                    </div>
+                    <span class="help" id="st2-help">Looking for Markdown files and a <code>.git</code> folder.</span>
+                  </div>
+                  <div class="acts"><button class="btn p" type="button" disabled>Save</button></div>
+                </div>
+              </section>
+            </div></div>
+          </div>
+        </div>
+        <figcaption><b>Validating.</b> A spinner in the field's trailing slot and on the Validate button; the field stays editable, and typing cancels the check.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia Settings</span></div>
+          <div class="app neutral-app">
+            <div class="hdr"><a class="back" href="#">← Jesinia</a><span class="sep"></span><span class="name">Settings</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot minor"></span></div></div>
+            <div class="strip"><b>! Sync paused:</b> merge conflict in <code>Notes/rss.md</code>. Resolve it, then choose Resume.</div>
+            <div class="body"><div class="col">
+              <section class="panel" aria-labelledby="st3-h">
+                <div class="ph-title" id="st3-h">Git sync <span class="sp"><span class="badge wn">! Paused</span></span></div>
+                <div class="pb">
+                  <div class="problem"><b>Merge conflict</b> in <code>Notes/rss.md</code> after pulling from <code>origin/main</code>. Resolve the conflict markers in your editor, commit, then choose Resume.</div>
+                  <dl class="facts">
+                    <dt>Last run</dt><dd><span class="wn">!</span> 14:05 · stopped at pull</dd>
+                    <dt>Next run</dt><dd>Paused until you resume</dd>
+                  </dl>
+                  <div class="acts"><button class="btn p" type="button">Resume</button><button class="btn s" type="button">Reveal in Finder</button></div>
+                </div>
+              </section>
+            </div></div>
+          </div>
+        </div>
+        <figcaption><b>Sync paused.</b> Warn strip in every app. Here the panel shows a Paused badge, the problem, and "Resume", which only appears in this state.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia Settings</span></div>
+          <div class="app neutral-app">
+            <div class="hdr"><a class="back" href="#">← Jesinia</a><span class="sep"></span><span class="name">Settings</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"><div class="col">
+              <section class="panel" aria-labelledby="st4-h">
+                <div class="ph-title" id="st4-h">Git sync <span class="sp"><span class="badge neutral">Off</span></span></div>
+                <div class="pb">
+                  <p>This folder isn't a git repository.</p>
+                  <p class="muted">Initialize git to keep a history of every change. Add a remote later to push to another machine.</p>
+                  <div class="acts"><button class="btn s" type="button">Initialize git</button></div>
+                </div>
+              </section>
+              <section class="panel" aria-labelledby="st4b-h">
+                <div class="ph-title" id="st4b-h">Git sync <span class="sp"><span class="badge wn">! Paused</span></span></div>
+                <div class="pb">
+                  <div class="problem"><b>Detached HEAD:</b> check out a branch to resume syncing.</div>
+                </div>
+              </section>
+            </div></div>
+          </div>
+        </div>
+        <figcaption><b>No git, and detached HEAD.</b> Top: mode is Off and "Initialize git" is the only action (it shows only when there's no <code>.git</code>). Bottom: the detached-HEAD variant uses the same problem box as a paused sync.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia Settings</span></div>
+          <div class="app neutral-app">
+            <div class="hdr"><a class="back" href="#">← Jesinia</a><span class="sep"></span><span class="name">Settings</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"><div class="col">
+              <section class="panel" aria-labelledby="st5-h">
+                <div class="ph-title" id="st5-h">Security</div>
+                <div class="pb">
+                  <p>The login token lets browsers and agents talk to Jesinia on this Mac.</p>
+                  <div class="confirm" role="alertdialog" aria-labelledby="st5-q" aria-describedby="st5-c">
+                    <b id="st5-q">Rotate the token?</b>
+                    <p id="st5-c" class="muted">You'll need a new login link from <code>jesinia status</code>, and Claude Code and Codex are re-registered with the new token. Open windows sign out.</p>
+                    <div class="acts"><button class="btn d" type="button">Rotate token</button><button class="btn s" type="button">Cancel</button></div>
+                  </div>
+                </div>
+              </section>
+            </div></div>
+          </div>
+        </div>
+        <figcaption><b>Rotate token confirm.</b> Inline, inside the panel, not a browser dialog. Focus moves to Cancel; Esc cancels.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia Settings</span></div>
+          <div class="app neutral-app">
+            <div class="hdr"><a class="back" href="#">← Jesinia</a><span class="sep"></span><span class="name">Settings</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"><div class="col">
+              <section class="panel" aria-label="Knowledge base, loading">
+                <div class="ph-title">Knowledge base</div>
+                <div class="pb"><span class="skel w40"></span><span class="skel w90" style="height:32px"></span><span class="skel w60"></span></div>
+              </section>
+              <section class="panel" aria-label="Git sync, loading">
+                <div class="ph-title">Git sync <span class="sp"><span class="skel" style="width:96px"></span></span></div>
+                <div class="pb"><span class="skel w80"></span><span class="skel w60"></span><span class="skel w40"></span></div>
+              </section>
+            </div></div>
+          </div>
+        </div>
+        <figcaption><b>Loading.</b> Panel titles render at once; values show skeletons until <code>/healthz</code>, the git check, and the runner checks return.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame half relative">
+          <div class="titlebar"><i></i><i></i><i></i><span>Jesinia Settings</span></div>
+          <div class="app neutral-app relative">
+            <div class="hdr"><a class="back" href="#">← Jesinia</a><span class="sep"></span><span class="name">Settings</span><div class="mid"></div><div class="right"><span class="kbtn"><span class="lbl">Search…</span><kbd>⌘K</kbd></span><span class="sdot"></span></div></div>
+            <div></div>
+            <div class="body"><div class="col">
+              <section class="panel" aria-labelledby="st7-h">
+                <div class="ph-title" id="st7-h">Knowledge base</div>
+                <div class="pb">
+                  <div class="field">
+                    <label for="st7-kbpath">KB folder</label>
+                    <div class="fline">
+                      <div class="inp mono"><input id="st7-kbpath" value="~/Documents/KB"><span class="trail"><span class="ok">✓</span> Valid</span></div>
+                      <button class="btn s sm" type="button">Validate</button>
+                    </div>
+                    <span class="help">Changing the folder reindexes 1,284 pages. Your files aren't moved.</span>
+                  </div>
+                  <div class="acts"><button class="btn p" type="button">Save</button></div>
+                </div>
+              </section>
+            </div></div>
+            <div class="toast" role="status"><span class="ti">✓</span>KB folder saved. Reindexing 1,284 pages…</div>
+          </div>
+        </div>
+        <figcaption><b>Saved toast.</b> Bottom right, auto-dismisses after 4 s. Reindex progress continues in the status-dot popover.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+</body>
+</html>
