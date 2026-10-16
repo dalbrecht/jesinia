@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from importlib.resources import files
 from pathlib import Path
 
+import httpcore
 import pytest
 import respx
 from httpx import Response
@@ -184,6 +185,39 @@ async def test_guarded_backend_refuses_private_at_connect_time() -> None:
     with pytest.raises(FetchBlocked):
         await backend.connect_unix_socket("/var/run/docker.sock")
     await backend.sleep(0)
+
+
+class FlakyInner:
+    """Stands in for the real network backend: some addresses refuse the connection."""
+
+    def __init__(self, failures: dict[str, Exception]) -> None:
+        self.failures = failures
+        self.tried: list[str] = []
+
+    async def connect_tcp(self, host: str, port: int, **kwargs: object) -> str:
+        self.tried.append(host)
+        if host in self.failures:
+            raise self.failures[host]
+        return f"stream:{host}"
+
+
+async def test_guarded_backend_falls_back_to_next_vetted_address() -> None:
+    backend = GuardedBackend(resolver({"dual.example": ["2606:2800::1", PUBLIC]}))
+    inner = FlakyInner({"2606:2800::1": httpcore.ConnectError("no route to host")})
+    backend._inner = inner  # type: ignore[assignment]  # test double for the network
+    stream: object = await backend.connect_tcp("dual.example", 443)
+    assert stream == "stream:" + PUBLIC
+    assert inner.tried == ["2606:2800::1", PUBLIC]
+
+
+async def test_guarded_backend_raises_last_error_when_every_address_fails() -> None:
+    backend = GuardedBackend(resolver({"down.example": ["2606:2800::1", PUBLIC]}))
+    last = httpcore.ConnectTimeout("timed out")
+    inner = FlakyInner({"2606:2800::1": httpcore.ConnectError("refused"), PUBLIC: last})
+    backend._inner = inner  # type: ignore[assignment]  # test double for the network
+    with pytest.raises(httpcore.ConnectTimeout) as caught:
+        await backend.connect_tcp("down.example", 443)
+    assert caught.value is last and inner.tried == ["2606:2800::1", PUBLIC]
 
 
 async def test_guarded_transport_connects_to_vetted_address(tmp_path: Path) -> None:

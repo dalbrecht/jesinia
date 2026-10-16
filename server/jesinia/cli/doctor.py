@@ -13,6 +13,7 @@ from typing import Literal
 
 import httpx
 
+from jesinia.cli.install import unhealthy_modules
 from jesinia.core.config import Config, ConfigError, load_config
 
 Level = Literal["ok", "warn", "fail"]
@@ -107,8 +108,12 @@ def _tools(run: Run, which: Callable[[str], str | None]) -> list[Check]:
             checks.append(Check(missing, name, "not found on PATH", remedy))
             continue
         code, out = run([path, "--version"], 10)
-        version = out.splitlines()[0] if code == 0 and out else "version unknown"
-        checks.append(Check("ok", name, version))
+        if code != 0:
+            first = out.splitlines()[0] if out else ""
+            failure = f"{path} --version exited {code}" + (f": {first[:200]}" if first else "")
+            checks.append(Check(missing, name, failure, f"reinstall or fix it: {remedy}"))
+            continue
+        checks.append(Check("ok", name, out.splitlines()[0] if out else "version unknown"))
         if name == "gh":
             code, out = run([path, "auth", "status"], 10)
             if code != 0:
@@ -126,15 +131,30 @@ def _launchd(run: Run) -> Check:
 
 
 def _server(cfg: Config) -> Check:
+    remedy = "jesinia serve or ./setup"
     try:
         r = httpx.get(f"http://127.0.0.1:{cfg.port}/healthz", timeout=5, trust_env=False)
         body = r.json()
     except (httpx.HTTPError, ValueError):
-        return Check(
-            "fail", "server", f"not answering on port {cfg.port}", "jesinia serve or ./setup"
-        )
-    bad = [f"{n}: {m['detail']}" for n, m in body.get("modules", {}).items() if not m["ok"]]
-    if bad:
+        return Check("fail", "server", f"not answering on port {cfg.port}", remedy)
+    modules = body.get("modules") if isinstance(body, dict) else None
+    if r.status_code != 200 or not isinstance(modules, dict):
+        detail = f"port {cfg.port} is not answering as Jesinia (HTTP {r.status_code})"
+        return Check("fail", "server", detail, f"free the port or {remedy}")
+    unhealthy = unhealthy_modules(body)
+    malformed = [
+        n
+        for n in unhealthy
+        if n in modules
+        and not (isinstance(modules[n], dict) and isinstance(modules[n].get("ok"), bool))
+    ]
+    if malformed:
+        return Check("fail", "server", f"malformed health for {', '.join(malformed)}", remedy)
+    if unhealthy:
+        bad = [
+            f"{n}: {modules[n].get('detail', '')}" if n in modules else f"{n}: missing"
+            for n in unhealthy
+        ]
         return Check("warn", "server", "; ".join(bad))
     return Check("ok", "server", f"healthy on port {cfg.port}")
 

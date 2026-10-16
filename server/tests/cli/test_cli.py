@@ -231,6 +231,13 @@ def fake_run(responses: dict[str, tuple[int, str]]):  # type: ignore[no-untyped-
     return run
 
 
+def healthy_body(**overrides: object) -> dict[str, object]:
+    modules: dict[str, object] = {
+        name: {"ok": True, "detail": "ok"} for name in install.required_modules()
+    }
+    return {"ok": True, "modules": {**modules, **overrides}}
+
+
 def lines(checks: list[Check]) -> str:
     return "\n".join(c.line() for c in checks)
 
@@ -249,11 +256,7 @@ def test_doctor_full_pass(tmp_path: Path, kb: Path) -> None:
     path = tmp_path / "cfg" / "config.toml"
     cfg = load_config(path)
     save_config(cfg.__class__(**{**cfg.__dict__, "kb_path": kb}), path)
-    respx.get(f"{BASE}/healthz").mock(
-        return_value=httpx.Response(
-            200, json={"ok": True, "modules": {"kb": {"ok": True, "detail": "d"}}}
-        )
-    )
+    respx.get(f"{BASE}/healthz").mock(return_value=httpx.Response(200, json=healthy_body()))
     run = fake_run(
         {
             "rev-parse": (0, "true"),
@@ -277,7 +280,8 @@ def test_doctor_warnings(tmp_path: Path, kb: Path) -> None:
     path.chmod(0o644)
     respx.get(f"{BASE}/healthz").mock(
         return_value=httpx.Response(
-            200, json={"ok": False, "modules": {"kb": {"ok": False, "detail": "bad"}}}
+            200,
+            json=healthy_body(kb={"ok": False, "detail": "bad"}),
         )
     )
     run = fake_run(
@@ -285,6 +289,7 @@ def test_doctor_warnings(tmp_path: Path, kb: Path) -> None:
             "rev-parse": (0, "true"),
             " remote": (0, "origin"),
             "ls-remote": (128, "fatal: could not read"),
+            "/bin/gh --version": (0, "gh 2.0"),
             "--version": (1, ""),
             "auth status": (1, "not logged in"),
             "launchctl": (113, "not found"),
@@ -293,7 +298,52 @@ def test_doctor_warnings(tmp_path: Path, kb: Path) -> None:
     out = lines(doctor(path, run=run, which=lambda n: f"/bin/{n}"))
     assert "fail config: mode 644" in out and "warn kb.git: remote unreachable" in out
     assert "warn gh.auth" in out and "warn launchd" in out and "warn server: kb: bad" in out
-    assert "ok uv: version unknown" in out
+    assert (
+        "fail uv: /bin/uv --version exited 1" in out
+        and "→ reinstall or fix it: brew install uv" in out
+    )
+    assert "warn pnpm: /bin/pnpm --version exited 1" in out
+
+
+@respx.mock
+def test_doctor_keeps_tool_level_when_version_probe_times_out(tmp_path: Path) -> None:
+    run = fake_run({"--version": (1, "Command '/bin/node' timed out after 10 seconds")})
+    out = lines(doctor(tmp_path / "config.toml", run=run, which=lambda n: f"/bin/{n}"))
+    assert "fail node: /bin/node --version exited 1: Command '/bin/node' timed out" in out
+    assert "warn codex: /bin/codex --version exited 1" in out and "ok node" not in out
+
+
+def server_check(tmp_path: Path, response: httpx.Response) -> str:
+    path = tmp_path / "cfg" / "config.toml"
+    load_config(path)
+    with respx.mock:
+        respx.get(f"{BASE}/healthz").mock(return_value=response)
+        checks = doctor(path, run=fake_run({}), which=lambda n: None)
+    return next(c.line() for c in checks if c.name == "server")
+
+
+def test_doctor_server_rejects_non_jesinia_responses(tmp_path: Path) -> None:
+    for response in (
+        httpx.Response(404, json={"detail": "Not Found"}),
+        httpx.Response(200, json={"status": "ok"}),
+        httpx.Response(200, json=["modules"]),
+        httpx.Response(500, json=healthy_body()),
+    ):
+        line = server_check(tmp_path, response)
+        assert line.startswith("fail server: port 4870 is not answering as Jesinia"), line
+
+
+def test_doctor_server_fails_on_malformed_module_entries(tmp_path: Path) -> None:
+    line = server_check(tmp_path, httpx.Response(200, json=healthy_body(kb="up", search={})))
+    assert line.startswith("fail server: malformed health for kb, search"), line
+
+
+def test_doctor_server_applies_required_module_rule(tmp_path: Path) -> None:
+    body = healthy_body(agents={"ok": False, "detail": "no claude"})
+    assert server_check(tmp_path, httpx.Response(200, json=body)).startswith("ok server")
+    body = healthy_body()
+    del body["modules"]["kb"]  # type: ignore[attr-defined]
+    assert server_check(tmp_path, httpx.Response(200, json=body)) == "warn server: kb: missing"
 
 
 @respx.mock

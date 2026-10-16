@@ -35,13 +35,23 @@ class GuardedBackend(httpcore.AsyncNetworkBackend):
         addresses = await self._resolve(host)
         if not addresses or not all(self._allowed(a) for a in addresses):
             raise FetchBlocked(f"{host} does not resolve to a public address")
-        return await self._inner.connect_tcp(
-            addresses[0],
-            port,
-            timeout=timeout,
-            local_address=local_address,
-            socket_options=socket_options,
-        )
+        # Every address is vetted above, so falling back (e.g. IPv6 unreachable on an
+        # IPv4-only network) never widens what we connect to.
+        options = list(socket_options) if socket_options is not None else None
+        last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
+        for address in addresses:
+            try:
+                return await self._inner.connect_tcp(
+                    address,
+                    port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last_error = exc
+        assert last_error is not None  # addresses is non-empty
+        raise last_error
 
     async def connect_unix_socket(
         self,
