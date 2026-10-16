@@ -148,6 +148,21 @@ The default thresholds are 200 changed lines or 10 files, or a low familiarity s
 - **Quiz:** described below.
 - **Recommendation:** described below.
 
+**Walkthrough coverage (user):** every walkthrough, quick or deep, shows plainly how much of
+the change it covers. Leaving parts out is often right (lockfiles, generated code, renames,
+mechanical edits), but it must never be silent.
+
+- **The coverage line:** a header line on the walkthrough, such as
+  `Walkthrough covers 82% of changed lines · 14 of 17 files`. It is computed by Jesinia from
+  the steps' hunk ranges against the full diff, not reported by the agent.
+- **Not walked through:** a list of every file or hunk left out, each with its reason:
+  generated, lockfile, vendored, rename only, whitespace or format only, or "judged
+  mechanical by the agent". Each can be opened in place with **Show**.
+- **Full walk:** **Walk everything** adds steps for the rest.
+- **Shown everywhere it matters:** the percentage also appears in the queue row and the
+  recommendation's evidence. The correctness pass reports its own coverage the same way
+  (which changed lines it read) **(builder's call)**.
+
 **Chat** for follow-up questions (user) docks under the walkthrough and is available from
 every tab. It runs as an agent session with the PR, the repository and the review as context
 (foundation `agents`).
