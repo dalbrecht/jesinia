@@ -5,7 +5,8 @@ Trust model: this runs whatever is on ``origin/main`` of the remote the install 
 up from (the same trust as ``git pull && ./setup``); a changed ``origin`` is refused.
 Only a clean checkout on ``main`` that can fast-forward is updated. After pulling it
 rebuilds (``make install build``) and restarts the server; if the build or the restarted
-server fails, it goes back to the previous commit, rebuilds that, and restarts again.
+server fails (including a 200 ``/healthz`` that reports a required module down), it goes
+back to the previous commit, rebuilds that, and restarts again.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import httpx
 
-from jesinia.cli.install import LABEL, REPO, System
+from jesinia.cli.install import LABEL, REPO, System, unhealthy_modules
 from jesinia.core.config import Config
 
 HEALTH_TIMEOUT = 60.0
@@ -29,14 +30,11 @@ def _healthy(cfg: Config, sleep: Callable[[float], None]) -> bool:
     deadline = time.monotonic() + HEALTH_TIMEOUT
     while time.monotonic() < deadline:
         try:
-            if (
-                httpx.get(
-                    f"http://127.0.0.1:{cfg.port}/healthz", timeout=2, trust_env=False
-                ).status_code
-                == 200
-            ):
+            r = httpx.get(f"http://127.0.0.1:{cfg.port}/healthz", timeout=2, trust_env=False)
+            # A 200 with a failing required module is a broken update, same as for install.
+            if r.status_code == 200 and not unhealthy_modules(r.json()):
                 return True
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             pass
         sleep(1.0)
     return False

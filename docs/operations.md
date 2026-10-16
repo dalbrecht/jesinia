@@ -127,11 +127,15 @@ install.
   3. restarts the server and waits for `/healthz`.
 
   If the build or the restart fails, it resets to the previous commit, rebuilds and
-  restarts, so a bad commit never leaves you without a server. Each attempt adds a line
-  to `update.log`.
+  restarts, so a bad commit never leaves you without a server. A restart only counts as
+  healthy when `/healthz` reports every required module ok (`agents` and `github` are
+  optional), the same check `jesinia install` uses. Each attempt adds a line to
+  `update.log`.
 - **What you're trusting:** auto-update runs whatever is pushed to `main` on the remote
   you cloned from, just like `git pull && ./setup`. The remote URL is pinned when you
-  enable auto-update, so if `origin` is changed, updates stop until you run
+  enable auto-update (so the checkout must have an `origin` remote; without one,
+  `--auto-update` fails and asks you to add it), and if `origin` is changed, updates stop
+  until you run
   `jesinia install --kb-path <kb> --auto-update` again. Protect `main` on that remote if
   others can push to it.
 - **Manual:** `cd ~/apps/jesinia && git pull && ./setup`.

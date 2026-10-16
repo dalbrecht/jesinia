@@ -38,6 +38,7 @@ class Spy(System):
     calls: list[list[str]] = field(default_factory=list)
     out: list[str] = field(default_factory=list)
     fail: tuple[str, ...] = ()
+    origin: str = "https://github.com/dalbrecht/jesinia.git"
 
     def __post_init__(self) -> None:
         self.echo = self.out.append
@@ -51,6 +52,8 @@ class Spy(System):
         failed = any(f in " ".join(argv) for f in self.fail)
         if failed and check:
             raise RuntimeError("failed")
+        if not failed and argv[-2:] == ["get-url", "origin"]:
+            return 0, self.origin
         return (1 if failed else 0), ""
 
 
@@ -281,9 +284,6 @@ def test_auto_update_on_then_off(tmp_home: Path, kb: Path, healthy: None) -> Non
     spy = Spy(yes=True)
     assert inst.install(kb, spy, auto_update=True) == 0
     assert updater.exists()
-    assert (
-        "JESINIA_UPDATE_REMOTE" not in plistlib.loads(updater.read_bytes())["EnvironmentVariables"]
-    )
     assert ["launchctl", "bootstrap"] in [c[:2] for c in spy.calls if "updater" in " ".join(c)]
     assert inst.install(kb, Spy(yes=True)) == 0 and updater.exists()  # None keeps it
     assert inst.install(kb, Spy(yes=True), auto_update=False) == 0 and not updater.exists()
@@ -353,20 +353,32 @@ def test_command_shim(tmp_home: Path, kb: Path, healthy: None) -> None:
 
 
 def test_updater_pins_the_install_remote(tmp_home: Path, kb: Path, healthy: None) -> None:
-    spy = Spy(yes=True)
-    real = spy.run
-
-    def run(argv: list[str], *, check: bool = True) -> tuple[int, str]:
-        if argv[-2:] == ["get-url", "origin"]:
-            return 0, "https://github.com/dalbrecht/jesinia.git"
-        return real(argv, check=check)
-
-    spy.run = run  # type: ignore[method-assign]
-    inst.install(kb, spy, auto_update=True)
+    inst.install(kb, Spy(yes=True), auto_update=True)
     env = plistlib.loads(
         (tmp_home / "Library/LaunchAgents/com.jesinia.updater.plist").read_bytes()
     )["EnvironmentVariables"]
     assert env["JESINIA_UPDATE_REMOTE"] == "https://github.com/dalbrecht/jesinia.git"
+
+
+@pytest.mark.parametrize(
+    "spy",
+    [Spy(yes=True, fail=("get-url",)), Spy(yes=True, origin="")],
+    ids=["git-fails", "empty-url"],
+)
+def test_should_fail_auto_update_install_without_an_origin_remote(
+    tmp_home: Path, kb: Path, healthy: None, spy: Spy
+) -> None:
+    assert inst.install(kb, spy, auto_update=True) == 1
+    assert any(o.startswith("error:") and "origin" in o and "--auto-update" in o for o in spy.out)
+    assert not (tmp_home / "Library/LaunchAgents/com.jesinia.updater.plist").exists()
+    assert not (tmp_home / "Library/LaunchAgents/com.jesinia.server.plist").exists()
+
+
+def test_should_not_need_an_origin_remote_without_auto_update(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    assert inst.install(kb, Spy(yes=True, origin=""), auto_update=False) == 0
+    assert inst.install(kb, Spy(yes=True, origin="")) == 0
 
 
 def test_updater_gets_the_ssh_agent_socket(tmp_home: Path, kb: Path, healthy: None) -> None:

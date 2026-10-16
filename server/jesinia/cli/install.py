@@ -330,13 +330,15 @@ def remove_shim(sys: System) -> None:
         sys.remove(path)
 
 
-def _set_auto_update(sys: System, uv: str, cfg: Config, extra: Mapping[str, str], on: bool) -> None:
+def _set_auto_update(
+    sys: System, uv: str, cfg: Config, extra: Mapping[str, str], remote: str | None
+) -> None:
+    """``remote`` None removes the update agent; otherwise it is pinned in the agent's env."""
     sys.run(["launchctl", "bootout", f"{_domain()}/{UPDATER}"], check=False)
-    if not on:
+    if remote is None:
         sys.remove(plist_path(UPDATER))
         return
     # Pin the remote the user installed from: the updater refuses to pull if it changes.
-    remote = sys.run(["git", "-C", str(REPO), "remote", "get-url", "origin"], check=False)[1]
     env = {**extra, "JESINIA_UPDATE_REMOTE": remote} if remote else dict(extra)
     # launchd doesn't inherit the setup shell: git fetch over SSH needs the agent socket.
     if sock := sys.environ.get("SSH_AUTH_SOCK"):
@@ -355,6 +357,18 @@ def install(kb_path: Path, sys: System, *, auto_update: bool | None = None) -> i
     if uv is None:
         sys.echo("error: uv is not on PATH (brew install uv)")
         return 1
+    remote = ""
+    if auto_update:
+        # Checked before touching anything: an updater with no pinned remote would follow
+        # whatever `origin` later points at, which is exactly what pinning prevents.
+        code, remote = sys.run(["git", "-C", str(REPO), "remote", "get-url", "origin"], check=False)
+        if not sys.dry_run and (code != 0 or not remote):
+            sys.echo(
+                f"error: auto-update needs an `origin` remote in {REPO} to pin, and "
+                "`git remote get-url origin` failed or was empty; add one with "
+                "`git remote add origin <url>`, or install without --auto-update"
+            )
+            return 1
     path = config_path()
     if sys.dry_run and not path.exists():
         sys.echo(f"would create: {path} (mode 600, new token)")
@@ -381,7 +395,7 @@ def install(kb_path: Path, sys: System, *, auto_update: bool | None = None) -> i
     sys.run(["launchctl", "bootout", f"{_domain()}/{LABEL}"], check=False)
     sys.run(["launchctl", "bootstrap", _domain(), str(plist_path())])
     if auto_update is not None:
-        _set_auto_update(sys, uv, cfg, extra, auto_update)
+        _set_auto_update(sys, uv, cfg, extra, remote if auto_update else None)
     if sys.dry_run:
         sys.echo(f"would wait up to {HEALTH_TIMEOUT:.0f}s for http://127.0.0.1:{cfg.port}/healthz")
     elif not _wait_healthy(sys, cfg):

@@ -135,11 +135,53 @@ def test_concurrent_runs_are_skipped(cfg: Config) -> None:
 def test_health_wait(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     with respx.mock:
         respx.get("http://127.0.0.1:5374/healthz").mock(
-            side_effect=[ConnectError("x"), Response(200)]
+            side_effect=[
+                ConnectError("x"),
+                Response(200, json={"ok": True, "modules": {"kb": {"ok": True}}}),
+            ]
         )
         assert upd._healthy(cfg, lambda s: None) is True
     monkeypatch.setattr(upd, "HEALTH_TIMEOUT", 0.0)
     assert upd._healthy(cfg, lambda s: None) is False
+
+
+def test_should_not_accept_a_degraded_health_body_as_healthy(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = "http://127.0.0.1:5374/healthz"
+    degraded = {"ok": False, "modules": {"kb": {"ok": False, "detail": "x"}}}
+    optional_only = {
+        "ok": False,
+        "modules": {"kb": {"ok": True, "detail": "ok"}, "github": {"ok": False, "detail": "x"}},
+    }
+    monkeypatch.setattr(upd, "HEALTH_TIMEOUT", 0.05)
+    with respx.mock:
+        respx.get(url).mock(return_value=Response(200, json=degraded))
+        assert upd._healthy(cfg, lambda s: None) is False
+        respx.get(url).mock(return_value=Response(200, text="not json"))
+        assert upd._healthy(cfg, lambda s: None) is False
+        respx.get(url).mock(return_value=Response(200, json=optional_only))
+        assert upd._healthy(cfg, lambda s: None) is True
+
+
+def test_should_roll_back_when_the_restarted_server_reports_a_failing_module(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    degraded = {"ok": False, "modules": {"kb": {"ok": False, "detail": "x"}}}
+    healthy = {"ok": True, "modules": {"kb": {"ok": True, "detail": "ok"}}}
+    monkeypatch.setattr(upd, "HEALTH_TIMEOUT", 0.05)
+    git = Git(answers=dict(BASE))
+
+    def health(request: object) -> Response:
+        # The new commit reports a failing module; after the rollback the old one is fine.
+        rolled_back = any("reset --hard" in c for c in git.calls)
+        return Response(200, json=healthy if rolled_back else degraded)
+
+    with respx.mock:
+        respx.get("http://127.0.0.1:5374/healthz").mock(side_effect=health)
+        result = upd.update(cfg, git, Path("/r"))
+    assert result == "failed: bbbbbbbb did not restart cleanly; rolled back to aaaaaaaa"
+    assert any("reset --hard --quiet aaaaaaaa1111" in c for c in git.calls)
 
 
 def test_cli_update_exit_codes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
