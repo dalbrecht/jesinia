@@ -393,3 +393,52 @@ async def test_a_cached_body_never_read_before_is_parsed(
     fetcher.responses[url] = _ok(url, _rss("old"), from_cache=True)
     assert await _poller(store, fetcher, clock).poll_due() == PollSummary(1, 1, 0)
     assert _guids(conn, feed.id) == ["old"]
+
+
+async def test_a_cached_unreadable_feed_keeps_failing_until_it_parses(
+    store: SqliteFeedStore,
+) -> None:
+    # fetch caches any 200 with an ETag, readable or not; its 304s must not hide the
+    # parse failure, or the feed flip-flops and never reaches the warning.
+    clock, fetcher = Clock(), FakeFetcher()
+    url = "https://broken.example/feed"
+    feed = _subscribe(store, url)
+    poller = _poller(store, fetcher, clock)
+    fetcher.responses[url] = _ok(url, _rss("old"))
+    assert await poller.poll_due() == PollSummary(1, 1, 0)  # read fine once
+    clock.now = _feed(store, feed.id).next_poll_at
+    fetcher.responses[url] = _ok(url, b"<html>not a feed</html>")
+    assert await poller.poll_due() == PollSummary(1, 0, 1)
+    fetcher.responses[url] = _ok(url, b"<html>not a feed</html>", from_cache=True)
+    for attempt in (2, 3):
+        clock.now = _feed(store, feed.id).next_poll_at
+        assert await poller.poll_due() == PollSummary(1, 0, 1)
+        assert _feed(store, feed.id).fail_count == attempt
+    assert (_warning(store, feed.id) or "").startswith("FeedParseError: ")
+
+    # Once a body parses, a later cached answer is "unchanged" again (and not re-parsed).
+    clock.now = _feed(store, feed.id).next_poll_at
+    fetcher.responses[url] = _ok(url, _rss("a"))
+    assert await poller.poll_due() == PollSummary(1, 1, 0)
+    clock.now = _feed(store, feed.id).next_poll_at
+    fetcher.responses[url] = _ok(url, b"unchanged, never parsed", from_cache=True)
+    assert await poller.poll_due() == PollSummary(1, 0, 0)
+    assert _feed(store, feed.id).fail_count == 0
+
+
+async def test_every_store_failure_in_a_round_is_logged(
+    conn: sqlite3.Connection, store: SqliteFeedStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    class BrokenStore(SqliteFeedStore):
+        def set_poll_state(self, feed_id: int, state: PollState) -> None:
+            raise sqlite3.OperationalError(f"disk I/O error on {feed_id}")
+
+    clock, fetcher = Clock(), FakeFetcher()
+    one, two = "https://one.example/feed", "https://two.example/feed"
+    first, second = _subscribe(store, one), _subscribe(store, two)
+    fetcher.responses = {one: _ok(one, _rss("1")), two: _ok(two, _rss("2"))}
+    with pytest.raises(sqlite3.OperationalError):
+        await _poller(BrokenStore(conn), fetcher, clock).poll_all()
+    logged = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any(f"disk I/O error on {first.id}" in m for m in logged)
+    assert any(f"disk I/O error on {second.id}" in m for m in logged)

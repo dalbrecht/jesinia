@@ -16,7 +16,9 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import tempfile
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -116,9 +118,21 @@ def allow_loopback(address: str) -> bool:
         return False
 
 
+def _require_temporary_home() -> None:
+    """Loopback is reachable only from a home inside the system temp dir (as e2e makes)."""
+    _require_throwaway_home()
+    temp = Path(tempfile.gettempdir()).resolve()
+    home = Path(os.environ["JESINIA_HOME"]).resolve()
+    if home == temp or not home.is_relative_to(temp):
+        raise RuntimeError(
+            f"fake_runner_app reaches loopback only for a JESINIA_HOME inside the "
+            f"temporary directory {temp}, not {home}"
+        )
+
+
 def fixture_fetch_module() -> FetchModule:
     """The fetch service widened to loopback; only under the throwaway-home guard."""
-    _require_throwaway_home()
+    _require_temporary_home()
     return FetchModule(allowed=allow_loopback)
 
 

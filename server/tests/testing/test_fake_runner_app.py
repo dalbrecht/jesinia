@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +99,20 @@ def test_loopback_fetch_needs_the_throwaway_home(monkeypatch: pytest.MonkeyPatch
     monkeypatch.delenv("JESINIA_HOME")
     with pytest.raises(RuntimeError, match="tests only"):
         fake_runner_app.fixture_fetch_module()
+
+
+def test_loopback_fetch_refuses_a_home_outside_the_temp_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("JESINIA_FAKE_RUNNER", "1")
+    outside = Path.home() / ".jesinia"
+    sneaky = Path(tempfile.gettempdir()) / ".." / "jesinia-home"
+    for home in (outside, sneaky, Path(tempfile.gettempdir())):
+        monkeypatch.setenv("JESINIA_HOME", str(home))
+        with pytest.raises(RuntimeError, match="temporary directory"):
+            fake_runner_app.fixture_fetch_module()
+    monkeypatch.setenv("JESINIA_HOME", str(tmp_path / "data"))  # need not exist yet
+    assert fake_runner_app.fixture_fetch_module().name == "fetch"
 
 
 async def test_loopback_fetch_allows_only_loopback_beyond_public(

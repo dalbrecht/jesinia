@@ -80,12 +80,23 @@ class Poller:
         due = list(feeds)
         results = await asyncio.gather(*(self._poll_one(f) for f in due), return_exceptions=True)
         outcomes: list[_Outcome] = []
-        for result in results:
-            # Only recording an outcome can raise (the database itself failed): every
-            # other feed has finished, so surface the original error to the caller.
+        errors: list[BaseException] = []
+        for feed, result in zip(due, results, strict=True):
+            # Only recording an outcome can raise (the database itself failed): log each
+            # with its cause, then surface the first once every feed has finished.
             if isinstance(result, BaseException):
-                raise result
-            outcomes.append(result)
+                log.error(
+                    "rss poll of feed %d (%s) could not be recorded: %s",
+                    feed.id,
+                    feed.url,
+                    result,
+                    exc_info=result,
+                )
+                errors.append(result)
+            else:
+                outcomes.append(result)
+        if errors:
+            raise errors[0]
         return PollSummary(
             polled=len(due),
             new_items=sum(o.new_items for o in outcomes),
@@ -104,10 +115,11 @@ class Poller:
             result = await self._fetch(feed.url)
             if result.status != 200:
                 return self._failed(feed, f"HTTP {result.status}")
-            if result.from_cache and feed.last_ok_at is not None:
-                # Unchanged since it was last read: keep a recovered parse's warning.
-                kept = feed.last_error if feed.fail_count == 0 else None
-                return self._succeeded(feed, 0, kept)
+            # fetch caches any 200 with validators, readable or not: a cached body counts
+            # as "unchanged" only after a poll that read it fine. Otherwise it is parsed
+            # again, so an unreadable feed keeps failing (and reaches its warning).
+            if result.from_cache and feed.fail_count == 0 and feed.last_ok_at is not None:
+                return self._succeeded(feed, 0, feed.last_error)  # a recovered parse's warning
             parsed = self._reader.parse(result.body, result.url)
             new_items = self._store.add_posts(feed.id, parsed.items, self._clock())
         # Isolation boundary: whatever one feed raises (fetch, parse or a store error for
