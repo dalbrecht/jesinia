@@ -90,3 +90,22 @@ def test_write_refuses_symlinked_parent_dir(tmp_path: Path) -> None:
     with pytest.raises(PathOutsideKb):
         LocalFiles(root).write_atomic("sub/a.md", b"x")
     assert list(outside.iterdir()) == []
+
+
+def test_write_refuses_symlinked_target(tmp_path: Path) -> None:
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / "real.md").write_text("real")
+    (root / "alias.md").symlink_to(root / "real.md")
+    with pytest.raises(PathOutsideKb):
+        LocalFiles(root).write_atomic("alias.md", b"x")
+    assert (root / "real.md").read_text() == "real"
+
+
+def test_walk_skips_symlinks(tmp_path: Path) -> None:
+    (tmp_path / "a.md").write_text("a")
+    (tmp_path / "l.md").symlink_to(tmp_path / "a.md")
+    (tmp_path / "d").mkdir()
+    (tmp_path / "ld").symlink_to(tmp_path / "d")
+    (tmp_path / "d" / "x.md").write_text("x")
+    assert list(LocalFiles(tmp_path).walk()) == ["a.md", "d/x.md"]

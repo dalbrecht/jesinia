@@ -100,3 +100,38 @@ async def test_scan_is_incremental_and_counts(kb: KbService) -> None:
     (_root(kb) / "notes.txt").write_text("ignored")
     assert (await scan(kb)).indexed == 2
     assert (await scan(kb)).indexed == 2
+
+
+async def test_symlinked_files_and_dirs_are_never_adopted(kb: KbService, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.md"
+    secret.write_text("plain outside file\n")
+    (_root(kb) / "link.md").symlink_to(secret)
+    (_root(kb) / "linkdir").symlink_to(outside)
+    report = await scan(kb)
+    assert report.adopted == [] and secret.read_text() == "plain outside file\n"
+
+
+async def test_one_bad_file_does_not_stop_the_scan(kb: KbService, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    (_root(kb) / "good.md").write_text("fine\n")
+    (_root(kb) / "bad.md").write_text("broken\n")
+    files = kb.files
+    assert files is not None
+    real_read = files.read
+
+    def read(disk: str) -> bytes:
+        if disk == "bad.md":
+            raise PermissionError("denied")
+        return real_read(disk)
+
+    monkeypatch.setattr(files, "read", read)
+    report = await scan(kb)
+    assert report.adopted == [PurePosixPath("good.md")]
+    assert report.errors == [(PurePosixPath("bad.md"), "denied")]
+
+
+async def test_bad_id_frontmatter_is_reported(kb: KbService) -> None:
+    (_root(kb) / "odd.md").write_text("---\nid: x\njesinia: [1]\n---\nbody\n")
+    report = await scan(kb)
+    assert [p for p, _ in report.errors] == [PurePosixPath("odd.md")]

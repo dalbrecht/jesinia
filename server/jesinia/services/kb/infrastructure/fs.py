@@ -33,6 +33,8 @@ class LocalFiles:
         return self._abs(disk).exists()
 
     def write_atomic(self, disk: str, data: bytes) -> float:
+        if os.path.islink(self.root / disk):
+            raise PathOutsideKb(f"{disk} is a symlink; Jesinia never writes through links")
         path = self._abs(disk)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Re-check containment after mkdir, then create a uniquely named temp file
@@ -64,8 +66,10 @@ class LocalFiles:
         os.replace(self._abs(src), target)
 
     def walk(self) -> Iterator[str]:
-        for dirpath, dirnames, filenames in os.walk(self.root):
-            dirnames.sort()
+        """Regular files below the root; symlinked files and directories are skipped."""
+        for dirpath, dirnames, filenames in os.walk(self.root, followlinks=False):
+            dirnames[:] = sorted(d for d in dirnames if not os.path.islink(Path(dirpath) / d))
             base = Path(dirpath).relative_to(self.root)
             for name in sorted(filenames):
-                yield (base / name).as_posix()
+                if not os.path.islink(Path(dirpath) / name):
+                    yield (base / name).as_posix()
