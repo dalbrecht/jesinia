@@ -8,7 +8,7 @@ the Pigeonpile Wiki and record the results in `docs/adr/0007-pigeonpile-compat-r
 1. Copy `fixture-kb/` somewhere outside this repo (e.g. `/tmp/jesinia-compat`), so the
    committed fixture stays pristine for diffing.
 2. Open the copy as a workspace in the Pigeonpile Wiki (web and, if available, native).
-3. In each of the three pages, change `CHANGEME` (or any word) and save.
+3. In each page, change `CHANGEME` (or any word) and save.
 4. Diff the copy against `fixture-kb/` and answer:
 
 | # | Question | Where to look |
@@ -20,8 +20,11 @@ the Pigeonpile Wiki and record the results in `docs/adr/0007-pigeonpile-compat-r
 | e | Is `#compat` recognized as a tag? | Wiki tag facets |
 | f | Was `Plain File.md` adopted? What front-matter was written? | file |
 | g | Did any file get renamed or moved? | `ls -R` |
+| h | In `Tag grammar.md`, are `#SQLite` and `#sqlite` one tag? Are `#wal-mode`, `#2026` and `#ünïcode` recognized whole? | Wiki tag facets |
 
 ## Decisions the results drive
 
 - (a) fails → `jesinia:` metadata moves to the `.jesinia/meta/<id>.yaml` sidecar (plan Task 10 Step 5).
 - (c) shows comments as text → pick a different provenance marker before the RSS spec.
+- (h) differs → narrow Jesinia's tag grammar (`docs/conventions/kb-format.md#tags`) to what
+  the Wiki accepts, with a follow-up issue if the change is not trivial.

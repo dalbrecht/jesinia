@@ -41,8 +41,16 @@ observation (and, ideally, the re-saved file committed under
 | e | `#compat` recognized as a tag | tag facet | not individually recorded |
 | f | `Plain File.md` adopted | `id` + `title: Plain File` added, body unchanged | not individually recorded |
 | g | no file renamed or moved | paths unchanged | not individually recorded |
+| h | tag grammar (`Ideas/Tag grammar.md`): case folds; hyphens, digits and Unicode accepted | `#SQLite` = `#sqlite`; `#wal-mode`, `#2026`, `#ünïcode` whole | *pending manual check* |
 
 The design decisions below depend only on (a) and (c).
+
+### Addendum: tag grammar (row h)
+
+Added with the KB-wide tag catalog. Row (h) is *pending manual check*: the author confirms
+in the Wiki whether tags fold case and whether hyphens, digits and Unicode letters are
+accepted. If any of them is not, Jesinia's grammar (`docs/conventions/kb-format.md#tags`)
+is narrowed to match, with a follow-up issue if needed.
 
 ## Consequences
 
