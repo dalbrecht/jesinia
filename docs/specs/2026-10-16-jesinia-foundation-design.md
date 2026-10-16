@@ -115,7 +115,9 @@ Each service exposes three faces over **one** application-layer implementation:
 
 1. A Python interface (a `Protocol` + implementation) for in-process callers.
 2. HTTP routes under `/api/<service>/…` for PWAs.
-3. MCP tools named `<service>.<verb>` for agents.
+3. MCP tools named `<service>.<verb>` for agents. This spec writes names with a dot for
+   readability; the **wire name** uses an underscore (`kb_search`), because LLM tool names
+   must match `^[a-zA-Z0-9_-]{1,64}$`.
 
 The PWAs, other apps, and terminal agents therefore all exercise the same code path.
 
