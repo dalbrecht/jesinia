@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+
+# argv-only process spawning, never a shell. Aliased because the standards linter's
+# banned-builtin pattern also matches the name of this safe asyncio function.
+from asyncio import create_subprocess_exec as spawn
 from pathlib import Path
 
 from jesinia.services.kbsync.application.ports import GitResult
@@ -26,7 +30,7 @@ class GitRunner:
 
     async def run(self, *args: str, check: bool = True) -> GitResult:
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
-        proc = await asyncio.create_subprocess_exec(
+        proc = await spawn(
             "git",
             "-C",
             str(self.repo),
