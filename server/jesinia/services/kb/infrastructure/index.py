@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from jesinia.core.db import transaction
-from jesinia.services.kb.application.ports import IndexRow
+from jesinia.services.kb.application.ports import Conflict, IndexRow
 from jesinia.services.kb.domain.page import PageId
 
 _COLS = "id, path, disk, rev, title, mtime"
@@ -60,3 +62,42 @@ class SqliteIndex:
     def links_to(self, dst: PageId) -> list[PageId]:
         rows = self.conn.execute("SELECT src FROM links WHERE dst = ? ORDER BY src", (dst,))
         return [PageId(r[0]) for r in rows]
+
+    def set_duplicates(self, dups: dict[PageId, list[PurePosixPath]]) -> None:
+        now = datetime.now(UTC).isoformat()
+        with transaction(self.conn):
+            self.conn.execute("DELETE FROM conflicts WHERE kind = 'duplicate_id'")
+            self.conn.executemany(
+                "INSERT INTO conflicts (kind, page_id, paths_json, detected_at) "
+                "VALUES ('duplicate_id', ?, ?, ?)",
+                [(id, json.dumps([str(p) for p in paths]), now) for id, paths in dups.items()],
+            )
+
+    def add_missing(self, id: PageId, path: PurePosixPath) -> None:
+        now = datetime.now(UTC).isoformat()
+        with transaction(self.conn):
+            self.conn.execute("DELETE FROM conflicts WHERE kind = 'missing' AND page_id = ?", (id,))
+            self.conn.execute(
+                "INSERT INTO conflicts (kind, page_id, paths_json, detected_at) "
+                "VALUES ('missing', ?, ?, ?)",
+                (id, json.dumps([str(path)]), now),
+            )
+
+    def clear_missing(self, ids: Iterable[PageId]) -> None:
+        with transaction(self.conn):
+            self.conn.executemany(
+                "DELETE FROM conflicts WHERE kind = 'missing' AND page_id = ?", [(i,) for i in ids]
+            )
+
+    def conflicts(self) -> list[Conflict]:
+        rows = self.conn.execute(
+            "SELECT kind, page_id, paths_json, detected_at FROM conflicts ORDER BY kind, page_id"
+        )
+        return [
+            Conflict(k, PageId(i), [PurePosixPath(p) for p in json.loads(pj)], at)
+            for k, i, pj, at in rows
+        ]
+
+    def stat(self, path: PurePosixPath) -> float | None:
+        r = self.conn.execute("SELECT mtime FROM pages WHERE path = ?", (str(path),)).fetchone()
+        return float(r[0]) if r else None

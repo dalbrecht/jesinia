@@ -21,6 +21,14 @@ class IndexRow:
     mtime: float
 
 
+@dataclass(frozen=True)
+class Conflict:
+    kind: str  # "duplicate_id" | "missing"
+    id: PageId
+    paths: list[PurePosixPath]
+    detected_at: str
+
+
 class PageFiles(Protocol):
     root: Path
 
@@ -59,3 +67,17 @@ class PageIndex(Protocol):
     def set_links(self, src: PageId, dsts: Iterable[PageId]) -> None: ...
 
     def links_to(self, dst: PageId) -> list[PageId]: ...
+
+    def set_duplicates(self, dups: dict[PageId, list[PurePosixPath]]) -> None:
+        """Replace all ``duplicate_id`` conflicts."""
+        ...
+
+    def add_missing(self, id: PageId, path: PurePosixPath) -> None: ...
+
+    def clear_missing(self, ids: Iterable[PageId]) -> None: ...
+
+    def conflicts(self) -> list[Conflict]: ...
+
+    def stat(self, path: PurePosixPath) -> float | None:
+        """Last indexed mtime for ``path`` (NFC), for incremental scans."""
+        ...

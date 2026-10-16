@@ -67,3 +67,26 @@ def test_index_put_get_delete_links(tmp_path: Path) -> None:
     idx.delete(B)
     assert idx.get(B) is None and idx.links_to(A) == [] and idx.all() == []
     conn.close()
+
+
+def test_atomic_write_ignores_planted_symlinks(tmp_path: Path) -> None:
+    root, outside = tmp_path / "kb", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    victim = outside / "victim.txt"
+    victim.write_text("keep")
+    # an attacker pre-creates links at the old predictable temp name and a guessable one
+    (root / ".a.md.jesinia-tmp").symlink_to(victim)
+    fs = LocalFiles(root)
+    fs.write_atomic("a.md", b"page")
+    assert victim.read_text() == "keep" and (root / "a.md").read_bytes() == b"page"
+
+
+def test_write_refuses_symlinked_parent_dir(tmp_path: Path) -> None:
+    root, outside = tmp_path / "kb", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "sub").symlink_to(outside)
+    with pytest.raises(PathOutsideKb):
+        LocalFiles(root).write_atomic("sub/a.md", b"x")
+    assert list(outside.iterdir()) == []

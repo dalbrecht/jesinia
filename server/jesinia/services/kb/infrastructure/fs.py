@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 
@@ -34,9 +35,14 @@ class LocalFiles:
     def write_atomic(self, disk: str, data: bytes) -> float:
         path = self._abs(disk)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.jesinia-tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        # Re-check containment after mkdir, then create a uniquely named temp file
+        # exclusively (O_EXCL: never follows or reuses a planted symlink).
+        if not path.parent.resolve().is_relative_to(self.root.resolve()):
+            raise PathOutsideKb(f"{disk} resolves outside the KB")
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        tmp = Path(tmp_name)
         try:
+            os.fchmod(fd, 0o644)
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
                 fh.flush()

@@ -20,7 +20,7 @@ from jesinia.services.kb.application.errors import (
     ReservedPath,
     StaleWrite,
 )
-from jesinia.services.kb.application.ports import PageFiles, PageIndex
+from jesinia.services.kb.application.ports import Conflict, PageFiles, PageIndex
 from jesinia.services.kb.domain.frontmatter import (
     page_from,
     parse_document,
@@ -91,6 +91,25 @@ class KbService:
             raise KbUnavailable("no KB path is configured")
         return self._files
 
+    @property
+    def files(self) -> PageFiles | None:
+        return self._files
+
+    @property
+    def index(self) -> PageIndex:
+        return self._index
+
+    def set_files(self, files: PageFiles | None) -> None:
+        """Point the service at a new KB root (``PUT /api/kb/path``)."""
+        self._files = files
+
+    async def conflicts(self) -> list[Conflict]:
+        return self._index.conflicts()
+
+    async def emit(self, id: PageId, path: PurePosixPath, change: Change, origin: str) -> None:
+        payload = {"id": id, "path": str(path), "change": change, "origin": origin}
+        await self._bus.publish(Event("kb.page_changed", payload))
+
     def resolve(self, id: PageId) -> PurePosixPath | None:
         row = self._index.get(id)
         return row.path if row else None
@@ -116,8 +135,7 @@ class KbService:
         return path
 
     async def _emit(self, id: PageId, path: PurePosixPath, change: Change) -> None:
-        payload = {"id": id, "path": str(path), "change": change, "origin": "jesinia"}
-        await self._bus.publish(Event("kb.page_changed", payload))
+        await self.emit(id, path, change, "jesinia")
 
     def _store(self, page: Page, disk: str, data: bytes) -> PageWithRev:
         mtime = self._fs().write_atomic(disk, data)
