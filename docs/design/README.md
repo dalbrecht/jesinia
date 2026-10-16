@@ -46,7 +46,7 @@ think about it with your AI agent in a chat → keep what matters in the KB.**
 | 3 | `docs/design/tokens.md` (+ rendered token sheet) — every token, both themes, contrast table | ☑ [tokens](tokens.md) + [sheet](tokens.html) signed off 2026-10-16 |
 | 4 | `docs/design/components.md` — eight components, anatomy/variants/states/a11y/props | ☑ [components](components.md) signed off 2026-10-16 |
 | 5 | `docs/design/wireframes/` — every screen below, both widths, with an index README | ☑ [wireframes](wireframes/README.md) + [app icons](icons/index.html) signed off 2026-10-16 |
-| 6 | `docs/adr/0008-design-system-and-shell.md` — accepted by the user | ☐ |
+| 6 | `docs/adr/0008-design-system-and-shell.md` — accepted by the user | ☑ [ADR 0008](../adr/0008-design-system-and-shell.md) accepted 2026-10-16 |
 
 Visual work can happen as Artifacts (design-system / design types) or as HTML in
 `docs/design/wireframes/`; either way, commit the source or an exported snapshot and link

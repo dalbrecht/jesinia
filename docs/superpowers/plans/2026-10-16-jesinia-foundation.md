@@ -241,6 +241,8 @@ async def test_scheduler_runs_and_stops(): ...  # every(…, 10ms) runs ≥ 2 ti
   - `filename_for(title: str, id: PageId, siblings: Iterable[tuple[str, PageId]]) -> str` — case-insensitive collision; the id-ordered first keeps the bare name, others get ` [<first 8 hex of id without dashes>]`.
   - `is_hidden(rel: PurePosixPath) -> bool` (any segment starting `.`), `is_reserved(rel: PurePosixPath) -> bool` (first segment casefold in `{"journal","drafts"}`), `is_page_candidate(rel) -> bool` (`.md`, not hidden, not under `_assets/`).
   - `wrap_ai(text: str, *, agent: str, model: str, at: datetime, session: str) -> str`.
+  - `split_document(text: str) -> tuple[str | None, str]` — the raw front-matter block (from the opening `---` through the closing `---` line, newline included) exactly as on disk, and the body. `replace_body(text: str, body: str) -> str` returns the raw block unchanged plus the new body. Ordinary editor saves use this path, so user YAML (flow style, comments, quoting, key order) is never re-serialized (ADR 0008 §5).
+  - `retitle_links(body: str, id: PageId, title: str) -> str` — updates the `Title` part of every `[[<id>|…]]` for that id; other links untouched.
 
 - [ ] **Step 1: Failing tests:**
 
@@ -274,6 +276,17 @@ def test_reserved_and_hidden():
     assert is_reserved(PurePosixPath("journal/x.md")) and not is_reserved(PurePosixPath("Notes/Journal/x.md"))
     assert is_hidden(PurePosixPath("a/.obsidian/x.md"))
 
+def test_replace_body_keeps_raw_frontmatter_bytes():
+    text = "---\nid: 0192f7a8-0000-7000-8000-000000000001\ntitle: 'Quoted'   # note\naliases: [rt, \"x\"]\njesinia: {kind: note}\n---\nOld body\n"
+    raw, body = split_document(text)
+    out = replace_body(text, "New body\n")
+    assert out == raw + "New body\n" and out.startswith(text[: len(raw)])
+
+def test_retitle_links_only_touches_that_id():
+    a, b = "0192f7a8-0000-7000-8000-00000000000a", "0192f7a8-0000-7000-8000-00000000000b"
+    body = f"See [[{a}|Old]] and [[{b}|Other]]."
+    assert retitle_links(body, PageId(a), "New") == f"See [[{a}|New]] and [[{b}|Other]]."
+
 def test_wrap_ai_exact():
     out = wrap_ai("Hi", agent="claude-code", model="claude-opus-5-5", at=datetime(2026,10,16,9,20,tzinfo=UTC), session="s1")
     assert out == "<!-- jesinia:ai agent=claude-code model=claude-opus-5-5 at=2026-10-16T09:20:00Z session=s1 -->\nHi\n<!-- /jesinia:ai -->"
@@ -292,7 +305,10 @@ def test_wrap_ai_exact():
 - Consumes: Task 8 `open_db`, `DbClass.DERIVED`; Task 9 `EventBus`; Task 10 domain.
 - Produces:
   - `PageDraft(id: PageId | None, title: str, folder: PurePosixPath, body: str, jesinia: Mapping[str, object] = {})`.
-  - `class KbService: async read(id: PageId) -> PageWithRev; async write(draft: PageDraft, *, expected_rev: str | None = None) -> PageWithRev; async move(id: PageId, folder: PurePosixPath, title: str | None = None) -> PageWithRev; resolve(id: PageId) -> PurePosixPath | None; root: Path | None`.
+  - `class KbService: async read(id: PageId) -> PageWithRev; async write(draft: PageDraft, *, expected_rev: str | None = None) -> PageWithRev; async update_body(id: PageId, body: str, *, expected_rev: str) -> PageWithRev; async move(id: PageId, folder: PurePosixPath, title: str | None = None) -> MoveResult; async tree() -> list[TreeNode]; resolve(id: PageId) -> PurePosixPath | None; root: Path | None`.
+  - `update_body` writes via `replace_body` (raw front matter byte-identical) with the same atomic, rev-checked path as `write`; `write` (full re-serialize) is used only for new pages and explicit front-matter edits.
+  - `MoveResult(page: PageWithRev, relinked: list[PageId])` — when `title` changes, every page linking to `id` gets `retitle_links` applied through `update_body` (each rev-checked; a stale linker is reported in `relinked` as skipped via `kb.page_changed` and left for the next scan, never overwritten). Links resolve by id, so a folder-only move needs no relinking.
+  - `TreeNode(path: PurePosixPath, kind: Literal["folder", "page"], title: str | None, id: PageId | None, pages: int, children: list[TreeNode])` — from the index, hidden and reserved paths excluded, folders sorted before pages, case-insensitive.
   - `PageWithRev(page: Page, rev: str)` — `rev` = `sha256` hex of file bytes.
   - Errors: `KbUnavailable`, `PageNotFound`, `StaleWrite`, `PathOutsideKb`, `ReservedPath`.
   - Events: `Event("kb.page_changed", {"id", "path", "change": "created"|"updated"|"moved"|"missing", "origin": "jesinia"|"external"})`.
@@ -330,6 +346,30 @@ async def test_title_change_moves_file_and_keeps_id(kb, events):
     assert not (kb.root / "Notes/Old.md").exists() and (kb.root / "Notes/New.md").exists()
     assert q.page.id == p.page.id and events[-1].payload["change"] == "moved"
 
+async def test_update_body_preserves_noncanonical_frontmatter(kb):
+    made = await kb.write(PageDraft(None, "Odd", PurePosixPath("Notes"), "v1\n"))
+    raw = f"---\nid: {made.page.id}\ntitle: 'Odd'  # keep me\naliases: [rt]\n---\n"
+    (kb.root / "Notes/Odd.md").write_text(raw + "v1\n")  # user reformats the YAML in another editor
+    p = await kb.read(made.page.id)                         # rev = hash of the current bytes
+    await kb.update_body(p.page.id, "v2\n", expected_rev=p.rev)
+    assert (kb.root / "Notes/Odd.md").read_text() == raw + "v2\n"
+
+async def test_update_body_stale_refused(kb):
+    p = await kb.write(PageDraft(None, "S", PurePosixPath("Notes"), "v1"))
+    (kb.root / "Notes/S.md").write_text((kb.root / "Notes/S.md").read_text().replace("v1", "user"))
+    with pytest.raises(StaleWrite): await kb.update_body(p.page.id, "mine", expected_rev=p.rev)
+
+async def test_rename_retitles_inbound_links(kb):
+    a = await kb.write(PageDraft(None, "Target", PurePosixPath("Notes"), "t"))
+    b = await kb.write(PageDraft(None, "Linker", PurePosixPath("Notes"), f"see [[{a.page.id}|Target]]"))
+    r = await kb.move(a.page.id, PurePosixPath("Notes"), title="Renamed")
+    assert f"[[{a.page.id}|Renamed]]" in (await kb.read(b.page.id)).page.body and r.relinked == [b.page.id]
+
+async def test_tree_counts_and_order(kb):
+    await kb.write(PageDraft(None, "B", PurePosixPath("Notes"), "")); await kb.write(PageDraft(None, "A", PurePosixPath("Notes/Sub"), ""))
+    notes = next(n for n in await kb.tree() if n.path == PurePosixPath("Notes"))
+    assert notes.pages == 2 and [c.kind for c in notes.children] == ["folder", "page"]
+
 async def test_unavailable_when_no_kb_path(kb_unset):
     with pytest.raises(KbUnavailable): await kb_unset.read(PageId("x"))
 ```
@@ -348,8 +388,8 @@ async def test_unavailable_when_no_kb_path(kb_unset):
 - Produces:
   - `async scan(svc: KbService) -> ScanReport`; `ScanReport(indexed: int, adopted: list[PurePosixPath], missing: list[PageId], duplicates: list[DuplicateId], foreign_skipped: int)`; `DuplicateId(id: PageId, paths: list[PurePosixPath])`.
   - `KbWatcher(root: Path, on_paths: Callable[[set[Path]], Awaitable[None]], debounce_ms: int = 500)`; `last_activity: datetime` (consumed by kbsync quiet period).
-  - `KbModule(Module)` name `"kb"`; routes `GET /api/kb/pages/{id}`, `PUT /api/kb/pages` (body PageDraft + expected_rev), `POST /api/kb/pages/{id}/move`, `GET /api/kb/conflicts`, `POST /api/kb/scan`, `PUT /api/kb/path` (validate + persist `kb.path`, restart watcher, rescan, publish `Event("kb.root_changed", {"path"})`).
-  - MCP tools: `kb_read {id}`, `kb_write {id?, title, folder, body, jesinia?, expected_rev?}` (`writes=True`), `kb_move` (`writes=True`), `kb_link {id}` → `{id, title, path}`.
+  - `KbModule(Module)` name `"kb"`; routes `GET /api/kb/pages/{id}` (page + `rev`), `PUT /api/kb/pages` (body PageDraft + expected_rev; new pages and front-matter edits), `PATCH /api/kb/pages/{id}/body {body, expected_rev}` (editor autosave via `update_body`; `409 {rev, body}` on `StaleWrite`), `POST /api/kb/pages/{id}/move {folder, title?}` (returns `relinked`), `GET /api/kb/tree`, `GET /api/kb/conflicts`, `POST /api/kb/scan`, `PUT /api/kb/path` (validate + persist `kb.path`, restart watcher, rescan, publish `Event("kb.root_changed", {"path"})`).
+  - MCP tools: `kb_read {id}`, `kb_write {id?, title, folder, body, jesinia?, expected_rev?}` (`writes=True`), `kb_move` (`writes=True`), `kb_tree {}` → folders with page counts, `kb_link {id}` → `{id, title, path}`.
 
 - [ ] **Step 1: Failing tests:**
 
@@ -386,6 +426,9 @@ async def test_duplicate_ids_reported_not_deleted(kb):
     assert len((await scan(kb)).duplicates[0].paths) == 2 and (kb.root / "Notes/A copy.md").exists()
 
 async def test_watcher_emits_external_change(kb_running, events): ...  # edit file → kb.page_changed origin=external within 2s
+
+async def test_patch_body_returns_409_with_current_on_stale(client, kb): ...  # external edit → PATCH with old rev → 409 {rev, body}; file unchanged
+async def test_tree_route_and_mcp_tool_match(client, mcp): ...  # GET /api/kb/tree == kb_tree result
 ```
 
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement** (NFC-normalize every observed path before comparison; adoption uses `KbService.write` with `expected_rev` of the plain file's hash). **Step 4: Run** — PASS.
@@ -796,6 +839,7 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
   - `start_session` builds `ContextPack(role_prompt=NOTES_ROLE, files={}, untrusted={"subject.md": UntrustedDoc(f"kb:{id}", <page markdown>), "related.md": UntrustedDoc("kb:search", <top 5 search hits as a list of `[[id|Title]]` + snippet>)})` — KB content used as context is wrapped as untrusted per spec §4.3; `preauthorized_tools={"notes_save"}`.
   - `save_note` writes to folder `cfg.folders["note"]` (`Notes`), body = `user_text` + blank line + `wrap_ai(agent_text, agent=<runner>, model=model, at=now, session=session_id)` + `\n\nAbout: [[<subject id>|<subject title>]]\n`; `jesinia: {kind: "note", captured: now-local-ISO}`; records `(session_id, note_id, subject_id)` in `notes.sqlite` (`DbClass.DERIVED`; rebuildable from note bodies' links).
   - Routes `POST /api/notes/sessions {page_id, runner}`, `POST /api/notes/sessions/{id}/save`; MCP `notes_save` (`writes=True`).
+  - Editing and browsing (ADR 0008 §5) use the shared KB routes from Task 12 (`GET /api/kb/tree`, `PATCH /api/kb/pages/{id}/body`, `PUT /api/kb/pages`, `POST /api/kb/pages/{id}/move`); the Notes module adds no KB routes and never touches the filesystem directly.
 
 - [ ] **Step 1: Failing tests:**
 
@@ -823,11 +867,14 @@ async def test_notes_save_is_preauthorized_but_kb_write_is_not(app_env): ...
 
 **Interfaces:**
 - Consumes: Task 23 client/shell, Task 22 `ChatTranscript`, Task 24 routes, Task 18 SSE + pending routes.
+- Editor: CodeMirror 6 (MIT) Markdown with live styling (markers only on the caret line), `[[` autocomplete, provenance comments folded into read-only chips, autosave (~1 s idle, blur, page switch) via `PATCH /api/kb/pages/{id}/body` with `expected_rev`; properties edits go through `PUT /api/kb/pages`; file tree from `GET /api/kb/tree`; grouped search results per the Task 5 wireframes (ADR 0008 §5).
 
 - [ ] **Step 1: Failing tests:** unit — search box debounces 200 ms and lists hits; chat streams deltas into one agent message; Save note disabled until an agent turn completes. e2e (`notes.spec.ts`, fake runner scripted to call `kb_write` once and then reply):
   1. search fixture page → open → start chat with runner "fake" → see streamed reply;
   2. the agent's `kb_write` shows a pending-write card → Reject → file not created;
-  3. Save note → file appears in fixture KB `Notes/` with provenance comments and back-link (assert by reading the file).
+  3. Save note → file appears in fixture KB `Notes/` with provenance comments and back-link (assert by reading the file);
+  4. edit the body of a fixture page whose front matter is noncanonical (flow-style `aliases: [rt]`, a quoted title, a YAML comment) and which contains a provenance block → autosave writes it, and the front-matter block and the untouched provenance block are byte-identical (assert by reading the file);
+  5. change the file on disk while a local edit is unsaved → the changed-on-disk bar appears and "Keep mine" writes the local version.
 - [ ] **Step 2–4:** FAIL → implement per Task 5 wireframes → PASS.
 - [ ] **Step 5: Manual check** with real `claude` and `codex` runners on the author's Mac; record result in the PR description. Commit `feat(notes): tracer PWA with end-to-end test`.
 

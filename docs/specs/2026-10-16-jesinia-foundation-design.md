@@ -1,6 +1,6 @@
 # Jesinia — Foundation Design
 
-- **Status:** Draft for review
+- **Status:** Draft for review (amended by ADR 0008)
 - **Date:** 2026-10-16
 - **Author:** Don Albrecht (with Claude)
 - **License of this project:** AGPL-3.0-or-later
@@ -42,7 +42,6 @@ The foundation is done when, on a fresh Mac:
 - Packaging (Homebrew/pipx), auto-update, multi-machine or multi-user operation.
 - Direct LLM API calls with stored API keys (agents are driven through their CLIs).
 - Sharing code with, or reading the databases of, the Pigeonpile suite.
-- The final visual identity of the design system (scaffold only, §9).
 
 ## 2. Context and constraints
 
@@ -146,8 +145,18 @@ The PWAs, other apps, and terminal agents therefore all exercise the same code p
 - A filesystem watcher (macOS FSEvents via `watchfiles`) detects external edits
   (Pigeonpile Wiki, editors, `git pull`) and emits the same events.
 - Adoption of plain `.md` files (§5.4) happens on scan and on watcher events.
+- Writes accept an optional **base version** (the content hash the writer last read);
+  if the file on disk no longer matches, the write fails with a conflict instead of
+  overwriting. The Notes editor depends on this (§11, ADR 0008).
+- **Body-only updates** replace the body and keep the raw front-matter block
+  byte-identical (no YAML re-serialization), so ordinary edits never reformat user
+  metadata. Full re-serialization is used only for new pages and explicit front-matter
+  edits.
+- Links resolve by `id`, so moves never break them; a **rename** updates the `Title`
+  text of inbound `[[id|Title]]` links (each a rev-checked body-only update).
 - MCP tools: `kb.search` (delegates to `search`), `kb.read`, `kb.write`, `kb.move`,
-  `kb.link` (resolve `[[id|Title]]`), `kb.sync_status` (delegates to `kbsync`).
+  `kb.tree` (folders with page counts, for the Notes file tree), `kb.link` (resolve
+  `[[id|Title]]`), `kb.sync_status` (delegates to `kbsync`).
 
 ### 4.2 `search`
 
@@ -437,15 +446,20 @@ them, not a restatement.
 
 ## 9. Design system (`@jesinia/design`)
 
-The foundation builds the **scaffold**; the visual identity (palette, type, voice) is a
-separate design pass that swaps values behind the tokens without touching apps.
+The identity was defined in the Phase 0 design pass and is recorded in ADR 0008. Its
+sources are `docs/design/`: brief, tokens, components, wireframes, and icons. Those docs
+are authoritative for names and values.
 
 - Three token tiers: primitive palette → semantic roles → component tokens. Light and
   dark themes via `prefers-color-scheme`, overridable with `[data-theme]`.
 - Reset, type scale, spacing scale, radius/shadow geometry.
 - Core React components: Button, Input, Panel, List/Row, Badge, Tabs, Toast, and a Chat
-  transcript (streaming-aware), since all three products need chat.
-- Placeholder values are deliberately neutral.
+  transcript (streaming-aware), since all three products need chat. Shell components:
+  CommandPalette (⌘K), Banner, StatusIndicator.
+- Shell: launcher-only navigation; each app's header lives in the title bar via Window
+  Controls Overlay; one visible search per window; per-app chat placement with pop-out;
+  banners for blocking conditions and a status dot for minor ones (ADR 0008 §4).
+- App icons: a macro image in the app's hue with a monochrome symbol (brief §8a).
 - A demo page at `/design/` renders every token and component in both themes.
 - Accessibility: WCAG 2.2 AA contrast for semantic color pairs (checked in tests),
   keyboard operability, visible focus.
@@ -490,11 +504,15 @@ separate design pass that swaps values behind the tokens without touching apps.
 A minimal app that exercises every foundation service end to end before product work
 starts.
 
-- **UI (`/notes/`):** search the KB (`search`), open a page (`kb.read`), start a chat
-  session about it with the chosen runner (`agents`, streamed via SSE), and "Save note"
-  — which writes a new or updated page in `Notes/` with correct front-matter, a
-  `[[id|Title]]` back-link to the subject page, and `jesinia:ai` provenance comments
-  around agent-written text (`kb.write`).
+- **UI (`/notes/`):** browse the KB in a file tree (`kb.tree`) or search it (`search`);
+  open a page, which is **always editable** as live-styled Markdown and autosaves
+  through `kb.write` with a base version (a changed-on-disk conflict offers Keep mine,
+  Use theirs, or Compare); start a chat session about it with the chosen runner
+  (`agents`, streamed via SSE); and "Save note", which writes a new or updated page in
+  `Notes/` with correct front-matter, a `[[id|Title]]` back-link to the subject page,
+  and `jesinia:ai` provenance comments around agent-written text (`kb.write`). The
+  editor preserves front-matter and provenance comments byte-for-byte (ADR 0007), and
+  shows provenance as chips that can't be edited (ADR 0008 §5).
 - **Terminal path:** `agents.session_attach` from Claude Code continues the same session;
   the PWA shows its activity.
 - **Data:** `notes.sqlite` holds only session ↔ page associations (rebuildable from
