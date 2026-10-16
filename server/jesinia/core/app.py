@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 
-from jesinia.core.auth import auth_router, require_user
+from jesinia.core.auth import auth_router, require_owner
 from jesinia.core.config import Config
 from jesinia.core.events import EventBus
 from jesinia.core.module import AppContext, Module, ModuleHealth
@@ -53,7 +53,10 @@ def create_app(cfg: Config, modules: Sequence[Module]) -> FastAPI:
     for module in modules:
         router = module.router()
         if router is not None:
-            app.include_router(router, dependencies=[Depends(require_user)])
+            # HTTP routes serve the PWAs (the owner). Agent sessions reach Jesinia only
+            # through MCP, where write confirmation applies (spec §4.3), so their session
+            # tokens are refused here.
+            app.include_router(router, dependencies=[Depends(require_owner)])
 
     @app.get("/healthz")
     async def healthz() -> dict[str, object]:

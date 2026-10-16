@@ -81,6 +81,14 @@ async def test_module_routes_require_auth(cfg: Config) -> None:
         assert r.status_code == 200 and r.json() == {"hello": "m"}
 
 
+async def test_module_routes_refuse_agent_session_tokens(cfg: Config) -> None:
+    from jesinia.core.auth import register_session_token
+
+    register_session_token("agent-token", "s-1")
+    async with lifespan_client(create_app(cfg, [Healthy("m")])) as c:
+        assert (await c.get("/api/m/hello", headers=bearer("agent-token"))).status_code == 403
+
+
 async def test_context_exposes_services(cfg: Config) -> None:
     m = Healthy("svc")
     app = create_app(cfg, [m])
