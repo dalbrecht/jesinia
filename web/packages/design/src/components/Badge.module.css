@@ -1,0 +1,48 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jx-space-1);
+  padding: 1px var(--jx-badge-pad-x);
+  border-radius: var(--jx-badge-radius);
+  font-size: var(--jx-badge-text);
+  font-weight: var(--jx-weight-medium);
+  line-height: var(--jx-leading-sm);
+  white-space: nowrap;
+}
+.neutral {
+  background: var(--jx-badge-neutral-bg);
+  color: var(--jx-badge-neutral-fg);
+}
+.marigold {
+  background: var(--jx-badge-marigold-bg);
+  color: var(--jx-badge-marigold-fg);
+}
+.plum {
+  background: var(--jx-badge-plum-bg);
+  color: var(--jx-badge-plum-fg);
+}
+.cornflower {
+  background: var(--jx-badge-cornflower-bg);
+  color: var(--jx-badge-cornflower-fg);
+}
+.clay {
+  background: var(--jx-badge-clay-bg);
+  color: var(--jx-badge-clay-fg);
+}
+.fern {
+  background: var(--jx-badge-fern-bg);
+  color: var(--jx-badge-fern-fg);
+}
+.success {
+  background: var(--jx-badge-success-bg);
+  color: var(--jx-badge-success-fg);
+}
+.warn {
+  background: var(--jx-badge-warn-bg);
+  color: var(--jx-badge-warn-fg);
+}
+.danger {
+  background: var(--jx-badge-danger-bg);
+  color: var(--jx-badge-danger-fg);
+}

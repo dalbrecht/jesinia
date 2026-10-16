@@ -1,0 +1,96 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.list {
+  list-style: none;
+  padding: 0;
+  outline: none;
+}
+.item {
+  background: var(--jx-row-bg);
+  border-bottom: 1px solid var(--jx-row-divider);
+  transition: background-color var(--jx-duration-fast) var(--jx-ease);
+}
+.item:last-child {
+  border-bottom: 0;
+}
+.interactive {
+  cursor: default;
+}
+.interactive:hover,
+.interactive:active {
+  background: var(--jx-row-bg-hover);
+}
+.item[aria-selected="true"] {
+  background: var(--jx-row-bg-selected);
+}
+.item[aria-selected="true"] [data-row-title] {
+  font-weight: var(--jx-row-title-weight-selected);
+}
+.item:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: -2px;
+}
+.item[aria-disabled="true"] {
+  opacity: 0.45;
+}
+.row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  column-gap: var(--jx-space-3);
+  padding: var(--jx-row-pad-y) var(--jx-row-pad-x);
+  font-size: var(--jx-row-text);
+  line-height: var(--jx-row-leading);
+}
+.leading {
+  display: inline-flex;
+  min-width: 8px;
+}
+.main {
+  min-width: 0;
+}
+.title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.unread .title {
+  font-weight: var(--jx-weight-medium);
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--jx-radius-full);
+  background: var(--jx-row-unread-dot);
+}
+.excerpt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--jx-row-meta-fg);
+}
+[data-density="compact"] .excerpt {
+  display: none;
+}
+.meta {
+  font-size: var(--jx-text-sm);
+  color: var(--jx-row-meta-fg);
+}
+.trailing {
+  display: inline-flex;
+  gap: var(--jx-space-2);
+}
+.skeleton {
+  display: grid;
+  gap: var(--jx-space-1);
+  padding: var(--jx-row-pad-y) var(--jx-row-pad-x);
+}
+.bar {
+  height: 0.8em;
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-surface-sunken);
+}
+.empty {
+  padding: var(--jx-space-6) var(--jx-space-4);
+  text-align: center;
+  color: var(--jx-fg-muted);
+}

@@ -1,0 +1,39 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.panel {
+  background: var(--jx-panel-bg);
+  border: 1px solid var(--jx-panel-border);
+  border-radius: var(--jx-panel-radius);
+  box-shadow: var(--jx-panel-shadow);
+}
+.raised {
+  background: var(--jx-panel-raised-bg);
+  box-shadow: var(--jx-panel-raised-shadow);
+}
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jx-space-2);
+  padding: var(--jx-panel-pad) var(--jx-panel-pad) 0;
+}
+.title {
+  font-size: var(--jx-panel-title-text);
+  font-weight: var(--jx-panel-title-weight);
+}
+.actions {
+  display: flex;
+  gap: var(--jx-space-2);
+}
+.body {
+  padding: var(--jx-panel-pad);
+}
+.flush .body {
+  padding: 0;
+}
+.flush .header {
+  padding-bottom: var(--jx-space-2);
+}
+.footer {
+  padding: 0 var(--jx-panel-pad) var(--jx-panel-pad);
+}

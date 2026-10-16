@@ -1,0 +1,54 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* A small reset: box sizing, margins, form fonts, and the shared base for every app. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+* {
+  margin: 0;
+}
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+body {
+  min-height: 100vh;
+  background: var(--jx-bg);
+  color: var(--jx-fg);
+  font-family: var(--jx-font-ui);
+  font-size: var(--jx-text-base);
+  line-height: var(--jx-leading-base);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+}
+:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
+}

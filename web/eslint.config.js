@@ -12,4 +12,22 @@ export default tseslint.config(
   {
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
   },
+  {
+    files: ["**/*.ts", "**/*.tsx"],
+    rules: {
+      // Omitting props by destructuring into `_name` (or a rest sibling) is deliberate.
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { ignoreRestSiblings: true, varsIgnorePattern: "^_", argsIgnorePattern: "^_" },
+      ],
+      // Flags every `obj[key]`; in TypeScript the key types (unions, typed records) already
+      // bound these lookups, so the rule is noise here. Still on for plain JS.
+      "security/detect-object-injection": "off",
+    },
+  },
+  {
+    // Tests read fixed fixture files relative to themselves.
+    files: ["**/__tests__/**", "tests/**"],
+    rules: { "security/detect-non-literal-fs-filename": "off" },
+  },
 );

@@ -800,9 +800,9 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
 - Consumes: Task 3 `docs/design/tokens.md` (exact names/values), Task 4 `docs/design/components.md` (props signatures).
 - Produces: `import "@jesinia/design/tokens.css"`, `reset.css`, `fonts.css`; React exports `Button, Input, Panel, List, Row, Badge, Tabs, Toast, ToastProvider, useToast, ChatTranscript, CommandPalette, Banner, StatusIndicator` and the `ChatMessage` type, with the exact props and message shapes from Task 4 (`docs/design/components.md`; e.g. `ChatTranscript({runner, messages, onApprove, onReject, onRetry})`). Task 4 is authoritative where this line and that spec differ.
 
-- [ ] **Step 1: Failing tests:** `contrast.test.ts` parses `tokens.css`, resolves each pair from the Task 3 contrast table in light and dark, and asserts ratios ≥ the table's required minimum (oklch → sRGB → WCAG luminance). `components.test.tsx`: Button `loading` sets `aria-busy` and disables; Tabs arrow-key roving focus; ChatTranscript renders a pending-write card whose Approve calls `onApprove(id)`, announces new agent text through a polite live region, and does not auto-scroll when the user has scrolled up.
-- [ ] **Step 2–4:** FAIL → implement from the Phase 0 docs → PASS.
-- [ ] **Step 5: Demo app** renders every token and component in both themes with a theme toggle (`data-theme`). Commit `feat(design): @jesinia/design tokens, components, and demo`.
+- [x] **Step 1: Failing tests:** `contrast.test.ts` parses `tokens.css`, resolves each pair from the Task 3 contrast table in light and dark, and asserts ratios ≥ the table's required minimum (oklch → sRGB → WCAG luminance). `components.test.tsx`: Button `loading` sets `aria-busy` and disables; Tabs arrow-key roving focus; ChatTranscript renders a pending-write card whose Approve calls `onApprove(id)`, announces new agent text through a polite live region, and does not auto-scroll when the user has scrolled up.
+- [x] **Step 2–4:** FAIL → implement from the Phase 0 docs → PASS.
+- [x] **Step 5: Demo app** renders every token and component in both themes with a theme toggle (`data-theme`). Commit `feat(design): @jesinia/design tokens, components, and demo`.
 
 ### Task 23: `@jesinia/client`, PWA shell, launcher and settings
 

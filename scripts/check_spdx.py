@@ -13,7 +13,7 @@ from pathlib import Path
 
 HEADER = "SPDX-License-Identifier: AGPL-3.0-or-later"
 HEADER_WINDOW = 3
-SKIP_DIRS = frozenset({".standards", "node_modules", ".venv", "dist", "static", ".git"})
+SKIP_DIRS = frozenset({".standards", "node_modules", ".venv", "dist", "static", ".git", "coverage"})
 CHECKED_SUFFIXES = frozenset(
     {".py", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".css", ".sh"}
 )

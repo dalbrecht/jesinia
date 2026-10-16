@@ -1,0 +1,63 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.region {
+  position: fixed;
+  right: var(--jx-space-4);
+  bottom: var(--jx-space-4);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-2);
+  width: min(var(--jx-toast-width), calc(100vw - 2 * var(--jx-space-4)));
+  outline: none;
+}
+@media (max-width: 480px) {
+  .region {
+    right: 50%;
+    transform: translateX(50%);
+  }
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-3);
+  padding: var(--jx-space-3);
+  background: var(--jx-toast-bg);
+  color: var(--jx-toast-fg);
+  border: 1px solid var(--jx-toast-border);
+  border-radius: var(--jx-toast-radius);
+  box-shadow: var(--jx-toast-shadow);
+  animation: rise var(--jx-duration-base) var(--jx-ease);
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation-name: fade;
+  }
+  @keyframes fade {
+    from {
+      opacity: 0;
+    }
+  }
+}
+.icon {
+  flex: none;
+  color: var(--jx-fg-muted);
+}
+.success .icon {
+  color: var(--jx-toast-icon-success);
+}
+.warn .icon {
+  color: var(--jx-toast-icon-warn);
+}
+.danger .icon {
+  color: var(--jx-toast-icon-danger);
+}
+.message {
+  flex: 1;
+  font-size: var(--jx-text-sm);
+}

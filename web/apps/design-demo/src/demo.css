@@ -1,0 +1,50 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--jx-space-6) var(--jx-space-4) var(--jx-space-8);
+  display: grid;
+  gap: var(--jx-space-6);
+}
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jx-space-3);
+}
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--jx-space-2);
+}
+.swatch {
+  display: grid;
+  gap: var(--jx-space-1);
+  font-size: var(--jx-text-xs);
+  font-family: var(--jx-font-mono);
+  color: var(--jx-fg-muted);
+}
+.chip {
+  height: 40px;
+  border-radius: var(--jx-radius-md);
+  border: 1px solid var(--jx-border);
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2);
+}
+.chat {
+  height: 420px;
+}
+.type-read {
+  font-family: var(--jx-font-read);
+  font-size: var(--jx-text-read);
+  line-height: var(--jx-leading-read);
+  max-width: var(--jx-read-measure);
+}
+.type-mono {
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-sm);
+}
