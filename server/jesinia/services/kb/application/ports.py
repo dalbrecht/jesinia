@@ -57,8 +57,17 @@ class PageIndex(Protocol):
     def by_path(self, path: PurePosixPath) -> IndexRow | None: ...
 
     def put(
-        self, id: PageId, path: PurePosixPath, disk: str, rev: str, title: str, mtime: float
-    ) -> None: ...
+        self,
+        id: PageId,
+        path: PurePosixPath,
+        disk: str,
+        rev: str,
+        title: str,
+        mtime: float,
+        links: Iterable[PageId] | None = None,
+    ) -> None:
+        """Upsert a page row; with ``links``, replace its outbound links atomically."""
+        ...
 
     def delete(self, id: PageId) -> None: ...
 
@@ -69,6 +78,12 @@ class PageIndex(Protocol):
     def reset(self) -> None:
         """Forget everything (a different KB root)."""
         ...
+
+    def indexed_root(self) -> str | None:
+        """The KB root the index was built from (persisted across restarts)."""
+        ...
+
+    def set_indexed_root(self, root: str) -> None: ...
 
     def links_to(self, dst: PageId) -> list[PageId]: ...
 

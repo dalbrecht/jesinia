@@ -31,7 +31,12 @@ from jesinia.services.kb.domain.frontmatter import (
 )
 from jesinia.services.kb.domain.links import link_targets, retitle_links
 from jesinia.services.kb.domain.page import Page, PageId, new_page_id
-from jesinia.services.kb.domain.paths import filename_for, is_hidden, is_reserved
+from jesinia.services.kb.domain.paths import (
+    filename_for,
+    is_hidden,
+    is_page_candidate,
+    is_reserved,
+)
 
 log = logging.getLogger(__name__)
 
@@ -122,8 +127,10 @@ class KbService:
         if folder.is_absolute() or ".." in folder.parts:
             raise PathOutsideKb(f"{folder}: must be a relative path inside the KB")
         probe = folder / "x.md"
-        if is_reserved(probe) or is_hidden(probe):
-            raise ReservedPath(f"{folder}: Jesinia never writes in reserved or hidden folders")
+        if is_reserved(probe) or not is_page_candidate(probe):
+            raise ReservedPath(
+                f"{folder}: Jesinia never writes pages in reserved, hidden or _assets folders"
+            )
         self._fs().contain(folder)
         return nfc(folder)
 
@@ -145,10 +152,12 @@ class KbService:
         mtime = self._fs().write_atomic(disk, data)
         rev = sha256(data)
         # The file is the source of truth and is already written. The index is derived:
-        # if updating it fails, report success anyway and let the next scan repair it.
+        # if updating it fails, report success anyway. Row and links change in one
+        # transaction, so a failure leaves the old mtime and the next scan re-reads the file.
         try:
-            self._index.put(page.id, page.path, disk, rev, page.title, mtime)
-            self._index.set_links(page.id, link_targets(page.body))
+            self._index.put(
+                page.id, page.path, disk, rev, page.title, mtime, link_targets(page.body)
+            )
         except Exception:
             log.exception("KB index update failed for %s; the next scan will repair it", page.id)
         return PageWithRev(page, rev)

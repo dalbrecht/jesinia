@@ -33,7 +33,14 @@ class SqliteIndex:
         return _row(r) if r else None
 
     def put(
-        self, id: PageId, path: PurePosixPath, disk: str, rev: str, title: str, mtime: float
+        self,
+        id: PageId,
+        path: PurePosixPath,
+        disk: str,
+        rev: str,
+        title: str,
+        mtime: float,
+        links: Iterable[PageId] | None = None,
     ) -> None:
         with transaction(self.conn):
             self.conn.execute("DELETE FROM pages WHERE path = ? AND id != ?", (str(path), id))
@@ -43,6 +50,8 @@ class SqliteIndex:
                 "rev=excluded.rev, title=excluded.title, mtime=excluded.mtime",
                 (id, str(path), disk, rev, title, mtime),
             )
+            if links is not None:
+                self._replace_links(id, links)
 
     def delete(self, id: PageId) -> None:
         with transaction(self.conn):
@@ -59,9 +68,22 @@ class SqliteIndex:
 
     def set_links(self, src: PageId, dsts: Iterable[PageId]) -> None:
         with transaction(self.conn):
-            self.conn.execute("DELETE FROM links WHERE src = ?", (src,))
-            self.conn.executemany(
-                "INSERT OR IGNORE INTO links (src, dst) VALUES (?, ?)", [(src, d) for d in dsts]
+            self._replace_links(src, dsts)
+
+    def _replace_links(self, src: PageId, dsts: Iterable[PageId]) -> None:
+        self.conn.execute("DELETE FROM links WHERE src = ?", (src,))
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO links (src, dst) VALUES (?, ?)", [(src, d) for d in dsts]
+        )
+
+    def indexed_root(self) -> str | None:
+        r = self.conn.execute("SELECT value FROM meta WHERE key = 'root'").fetchone()
+        return str(r[0]) if r else None
+
+    def set_indexed_root(self, root: str) -> None:
+        with transaction(self.conn):
+            self.conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('root', ?)", (root,)
             )
 
     def links_to(self, dst: PageId) -> list[PageId]:

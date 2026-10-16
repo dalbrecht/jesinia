@@ -149,3 +149,16 @@ async def test_adopted_page_emits_created(kb: KbService, events: list[Event]) ->
     (_root(kb) / "Plain.md").write_text("hello\n")
     await scan(kb)
     assert events[-1].payload["change"] == "created" and events[-1].payload["path"] == "Plain.md"
+
+
+async def test_unreadable_known_page_is_not_marked_missing(
+    kb: KbService, events: list[Event]
+) -> None:
+    p = await kb.write(PageDraft(None, "Fragile", N, "ok"))
+    f = _root(kb) / "Notes/Fragile.md"
+    f.write_bytes(f.read_bytes() + b"\xff")  # invalid UTF-8 now; still on disk
+    report = await scan(kb)
+    assert [path for path, _ in report.errors] == [PurePosixPath("Notes/Fragile.md")]
+    assert report.missing == [] and kb.index.get(p.page.id) is not None
+    assert await kb.conflicts() == []
+    assert not [e for e in events if e.payload.get("change") == "missing"]

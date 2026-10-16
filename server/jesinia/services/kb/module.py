@@ -49,7 +49,6 @@ class KbModule:
         self._watcher: KbWatcher | None = None
         self._last: ScanReport | None = None
         self._problem: str | None = None
-        self._root: Path | None = None
 
     @property
     def service(self) -> KbService:
@@ -86,9 +85,12 @@ class KbModule:
         if self._problem is not None or root is None:
             self._svc.set_files(None)
             return
-        if self._root is not None and root.resolve() != self._root.resolve():
-            self._svc.index.reset()  # a different KB: its pages are not "missing"
-        self._root = root
+        # A different KB from the one indexed (now, or while the server was stopped):
+        # its pages are not "missing" — start the derived index over.
+        resolved = str(root.resolve())
+        if self._svc.index.indexed_root() != resolved:
+            self._svc.index.reset()
+            self._svc.index.set_indexed_root(resolved)
         self._svc.set_files(LocalFiles(root))
         self._last = await scan(self._svc)
         self._watcher = KbWatcher(root, self._on_paths)

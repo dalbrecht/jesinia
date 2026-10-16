@@ -23,6 +23,14 @@ class LocalFiles:
             raise PathOutsideKb(f"{rel} resolves outside the KB")
         return target
 
+    def _refuse_links(self, disk: str) -> None:
+        """Refuse a path if it, or any folder on the way to it, is a symlink."""
+        here = self.root
+        for part in PurePosixPath(disk).parts:
+            here = here / part
+            if os.path.islink(here):
+                raise PathOutsideKb(f"{disk}: {part} is a symlink; Jesinia never writes via links")
+
     def _abs(self, disk: str) -> Path:
         return self.contain(PurePosixPath(disk))
 
@@ -33,8 +41,7 @@ class LocalFiles:
         return self._abs(disk).exists()
 
     def write_atomic(self, disk: str, data: bytes) -> float:
-        if os.path.islink(self.root / disk):
-            raise PathOutsideKb(f"{disk} is a symlink; Jesinia never writes through links")
+        self._refuse_links(disk)
         path = self._abs(disk)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Re-check containment after mkdir, then create a uniquely named temp file
@@ -62,8 +69,7 @@ class LocalFiles:
 
     def rename(self, src: str, dst: str) -> None:
         for name in (src, dst):
-            if os.path.islink(self.root / name):
-                raise PathOutsideKb(f"{name} is a symlink; Jesinia never moves links")
+            self._refuse_links(name)
         target = self._abs(dst)
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(self._abs(src), target)

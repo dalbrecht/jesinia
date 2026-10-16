@@ -124,9 +124,8 @@ async def scan(svc: KbService) -> ScanReport:
             duplicates[id] = sorted(h.path for h in hits)
         keep = next((h for h in hits if previous and h.path == previous.path), hits[0])
         seen.add(id)
-        index.put(id, keep.path, keep.disk, keep.rev, keep.title, keep.mtime)
-        if keep.body is not None:
-            index.set_links(id, link_targets(keep.body))
+        links = link_targets(keep.body) if keep.body is not None else None
+        index.put(id, keep.path, keep.disk, keep.rev, keep.title, keep.mtime, links)
         change: Change
         if previous is None:
             change = "created"
@@ -138,9 +137,11 @@ async def scan(svc: KbService) -> ScanReport:
             continue
         await svc.emit(id, keep.path, change, "external")
 
+    # A file that exists but failed to read or parse this time is not missing: keep its row.
+    failed = {path for path, _ in errors}
     missing: list[PageId] = []
     for row in index.all():
-        if row.id not in seen:
+        if row.id not in seen and row.path not in failed:
             missing.append(row.id)
             index.add_missing(row.id, row.path)
             index.delete(row.id)

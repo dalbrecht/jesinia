@@ -122,6 +122,31 @@ def test_rename_refuses_symlink_source(tmp_path: Path) -> None:
     assert (root / "real.md").read_text() == "real" and not (root / "moved.md").exists()
 
 
+def test_rename_refuses_symlinked_ancestor(tmp_path: Path) -> None:
+    root = tmp_path / "kb"
+    (root / "Real").mkdir(parents=True)
+    (root / "Real/a.md").write_text("other page")
+    (root / "Alias").symlink_to(root / "Real")
+    fs = LocalFiles(root)
+    with pytest.raises(PathOutsideKb):
+        fs.rename("Alias/a.md", "moved.md")
+    with pytest.raises(PathOutsideKb):
+        fs.rename("x.md", "Alias/b.md")
+    with pytest.raises(PathOutsideKb):
+        fs.write_atomic("Alias/a.md", b"overwrite")
+    assert (root / "Real/a.md").read_text() == "other page"
+
+
+def test_index_persists_root(tmp_path: Path) -> None:
+    conn = open_db(tmp_path, KB_DB)
+    idx = SqliteIndex(conn)
+    assert idx.indexed_root() is None
+    idx.set_indexed_root("/a")
+    idx.set_indexed_root("/b")
+    assert idx.indexed_root() == "/b"
+    conn.close()
+
+
 def test_index_reset(tmp_path: Path) -> None:
     conn = open_db(tmp_path, KB_DB)
     idx = SqliteIndex(conn)

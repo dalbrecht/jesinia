@@ -69,7 +69,7 @@ async def test_symlink_escape_rejected(kb: KbService, tmp_path) -> None:  # type
     assert list(outside.iterdir()) == []
 
 
-@pytest.mark.parametrize("folder", ["Journal", "drafts/sub", ".hidden"])
+@pytest.mark.parametrize("folder", ["Journal", "drafts/sub", ".hidden", "_assets/x", "a/_assets"])
 async def test_reserved_and_hidden_rejected(kb: KbService, folder: str) -> None:
     with pytest.raises(ReservedPath):
         await kb.write(PageDraft(None, "x", PurePosixPath(folder), ""))
@@ -203,3 +203,26 @@ async def test_relink_skips_malformed_linker(kb: KbService) -> None:
     (kb.root / "Notes/L.md").write_bytes(b"---\nid: " + b.page.id.encode() + b"\n---\n\xff\xfe")  # type: ignore[operator]
     r = await kb.move(a.page.id, N, title="T2")
     assert r.page.page.title == "T2" and r.skipped == [b.page.id] and r.relinked == []
+
+
+async def test_failed_link_update_leaves_row_for_scan_to_repair(
+    kb: KbService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    from jesinia.services.kb.application.scan import scan
+    from jesinia.services.kb.infrastructure.index import SqliteIndex
+
+    target = await kb.write(PageDraft(None, "Target", N, ""))
+    src = await kb.write(PageDraft(None, "Src", N, "no links yet"))
+
+    def broken(self: SqliteIndex, *a: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(SqliteIndex, "_replace_links", broken)
+    body = f"see [[{target.page.id}|Target]]"
+    await kb.update_body(src.page.id, body, expected_rev=src.rev)
+    monkeypatch.undo()
+    assert kb.index.links_to(target.page.id) == []  # row and links rolled back together
+    await scan(kb)
+    assert kb.index.links_to(target.page.id) == [src.page.id]

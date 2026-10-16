@@ -214,3 +214,18 @@ async def test_change_root_resets_index(client: httpx.AsyncClient, tmp_path: Pat
     r = await client.put("/api/kb/path", json={"path": str(other)})
     assert r.status_code == 200 and r.json()["missing"] == []
     assert (await client.get("/api/kb/conflicts")).json() == []
+
+
+async def test_root_changed_while_stopped_resets_index(kb_cfg: Config, tmp_path: Path) -> None:
+    async with lifespan_client(create_app(kb_cfg, [KbModule()])) as c:
+        c.headers.update(bearer(kb_cfg.token))
+        await _create(c, "Old KB page")
+    other = tmp_path / "other-kb"
+    other.mkdir()
+    cfg2 = replace(kb_cfg, kb_path=other)
+    async with lifespan_client(create_app(cfg2, [KbModule()])) as c:
+        c.headers.update(bearer(cfg2.token))
+        assert (await c.get("/api/kb/conflicts")).json() == []
+    async with lifespan_client(create_app(cfg2, [KbModule()])) as c:  # same root: kept
+        c.headers.update(bearer(cfg2.token))
+        assert (await c.get("/api/kb/conflicts")).json() == []
