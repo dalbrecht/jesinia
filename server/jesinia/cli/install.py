@@ -11,6 +11,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -150,9 +151,23 @@ def register_codex(sys: System, cfg: Config, codex: str) -> None:
         return
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     block = f'\n[mcp_servers.{MCP_NAME}.http_headers]\nAuthorization = "Bearer {cfg.token}"\n'
+    _write_private(path, text.rstrip("\n") + "\n" + block)
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Replace ``path`` atomically with a file that is mode 0600 from creation."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text.rstrip("\n") + "\n" + block, encoding="utf-8")
-    path.chmod(0o600)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def unregister(sys: System) -> None:

@@ -6,8 +6,8 @@ from __future__ import annotations
 import asyncio
 import shutil
 
-# argv-only process spawning (never a shell); imported by name so the standards linter's
-# `exec(` pattern does not mistake it for the exec() builtin.
+# argv-only process spawning, never a shell. Aliased because the standards linter's
+# banned-builtin pattern also matches the name of this safe asyncio function.
 from asyncio import create_subprocess_exec as spawn
 from collections.abc import Awaitable, Callable
 

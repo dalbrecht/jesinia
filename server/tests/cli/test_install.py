@@ -214,3 +214,17 @@ def test_real_system_run_and_files(tmp_path: Path) -> None:
     sys.remove(tmp_path / "d")
     assert not (tmp_path / "d").exists()
     assert System(yes=False, confirm=lambda q: True).ask("?") is True
+
+
+def test_private_write_cleans_up_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    def boom(src: str, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        inst._write_private(tmp_path / "config.toml", "secret")
+    assert list(tmp_path.iterdir()) == []
