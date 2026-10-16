@@ -36,6 +36,8 @@ class Scheduler:
     def every(self, name: str, interval: timedelta, job: Job) -> None:
         if name in self._jobs:
             raise ValueError(f"job {name!r} already scheduled")
+        if interval <= timedelta(0):
+            raise ValueError(f"job {name!r}: interval must be positive, got {interval}")
         self._jobs[name] = _Entry(interval, job)
 
     async def _run(self, name: str, entry: _Entry) -> None:

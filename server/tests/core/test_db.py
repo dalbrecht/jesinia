@@ -102,3 +102,11 @@ def test_two_statements_on_one_line(tmp_path: Path) -> None:
     conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, d))
     assert [r[0] for r in conn.execute("SELECT v FROM a ORDER BY v")] == ["x;y", "z"]
     conn.close()
+
+
+def test_zero_numbered_migration_rejected(tmp_path: Path) -> None:
+    d = tmp_path / "zero"
+    d.mkdir()
+    (d / "0000_base.sql").write_text("CREATE TABLE z (id INTEGER);\n")
+    with pytest.raises(MigrationError, match="start at 0001"):
+        open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, d))

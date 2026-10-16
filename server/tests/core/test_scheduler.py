@@ -98,3 +98,12 @@ async def test_start_twice_and_jobs_added_after_start() -> None:
     await s.start()  # already running: no second task
     s.every("b", timedelta(hours=1), job)  # never started
     await s.stop()
+
+
+@pytest.mark.parametrize("interval", [timedelta(0), timedelta(seconds=-1)])
+def test_nonpositive_interval_rejected(interval: timedelta) -> None:
+    async def job() -> None:
+        return None
+
+    with pytest.raises(ValueError, match="positive"):
+        Scheduler().every("x", interval, job)

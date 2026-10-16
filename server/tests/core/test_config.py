@@ -186,3 +186,23 @@ def test_unknown_keys_fail_fast(tmp_path: Path, extra: str) -> None:
     p.write_text(base + extra)
     with pytest.raises(ConfigError, match="unknown"):
         load_config(p)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[folders]\nnote = 123\n",
+        "[folders]\nnote = true\n",
+        "[kb]\npath = 5\n",
+        "[kbsync]\ninterval = 4\n",
+        '[server]\nport = "4870"\n',
+        "[server]\nport = true\n",
+    ],
+)
+def test_wrong_value_types_rejected(tmp_path: Path, body: str) -> None:
+    p = tmp_path / "config.toml"
+    header = '[server]\ntoken = "abc"\n'
+    text = header + body if not body.startswith("[server]") else body.replace("[server]\n", header)
+    p.write_text(text)
+    with pytest.raises(ConfigError, match="must be a"):
+        load_config(p)

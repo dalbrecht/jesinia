@@ -40,6 +40,8 @@ def _migrations(source: Traversable) -> list[tuple[int, str, str]]:
         if not m:
             continue
         version = int(m.group(1))
+        if version == 0:
+            raise MigrationError(f"{entry.name}: migration numbers start at 0001")
         if version in found:
             raise MigrationError(
                 f"duplicate migration version {version:04d}: {found[version][0]}, {entry.name}"

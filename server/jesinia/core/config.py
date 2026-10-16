@@ -124,6 +124,23 @@ _ALLOWED: dict[str, frozenset[str] | None] = {
 }
 
 
+_TYPES: dict[tuple[str, str], type] = {
+    ("server", "port"): int,
+    ("server", "token"): str,
+    ("kb", "path"): str,
+    ("kbsync", "interval"): str,
+    ("kbsync", "quiet"): str,
+}
+
+
+def _check_types(doc: Mapping[str, object]) -> None:
+    for table in _ALLOWED:
+        for key, value in _section(doc, table).items():
+            expected = _TYPES.get((table, key), str)  # every [folders] value is a string
+            if isinstance(value, bool) or not isinstance(value, expected):
+                raise ConfigError(f"[{table}] {key} must be a {expected.__name__}, got {value!r}")
+
+
 def _check_keys(doc: Mapping[str, object]) -> None:
     for table in doc:
         if table not in _ALLOWED:
@@ -139,6 +156,7 @@ def _check_keys(doc: Mapping[str, object]) -> None:
 
 def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
     _check_keys(doc)
+    _check_types(doc)
     server, kb, kbsync, folders = (_section(doc, s) for s in ("server", "kb", "kbsync", "folders"))
     token = server.get("token")
     if not isinstance(token, str) or not token:
