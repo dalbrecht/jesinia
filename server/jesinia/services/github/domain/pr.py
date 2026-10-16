@@ -58,6 +58,9 @@ class PullRequest:
     review_requested: bool
     mergeable_state: str | None
     created_at: datetime
+    # Set when the inbox could list this PR only from its search hit: the PR fetch failed
+    # with this cause, so the head, base and size fields are empty.
+    fetch_error: str | None = None
 
 
 @dataclass(frozen=True)

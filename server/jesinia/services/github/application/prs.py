@@ -39,6 +39,10 @@ from jesinia.services.github.domain.pr import (
 PER_PAGE = 100
 # GitHub's search rejects queries longer than 256 characters.
 SEARCH_QUERY_LIMIT = 256
+# Search returns at most 1000 results (10 pages of 100); asking for page 11 is a 422.
+SEARCH_MAX_PAGES = 10
+# Cap on concurrent per-PR fetches while building the inbox.
+INBOX_CONCURRENCY = 8
 # Who-qualifiers in inbox priority order: requested reviews first (spec §2 "Order").
 _REQUESTED = "review-requested:@me"
 _INBOX_QUALIFIERS = (_REQUESTED, "author:@me", "reviewed-by:@me")
@@ -62,6 +66,9 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
   }
 }
 """
+
+
+_SearchHit = tuple[tuple[str, int], Mapping[str, object]]
 
 
 class GitHubPayloadError(GitHubError):
@@ -183,6 +190,36 @@ def _pull_request(repo: str, data: Mapping[str, object], viewer: str) -> PullReq
     )
 
 
+def _pull_request_from_search(
+    repo: str, item: Mapping[str, object], fetch_error: str
+) -> PullRequest:
+    """What a search hit alone says about a PR whose own fetch failed."""
+    author, author_is_bot = _account(item, "user")
+    return PullRequest(
+        repo=repo,
+        number=_number(item, "number"),
+        title=_text(item, "title"),
+        body=_optional_text(item, "body") or "",
+        author=author,
+        author_is_bot=author_is_bot,
+        base_ref="",
+        head_ref="",
+        head_sha="",
+        base_sha="",
+        head_repo=None,
+        state=_text(item, "state"),
+        draft=item.get("draft") is True,
+        additions=0,
+        deletions=0,
+        changed_files=0,
+        url=_text(item, "html_url"),
+        review_requested=False,
+        mergeable_state=None,
+        created_at=datetime.fromisoformat(_text(item, "created_at")),
+        fetch_error=fetch_error,
+    )
+
+
 def _check_run(data: Mapping[str, object]) -> Check:
     status = check_status_from_run(_text(data, "status"), _optional_text(data, "conclusion"))
     return Check(_text(data, "name"), status, _optional_text(data, "html_url"))
@@ -236,10 +273,14 @@ class PrClient:
         return response.data
 
     async def _get_pages(
-        self, path: str, params: Mapping[str, str] | None = None, items_key: str | None = None
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        items_key: str | None = None,
+        max_pages: int | None = None,
     ) -> list[Mapping[str, object]]:
-        """Follow ``page`` until a short page; GitHub caps these lists (3000 files, 250
-        commits), so the loop always ends."""
+        """Follow ``page`` until a short page, or ``max_pages``; GitHub caps these lists
+        (3000 files, 250 commits, 1000 search results), so the loop always ends."""
         items: list[Mapping[str, object]] = []
         page = 1
         while True:
@@ -249,7 +290,7 @@ class PrClient:
                 data = _mapping(data, path).get(items_key)
             batch = _list(data, path)
             items.extend(_mapping(item, path) for item in batch)
-            if len(batch) < PER_PAGE:
+            if len(batch) < PER_PAGE or page == max_pages:
                 return items
             page += 1
 
@@ -267,12 +308,28 @@ class PrClient:
         validate_pull_number(number)
         return await self._pull(repo, number, await self.viewer())
 
-    async def _search(self, qualifier: str, repos: Sequence[str]) -> list[tuple[str, int]]:
-        found: list[tuple[str, int]] = []
+    async def _search(self, qualifier: str, repos: Sequence[str]) -> list[_SearchHit]:
+        found: list[_SearchHit] = []
         for query in _search_queries(qualifier, repos):
-            items = await self._get_pages("/search/issues", {"q": query}, items_key="items")
-            found.extend((_repo_of_search_item(item), _number(item, "number")) for item in items)
+            items = await self._get_pages(
+                "/search/issues", {"q": query}, items_key="items", max_pages=SEARCH_MAX_PAGES
+            )
+            found.extend(
+                ((_repo_of_search_item(item), _number(item, "number")), item) for item in items
+            )
         return found
+
+    async def _inbox_pull(
+        self, hit: _SearchHit, viewer: str, limit: asyncio.Semaphore
+    ) -> PullRequest:
+        """The full PR, or, if that one fetch fails, the search hit carrying the cause, so
+        one inaccessible PR never empties the inbox."""
+        (repo, number), item = hit
+        try:
+            async with limit:
+                return await self._pull(repo, number, viewer)
+        except (GitHubRequestError, GitHubPayloadError) as exc:
+            return _pull_request_from_search(repo, item, str(exc))
 
     async def list_review_inbox(self, repos: list[str]) -> list[PullRequest]:
         """Open PRs in ``repos`` whose review is requested of the viewer (directly or via a
@@ -282,15 +339,18 @@ class PrClient:
         if not repos:
             return []
         found = await asyncio.gather(*(self._search(q, repos) for q in _INBOX_QUALIFIERS))
-        requested = set(found[0])
-        keys = list(dict.fromkeys(key for keys in found for key in keys))
-        if not keys:
+        requested = {key for key, _ in found[0]}
+        hits: dict[tuple[str, int], Mapping[str, object]] = {}
+        for key, item in (hit for hits_of_one in found for hit in hits_of_one):
+            hits.setdefault(key, item)
+        if not hits:
             return []
         viewer = await self.viewer()
-        pulls = await asyncio.gather(*(self._pull(repo, n, viewer) for repo, n in keys))
+        limit = asyncio.Semaphore(INBOX_CONCURRENCY)
+        pulls = await asyncio.gather(*(self._inbox_pull(h, viewer, limit) for h in hits.items()))
         return [
             replace(pr, review_requested=pr.review_requested or key in requested)
-            for key, pr in zip(keys, pulls, strict=True)
+            for key, pr in zip(hits, pulls, strict=True)
         ]
 
     async def files(self, repo: str, number: int) -> list[PrFile]:
@@ -330,13 +390,14 @@ class PrClient:
     async def checks(self, repo: str, sha: str) -> CheckState:
         """Check runs plus legacy commit statuses on ``sha``, rolled up into one state."""
         base = f"/repos/{validate_repo(repo)}/commits/{validate_sha(sha)}"
-        runs, combined = await asyncio.gather(
+        # The combined status already keeps only the latest status per context, but it
+        # pages like any list, so a failure past the first page must still be read.
+        runs, statuses = await asyncio.gather(
             self._get_pages(f"{base}/check-runs", items_key="check_runs"),
-            self._get_json(f"{base}/status"),
+            self._get_pages(f"{base}/status", items_key="statuses"),
         )
-        statuses = _list(_mapping(combined, "status").get("statuses"), "statuses")
         checks = [_check_run(run) for run in runs]
-        checks += [_commit_status(_mapping(s, "status")) for s in statuses]
+        checks += [_commit_status(status) for status in statuses]
         return rollup_checks(checks)
 
     async def reviews(self, repo: str, number: int) -> list[ReviewSummary]:

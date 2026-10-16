@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
 
+import httpx
 import pytest
 import respx
 from httpx import Response
@@ -11,7 +12,11 @@ from httpx import Response
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
 from jesinia.core.db import DbClass, ModuleDb, open_db
-from jesinia.services.github.application.service import GitHubService, GitHubUnavailable
+from jesinia.services.github.application.service import (
+    GitHubRequestError,
+    GitHubService,
+    GitHubUnavailable,
+)
 from jesinia.services.github.infrastructure.auth import github_token
 from jesinia.services.github.infrastructure.cache import SqliteGitHubCache
 from jesinia.services.github.module import GitHubModule
@@ -167,3 +172,34 @@ async def test_non_json_body_and_graphql_rejected_token(gh: GitHubService) -> No
     respx.post("https://api.github.com/graphql").mock(return_value=Response(401, json={}))
     with pytest.raises(GitHubUnavailable):
         await gh.graphql("{ x }", {})
+
+
+@respx.mock
+async def test_transport_errors_are_typed_and_keep_their_cause(gh: GitHubService) -> None:
+    lost = httpx.ConnectError("connection refused")
+    respx.get("https://api.github.com/user").mock(side_effect=lost)
+    with pytest.raises(GitHubRequestError, match="connection refused") as caught:
+        await gh.get("/user")
+    assert caught.value.status is None and caught.value.__cause__ is lost
+    timeout = httpx.ReadTimeout("read timed out")
+    respx.post("https://api.github.com/graphql").mock(side_effect=timeout)
+    with pytest.raises(GitHubRequestError, match="read timed out") as caught:
+        await gh.graphql("{ x }", {})
+    assert caught.value.__cause__ is timeout
+
+
+@respx.mock
+async def test_graphql_server_errors_are_typed(gh: GitHubService) -> None:
+    respx.post("https://api.github.com/graphql").mock(
+        return_value=Response(502, text="<html>Bad gateway</html>")
+    )
+    with pytest.raises(GitHubRequestError, match="Bad gateway") as caught:
+        await gh.graphql("{ x }", {})
+    assert caught.value.status == 502
+    respx.post("https://api.github.com/graphql").mock(
+        return_value=Response(500, json={"message": "Something went wrong"})
+    )
+    with pytest.raises(GitHubRequestError, match="500: Something went wrong"):
+        await gh.graphql("{ x }", {})
+    respx.post("https://api.github.com/graphql").mock(return_value=Response(200, json={}))
+    assert await gh.graphql("{ x }", {}) == {}

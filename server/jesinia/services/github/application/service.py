@@ -119,6 +119,31 @@ class GitHubService:
             base_url=API, timeout=TIMEOUT, transport=self._transport, trust_env=False
         )
 
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        headers: Mapping[str, str],
+        *,
+        params: Mapping[str, str] | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> httpx.Response:
+        """One request; a network failure becomes a typed error that keeps httpx's cause."""
+        try:
+            async with self._client() as client:
+                resp = await client.request(
+                    method,
+                    path,
+                    params=params,
+                    json=None if payload is None else dict(payload),
+                    headers=headers,
+                )
+        except httpx.HTTPError as exc:
+            raise GitHubRequestError(None, str(exc) or type(exc).__name__) from exc
+        if resp.status_code == 401:
+            raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")
+        return resp
+
     async def get(self, path: str, params: Mapping[str, str] | None = None) -> GitHubResponse:
         headers = await self._headers()
         query = urlencode(sorted((params or {}).items()))
@@ -126,10 +151,7 @@ class GitHubService:
         cached = self._cache.get(key)
         if cached is not None:
             headers["If-None-Match"] = cached.etag
-        async with self._client() as client:
-            resp = await client.get(path, params=params, headers=headers)
-        if resp.status_code == 401:
-            raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")
+        resp = await self._send("GET", path, headers, params=params)
         if resp.status_code == 304 and cached is not None:
             return GitHubResponse(cached.status, cached.data, True)
         data = _json(resp)
@@ -140,31 +162,23 @@ class GitHubService:
 
     async def graphql(self, query: str, variables: Mapping[str, object]) -> dict[str, object]:
         headers = await self._headers()
-        async with self._client() as client:
-            resp = await client.post(
-                "/graphql", json={"query": query, "variables": dict(variables)}, headers=headers
-            )
-        if resp.status_code == 401:
-            raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")
-        body = resp.json()
-        if errors := body.get("errors"):
-            raise GitHubRequestError(
-                resp.status_code, "; ".join(str(e.get("message", e)) for e in errors)
-            )
-        resp.raise_for_status()
-        data: dict[str, object] = body.get("data") or {}
-        return data
+        resp = await self._send(
+            "POST", "/graphql", headers, payload={"query": query, "variables": dict(variables)}
+        )
+        body = _json(resp)
+        if not isinstance(body, Mapping):
+            raise GitHubRequestError(resp.status_code, str(body))
+        errors = body.get("errors")
+        if isinstance(errors, list) and errors:
+            raise GitHubRequestError(resp.status_code, "; ".join(_error_detail(e) for e in errors))
+        if not resp.is_success:
+            raise GitHubRequestError(resp.status_code, github_error_message(body))
+        data = body.get("data")
+        return {str(k): v for k, v in data.items()} if isinstance(data, Mapping) else {}
 
     async def _post(self, path: str, payload: Mapping[str, object]) -> object:
         """A write: never cached or revalidated, and every failure keeps GitHub's cause."""
-        headers = await self._headers()
-        try:
-            async with self._client() as client:
-                resp = await client.post(path, json=dict(payload), headers=headers)
-        except httpx.HTTPError as exc:
-            raise GitHubRequestError(None, str(exc) or type(exc).__name__) from exc
-        if resp.status_code == 401:
-            raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")
+        resp = await self._send("POST", path, await self._headers(), payload=payload)
         data = _json(resp)
         if not resp.is_success:
             raise GitHubRequestError(resp.status_code, github_error_message(data))

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import asyncio
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -11,7 +12,12 @@ import respx
 from httpx import Response
 
 from jesinia.core.db import DbClass, ModuleDb, open_db
-from jesinia.services.github.application.prs import GitHubPayloadError, PrClient
+from jesinia.services.github.application.prs import (
+    INBOX_CONCURRENCY,
+    SEARCH_MAX_PAGES,
+    GitHubPayloadError,
+    PrClient,
+)
 from jesinia.services.github.application.service import (
     GitHubRequestError,
     GitHubService,
@@ -517,3 +523,109 @@ async def test_graphql_errors_are_typed(github: GitHubService) -> None:
     )
     with pytest.raises(GitHubRequestError, match="Could not resolve"):
         await github.graphql("{ x }", {})
+
+
+def _status(context: str, state: str) -> dict[str, object]:
+    return {"context": context, "state": state, "target_url": None}
+
+
+@respx.mock
+async def test_checks_page_commit_statuses_so_a_late_failure_counts(prs: PrClient) -> None:
+    respx.get(f"{API}/repos/acme/api/commits/{SHA}/check-runs").mock(
+        return_value=Response(200, json=fixture("check_runs_passing"))
+    )
+    first = {"state": "failure", "statuses": [_status(f"ci/{i}", "success") for i in range(100)]}
+    second = {"state": "failure", "statuses": [_status("ci/late", "failure")]}
+    route = respx.get(f"{API}/repos/acme/api/commits/{SHA}/status").mock(
+        side_effect=[Response(200, json=first), Response(200, json=second)]
+    )
+
+    state = await prs.checks("acme/api", SHA)
+
+    assert state.state == "failing" and len(state.checks) == 103
+    assert state.checks[-1].name == "ci/late"
+    assert [c.request.url.params["page"] for c in route.calls] == ["1", "2"]
+    assert route.calls[0].request.url.params["per_page"] == "100"
+
+
+@respx.mock
+async def test_inbox_keeps_a_pr_that_fails_to_load_with_its_cause(prs: PrClient) -> None:
+    _mock_search("review-requested:@me", "search_review_requested")
+    _mock_search("author:@me", "search_authored")
+    _mock_search("reviewed-by:@me", "search_reviewed")
+    _mock_pulls()
+    respx.get(f"{API}/repos/acme/web/pulls/8").mock(
+        return_value=Response(403, json={"message": "Resource not accessible by integration"})
+    )
+
+    inbox = await prs.list_review_inbox(["acme/api", "acme/web"])
+
+    assert [(pr.repo, pr.number) for pr in inbox] == [
+        ("acme/api", 7),
+        ("acme/web", 8),
+        ("acme/api", 9),
+    ]
+    assert inbox[0].fetch_error is None and inbox[2].fetch_error is None
+    broken = inbox[1]
+    assert broken.fetch_error is not None
+    assert "403" in broken.fetch_error and "not accessible" in broken.fetch_error
+    assert (broken.title, broken.author, broken.url) == (
+        "Fix the header",
+        "me",
+        "https://github.com/acme/web/pull/8",
+    )
+    assert broken.head_sha == "" and broken.review_requested is False
+
+
+@respx.mock
+async def test_inbox_bounds_concurrent_pull_fetches(prs: PrClient) -> None:
+    items = [
+        {
+            "repository_url": f"{API}/repos/acme/api",
+            "number": n,
+            "title": f"PR {n}",
+            "html_url": f"https://github.com/acme/api/pull/{n}",
+            "user": {"login": "alice", "type": "User"},
+            "state": "open",
+            "created_at": "2026-10-14T09:30:00Z",
+        }
+        for n in range(1, 31)
+    ]
+    respx.get(f"{API}/search/issues").mock(
+        return_value=Response(200, json={"total_count": 30, "items": items})
+    )
+    respx.get(f"{API}/user").mock(return_value=Response(200, json=fixture("user")))
+    in_flight = 0
+    peak = 0
+    template = fixture("pull_api_7")
+    assert isinstance(template, dict)
+
+    async def slow_pull(request: httpx.Request) -> Response:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        number = int(request.url.path.rsplit("/", 1)[1])
+        return Response(200, json={**template, "number": number})
+
+    respx.get(url__regex=rf"{API}/repos/acme/api/pulls/\d+$").mock(side_effect=slow_pull)
+
+    inbox = await prs.list_review_inbox(["acme/api"])
+
+    assert len(inbox) == 30 and 1 < peak <= INBOX_CONCURRENCY
+
+
+@respx.mock
+async def test_inbox_search_stops_at_githubs_thousand_result_cap(prs: PrClient) -> None:
+    item = fixture("search_review_requested")
+    assert isinstance(item, dict)
+    full_page = {"total_count": 5000, "items": item["items"] * 100}
+    route = respx.get(f"{API}/search/issues").mock(return_value=Response(200, json=full_page))
+    _mock_pulls()
+
+    inbox = await prs.list_review_inbox(["acme/api"])
+
+    assert [(pr.repo, pr.number) for pr in inbox] == [("acme/api", 7)]
+    pages = [int(c.request.url.params["page"]) for c in route.calls]
+    assert max(pages) == SEARCH_MAX_PAGES == 10
