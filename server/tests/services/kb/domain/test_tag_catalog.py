@@ -92,3 +92,15 @@ def test_ignored_entries_keep_their_meaning_and_aliases() -> None:
     cat = parse_catalog(body)
     assert cat.entries["x"] == CatalogEntry("x", "why", ("a",), ignored=True)
     assert render_catalog(cat) == body
+
+
+def test_catalog_ignores_malformed_tag_lines_but_keeps_them_verbatim() -> None:
+    body = "- #foo-\n- #a--b\n- #ok: fine\n- #foo-: x\n"
+    cat = parse_catalog(body)
+    assert list(cat.entries) == ["ok"]
+    assert render_catalog(cat) == body
+
+
+def test_catalog_entry_tag_is_nfc_normalised() -> None:
+    cat = parse_catalog("- #café: coffee\n")
+    assert list(cat.entries) == ["café"]

@@ -25,6 +25,11 @@ type Offer = { typed: string; tag: string };
 
 const SUGGESTIONS = 5;
 
+/** The reason a request failed to even get a response (offline, refused, aborted). */
+function causeText(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : "the request failed.";
+}
+
 /**
  * Tag chips for something about to be saved, plus a box to add a tag by name. Suggestions
  * (which may run the user's agent) are fetched only when the user asks, about to save, never
@@ -72,11 +77,18 @@ export function TagPicker({ text, context, value, onChange }: TagPickerProps) {
     if (!wanted) return;
     const asked = [scope.current, suggestionsFor.current];
     setSuggesting(true);
-    const r = await client.POST("/api/kb/tags/suggest", { body: { text: wanted, limit: SUGGESTIONS } });
-    if (scope.current !== asked[0] || suggestionsFor.current !== asked[1]) return;
-    setSuggesting(false);
-    // Suggestions are a convenience: when they fail, the box still adds tags by name.
-    setSuggestions(r.data ?? []);
+    setError(null);
+    const isCurrent = () => scope.current === asked[0] && suggestionsFor.current === asked[1];
+    try {
+      const r = await client.POST("/api/kb/tags/suggest", { body: { text: wanted, limit: SUGGESTIONS } });
+      if (!isCurrent()) return;
+      // Suggestions are a convenience: when they fail, the box still adds tags by name.
+      setSuggestions(r.data ?? []);
+    } catch (cause) {
+      if (isCurrent()) setError(`Couldn't get suggestions: ${causeText(cause)}`);
+    } finally {
+      if (isCurrent()) setSuggesting(false);
+    }
   };
 
   const add = (tag: string, isNew: boolean) => {
@@ -97,19 +109,24 @@ export function TagPicker({ text, context, value, onChange }: TagPickerProps) {
     setOffer(null);
     setChecking(true);
     const asked = scope.current;
-    const r = await client.GET("/api/kb/tags/check", { params: { query: { tag: typed } } });
-    if (scope.current !== asked) return; // switched away (or unmounted) meanwhile
-    setChecking(false);
-    if (!r.data) {
-      setError(errorText(r.error, "Couldn't check that tag."));
-      return;
+    try {
+      const r = await client.GET("/api/kb/tags/check", { params: { query: { tag: typed } } });
+      if (scope.current !== asked) return; // switched away (or unmounted) meanwhile
+      if (!r.data) {
+        setError(errorText(r.error, "Couldn't check that tag."));
+        return;
+      }
+      setDraft("");
+      const { normalised, canonical, near, same_meaning: sameMeaning } = r.data;
+      const closest = sameMeaning ?? near[0];
+      if (canonical) add(canonical, false);
+      else if (closest) setOffer({ typed: normalised, tag: closest });
+      else add(normalised, true);
+    } catch (cause) {
+      if (scope.current === asked) setError(`Couldn't check that tag: ${causeText(cause)}`);
+    } finally {
+      if (scope.current === asked) setChecking(false);
     }
-    setDraft("");
-    const { normalised, canonical, near, same_meaning: sameMeaning } = r.data;
-    const closest = sameMeaning ?? near[0];
-    if (canonical) add(canonical, false);
-    else if (closest) setOffer({ typed: normalised, tag: closest });
-    else add(normalised, true);
   };
 
   const pick = (suggestion: Suggestion) => {

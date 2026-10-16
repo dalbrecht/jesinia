@@ -8,12 +8,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
-from jesinia.services.kb.domain.tags import extract_tags, normalise_tag
+from jesinia.services.kb.domain.tags import extract_tags, has_tag_grammar, normalise_tag
 
 CATALOG_TITLE = "Tags"
 CATALOG_KIND = "tag-catalog"
 
-_ENTRY_LINE = re.compile(r"^- #(?P<tag>[^\W_](?:[^\W_]|-)*)(?P<rest>.*)$")
+_ENTRY_LINE = re.compile(r"^- #(?P<tag>[^\s:(]+)(?P<rest>.*)$")
 _TRAILING_GROUP = re.compile(r"\s*\((?P<body>aliases:[^()]*|retired|ignored)\)\s*$")
 
 
@@ -56,7 +56,7 @@ class TagCatalog:
 
 def _parse_entry(line: str) -> CatalogEntry | None:
     match = _ENTRY_LINE.match(line)
-    if match is None:
+    if match is None or not has_tag_grammar(match.group("tag")):
         return None
     rest = match.group("rest").rstrip()
     retired = ignored = False
