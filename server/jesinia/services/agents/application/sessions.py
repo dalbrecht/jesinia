@@ -23,6 +23,7 @@ from jesinia.services.agents.application.errors import (
     PendingNotFound,
     RunnerUnavailable,
     SessionBusy,
+    SessionClosed,
     SessionNotFound,
     TurnFailed,
 )
@@ -50,12 +51,20 @@ __all__ = [
     "PendingNotFound",
     "RunnerUnavailable",
     "SessionBusy",
+    "SessionClosed",
     "SessionNotFound",
     "SessionService",
     "TurnFailed",
 ]
 
+# The subject kind marks a one-shot session in the store, so it survives a restart: such a
+# session never gets an MCP endpoint or token, and takes a single turn.
 ONE_SHOT_SUBJECT = "one-shot"
+NO_MCP_SERVERS: dict[str, object] = {"mcpServers": {}}
+
+
+def is_one_shot(session: Session) -> bool:
+    return session.subject.kind == ONE_SHOT_SUBJECT
 
 
 def _inline_context(pack: ContextPack) -> str:
@@ -89,7 +98,6 @@ class SessionService:
         self._tools = tools
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._changed: dict[str, asyncio.Condition] = {}
-        self._toolless: set[str] = set()  # one-shot sessions: no Jesinia tools at all
 
     # -- helpers -------------------------------------------------------------------
     def dir_for(self, id: str) -> Path:
@@ -113,26 +121,43 @@ class SessionService:
             raise SessionNotFound(id)
         return s
 
-    def _write_mcp_config(self, id: str, token: str) -> Path:
+    def _write_mcp_config(self, id: str, token: str | None) -> Path:
         path = self.dir_for(id) / "mcp.json"
-        cfg = {
-            "mcpServers": {
-                "jesinia": {
-                    "type": "http",
-                    "url": self.mcp_url,
-                    "headers": {"Authorization": f"Bearer {token}"},
+        cfg: dict[str, object] = NO_MCP_SERVERS
+        if token is not None:
+            cfg = {
+                "mcpServers": {
+                    "jesinia": {
+                        "type": "http",
+                        "url": self.mcp_url,
+                        "headers": {"Authorization": f"Bearer {token}"},
+                    }
                 }
             }
-        }
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as fh:
             json.dump(cfg, fh)
         return path
 
+    @staticmethod
+    def _token_in(path: Path) -> str | None:
+        """The session token in an ``mcp.json``, if it configures the Jesinia server."""
+        if not path.exists():
+            return None
+        server = json.loads(path.read_text()).get("mcpServers", {}).get("jesinia")
+        if not isinstance(server, dict):
+            return None
+        header = str(server.get("headers", {}).get("Authorization", ""))
+        return header.removeprefix("Bearer ") or None
+
     async def recover(self) -> int:
         """After a restart, a session still marked ``running`` lost its turn: mark it
-        failed (with a transcript note) so the user can send again."""
-        stranded = [s for s in self.store.all_sessions() if s.status == "running"]
+        failed (with a transcript note) so the user can send again. One-shot sessions are
+        closed for good (their caller is gone)."""
+        sessions = self.store.all_sessions()
+        stranded = [s for s in sessions if s.status == "running"]
+        for s in [s for s in sessions if is_one_shot(s)]:
+            self._close_folder(s.id)
         for s in stranded:
             self.store.set_status(s.id, "failed")
             await self._append(
@@ -158,12 +183,9 @@ class SessionService:
         """Re-register session tokens after a restart (they live in each mcp.json)."""
         count = 0
         for s in self.store.all_sessions():
-            path = self.dir_for(s.id) / "mcp.json"
-            if path.exists():
-                header = json.loads(path.read_text())["mcpServers"]["jesinia"]["headers"][
-                    "Authorization"
-                ]
-                auth.register_session_token(str(header).removeprefix("Bearer "), s.id)
+            token = self._token_in(self.dir_for(s.id) / "mcp.json")
+            if token is not None and not is_one_shot(s):
+                auth.register_session_token(token, s.id)
                 count += 1
         return count
 
@@ -175,17 +197,18 @@ class SessionService:
         pack: ContextPack,
         *,
         preauthorized_tools: frozenset[str] | set[str] = frozenset(),
-        tools_allowed: bool = True,
     ) -> Session:
+        """A new idle session. A ``one-shot`` subject gets no MCP endpoint or token."""
         if runner not in self.runners:
             raise ValueError(f"unknown runner {runner!r}")
         id = uuid.uuid4().hex
-        if not tools_allowed:
-            self._toolless.add(id)
         write_pack(pack, self.dir_for(id))
-        token = secrets.token_urlsafe(32)
-        self._write_mcp_config(id, token)
-        auth.register_session_token(token, id)
+        if subject.kind == ONE_SHOT_SUBJECT:
+            self._write_mcp_config(id, None)
+        else:
+            token = secrets.token_urlsafe(32)
+            self._write_mcp_config(id, token)
+            auth.register_session_token(token, id)
         session = Session(
             id,
             subject,
@@ -208,6 +231,11 @@ class SessionService:
         task = self._tasks.get(session_id)
         if session.status == "running" or (task is not None and not task.done()):
             raise SessionBusy(session_id)
+        if is_one_shot(session) and (
+            not self.dir_for(session_id).exists()
+            or any(e.kind == "user_message" for e in self.store.events(session_id))
+        ):
+            raise SessionClosed(session_id)
         self.store.set_status(session_id, "running")
         message = await self._append(session_id, "user_message", {"text": text})
         self._tasks[session_id] = asyncio.create_task(
@@ -264,7 +292,6 @@ class SessionService:
             Subject(ONE_SHOT_SUBJECT, "", "One-shot ask"),
             runner,
             ContextPack(pack.role_prompt),
-            tools_allowed=False,
         )
         context = _inline_context(pack)
         text = f"{prompt}\n\n{context}" if context else prompt
@@ -277,16 +304,15 @@ class SessionService:
         """End a session for good: stop its turn, revoke its MCP token, and delete its
         scratch folder. The transcript stays (history)."""
         await self._abandon_turn(session_id, "the session was closed during this turn")
-        path = self.dir_for(session_id) / "mcp.json"
-        if path.exists():
-            header = json.loads(path.read_text())["mcpServers"]["jesinia"]["headers"][
-                "Authorization"
-            ]
-            auth.revoke_session_token(str(header).removeprefix("Bearer "))
-        shutil.rmtree(self.dir_for(session_id), ignore_errors=True)
-        self._toolless.discard(session_id)
+        self._close_folder(session_id)
         self._tasks.pop(session_id, None)
         self._changed.pop(session_id, None)
+
+    def _close_folder(self, session_id: str) -> None:
+        token = self._token_in(self.dir_for(session_id) / "mcp.json")
+        if token is not None:
+            auth.revoke_session_token(token)
+        shutil.rmtree(self.dir_for(session_id), ignore_errors=True)
 
     async def _turn(self, id: str, text: str) -> None:
         session = self.get(id)
@@ -298,7 +324,7 @@ class SessionService:
             system_prompt=system_prompt(workdir),
             resume_id=session.agent_session_id,
             mcp_config=workdir / "mcp.json",
-            allowed_tools=[] if id in self._toolless else sorted(self._tools()),
+            allowed_tools=[] if is_one_shot(session) else sorted(self._tools()),
         )
         finished = False
         try:

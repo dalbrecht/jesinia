@@ -20,3 +20,7 @@ class RunnerUnavailable(LookupError):
 
 class TurnFailed(RuntimeError):
     """The agent's turn ended in an error; the message is the runner's own."""
+
+
+class SessionClosed(RuntimeError):
+    """The session takes no more turns (a one-shot session after its single turn)."""

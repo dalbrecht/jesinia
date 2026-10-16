@@ -10,7 +10,11 @@ import pytest
 from jesinia.core import auth
 from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.module import ToolDef
-from jesinia.services.agents.application.errors import RunnerUnavailable, TurnFailed
+from jesinia.services.agents.application.errors import (
+    RunnerUnavailable,
+    SessionClosed,
+    TurnFailed,
+)
 from jesinia.services.agents.application.packs import ContextPack, UntrustedDoc
 from jesinia.services.agents.application.runner import RunnerStatus, TurnRequest
 from jesinia.services.agents.application.sessions import SessionNotFound, SessionService
@@ -22,6 +26,23 @@ from jesinia.services.agents.infrastructure.store import SqliteSessionStore
 DB = ModuleDb("sessions", DbClass.HISTORY, files("jesinia.services.agents.migrations"))
 SUBJ = Subject("kb", "p1", "A page")
 TOOLS: dict[str, ToolDef] = {"kb_read": ToolDef("kb_read", "r", object, None, False)}  # type: ignore[arg-type]
+
+
+class ConfigRecordingRunner:
+    """Records the session's MCP config as the runner sees it during the turn."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.configs: list[object] = []
+
+    async def status(self) -> RunnerStatus:
+        return RunnerStatus(True, "rec", "records")
+
+    async def run(self, req: TurnRequest) -> AsyncIterator[AgentEvent]:
+        self.configs.append(json.loads(req.mcp_config.read_text()))
+        yield TextDelta("ok")
+        yield TurnDone("a-1", None)
 
 
 class HangingRunner:
@@ -67,22 +88,9 @@ def _pack() -> ContextPack:
     )
 
 
-def _token(svc: SessionService, session_id: str) -> str:
-    cfg = json.loads((svc.dir_for(session_id) / "mcp.json").read_text())
-    return str(cfg["mcpServers"]["jesinia"]["headers"]["Authorization"]).removeprefix("Bearer ")
-
-
 async def test_one_shot_returns_text_and_closes_session(make) -> None:  # type: ignore[no-untyped-def]
     runner = FakeRunner([TextDelta("Hel"), TextDelta("lo"), TurnDone("a-1", "m")])
     svc: SessionService = make(runner)
-    tokens: list[str] = []
-    original = svc.ask
-
-    async def spy(session_id: str, prompt: str, *, timeout: float = 45.0) -> str:
-        tokens.append(_token(svc, session_id))
-        return await original(session_id, prompt, timeout=timeout)
-
-    svc.ask = spy  # type: ignore[method-assign]
     assert await svc.one_shot("fake", _pack(), "TAGS: which?") == "Hello"
     req = runner.last_req
     assert req is not None and list(req.allowed_tools) == [] and req.resume_id is None
@@ -95,7 +103,6 @@ async def test_one_shot_returns_text_and_closes_session(make) -> None:  # type: 
     (session,) = svc.store.all_sessions()
     assert session.status == "idle"
     assert not svc.dir_for(session.id).exists()
-    assert auth.session_for_token(tokens[0]) is None
 
 
 async def test_one_shot_times_out(make) -> None:  # type: ignore[no-untyped-def]
@@ -164,3 +171,60 @@ async def test_close_is_idempotent(make) -> None:  # type: ignore[no-untyped-def
     await svc.close(session.id)
     await svc.close(session.id)
     assert not svc.dir_for(session.id).exists()
+
+
+async def test_one_shot_session_has_no_mcp_server_or_token(  # type: ignore[no-untyped-def]
+    make, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = ConfigRecordingRunner()
+    svc: SessionService = make(runner)
+    registered: list[str] = []
+    original = auth.register_session_token
+
+    def spy(token: str, session_id: str) -> None:
+        registered.append(session_id)
+        original(token, session_id)
+
+    monkeypatch.setattr(auth, "register_session_token", spy)
+    assert await svc.one_shot("fake", _pack(), "TAGS: which?") == "ok"
+    # Enforced server-side, not only by the runner's allowlist: no endpoint, no token.
+    assert runner.configs == [{"mcpServers": {}}]
+    assert registered == []
+    assert auth._session_tokens == {}
+
+
+async def test_one_shot_session_refuses_further_turns(make) -> None:  # type: ignore[no-untyped-def]
+    svc: SessionService = make(FakeRunner([TextDelta("x"), TurnDone("a-1", None)]))
+    await svc.one_shot("fake", _pack(), "TAGS: which?")
+    (session,) = svc.store.all_sessions()
+    with pytest.raises(SessionClosed):
+        await svc.send(session.id, "again")
+    with pytest.raises(SessionClosed):
+        await svc.ask(session.id, "again")
+
+
+async def test_restart_closes_stranded_one_shot_sessions(make) -> None:  # type: ignore[no-untyped-def]
+    svc: SessionService = make(HangingRunner())
+    task = asyncio.create_task(svc.one_shot("fake", _pack(), "TAGS: which?", timeout=30))
+    while not svc.store.all_sessions() or not svc._tasks:
+        await asyncio.sleep(0)
+    (session,) = svc.store.all_sessions()
+    assert svc.get(session.id).status == "running"
+    # Simulate a crash: the stranded folder carries a token (as an older build wrote it).
+    (svc.dir_for(session.id) / "mcp.json").write_text(
+        json.dumps(
+            {"mcpServers": {"jesinia": {"url": "u", "headers": {"Authorization": "Bearer t-1"}}}}
+        )
+    )
+    task.cancel()
+    svc._tasks.clear()
+    auth.reset_state()
+
+    restarted = SessionService(svc.store, svc.runners, svc.sessions_dir, svc.mcp_url, dict)
+    assert restarted.restore_tokens() == 0
+    assert auth.session_for_token("t-1") is None
+    await restarted.recover()
+    assert restarted.get(session.id).status == "failed"
+    assert not restarted.dir_for(session.id).exists()
+    with pytest.raises(SessionClosed):
+        await restarted.send(session.id, "again")
