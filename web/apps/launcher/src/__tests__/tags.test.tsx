@@ -29,6 +29,10 @@ const posted = async (calls: Request[], path: string) => {
   return call ? await call.clone().json() : undefined;
 };
 
+const keyOf = (call: Request) => call.headers.get("Idempotency-Key");
+const callsTo = (calls: Request[], method: string, path: string) =>
+  calls.filter((c) => c.method === method && new URL(c.url).pathname === path);
+
 const section = async () => within(await screen.findByRole("region", { name: "Tags" }));
 
 describe("Settings → Tags", () => {
@@ -404,5 +408,107 @@ describe("Settings → Tags", () => {
       into: "python",
       revs: { p1: "r1", p2: "r2" },
     });
+  });
+
+  it("Restore shows on retired rows only and posts restore", async () => {
+    const calls = renderTags({ "POST /api/kb/tags/restore": () => new Response(null, { status: 204 }) });
+    const tags = await section();
+    const python = (await tags.findByText("#python")).closest("li") as HTMLElement;
+    expect(within(python).queryByRole("button", { name: "Restore" })).toBeNull();
+    const old = tags.getByText("#old").closest("li") as HTMLElement;
+    await userEvent.click(within(old).getByRole("button", { name: "Restore" }));
+    expect((await screen.findAllByText("Restored #old.")).length).toBeGreaterThan(0);
+    expect(await posted(calls, "/api/kb/tags/restore")).toEqual({ tag: "old" });
+  });
+
+  it("every mutating call sends an Idempotency-Key; reads and previews do not", async () => {
+    const empty = () => new Response(null, { status: 204 });
+    const calls = renderTags({
+      "POST /api/kb/tags": empty,
+      "POST /api/kb/tags/retire": empty,
+      "POST /api/kb/tags/adopt": empty,
+      "POST /api/kb/tags/ignore": empty,
+      "POST /api/kb/tags/rename/preview": { pages: [{ id: "p1", title: "A", rev: "r1" }], skipped_reserved: [] },
+      "POST /api/kb/tags/rename": { updated: ["p1"], skipped_changed: [] },
+      "POST /api/kb/tags/merge": { updated: ["p1"], skipped_changed: [] },
+    });
+    const tags = await section();
+    await userEvent.type(await tags.findByLabelText("New tag"), "graphs");
+    await userEvent.click(tags.getByRole("button", { name: "Add tag" }));
+    await screen.findAllByText("Added #graphs.");
+    const python = tags.getByText("#python").closest("li") as HTMLElement;
+    await userEvent.click(within(python).getByRole("button", { name: "Retire" }));
+    await screen.findAllByText("Retired #python.");
+    const rust = tags.getByText("#rust").closest("li") as HTMLElement;
+    await userEvent.click(within(rust).getByRole("button", { name: "Adopt" }));
+    await userEvent.click(within(rust).getByRole("button", { name: "Ignore" }));
+    await screen.findAllByText("Ignored #rust.");
+    for (const mode of ["Rename", "Merge into…"]) {
+      const sqlite = tags.getByText("#sqlite").closest("li") as HTMLElement;
+      await userEvent.click(within(sqlite).getByRole("button", { name: mode }));
+      const dialog = within(await screen.findByRole("dialog"));
+      await userEvent.type(dialog.getByRole("textbox", { name: /New name|Merge into/ }), "db");
+      await userEvent.click(dialog.getByRole("button", { name: "Preview" }));
+      await userEvent.click(await dialog.findByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    }
+    const writes = ["", "/retire", "/adopt", "/ignore", "/rename", "/merge"].map((p) => `/api/kb/tags${p}`);
+    const keys = writes.map((path) => {
+      const sent = callsTo(calls, "POST", path);
+      expect(sent, path).toHaveLength(1);
+      return keyOf(sent[0] as Request);
+    });
+    keys.forEach((key) => expect(key).toMatch(/^[0-9a-f-]{36}$/));
+    expect(new Set(keys).size).toBe(keys.length);
+    const reads = calls.filter((c) => !writes.includes(new URL(c.url).pathname));
+    expect(reads.length).toBeGreaterThan(0);
+    reads.forEach((c) => expect(keyOf(c)).toBeNull());
+  });
+
+  it("a retry after a server error reuses the action's key; an answered action starts fresh", async () => {
+    let status = 503;
+    const calls = renderTags({
+      "POST /api/kb/tags/retire": () =>
+        status === 204 ? new Response(null, { status }) : Response.json({ detail: "Not now." }, { status }),
+    });
+    const tags = await section();
+    const python = (await tags.findByText("#python")).closest("li") as HTMLElement;
+    const retire = () => userEvent.click(within(python).getByRole("button", { name: "Retire" }));
+    await retire();
+    await screen.findAllByText("Not now.");
+    status = 400;
+    await retire();
+    await waitFor(() => expect(callsTo(calls, "POST", "/api/kb/tags/retire")).toHaveLength(2));
+    status = 204;
+    await retire();
+    await screen.findAllByText("Retired #python.");
+    const sqlite = tags.getByText("#sqlite").closest("li") as HTMLElement;
+    await userEvent.click(within(sqlite).getByRole("button", { name: "Retire" }));
+    await screen.findAllByText("Retired #sqlite.");
+    const keys = callsTo(calls, "POST", "/api/kb/tags/retire").map(keyOf);
+    expect(keys).toHaveLength(4);
+    expect(keys[1]).toBe(keys[0]); // retried after the 503: same action, same key
+    expect(keys[2]).not.toBe(keys[1]); // the 400 was an answer: clicking again is a new action
+    expect(keys[3]).not.toBe(keys[2]);
+  });
+
+  it("keeps the key when the network fails, so the next try is the same action", async () => {
+    let fail = true;
+    const calls = renderTags({
+      "POST /api/kb/tags/ignore": () => {
+        if (fail) return Promise.reject(new TypeError("offline"));
+        return new Response(null, { status: 204 });
+      },
+    });
+    const tags = await section();
+    const rust = (await tags.findByText("#rust")).closest("li") as HTMLElement;
+    await userEvent.click(within(rust).getByRole("button", { name: "Ignore" }));
+    expect((await screen.findAllByText("That didn't work.")).length).toBeGreaterThan(0);
+    fail = false;
+    await userEvent.click(within(rust).getByRole("button", { name: "Ignore" }));
+    await screen.findAllByText("Ignored #rust.");
+    const keys = callsTo(calls, "POST", "/api/kb/tags/ignore").map(keyOf);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
   });
 });

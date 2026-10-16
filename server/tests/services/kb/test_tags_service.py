@@ -452,3 +452,13 @@ async def test_ensure_resolves_aliases_and_adds_new_tags_all_or_nothing(kb: KbSe
         "database",
     ]
     assert [t.tag for t in await tags.catalog()] == ["sqlite", "wal-mode", "database"]
+
+
+async def test_restore_clears_retired_and_rejects_unknown_tags(kb: KbService) -> None:
+    tags = TagService(kb, None)
+    await tags.add("old")
+    await tags.retire("old")
+    await tags.restore("#Old")
+    assert not (await tags.catalog())[0].retired
+    with pytest.raises(TagNotFound):
+        await tags.restore("ghost")

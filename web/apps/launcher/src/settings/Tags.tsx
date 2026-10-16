@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { errorText, type components } from "@jesinia/client";
+import { errorText, withIdempotency, type components, type IdempotencyHeaders } from "@jesinia/client";
 import { Badge, Button, Input, List, Panel, Row, useToast } from "@jesinia/design";
 import { useClient } from "@jesinia/shell";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
@@ -19,6 +19,33 @@ const pagesLabel = (n: number) => `${n} page${n === 1 ? "" : "s"}`;
 function matchesFilter(info: TagInfo, needle: string): boolean {
   const haystack = [info.tag, info.meaning, ...info.aliases].join(" ").toLowerCase();
   return haystack.includes(needle.toLowerCase());
+}
+
+type Answered = { response: Response; error?: unknown };
+type ActionTag = { action: string; key: string };
+
+const isInProgress = (error: unknown) =>
+  typeof error === "object" && error !== null && (error as { error?: unknown }).error === "IdempotencyInProgress";
+
+/**
+ * Sends writes with one idempotency key per user action. Trying the same action again (same
+ * request, after a network failure, a server error, or while the first is still running)
+ * reuses its key, so the server acts at most once; once the server has answered, the next
+ * attempt is a new action with a new key.
+ */
+function useIdempotentSend() {
+  const pending = useRef<ActionTag | null>(null);
+  return useCallback(
+    async <T extends Answered>(action: unknown, send: (header: IdempotencyHeaders) => Promise<T>): Promise<T> => {
+      const id = JSON.stringify(action);
+      const header = withIdempotency(pending.current?.action === id ? pending.current.key : undefined);
+      pending.current = { action: id, key: header["Idempotency-Key"] };
+      const r = await send(header);
+      if (r.response.status < 500 && !isInProgress(r.error)) pending.current = null;
+      return r;
+    },
+    [],
+  );
 }
 
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
@@ -82,6 +109,7 @@ function ChangeDialog({
 }) {
   const client = useClient();
   const toast = useToast();
+  const send = useIdempotentSend();
   const { mode } = target;
   const [sources, setSources] = useState<string[]>([target.source]);
   const [extra, setExtra] = useState("");
@@ -131,8 +159,15 @@ function ChangeDialog({
     setError(null);
     const r =
       mode === "rename"
-        ? await client.POST("/api/kb/tags/rename", { body: { old: target.source, new: destination, revs } })
-        : await client.POST("/api/kb/tags/merge", { body: { sources, into: destination, revs } });
+        ? await send(["rename", target.source, destination, revs], (header) =>
+            client.POST("/api/kb/tags/rename", {
+              body: { old: target.source, new: destination, revs },
+              params: { header },
+            }),
+          )
+        : await send(["merge", sources, destination, revs], (header) =>
+            client.POST("/api/kb/tags/merge", { body: { sources, into: destination, revs }, params: { header } }),
+          );
     setBusy(false);
     if (!r.data) {
       setError(errorText(r.error, "Couldn't apply that change."));
@@ -266,6 +301,7 @@ function ChangeDialog({
 function AddTagForm({ onAdded }: { onAdded: () => void }) {
   const client = useClient();
   const toast = useToast();
+  const send = useIdempotentSend();
   const [tag, setTag] = useState("");
   const [meaning, setMeaning] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -275,7 +311,9 @@ function AddTagForm({ onAdded }: { onAdded: () => void }) {
   const submit = async (force: boolean) => {
     setBusy(true);
     setError(null);
-    const r = await client.POST("/api/kb/tags", { body: { tag, meaning, force } });
+    const r = await send(["add", tag, meaning, force], (header) =>
+      client.POST("/api/kb/tags", { body: { tag, meaning, force }, params: { header } }),
+    );
     setBusy(false);
     if (r.response.ok) {
       toast.show({ tone: "success", message: `Added #${tag.trim().replace(/^#/, "")}.` });
@@ -343,6 +381,7 @@ function AddTagForm({ onAdded }: { onAdded: () => void }) {
 export function TagsSection() {
   const client = useClient();
   const toast = useToast();
+  const send = useIdempotentSend();
   const [catalog, setCatalog] = useState<TagInfo[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [uncataloged, setUncataloged] = useState<UncatalogedTag[]>([]);
@@ -365,10 +404,12 @@ export function TagsSection() {
     void reload();
   }, [reload]);
 
-  const act = async (path: "retire" | "adopt" | "ignore", tag: string, done: string) => {
-    const r = await client.POST(`/api/kb/tags/${path}`, { body: { tag } });
-    if (!r.response.ok) {
-      toast.show({ tone: "danger", message: errorText((r as { error?: unknown }).error, "That didn't work.") });
+  const act = async (path: "retire" | "restore" | "adopt" | "ignore", tag: string, done: string) => {
+    const r = await send([path, tag], (header) =>
+      client.POST(`/api/kb/tags/${path}`, { body: { tag }, params: { header } }),
+    ).catch(() => null); // offline: the key is kept, so trying again is the same action
+    if (!r?.response.ok) {
+      toast.show({ tone: "danger", message: errorText(r?.error, "That didn't work.") });
       return;
     }
     toast.show({ tone: "success", message: done });
@@ -428,7 +469,11 @@ export function TagsSection() {
                     <Button size="sm" onClick={() => setDialog({ mode: "merge", source: info.tag })}>
                       Merge into…
                     </Button>
-                    {info.retired ? null : (
+                    {info.retired ? (
+                      <Button size="sm" onClick={() => void act("restore", info.tag, `Restored #${info.tag}.`)}>
+                        Restore
+                      </Button>
+                    ) : (
                       <Button
                         size="sm"
                         variant="danger"

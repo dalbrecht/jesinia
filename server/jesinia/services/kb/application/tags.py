@@ -357,13 +357,20 @@ class TagService:
 
     async def retire(self, tag: str) -> None:
         """Keep the tag in pages but stop suggesting it."""
+        await self._set_retired(tag, retired=True)
+
+    async def restore(self, tag: str) -> None:
+        """Undo ``retire``: suggest the tag again."""
+        await self._set_retired(tag, retired=False)
+
+    async def _set_retired(self, tag: str, *, retired: bool) -> None:
         wanted = _tag(tag)
         async with self._catalog_lock:
             loaded = await self._load()
             canonical = loaded.catalog.resolve(wanted)
             if canonical is None:
                 raise TagNotFound(f"#{wanted} is not in the catalog")
-            entry = replace(loaded.catalog.entries[canonical], retired=True)
+            entry = replace(loaded.catalog.entries[canonical], retired=retired)
             await self._save(loaded, with_entry(loaded.catalog, entry))
 
     async def ignore(self, tag: str) -> None:

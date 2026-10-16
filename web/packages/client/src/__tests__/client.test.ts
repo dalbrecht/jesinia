@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, expect, it, vi } from "vitest";
-import { createClient, errorText, UNAUTHORIZED_EVENT } from "../client";
+import { createClient, errorText, IDEMPOTENCY_HEADER, UNAUTHORIZED_EVENT, withIdempotency } from "../client";
 
 describe("createClient", () => {
   it("sends cookies, types responses, and announces 401", async () => {
@@ -32,5 +32,16 @@ describe("createClient", () => {
     expect(errorText({ detail: [{ msg: "field required" }, "x"] })).toBe("field required; x");
     expect(errorText(null)).toBe("Something went wrong.");
     expect(errorText({ detail: 3 }, "fallback")).toBe("fallback");
+  });
+});
+
+describe("withIdempotency", () => {
+  it("makes a fresh key per call, or carries the key given for a retry", () => {
+    const first = withIdempotency();
+    const second = withIdempotency();
+    expect(IDEMPOTENCY_HEADER).toBe("Idempotency-Key");
+    expect(first["Idempotency-Key"]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second["Idempotency-Key"]).not.toBe(first["Idempotency-Key"]);
+    expect(withIdempotency("retry-me")).toEqual({ "Idempotency-Key": "retry-me" });
   });
 });

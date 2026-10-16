@@ -6,10 +6,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
 
-from fastapi import APIRouter, Query, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from jesinia.core.idempotency import IdempotencyStore, IdempotentCall, idempotent
 from jesinia.core.module import CallContext, ToolDef
 from jesinia.services.kb.api.schemas import (
     TAG_MAX,
@@ -43,10 +45,14 @@ from jesinia.services.kb.domain.page import PageId
 
 
 class TagsHost(Protocol):
-    """What the tag routes need from the module: the live ``TagService``."""
+    """What the tag routes need from the module: the live ``TagService`` and the store
+    for the write routes' idempotency keys."""
 
     @property
     def tags(self) -> TagService: ...
+
+    @property
+    def idempotency(self) -> IdempotencyStore: ...
 
 
 _STATUS: dict[type[KbError], int] = {
@@ -66,6 +72,9 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
 }
 
 
+_NO_CONTENT = status.HTTP_204_NO_CONTENT
+
+
 def _error(exc: KbError) -> JSONResponse:
     body = TagErrorOut(error=type(exc).__name__, detail=str(exc))
     if isinstance(exc, NearDuplicate):
@@ -80,6 +89,18 @@ async def _answer[T](fn: Callable[[], Awaitable[T]]) -> T | JSONResponse:
         return _error(exc)
 
 
+async def _respond(
+    fn: Callable[[], Awaitable[BaseModel | None]], ok: int = status.HTTP_200_OK
+) -> Response:
+    """``_answer`` as a concrete ``Response``, so the idempotency layer can store it."""
+    result = await _answer(fn)
+    if isinstance(result, Response):
+        return result
+    if result is None:
+        return Response(status_code=ok)
+    return JSONResponse(jsonable_encoder(result), status_code=ok)
+
+
 def _revs(revs: dict[str, str]) -> dict[PageId, str]:
     return {PageId(page): rev for page, rev in revs.items()}
 
@@ -87,6 +108,8 @@ def _revs(revs: dict[str, str]) -> dict[PageId, str]:
 def build_tags_router(host: TagsHost) -> APIRouter:
     """Routes under ``/tags``; ``KbModule`` mounts them inside the ``/api/kb`` router."""
     r = APIRouter(prefix="/tags", tags=["kb"], responses=_ERRORS)
+    # Every catalog or page write needs an Idempotency-Key; the reads and previews do not.
+    keyed = Depends(idempotent(lambda: host.idempotency))
 
     @r.get("", response_model=list[TagInfoOut])
     async def list_tags() -> list[TagInfoOut] | JSONResponse:
@@ -96,8 +119,12 @@ def build_tags_router(host: TagsHost) -> APIRouter:
         return await _answer(run)
 
     @r.post("", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-    async def add_tag(body: TagIn) -> JSONResponse | None:
-        return await _answer(lambda: host.tags.add(body.tag, body.meaning, force=body.force))
+    async def add_tag(body: TagIn, idem: IdempotentCall = keyed) -> Response:
+        return await idem.run(
+            lambda: _respond(
+                lambda: host.tags.add(body.tag, body.meaning, force=body.force), _NO_CONTENT
+            )
+        )
 
     @r.get("/check", response_model=TagCheckOut)
     async def check_tag(
@@ -132,32 +159,36 @@ def build_tags_router(host: TagsHost) -> APIRouter:
         return await _answer(run)
 
     @r.post("/rename", response_model=RenameResultOut)
-    async def rename_tag(body: RenameIn) -> RenameResultOut | JSONResponse:
+    async def rename_tag(body: RenameIn, idem: IdempotentCall = keyed) -> Response:
         async def run() -> RenameResultOut:
             result = await host.tags.apply_rename(body.old, body.new, _revs(body.revs))
             return RenameResultOut.of(result)
 
-        return await _answer(run)
+        return await idem.run(lambda: _respond(run))
 
     @r.post("/merge", response_model=RenameResultOut)
-    async def merge_tags(body: MergeIn) -> RenameResultOut | JSONResponse:
+    async def merge_tags(body: MergeIn, idem: IdempotentCall = keyed) -> Response:
         async def run() -> RenameResultOut:
             result = await host.tags.merge(body.sources, body.into, _revs(body.revs))
             return RenameResultOut.of(result)
 
-        return await _answer(run)
+        return await idem.run(lambda: _respond(run))
 
     @r.post("/retire", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-    async def retire_tag(body: TagNameIn) -> JSONResponse | None:
-        return await _answer(lambda: host.tags.retire(body.tag))
+    async def retire_tag(body: TagNameIn, idem: IdempotentCall = keyed) -> Response:
+        return await idem.run(lambda: _respond(lambda: host.tags.retire(body.tag), _NO_CONTENT))
+
+    @r.post("/restore", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+    async def restore_tag(body: TagNameIn, idem: IdempotentCall = keyed) -> Response:
+        return await idem.run(lambda: _respond(lambda: host.tags.restore(body.tag), _NO_CONTENT))
 
     @r.post("/adopt", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-    async def adopt_tag(body: TagNameIn) -> JSONResponse | None:
-        return await _answer(lambda: host.tags.adopt(body.tag))
+    async def adopt_tag(body: TagNameIn, idem: IdempotentCall = keyed) -> Response:
+        return await idem.run(lambda: _respond(lambda: host.tags.adopt(body.tag), _NO_CONTENT))
 
     @r.post("/ignore", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-    async def ignore_tag(body: TagNameIn) -> JSONResponse | None:
-        return await _answer(lambda: host.tags.ignore(body.tag))
+    async def ignore_tag(body: TagNameIn, idem: IdempotentCall = keyed) -> Response:
+        return await idem.run(lambda: _respond(lambda: host.tags.ignore(body.tag), _NO_CONTENT))
 
     return r
 
