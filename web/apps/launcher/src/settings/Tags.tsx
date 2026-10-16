@@ -141,18 +141,22 @@ function ChangeDialog({
     setError(null);
     const pages = new Map<string, PageRef>();
     const reserved = new Set<string>();
-    for (const source of sources) {
-      const r = await client.POST("/api/kb/tags/rename/preview", { body: { old: source, new: destination } });
-      if (!r.data) {
-        setBusy(false);
-        setError(errorText(r.error, "Couldn't preview that change."));
-        return;
+    try {
+      for (const source of sources) {
+        const r = await client.POST("/api/kb/tags/rename/preview", { body: { old: source, new: destination } });
+        if (!r.data) {
+          setError(errorText(r.error, "Couldn't preview that change."));
+          return;
+        }
+        r.data.pages.forEach((p) => pages.has(p.id) || pages.set(p.id, p));
+        r.data.skipped_reserved.forEach((path) => reserved.add(path));
       }
-      r.data.pages.forEach((p) => pages.has(p.id) || pages.set(p.id, p));
-      r.data.skipped_reserved.forEach((path) => reserved.add(path));
+      setPreview({ pages: [...pages.values()], reserved: [...reserved] });
+    } catch (cause) {
+      setError(`Couldn't preview that change: ${failureCause(cause)}`);
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
-    setPreview({ pages: [...pages.values()], reserved: [...reserved] });
   };
 
   const apply = async () => {
@@ -405,14 +409,18 @@ export function TagsSection() {
   const [dialog, setDialog] = useState<ChangeTarget | null>(null);
 
   const reload = useCallback(async () => {
-    const [tags, loose] = await Promise.all([client.GET("/api/kb/tags"), client.GET("/api/kb/tags/uncataloged")]);
-    if (tags.data) {
-      setCatalog(tags.data);
-      setLoadError(null);
-    } else {
-      setLoadError(errorText(tags.error, "Couldn't load the tag catalog."));
+    try {
+      const [tags, loose] = await Promise.all([client.GET("/api/kb/tags"), client.GET("/api/kb/tags/uncataloged")]);
+      if (tags.data) {
+        setCatalog(tags.data);
+        setLoadError(null);
+      } else {
+        setLoadError(errorText(tags.error, "Couldn't load the tag catalog."));
+      }
+      setUncataloged(loose.data ?? []);
+    } catch (cause) {
+      setLoadError(`Couldn't load the tag catalog: ${failureCause(cause)}`);
     }
-    setUncataloged(loose.data ?? []);
   }, [client]);
 
   useEffect(() => {

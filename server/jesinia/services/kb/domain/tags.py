@@ -39,7 +39,7 @@ _HEADING_LINE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
 _FENCE_LINE = re.compile(r" {0,3}(`{3,}|~{3,})(?P<rest>.*)$", re.DOTALL)
 _INDENTED_LINE = re.compile(r"(?: {4}|\t)")
 _LIST_MARKER = re.compile(r"[ \t]*(?:[-*+]|\d+[.)])(?:[ \t]|$)")
-_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
+_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)[\s\S]+?(?<!`)\1(?!`)")
 _MIN_FUZZY_LETTERS = 5
 _MAX_EDIT_DISTANCE = 2
 
@@ -89,14 +89,29 @@ def _closes_fence(candidate: re.Match[str], opening_run: str) -> bool:
     )
 
 
+def _mask_inline_code(masked_lines: list[str], prose_indexes: list[int]) -> None:
+    """Blank inline code spans in one paragraph; a span may cross lines but not a blank line."""
+    if not prose_indexes:
+        return
+    paragraph = "".join(masked_lines[i] for i in prose_indexes)
+    blanked = _INLINE_CODE.sub(lambda m: _blank(m.group(0)), paragraph)
+    cursor = 0
+    for index in prose_indexes:
+        length = len(masked_lines[index])
+        masked_lines[index] = blanked[cursor : cursor + length]
+        cursor += length
+
+
 def _mask_ignored(body: str) -> str:
     """Blank out fenced and indented code, headings and inline code, keeping offsets identical."""
     masked_lines: list[str] = []
+    paragraph: list[int] = []  # indexes of consecutive prose lines, the unit inline code spans in
     open_fence: str | None = None
     may_start_code = True  # at the start, after a blank line, or inside an indented block
     for line in body.splitlines(keepends=True):
         fence = _FENCE_LINE.match(line)
         is_code = False
+        is_prose = False
         if open_fence is not None:
             if fence is not None and _closes_fence(fence, open_fence):
                 open_fence = None
@@ -110,8 +125,15 @@ def _mask_ignored(body: str) -> str:
         elif _HEADING_LINE.match(line):
             masked_lines.append(_blank(line))
         else:
-            masked_lines.append(_INLINE_CODE.sub(lambda m: _blank(m.group(0)), line))
+            is_prose = line.strip() != ""
+            masked_lines.append(line)
+        if is_prose:
+            paragraph.append(len(masked_lines) - 1)
+        else:
+            _mask_inline_code(masked_lines, paragraph)
+            paragraph = []
         may_start_code = open_fence is None and (is_code or line.strip() == "")
+    _mask_inline_code(masked_lines, paragraph)
     return "".join(masked_lines)
 
 

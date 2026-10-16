@@ -512,6 +512,31 @@ describe("Settings → Tags", () => {
     expect(keys[1]).toBe(keys[0]);
   });
 
+  it("an offline preview stops busy, shows the cause, and can be retried", async () => {
+    let fail = true;
+    renderTags({
+      "POST /api/kb/tags/rename/preview": () =>
+        fail ? Promise.reject(new TypeError("offline")) : Response.json({ pages: [], skipped_reserved: [] }),
+    });
+    const tags = await section();
+    const row = (await tags.findByText("#python")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    await userEvent.type(dialog.getByLabelText("New name"), "py");
+    await userEvent.click(dialog.getByRole("button", { name: "Preview" }));
+    expect(await dialog.findByText("Couldn't preview that change: offline")).toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "Preview" })).not.toHaveAttribute("aria-busy");
+    fail = false;
+    await userEvent.click(dialog.getByRole("button", { name: "Preview" }));
+    await dialog.findByText("No pages use this tag yet.");
+  });
+
+  it("a network failure on first load shows the cause instead of loading forever", async () => {
+    renderTags({ "GET /api/kb/tags": () => Promise.reject(new TypeError("offline")) });
+    const tags = await section();
+    expect(await tags.findByText("Couldn't load the tag catalog: offline")).toBeInTheDocument();
+  });
+
   it("an offline add stops loading, shows the cause, and the retry reuses the key", async () => {
     let fail = true;
     const calls = renderTags({

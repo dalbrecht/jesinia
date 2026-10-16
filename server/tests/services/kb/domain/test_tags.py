@@ -149,3 +149,19 @@ def test_fence_closes_on_equal_or_longer_run_of_the_same_character() -> None:
     assert extract_tags("```\n#a\n`````\n#after\n") == ["after"]
     assert extract_tags("~~~~\n#a\n~~~~~\n#after\n") == ["after"]
     assert extract_tags("```\n#a\n```trailing\n#b\n```\n#after\n") == ["after"]
+
+
+def test_inline_code_span_crossing_a_newline_is_masked() -> None:
+    body = "see `code\n#hidden` then #shown\n"
+    assert extract_tags(body) == ["shown"]
+    assert replace_tag(body, "hidden", "x") == body
+
+
+def test_inline_code_span_is_broken_by_a_blank_line() -> None:
+    body = "an `unclosed\n\n#visible` tail\n"
+    assert extract_tags(body) == ["visible"]
+
+
+def test_inline_code_span_needs_a_matching_backtick_run_across_lines() -> None:
+    body = "``a\n#hidden` still``\n#after `x\n#kept\n"
+    assert extract_tags(body) == ["after", "kept"]
