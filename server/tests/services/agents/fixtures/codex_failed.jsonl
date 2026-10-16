@@ -1,0 +1,4 @@
+{"type": "thread.started", "thread_id": "22222222-2222-4222-8222-222222222222"}
+{"type": "turn.started"}
+{"type": "error", "message": "stream disconnected"}
+{"type": "turn.failed", "error": {"message": "model not supported"}}
