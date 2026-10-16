@@ -1,7 +1,6 @@
 # ADR 0008: Design system and app shell
 
-- **Status:** Proposed. It becomes Accepted when the user approves it; code phases start
-  only after that.
+- **Status:** Accepted (approved by the user, 2026-10-16). Code phases may start.
 - **Date:** 2026-10-16
 - **Related:**
   - foundation spec §1, §4.1, §9, §11 (updated in this change);
