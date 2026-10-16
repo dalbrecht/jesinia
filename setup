@@ -30,10 +30,25 @@ flags=()
 (( dry_run )) && flags+=(--dry-run)
 (( yes )) && flags+=(--yes)
 
+# Runs `jesinia ARGS...` from server/. A dry run changes nothing, including server/.venv:
+# don't let uv create or sync it; with no venv yet, just print the command.
+run_jesinia() {
+  if (( dry_run )); then
+    if [[ ! -d server/.venv ]]; then
+      printf 'would run: uv run --project server jesinia'
+      printf ' %q' "$@"
+      printf '\n'
+      exit 0
+    fi
+    exec uv run --no-sync --project server jesinia "$@"
+  fi
+  exec uv run --project server jesinia "$@"
+}
+
 if (( uninstall )); then
   command -v uv >/dev/null || die "uv is not installed; nothing to uninstall with."
   (( purge )) && flags+=(--purge-data)
-  exec uv run --project server jesinia uninstall "${flags[@]+"${flags[@]}"}"
+  run_jesinia uninstall "${flags[@]+"${flags[@]}"}"
 fi
 
 missing=()
@@ -67,12 +82,4 @@ fi
 kb_path="${kb_path/#\~/$HOME}"
 
 (( auto_update )) && flags+=(--auto-update)
-if (( dry_run )); then
-  # A dry run changes nothing, including server/.venv: don't let uv sync it.
-  if [[ ! -d server/.venv ]]; then
-    printf 'would run: uv run --project server jesinia install --kb-path %q %s\n' "$kb_path" "${flags[*]}"
-    exit 0
-  fi
-  exec uv run --no-sync --project server jesinia install --kb-path "$kb_path" "${flags[@]+"${flags[@]}"}"
-fi
-exec uv run --project server jesinia install --kb-path "$kb_path" "${flags[@]+"${flags[@]}"}"
+run_jesinia install --kb-path "$kb_path" "${flags[@]+"${flags[@]}"}"

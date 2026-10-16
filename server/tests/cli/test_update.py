@@ -8,7 +8,7 @@ from httpx import ConnectError, Response
 from typer.testing import CliRunner
 
 from jesinia.cli import update as upd
-from jesinia.cli.install import System
+from jesinia.cli.install import System, required_modules
 from jesinia.core.config import Config
 
 
@@ -132,12 +132,16 @@ def test_concurrent_runs_are_skipped(cfg: Config) -> None:
     assert result == "skipped: another update is running"
 
 
+def healthy_body() -> dict[str, object]:
+    return {"ok": True, "modules": {n: {"ok": True, "detail": "ok"} for n in required_modules()}}
+
+
 def test_health_wait(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     with respx.mock:
         respx.get("http://127.0.0.1:5374/healthz").mock(
             side_effect=[
                 ConnectError("x"),
-                Response(200, json={"ok": True, "modules": {"kb": {"ok": True}}}),
+                Response(200, json=healthy_body()),
             ]
         )
         assert upd._healthy(cfg, lambda s: None) is True
@@ -150,10 +154,8 @@ def test_should_not_accept_a_degraded_health_body_as_healthy(
 ) -> None:
     url = "http://127.0.0.1:5374/healthz"
     degraded = {"ok": False, "modules": {"kb": {"ok": False, "detail": "x"}}}
-    optional_only = {
-        "ok": False,
-        "modules": {"kb": {"ok": True, "detail": "ok"}, "github": {"ok": False, "detail": "x"}},
-    }
+    modules = {n: {"ok": True, "detail": "ok"} for n in required_modules()}
+    optional_only = {"ok": False, "modules": {**modules, "github": {"ok": False, "detail": "x"}}}
     monkeypatch.setattr(upd, "HEALTH_TIMEOUT", 0.05)
     with respx.mock:
         respx.get(url).mock(return_value=Response(200, json=degraded))
@@ -168,7 +170,7 @@ def test_should_roll_back_when_the_restarted_server_reports_a_failing_module(
     cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     degraded = {"ok": False, "modules": {"kb": {"ok": False, "detail": "x"}}}
-    healthy = {"ok": True, "modules": {"kb": {"ok": True, "detail": "ok"}}}
+    healthy = healthy_body()
     monkeypatch.setattr(upd, "HEALTH_TIMEOUT", 0.05)
     git = Git(answers=dict(BASE))
 

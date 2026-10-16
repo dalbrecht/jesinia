@@ -118,6 +118,8 @@ function Shell({ app, children, controls, ownSearch, appSearch, commands = [] }:
     }));
   };
 
+  // KB results open in Notes; until Notes ships there is nowhere to send them.
+  const notesBuilt = APPS.some((a) => a.id === "notes" && a.built);
   const kb = st.health?.modules.kb;
   return (
     <div className={s.shell} data-app={app.id}>
@@ -162,7 +164,7 @@ function Shell({ app, children, controls, ownSearch, appSearch, commands = [] }:
         ) : null}
       </BannerRegion>
       <main className={s.main}>{typeof children === "function" ? children(st) : children}</main>
-      <CommandPalette commands={[...commands, ...shellCommands]} kbSearch={kbSearch} {...(appSearch ? { appSearch } : {})} />
+      <CommandPalette commands={[...commands, ...shellCommands]} {...(notesBuilt ? { kbSearch } : {})} {...(appSearch ? { appSearch } : {})} />
     </div>
   ); // prettier-ignore
 }

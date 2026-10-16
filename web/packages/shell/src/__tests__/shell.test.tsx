@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  APPS,
   AppShell,
   appCommands,
   applyTheme,
@@ -37,7 +38,13 @@ class FakeSource {
 const assign = vi.fn();
 const open = vi.fn();
 
+const NOTES_BUILT = APPS.some((a) => a.id === "notes" && a.built);
+function setNotesBuilt(built: boolean) {
+  for (const a of APPS) if (a.id === "notes") a.built = built;
+}
+
 afterEach(() => {
+  setNotesBuilt(NOTES_BUILT);
   assign.mockReset();
   open.mockReset();
   localStorage.clear();
@@ -113,6 +120,7 @@ describe("AppShell", () => {
   });
 
   it("palette: shell commands, app commands, KB results", async () => {
+    setNotesBuilt(true);
     const appRun = vi.fn();
     const calls = setup(
       {
@@ -155,6 +163,10 @@ describe("AppShell", () => {
     await userEvent.type(screen.getByRole("combobox"), "budget");
     await userEvent.click(await screen.findByText("Budget"));
     expect(assign).toHaveBeenCalledWith("/notes/page/p1");
+    openPalette();
+    await userEvent.type(screen.getByRole("combobox"), "budget");
+    fireEvent.click(await screen.findByText("Budget"), { metaKey: true });
+    expect(open).toHaveBeenCalledWith("/notes/page/p1", "_blank", "noopener");
     const search = calls.find((c) => c.url.includes("/api/search"));
     expect(new URL(search?.url ?? "").searchParams.get("source")).toBe("kb");
   });
@@ -176,6 +188,7 @@ describe("AppShell", () => {
 
 describe("AppShell edge cases", () => {
   it("tolerates failing endpoints, opens other apps, and collapses extra banners", async () => {
+    setNotesBuilt(true);
     vi.stubGlobal("EventSource", FakeSource);
     Object.defineProperty(window, "location", {
       configurable: true,
@@ -224,6 +237,21 @@ describe("AppShell edge cases", () => {
     await userEvent.type(screen.getByRole("combobox"), "no");
     fireEvent.click(await screen.findByText("No path"), { metaKey: true });
     expect(open).toHaveBeenCalledWith("/notes/page/p2", "_blank", "noopener");
+  });
+
+  it("offers no KB results while Notes is unbuilt", async () => {
+    setNotesBuilt(false);
+    const calls = setup({
+      "GET /api/search": [
+        { source: "kb", key: "p3", title: "Hidden", snippet: "", path: null, authoritative: true, score: 1, url: null },
+      ],
+    });
+    await screen.findByText("ready");
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await userEvent.type(screen.getByRole("combobox"), "hid");
+    await new Promise((r) => setTimeout(r, 300)); // past the palette's debounce
+    expect(screen.queryByText("Hidden")).toBeNull();
+    expect(calls.some((c) => c.url.includes("/api/search"))).toBe(false);
   });
 
   it("creates its own client when none is given", async () => {

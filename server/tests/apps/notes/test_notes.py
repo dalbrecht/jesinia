@@ -304,3 +304,25 @@ async def test_note_log_failure_does_not_fail_the_saved_note(
     )
     assert (env.root / "Notes/Kept anyway.md").exists() and n.page.title == "Kept anyway"
     assert "recording it in notes.sqlite failed" in caplog.text
+
+
+async def test_agent_save_cap_holds_when_the_note_log_is_broken(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jesinia.apps.notes.application.service import MAX_AGENT_SAVES, TooManySavesError
+
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+
+    def broken(*a: object) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(env.notes.service.log, "record", broken)
+    for i in range(MAX_AGENT_SAVES):
+        await env.notes.service.save_note(
+            s.id, title=f"n{i}", user_text="", agent_text="t", model="m", by_agent=True
+        )
+    with pytest.raises(TooManySavesError):
+        await env.notes.service.save_note(
+            s.id, title="over", user_text="", agent_text="t", model="m", by_agent=True
+        )

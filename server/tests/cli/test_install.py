@@ -12,7 +12,10 @@ from jesinia.cli import main
 from jesinia.cli.install import System, render_plist
 from jesinia.core.config import load_config
 
-HEALTHY = {"ok": True, "modules": {"kb": {"ok": True, "detail": "ok"}}}
+HEALTHY_MODULES: dict[str, object] = {
+    name: {"ok": True, "detail": "ok"} for name in inst.required_modules()
+}
+HEALTHY = {"ok": True, "modules": HEALTHY_MODULES}
 
 
 @pytest.fixture
@@ -254,7 +257,7 @@ def test_degraded_server_is_not_healthy(tmp_home: Path, monkeypatch: pytest.Monk
     }
     optional_only = {
         "ok": False,
-        "modules": {"kb": {"ok": True, "detail": "ok"}, "agents": {"ok": False, "detail": "x"}},
+        "modules": {**HEALTHY_MODULES, "agents": {"ok": False, "detail": "x"}},
     }
     with respx.mock:
         respx.get("http://127.0.0.1:5374/healthz").mock(return_value=Response(200, json=degraded))
@@ -399,3 +402,22 @@ def test_uninstall_cleans_codex_instructions_without_the_cli(
     gone.which = lambda n: "/bin/uv" if n == "uv" else None
     inst.uninstall(gone, purge_data=False)
     assert "jesinia:begin" not in agents_md.read_text()
+
+
+def test_missing_required_modules_are_unhealthy() -> None:
+    required = frozenset({"kb", "search"})
+    assert inst.unhealthy_modules({"ok": True, "modules": {}}, required) == ["kb", "search"]
+    assert inst.unhealthy_modules({"modules": {"kb": {"ok": True}}}, required) == ["search"]
+    assert inst.unhealthy_modules(
+        {"modules": {"kb": {"ok": True}, "search": {"ok": True}, "x": {"ok": False}}}, required
+    ) == ["x"]
+    assert "kb" in inst.required_modules() and "agents" not in inst.required_modules()
+
+
+def test_codex_home_that_does_not_exist_yet(tmp_home: Path, healthy: None) -> None:
+    cfg = load_config(tmp_home / "c/config.toml")
+    spy = Spy()
+    spy.environ = {"CODEX_HOME": str(tmp_home / "new-codex-home")}
+    inst.register_codex(spy, cfg, "/bin/codex")
+    assert (tmp_home / "new-codex-home").is_dir()
+    assert "Authorization" in (tmp_home / "new-codex-home/config.toml").read_text()
