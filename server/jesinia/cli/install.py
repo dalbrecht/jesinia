@@ -127,8 +127,9 @@ def mcp_url(cfg: Config) -> str:
 
 
 def _codex_config(sys: System) -> Path:
+    # CODEX_HOME is always a directory, even one that doesn't exist yet.
     home = sys.environ.get("CODEX_HOME")
-    return Path(home) if home else Path.home() / ".codex" / "config.toml"
+    return (Path(home) if home else Path.home() / ".codex") / "config.toml"
 
 
 def register_claude(sys: System, cfg: Config, claude: str) -> None:
@@ -144,8 +145,6 @@ def register_codex(sys: System, cfg: Config, codex: str) -> None:
     sys.run([codex, "mcp", "add", MCP_NAME, "--url", mcp_url(cfg)])
     # `codex mcp add` has no header flag; Codex reads static headers from its config.
     path = _codex_config(sys)
-    if path.is_dir():
-        path = path / "config.toml"
     if sys.dry_run:
         sys.echo(f"would add the Authorization header for {MCP_NAME} to {path}")
         return
@@ -200,15 +199,23 @@ def refresh_registrations(cfg: Config, sys: System | None = None) -> None:
 OPTIONAL_MODULES = frozenset({"agents", "github"})
 
 
-def unhealthy_modules(body: object) -> list[str]:
-    """Required modules that /healthz reports as not ok (``["?"]`` if unreadable)."""
+def required_modules() -> frozenset[str]:
+    from jesinia.registry import modules
+
+    return frozenset(m.name for m in modules()) - OPTIONAL_MODULES
+
+
+def unhealthy_modules(body: object, required: frozenset[str] | None = None) -> list[str]:
+    """Required modules that /healthz doesn't report as ok, including missing ones (an
+    older or unrelated server on the port). ``["?"]`` if the body is unreadable."""
     modules = body.get("modules") if isinstance(body, dict) else None
     if not isinstance(modules, dict):
         return ["?"]
+    names = required if required is not None else required_modules()
     return sorted(
         name
-        for name, m in modules.items()
-        if name not in OPTIONAL_MODULES and not (isinstance(m, dict) and m.get("ok") is True)
+        for name in names | {n for n in modules if n not in OPTIONAL_MODULES}
+        if not (isinstance(modules.get(name), dict) and modules[name].get("ok") is True)
     )
 
 

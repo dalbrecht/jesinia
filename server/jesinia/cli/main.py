@@ -18,7 +18,7 @@ import typer
 from jesinia.cli import backup as backup_mod
 from jesinia.cli import doctor as doctor_mod
 from jesinia.cli import install as install_mod
-from jesinia.cli.server import ServerDown, call
+from jesinia.cli.server import ServerBusy, ServerDown, call
 from jesinia.core.config import Config, ConfigError, format_duration, load_config, save_config
 from jesinia.core.config import set_value as config_set_value
 from jesinia.core.db import DbClass
@@ -100,6 +100,8 @@ def status() -> None:
     try:
         health = call(cfg, "GET", "/healthz")
         login = call(cfg, "POST", "/api/auth/nonce")
+    except ServerBusy as exc:
+        raise _fail(str(exc)) from exc
     except ServerDown as exc:
         raise _fail(f"{exc} (start it with ./setup or `jesinia serve`)") from exc
     typer.echo(f"server: {'ok' if health['ok'] else 'degraded'} on port {cfg.port}")
@@ -179,7 +181,7 @@ def sync_now() -> None:
     """Run a KB sync cycle now."""
     try:
         r = call(_cfg(), "POST", "/api/kbsync/run", timeout=300)
-    except ServerDown as exc:
+    except (ServerDown, ServerBusy) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"{r['result']['outcome']}: {r['result']['message']}")
 
@@ -199,6 +201,8 @@ def reindex() -> None:
                     (cfg.data_dir / f"{spec.name}.sqlite{suffix}").unlink(missing_ok=True)
         typer.echo("server not running: derived databases removed; they rebuild on start")
         return
+    except ServerBusy as exc:  # it may still be reindexing: never delete live databases
+        raise _fail(str(exc)) from exc
     typer.echo(f"kb: {scan['indexed']} pages; search: {search['indexed']} pages")
 
 

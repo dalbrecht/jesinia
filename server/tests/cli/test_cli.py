@@ -322,3 +322,15 @@ def test_doctor_kb_variants(tmp_path: Path, kb: Path) -> None:
 def test_run_command() -> None:
     assert run_command(["python3", "-c", "print('hi')"], 10) == (0, "hi")
     assert run_command(["/nonexistent"], 10)[0] == 1
+
+
+@respx.mock
+def test_reindex_timeout_never_deletes_live_databases(cli: Cli, home: Path) -> None:
+    load_config(home / "config.toml")
+    open_db(home, SEARCH_DB).close()
+    respx.post(f"{BASE}/api/kb/scan").mock(side_effect=httpx.ReadTimeout("slow"))
+    r = cli(["reindex"])
+    assert r.exit_code == 1 and "may still be working" in r.stderr
+    assert (home / "search.sqlite").exists()
+    respx.get(f"{BASE}/healthz").mock(side_effect=httpx.ReadTimeout("slow"))
+    assert cli(["status"]).exit_code == 1
