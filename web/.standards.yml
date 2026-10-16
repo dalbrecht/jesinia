@@ -1,0 +1,12 @@
+# Sub-project standards config so `make lint-standards` runs the typescript checks against
+# web/ (the checks only look at the root they are given). The repo-root .standards.yml
+# remains the source for agents and sync.
+version: 1
+languages:
+  - typescript
+role: service
+coverage:
+  minimum: 95
+  domain: 100
+architecture: clean
+security: strict

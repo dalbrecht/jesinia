@@ -1,4 +1,5 @@
-/* Jesinia wireframes: shared styles. Every color, size and font comes from tokens.css.
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Jesinia wireframes: shared styles. Every color, size and font comes from tokens.css.
    This file is wireframe scaffolding, not @jesinia/design source. */
 
 *, *::before, *::after { box-sizing: border-box; }
