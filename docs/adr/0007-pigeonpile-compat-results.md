@@ -3,7 +3,7 @@
 - **Status:** Accepted (provisional — pending the suite-side cross-test)
 - **Date:** 2026-10-16
 - **Related:** foundation spec §5.6; plan Task 1; fixture `docs/design/compat/`;
-  suite-side tracking issue in `c65llc/amicus-platform` (cross-test + regression guard)
+  suite-side cross-test tracked in c65llc/amicus-platform#3212
 
 ## Context
 
