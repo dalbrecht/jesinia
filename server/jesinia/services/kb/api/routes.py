@@ -160,12 +160,19 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
         a = WriteToolIn.model_validate(args.model_dump())
         if a.id:
             current = await host.service.read(PageId(a.id))
-            return {
+            to = PurePosixPath(a.folder) / f"{a.title}.md"
+            preview: dict[str, object] = {
                 "action": "update",
                 "path": str(current.page.path),
                 "title": current.page.title,
                 "current": current.page.body,
             }
+            # kb_write also retitles/moves when title or folder differ: say so.
+            if a.title != current.page.title or PurePosixPath(a.folder) != current.page.path.parent:
+                preview.update(action="update+move", to=str(to), new_title=a.title)
+            if a.jesinia != current.page.jesinia:
+                preview["jesinia"] = {"from": current.page.jesinia, "to": a.jesinia}
+            return preview
         folder = PurePosixPath(a.folder)
         return {"action": "create", "path": str(folder / f"{a.title}.md"), "title": a.title}
 

@@ -37,7 +37,51 @@ function summarize(input: unknown): string {
   return typeof first === "string" ? `"${first.length > 60 ? `${first.slice(0, 60)}…` : first}"` : "";
 }
 
-type Target = { action?: string; path?: string; to?: string; title?: string; current?: string; error?: string };
+type Target = {
+  action?: string;
+  path?: string;
+  to?: string;
+  title?: string;
+  new_title?: string;
+  current?: string;
+  error?: string;
+  jesinia?: { from: unknown; to: unknown };
+};
+
+const MAX_DIFF_CELLS = 4_000_000; // beyond this, show the whole new body instead
+
+/** A unified line diff (LCS): unchanged lines keep a two-space prefix. */
+export function lineDiff(before: string[], after: string[]): string {
+  const n = before.length;
+  const m = after.length;
+  if (n * m > MAX_DIFF_CELLS)
+    return ["(too large to compare: the full new text follows)", ...after.map((l) => `+ ${l}`)].join("\n");
+  // lcs(i, j): longest common subsequence of before[i..] and after[j..].
+  const table = new Int32Array((n + 1) * (m + 1));
+  const lcs = (i: number, j: number) => table[i * (m + 1) + j] ?? 0;
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      table[i * (m + 1) + j] = before[i] === after[j] ? lcs(i + 1, j + 1) + 1 : Math.max(lcs(i + 1, j), lcs(i, j + 1));
+    }
+  }
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && before[i] === after[j]) {
+      out.push(`  ${before[i]}`);
+      i++;
+      j++;
+    } else if (i < n && (j === m || lcs(i + 1, j) >= lcs(i, j + 1))) {
+      out.push(`- ${before[i]}`); // deletions first, as in a unified diff
+      i++;
+    } else {
+      out.push(`+ ${after[j]}`);
+      j++;
+    }
+  }
+  return out.join("\n");
+}
 
 /** The card shows what the server says the write will really do (tool preview). */
 function describe(
@@ -48,6 +92,7 @@ function describe(
   const body = str(args.body ?? args.text);
   const lines = body ? body.split("\n") : [];
   const count = `${lines.length} ${lines.length === 1 ? "line" : "lines"}`;
+  const plus = lines.map((l) => `+ ${l}`).join("\n");
   if (target.action === "move") {
     return {
       path: str(target.path),
@@ -55,17 +100,20 @@ function describe(
       diff: `- ${str(target.path)}\n+ ${str(target.to)}`,
     };
   }
-  if (target.action === "update") {
-    const before = str(target.current).split("\n");
-    const removed = before.filter((l) => !lines.includes(l)).map((l) => `- ${l}`);
-    const added = lines.filter((l) => !before.includes(l)).map((l) => `+ ${l}`);
+  if (target.action === "update" || target.action === "update+move") {
+    const parts = [lineDiff(str(target.current).split("\n"), lines)];
+    if (target.jesinia)
+      parts.unshift(`~ metadata: ${JSON.stringify(target.jesinia.from)} → ${JSON.stringify(target.jesinia.to)}`);
+    const moving = target.action === "update+move";
+    if (moving) parts.unshift(`~ moves to ${str(target.to)} (title "${str(target.new_title)}")`);
     return {
       path: str(target.path),
-      summary: `Changes an existing page (${count})`,
-      diff: [...removed, ...added].join("\n"),
+      summary: moving
+        ? `Changes an existing page and moves it to ${str(target.to)}`
+        : `Changes an existing page (${count})`,
+      diff: parts.join("\n"),
     };
   }
-  const plus = lines.map((l) => `+ ${l}`).join("\n");
   if (target.action === "create")
     return { path: str(target.path), summary: `Creates a new page (${count})`, diff: plus };
   if (tool === "notes_save")

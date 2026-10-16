@@ -229,6 +229,11 @@ async def test_pending_write_events_show_the_real_target(app_env: AppEnv) -> Non
         )
         await m.call_tool("kb_move", {"id": existing.page.id, "folder": "Archive"})
         await m.call_tool("kb_move", {"id": "0" * 36, "folder": "Archive"})
+        await m.call_tool(
+            "kb_write",
+            {"id": existing.page.id, "title": "Existing", "folder": "Ideas", "body": "x",
+             "jesinia": {"kind": "note"}, "expected_rev": existing.rev},
+        )  # fmt: skip
     r = await app_env.client.get(
         f"/api/agents/sessions/{s['id']}/events", params={"follow": "false"}
     )
@@ -239,10 +244,12 @@ async def test_pending_write_events_show_the_real_target(app_env: AppEnv) -> Non
     ]
     assert targets[0] == {"action": "create", "path": "Notes/Agent page.md", "title": "Agent page"}
     assert targets[1] == {
-        "action": "update",
+        "action": "update+move",
         "path": "Ideas/Existing.md",
         "title": "Existing",
         "current": "old body",
+        "to": "Notes/Harmless.md",
+        "new_title": "Harmless",
     }
     assert targets[2] == {
         "action": "move",
@@ -250,3 +257,10 @@ async def test_pending_write_events_show_the_real_target(app_env: AppEnv) -> Non
         "to": "Archive/Existing.md",
     }
     assert targets[3]["action"] == "unknown" and "PageNotFound" in targets[3]["error"]
+    assert targets[4] == {
+        "action": "update",
+        "path": "Ideas/Existing.md",
+        "title": "Existing",
+        "current": "old body",
+        "jesinia": {"from": {}, "to": {"kind": "note"}},
+    }

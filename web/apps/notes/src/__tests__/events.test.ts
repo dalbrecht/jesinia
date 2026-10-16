@@ -2,7 +2,7 @@
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { pageFromPath } from "../api";
-import { EMPTY, markApproving, reduce, type AgentEvent, type ChatState } from "../events";
+import { EMPTY, lineDiff, markApproving, reduce, type AgentEvent, type ChatState } from "../events";
 import { findMarkers, provenance } from "../provenance";
 
 let seq = 0;
@@ -70,7 +70,7 @@ describe("chat events", () => {
     expect(pending.map((p) => (p.kind === "pending-write" ? [p.path, p.summary, p.diff] : null))).toEqual([
       ["Notes/Draft.md", "Creates a new page (2 lines)", "+ a\n+ b"],
       ["Notes/N.md", "Saves a note (1 line)", "+ one"],
-      ["Ideas/Real.md", "Changes an existing page (2 lines)", "- old\n+ new"],
+      ["Ideas/Real.md", "Changes an existing page (2 lines)", "  keep\n- old\n+ new"],
       ["Ideas/Real.md", "Moves the page to Archive/Real.md", "- Ideas/Real.md\n+ Archive/Real.md"],
       ["other", "other: boom", ""],
       ["x", "x (1 line)", "+ z"],
@@ -97,6 +97,33 @@ describe("chat events", () => {
       ["failed", "StaleWrite"],
       ["failed", "The write failed."],
     ]);
+  });
+
+  it("diffs by sequence, shows moves and metadata, and caps huge inputs", () => {
+    expect(lineDiff(["a", "b", "a"], ["a", "a"])).toBe("  a\n- b\n  a");
+    expect(lineDiff(["x"], ["y", "x"])).toBe("+ y\n  x");
+    const big = Array.from({ length: 2100 }, (_, i) => String(i));
+    expect(lineDiff(big, big).startsWith("(too large to compare")).toBe(true);
+    const s = run([
+      ev("pending_write", {
+        pending_id: "m1",
+        tool: "kb_write",
+        args: { id: "a", title: "T2", folder: "B", body: "same" },
+        target: {
+          action: "update+move",
+          path: "A/T.md",
+          to: "B/T2.md",
+          new_title: "T2",
+          current: "same",
+          jesinia: { from: {}, to: { k: 1 } },
+        },
+      }),
+    ]);
+    expect(s.messages[0]).toMatchObject({
+      path: "A/T.md",
+      summary: "Changes an existing page and moves it to B/T2.md",
+      diff: '~ moves to B/T2.md (title "T2")\n~ metadata: {} → {"k":1}\n  same',
+    });
   });
 
   it("errors end the stream; attach and unknown events", () => {
