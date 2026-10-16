@@ -84,6 +84,7 @@ class AgentsModule:
             tools,
         )
         self._svc.restore_tokens()
+        await self._svc.recover()
         ctx.services["agents"] = self._svc
         ctx.services["agents.gate"] = SessionWriteGate(self._svc)
         await self.runner_status()

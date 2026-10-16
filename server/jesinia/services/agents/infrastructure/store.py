@@ -136,6 +136,14 @@ class SqliteSessionStore:
         result = json.loads(r[5]) if r[5] is not None else None
         return PendingWrite(r[0], r[1], r[2], json.loads(r[3]), r[4], result)
 
+    def claim_pending(self, id: str, state: PendingState) -> bool:
+        with transaction(self.conn):
+            cur = self.conn.execute(
+                "UPDATE pending_writes SET state = ? WHERE id = ? AND state = 'pending'",
+                (state, id),
+            )
+        return cur.rowcount == 1
+
     def resolve_pending(self, id: str, state: PendingState, result: object | None) -> None:
         with transaction(self.conn):
             self.conn.execute(

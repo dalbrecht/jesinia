@@ -54,12 +54,16 @@ class ClaudeStreamParser:
         self.model: str | None = None
         self.session_id: str | None = None
         self._tool_names: dict[str, str] = {}
+        self.malformed: str | None = None  # the first unparseable record, if any
 
     def feed(self, line: str) -> list[AgentEvent]:
         try:
             d = json.loads(line)
         except json.JSONDecodeError:
-            return []  # a truncated line; the exit status reports the failure
+            # A truncated or garbled record: the transcript may be incomplete, so the
+            # turn must not finish as a success even if a valid result follows.
+            self.malformed = self.malformed or line[:200]
+            return []
         if not isinstance(d, dict):
             return []
         self.session_id = d.get("session_id") or self.session_id
@@ -90,6 +94,8 @@ class ClaudeStreamParser:
         if kind == "result":
             if d.get("is_error") or d.get("subtype") != "success":
                 return [RunError(str(d.get("result") or d.get("subtype") or "agent run failed"))]
+            if self.malformed is not None:
+                return [RunError(f"claude sent a malformed record: {self.malformed!r}")]
             return [TurnDone(str(self.session_id or ""), self.model)]
         return []
 

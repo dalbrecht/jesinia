@@ -107,6 +107,19 @@ class SessionService:
             json.dump(cfg, fh)
         return path
 
+    async def recover(self) -> int:
+        """After a restart, a session still marked ``running`` lost its turn: mark it
+        failed (with a transcript note) so the user can send again."""
+        stranded = [s for s in self.store.all_sessions() if s.status == "running"]
+        for s in stranded:
+            self.store.set_status(s.id, "failed")
+            await self._append(
+                s.id,
+                "error",
+                {"message": "Jesinia restarted during this turn. Send your message again."},
+            )
+        return len(stranded)
+
     def restore_tokens(self) -> int:
         """Re-register session tokens after a restart (they live in each mcp.json)."""
         count = 0
@@ -265,8 +278,9 @@ class SessionService:
 
     async def approve(self, session_id: str, pending_id: str) -> PendingWrite:
         p = self._pending(session_id, pending_id)
-        if p.state != "pending":
-            return p
+        # Claim it first: a double click, a retry or a racing reject must not run it twice.
+        if not self.store.claim_pending(pending_id, "approving"):
+            return self._pending(session_id, pending_id)
         tool = self._tools().get(p.tool)
         try:
             if tool is None:
@@ -287,8 +301,8 @@ class SessionService:
 
     async def reject(self, session_id: str, pending_id: str) -> PendingWrite:
         p = self._pending(session_id, pending_id)
-        if p.state != "pending":
-            return p
+        if not self.store.claim_pending(pending_id, "rejected"):
+            return self._pending(session_id, pending_id)
         self.store.resolve_pending(pending_id, "rejected", None)
         await self._append(
             session_id, "pending_resolved", {"pending_id": pending_id, "state": "rejected"}

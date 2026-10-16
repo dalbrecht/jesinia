@@ -9,7 +9,7 @@ from typing import Literal
 
 Status = Literal["idle", "running", "failed"]
 Origin = Literal["pwa", "terminal"]
-PendingState = Literal["pending", "approved", "rejected", "failed"]
+PendingState = Literal["pending", "approving", "approved", "rejected", "failed"]
 
 
 @dataclass(frozen=True)

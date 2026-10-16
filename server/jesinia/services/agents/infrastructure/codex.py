@@ -34,11 +34,13 @@ def _mcp_endpoint(req: TurnRequest) -> tuple[str, str]:
 class CodexStreamParser:
     def __init__(self) -> None:
         self.thread_id: str | None = None
+        self.malformed: str | None = None  # the first unparseable record, if any
 
     def feed(self, line: str) -> list[AgentEvent]:
         try:
             d = json.loads(line)
         except json.JSONDecodeError:
+            self.malformed = self.malformed or line[:200]
             return []
         if not isinstance(d, dict):
             return []
@@ -58,6 +60,8 @@ class CodexStreamParser:
                 return [ToolResult(name, ok)]
             return []
         if kind == "turn.completed":
+            if self.malformed is not None:
+                return [RunError(f"codex sent a malformed record: {self.malformed!r}")]
             return [TurnDone(self.thread_id or "", None)]
         if kind == "turn.failed":
             return [RunError(str((d.get("error") or {}).get("message", "turn failed")))]

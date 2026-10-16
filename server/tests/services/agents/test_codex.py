@@ -85,3 +85,12 @@ def test_codex_resume_id_validated(req: TurnRequest) -> None:
 
     with pytest.raises(ValueError):
         CodexRunner().build_argv(replace(req, resume_id="--last"))
+
+
+def test_malformed_record_fails_an_otherwise_successful_turn() -> None:
+    from jesinia.services.agents.infrastructure.codex import CodexStreamParser
+
+    p = CodexStreamParser()
+    assert p.feed('{"type": "item.completed", "item": {"type": "agent_message", "text": "Hi"') == []
+    out = p.feed('{"type": "turn.completed"}')
+    assert len(out) == 1 and isinstance(out[0], RunError) and "malformed record" in out[0].message

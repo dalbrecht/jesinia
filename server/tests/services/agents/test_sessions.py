@@ -278,3 +278,40 @@ async def test_stream_follow_wakes_on_new_events(svc: SessionService) -> None:
     await asyncio.wait_for(task, timeout=2)
     assert seen == ["attached"]
     assert [e.kind async for e in svc.stream(s.id, 0, follow=False)] == ["attached"]
+
+
+async def test_racing_approvals_run_the_write_once(tmp_path: Path) -> None:
+    runs: list[str] = []
+    gate = asyncio.Event()
+
+    async def slow(args: BaseModel, call: CallContext) -> object:
+        runs.append("ran")
+        await gate.wait()
+        return {"ok": True}
+
+    tools = {**TOOLS, "kb_slow": ToolDef("kb_slow", "w", In, slow, True)}
+    svc = make(tmp_path, FakeRunner([]))
+    svc._tools = lambda: tools
+    s = await svc.create(SUBJ, "fake", pack())
+    p = await svc.request_write(s.id, tools["kb_slow"], In())
+    first = asyncio.create_task(svc.approve(s.id, p.id))
+    await asyncio.sleep(0)
+    second = await svc.approve(s.id, p.id)  # while the first is still running
+    rejected = await svc.reject(s.id, p.id)
+    assert second.state == "approving" and rejected.state == "approving"
+    gate.set()
+    assert (await first).state == "approved" and runs == ["ran"]
+    assert [e.kind for e in svc.store.events(s.id)].count("pending_resolved") == 1
+
+
+async def test_restart_recovers_a_session_stranded_mid_turn(tmp_path: Path) -> None:
+    svc = make(tmp_path, FakeRunner([]))
+    s = await svc.create(SUBJ, "fake", pack())
+    svc.store.set_status(s.id, "running")  # the server died during this turn
+    again = make(tmp_path, FakeRunner([TextDelta("ok"), TurnDone("f", None)]))
+    assert await again.recover() == 1
+    assert again.get(s.id).status == "failed"
+    assert str(again.store.events(s.id)[-1].data["message"]).startswith("Jesinia restarted")
+    await again.send(s.id, "hello again")  # no longer stuck as busy
+    await again.wait_idle(s.id)
+    assert again.get(s.id).status == "idle"

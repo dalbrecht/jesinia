@@ -110,3 +110,15 @@ def test_minimal_env(monkeypatch: pytest.MonkeyPatch, req: TurnRequest) -> None:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/x")
     env = ClaudeCodeRunner().build_env(req)
     assert "AWS_SECRET_ACCESS_KEY" not in env and env["CLAUDE_CONFIG_DIR"] == "/x" and "PATH" in env
+
+
+def test_malformed_record_fails_an_otherwise_successful_turn() -> None:
+    from jesinia.services.agents.infrastructure.claude import ClaudeStreamParser
+
+    p = ClaudeStreamParser()
+    assert (
+        p.feed('{"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": "Hi"}}')
+        == []
+    )
+    out = p.feed('{"type": "result", "subtype": "success", "is_error": false, "session_id": "s"}')
+    assert len(out) == 1 and isinstance(out[0], RunError) and "malformed record" in out[0].message
