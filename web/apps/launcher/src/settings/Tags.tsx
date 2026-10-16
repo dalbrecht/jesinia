@@ -2,7 +2,8 @@
 import { errorText, type components } from "@jesinia/client";
 import { Badge, Button, Input, List, Panel, Row, useToast } from "@jesinia/design";
 import { useClient } from "@jesinia/shell";
-import { useCallback, useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import s from "../settings.module.css";
 
 type TagInfo = components["schemas"]["TagInfoOut"];
@@ -20,8 +21,53 @@ function matchesFilter(info: TagInfo, needle: string): boolean {
   return haystack.includes(needle.toLowerCase());
 }
 
+const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
+
+/** Modal behaviour: focus in, Tab trapped, page behind inert, Escape closes, focus restored. */
+function useModalBehaviour(
+  dialogRef: RefObject<HTMLDivElement | null>,
+  scrimRef: RefObject<HTMLDivElement | null>,
+  onClose: () => void,
+) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  // Captured during the first render: autoFocus moves focus before effects run.
+  const [invoker] = useState(() => document.activeElement as HTMLElement | null);
+  useEffect(() => {
+    const inerted = Array.from(document.body.children).filter(
+      (el) => el !== scrimRef.current && !el.hasAttribute("inert"),
+    );
+    inerted.forEach((el) => el.setAttribute("inert", ""));
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const nodes = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !dialogRef.current?.contains(active))) {
+        e.preventDefault();
+        last?.focus();
+      } else if (!e.shiftKey && (active === last || !dialogRef.current?.contains(active))) {
+        e.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      inerted.forEach((el) => el.removeAttribute("inert"));
+      invoker?.focus();
+    };
+  }, [dialogRef, scrimRef, invoker]);
+}
+
 /**
- * Previews and applies a rename (one source) or a merge (sources into a target).
+ * Previews and applies a rename (one source) or a merge (several sources into a target).
  * The server has no merge preview, so a merge previews each source as a rename and
  * combines the pages and revisions.
  */
@@ -36,24 +82,46 @@ function ChangeDialog({
 }) {
   const client = useClient();
   const toast = useToast();
-  const { mode, source } = target;
+  const { mode } = target;
+  const [sources, setSources] = useState<string[]>([target.source]);
+  const [extra, setExtra] = useState("");
   const [name, setName] = useState("");
   const [preview, setPreview] = useState<{ pages: PageRef[]; reserved: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const title = mode === "rename" ? `Rename #${source}` : `Merge #${source} into…`;
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
+  useModalBehaviour(dialogRef, scrimRef, onClose);
+  const title = mode === "rename" ? `Rename #${target.source}` : `Merge #${target.source} into…`;
   const destination = name.trim().replace(/^#/, "");
+  const sourceList = sources.map((x) => `#${x}`).join(", ");
+
+  const addSource = () => {
+    const tag = extra.trim().replace(/^#/, "");
+    if (tag !== "" && !sources.includes(tag)) {
+      setSources([...sources, tag]);
+      setPreview(null);
+    }
+    setExtra("");
+  };
 
   const runPreview = async () => {
     setBusy(true);
     setError(null);
-    const r = await client.POST("/api/kb/tags/rename/preview", { body: { old: source, new: destination } });
-    setBusy(false);
-    if (!r.data) {
-      setError(errorText(r.error, "Couldn't preview that change."));
-      return;
+    const pages = new Map<string, PageRef>();
+    const reserved = new Set<string>();
+    for (const source of sources) {
+      const r = await client.POST("/api/kb/tags/rename/preview", { body: { old: source, new: destination } });
+      if (!r.data) {
+        setBusy(false);
+        setError(errorText(r.error, "Couldn't preview that change."));
+        return;
+      }
+      r.data.pages.forEach((p) => pages.has(p.id) || pages.set(p.id, p));
+      r.data.skipped_reserved.forEach((path) => reserved.add(path));
     }
-    setPreview({ pages: r.data.pages, reserved: r.data.skipped_reserved });
+    setBusy(false);
+    setPreview({ pages: [...pages.values()], reserved: [...reserved] });
   };
 
   const apply = async () => {
@@ -63,87 +131,135 @@ function ChangeDialog({
     setError(null);
     const r =
       mode === "rename"
-        ? await client.POST("/api/kb/tags/rename", { body: { old: source, new: destination, revs } })
-        : await client.POST("/api/kb/tags/merge", { body: { sources: [source], into: destination, revs } });
+        ? await client.POST("/api/kb/tags/rename", { body: { old: target.source, new: destination, revs } })
+        : await client.POST("/api/kb/tags/merge", { body: { sources, into: destination, revs } });
     setBusy(false);
     if (!r.data) {
       setError(errorText(r.error, "Couldn't apply that change."));
       return;
     }
-    const verb = mode === "rename" ? `Renamed #${source} to #${destination}` : `Merged #${source} into #${destination}`;
+    const verb =
+      mode === "rename" ? `Renamed #${target.source} to #${destination}` : `Merged ${sourceList} into #${destination}`;
     const skipped = r.data.skipped_changed.length;
     const tail = skipped > 0 ? ` ${skipped} changed since the preview and were skipped.` : "";
     toast.show({ tone: "success", message: `${verb} in ${pagesLabel(r.data.updated.length)}.${tail}` });
     onApplied();
   };
 
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") onClose();
-  };
-
-  return (
-    <div className={s.scrim} onKeyDown={onKeyDown}>
-      <div role="dialog" aria-modal="true" aria-label={title} className={s.dialog}>
-        <Panel
-          variant="raised"
-          title={title}
-          headingLevel={3}
-          footer={
-            <div className={s.actions}>
-              <Button onClick={onClose}>Cancel</Button>
-              <Button loading={busy} disabled={destination === ""} onClick={() => void runPreview()}>
-                Preview
-              </Button>
-              {preview ? (
-                <Button variant="primary" loading={busy} onClick={() => void apply()}>
-                  Apply
-                </Button>
-              ) : null}
-            </div>
-          }
+  return createPortal(
+    <div className={s.scrim} ref={scrimRef}>
+      <div role="dialog" aria-modal="true" aria-label={title} className={s.dialog} ref={dialogRef}>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (destination !== "") void runPreview();
+          }}
         >
-          <div className={s.form}>
-            <Input
-              label={mode === "rename" ? "New name" : "Merge into"}
-              value={name}
-              autoFocus
-              onChange={(e) => {
-                setName(e.target.value);
-                setPreview(null);
-              }}
-              help={mode === "merge" ? "Pages tagged #" + source + " are retagged with this tag." : undefined}
-              error={error ?? undefined}
-            />
-            {preview ? (
-              <>
-                <h4>Pages to update</h4>
-                {preview.pages.length === 0 ? (
-                  <p className={s.muted}>No pages use this tag yet.</p>
-                ) : (
-                  <ul className={s.plainList}>
-                    {preview.pages.map((p) => (
-                      <li key={p.id}>{p.title}</li>
-                    ))}
-                  </ul>
-                )}
-                <h4>Not updated (private folder)</h4>
-                {preview.reserved.length === 0 ? (
-                  <p className={s.muted}>No pages are skipped.</p>
-                ) : (
-                  <ul className={s.plainList}>
-                    {preview.reserved.map((path) => (
-                      <li key={path} className={s.mono}>
-                        {path}
+          <Panel
+            variant="raised"
+            title={title}
+            headingLevel={3}
+            footer={
+              <div className={s.actions}>
+                <Button type="button" onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button type="submit" loading={busy} disabled={destination === ""}>
+                  Preview
+                </Button>
+                {preview ? (
+                  <Button type="button" variant="primary" loading={busy} onClick={() => void apply()}>
+                    Apply
+                  </Button>
+                ) : null}
+              </div>
+            }
+          >
+            <div className={s.form}>
+              {mode === "merge" ? (
+                <>
+                  <ul className={s.chips} aria-label="Tags to merge">
+                    {sources.map((x) => (
+                      <li key={x}>
+                        <Badge>{`#${x}`}</Badge>
+                        {sources.length > 1 ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Remove #${x}`}
+                            onClick={() => {
+                              setSources(sources.filter((y) => y !== x));
+                              setPreview(null);
+                            }}
+                          >
+                            ×
+                          </Button>
+                        ) : null}
                       </li>
                     ))}
                   </ul>
-                )}
-              </>
-            ) : null}
-          </div>
-        </Panel>
+                  <div className={s.actions}>
+                    <Input
+                      label="Also merge"
+                      value={extra}
+                      onChange={(e) => setExtra(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addSource();
+                        }
+                      }}
+                    />
+                    <Button type="button" onClick={addSource}>
+                      Add
+                    </Button>
+                  </div>
+                </>
+              ) : null}
+              <Input
+                label={mode === "rename" ? "New name" : "Merge into"}
+                value={name}
+                autoFocus
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setPreview(null);
+                }}
+                help={mode === "merge" ? `Pages tagged ${sourceList} are retagged with this tag.` : undefined}
+                error={error ?? undefined}
+              />
+              {preview ? (
+                <>
+                  <h4>Pages to update</h4>
+                  {preview.pages.length === 0 ? (
+                    <p className={s.muted}>No pages use this tag yet.</p>
+                  ) : (
+                    <ul className={s.plainList}>
+                      {preview.pages.map((p) => (
+                        <li key={p.id}>{p.title}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <h4>Not updated (private folder)</h4>
+                  {preview.reserved.length === 0 ? (
+                    <p className={s.muted}>No pages are skipped.</p>
+                  ) : (
+                    <ul className={s.plainList}>
+                      {preview.reserved.map((path) => (
+                        <li key={path} className={s.mono}>
+                          {path}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              ) : null}
+            </div>
+          </Panel>
+        </form>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

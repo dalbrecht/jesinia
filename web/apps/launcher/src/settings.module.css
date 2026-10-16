@@ -101,3 +101,14 @@
   max-height: 90vh;
   overflow: auto;
 }
+.chips {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--jx-space-2);
+}
+.chips li {
+  display: inline-flex;
+  align-items: center;
+}

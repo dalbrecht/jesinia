@@ -319,4 +319,90 @@ describe("Settings → Tags", () => {
     expect((await screen.findAllByText("Ignored #rust.")).length).toBeGreaterThan(0);
     await waitFor(() => expect(tags.queryByText("#rust")).toBeNull());
   });
+
+  it("traps focus in the dialog, inerts the page, closes on Escape and restores focus", async () => {
+    renderTags();
+    const tags = await section();
+    const row = (await tags.findByText("#python")).closest("li") as HTMLElement;
+    const invoker = within(row).getByRole("button", { name: "Rename" });
+    await userEvent.click(invoker);
+    const dialogEl = await screen.findByRole("dialog");
+    const dialog = within(dialogEl);
+    expect(dialog.getByLabelText("New name")).toHaveFocus();
+    expect(document.getElementById("root") ?? document.body.firstElementChild).toHaveAttribute("inert");
+    await userEvent.type(dialog.getByLabelText("New name"), "py");
+    await userEvent.tab({ shift: true });
+    expect(dialog.getByRole("button", { name: "Preview" })).toHaveFocus();
+    await userEvent.tab();
+    expect(dialog.getByLabelText("New name")).toHaveFocus();
+    for (let i = 0; i < 6; i++) {
+      await userEvent.tab();
+      expect(dialogEl.contains(document.activeElement)).toBe(true);
+    }
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(invoker).toHaveFocus();
+    expect(document.querySelector("[inert]")).toBeNull();
+  });
+
+  it("Escape closes even when focus is on the dialog's own button", async () => {
+    renderTags();
+    const tags = await section();
+    const row = (await tags.findByText("#python")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    dialog.getByRole("button", { name: "Cancel" }).focus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("Enter in the field runs Preview", async () => {
+    const calls = renderTags({
+      "POST /api/kb/tags/rename/preview": { pages: [{ id: "p1", title: "A", rev: "r1" }], skipped_reserved: [] },
+    });
+    const tags = await section();
+    const row = (await tags.findByText("#python")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    await userEvent.type(dialog.getByLabelText("New name"), "py{Enter}");
+    expect(await dialog.findByText("A")).toBeInTheDocument();
+    expect(await posted(calls, "/api/kb/tags/rename/preview")).toEqual({ old: "python", new: "py" });
+  });
+
+  it("merges several tags into one with a single request and combined revisions", async () => {
+    const calls = renderTags({
+      "POST /api/kb/tags/rename/preview": async (req: Request) => {
+        const body = (await req.json()) as { old: string };
+        return Response.json(
+          body.old === "sqlite"
+            ? { pages: [{ id: "p1", title: "From sqlite", rev: "r1" }], skipped_reserved: [] }
+            : { pages: [{ id: "p2", title: "From old", rev: "r2" }], skipped_reserved: ["x.md"] },
+        );
+      },
+      "POST /api/kb/tags/merge": { updated: ["p1", "p2"], skipped_changed: [] },
+    });
+    const tags = await section();
+    const row = (await tags.findByText("#sqlite")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Merge into…" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    await userEvent.type(dialog.getByLabelText("Also merge"), "#old{Enter}");
+    expect(dialog.getByText("#old")).toBeInTheDocument();
+    await userEvent.type(dialog.getByLabelText("Also merge"), "temp");
+    await userEvent.click(dialog.getByRole("button", { name: "Add" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Remove #temp" }));
+    await userEvent.type(dialog.getByLabelText("Also merge"), "old");
+    await userEvent.click(dialog.getByRole("button", { name: "Add" }));
+    await userEvent.type(dialog.getByLabelText("Merge into"), "python");
+    await userEvent.click(dialog.getByRole("button", { name: "Preview" }));
+    expect(await dialog.findByText("From sqlite")).toBeInTheDocument();
+    expect(dialog.getByText("From old")).toBeInTheDocument();
+    expect(dialog.getByText("x.md")).toBeInTheDocument();
+    await userEvent.click(dialog.getByRole("button", { name: "Apply" }));
+    expect((await screen.findAllByText("Merged #sqlite, #old into #python in 2 pages.")).length).toBeGreaterThan(0);
+    expect(await posted(calls, "/api/kb/tags/merge")).toEqual({
+      sources: ["sqlite", "old"],
+      into: "python",
+      revs: { p1: "r1", p2: "r2" },
+    });
+  });
 });
