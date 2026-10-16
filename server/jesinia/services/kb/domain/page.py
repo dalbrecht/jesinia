@@ -34,3 +34,9 @@ class Page:
     body: str
     jesinia: Mapping[str, object] = field(default_factory=dict)
     foreign: Mapping[str, object] = field(default_factory=dict)
+
+
+def source_of(jesinia: Mapping[str, object]) -> str | None:
+    """The page's source URL: ``jesinia.source`` when it is a non-empty string."""
+    value = jesinia.get("source")
+    return value if isinstance(value, str) and value else None

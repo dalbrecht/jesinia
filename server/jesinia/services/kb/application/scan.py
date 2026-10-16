@@ -23,8 +23,9 @@ from jesinia.services.kb.application.errors import KbError, StaleWrite
 from jesinia.services.kb.application.service import Change, KbService, nfc
 from jesinia.services.kb.domain.frontmatter import page_from, parse_document, serialize_page
 from jesinia.services.kb.domain.links import link_targets
-from jesinia.services.kb.domain.page import Page, PageId, new_page_id
+from jesinia.services.kb.domain.page import Page, PageId, new_page_id, source_of
 from jesinia.services.kb.domain.paths import is_page_candidate, is_reserved
+from jesinia.services.kb.domain.tags import extract_tags
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class _Found:
     title: str
     mtime: float
     body: str | None  # None when reused from the index (unchanged mtime)
+    source: str | None = None
 
 
 Visit = Literal["page", "foreign", "skipped"]
@@ -93,7 +95,9 @@ def _visit(
         doc = parse_document(data.decode("utf-8"))
     page = page_from(doc, rel)
     rev = hashlib.sha256(data).hexdigest()
-    by_id[page.id].append(_Found(page.id, rel, disk, rev, page.title, mtime, page.body))
+    by_id[page.id].append(
+        _Found(page.id, rel, disk, rev, page.title, mtime, page.body, source_of(page.jesinia))
+    )
     return "page"
 
 
@@ -130,7 +134,10 @@ async def scan(svc: KbService) -> ScanReport:
         keep = next((h for h in hits if previous and h.path == previous.path), hits[0])
         seen.add(id)
         links = link_targets(keep.body) if keep.body is not None else None
-        index.put(id, keep.path, keep.disk, keep.rev, keep.title, keep.mtime, links)
+        tags = extract_tags(keep.body) if keep.body is not None else None
+        index.put(
+            id, keep.path, keep.disk, keep.rev, keep.title, keep.mtime, links, tags, keep.source
+        )
         change: Change
         if previous is None:
             change = "created"
