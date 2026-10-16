@@ -14,6 +14,9 @@ under the project license (AGPL-3.0-or-later).
 | Launcher | `launcher/source.jpg` | same | 2026-10-16 |
 | Settings | `settings/source.jpg` | same | 2026-10-16 |
 
+`<app>/export/` holds the files rendered from these with `make icons`
+(`web/scripts/export-icons.mjs`); they are derived, so they carry the same credits.
+
 ## Prompts
 
 Every prompt asked for one 1024×1024 square image and added the same treatment:

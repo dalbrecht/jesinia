@@ -117,7 +117,7 @@ function Workspace({ status }: { status: ServerStatus }) {
 export function App({ client }: { client?: JesiniaClient }) {
   return (
     <AppShell
-      app={{ id: "notes", name: "Notes", glyph: "/notes/icons/monochrome-512.png" }}
+      app={{ id: "notes", name: "Notes", glyph: "/notes/icons/monochrome.svg" }}
       ownSearch
       {...(client ? { client } : {})}
     >

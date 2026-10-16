@@ -8,7 +8,7 @@ PNPM := cd web && pnpm  # run inside web/ so Corepack reads its packageManager p
 .DEFAULT_GOAL := help
 .PHONY: help install build test test-py test-js test-e2e lint fmt fmt-check coverage-check \
         typecheck spdx imports audit audit-py audit-js hooks ci-py ci-js ci lint-standards sync-standards doctor \
-        gen-client e2e-browsers e2e-server docs
+        gen-client e2e-browsers e2e-server docs icons
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -31,6 +31,9 @@ test-py:
 
 test-js:
 	$(PNPM) run test
+
+icons: ## Export app icons from docs/design/icons into the apps (needs e2e-browsers)
+	$(PNPM) exec node scripts/export-icons.mjs
 
 e2e-browsers: ## Install the Playwright browser the e2e tests use (CI)
 	$(PNPM) exec playwright install --with-deps chromium

@@ -24,7 +24,10 @@ first.
 7. **PWA.** Create `web/apps/<app>/` from the Notes app:
    - `AppShell` with `data-app="<app>"`;
    - a manifest with `scope: /<app>/` and `display_override: ["window-controls-overlay"]`;
-   - icons from `node scripts/export-icons.mjs <app> apps/<app>/public/icons`;
+   - icons: add `web/apps/<app>/public/icons` to `SHIPPED` in `web/scripts/export-icons.mjs`
+     and run `make icons`; link `favicon-32.png`, `favicon-16.png` and `apple-touch-icon.png`
+     in `index.html`, and use `icons/monochrome.svg` as the manifest `monochrome` icon and
+     the title-bar glyph (the `icons.test.ts` in each app checks this);
    - the service worker.
 
    Use `@jesinia/design` components and tokens only, and register the app in
