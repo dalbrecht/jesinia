@@ -333,3 +333,27 @@ async def test_cancelled_git_command_is_killed(tmp_path: Path) -> None:
     with pytest.raises(asyncio.CancelledError):
         await slow
     assert time.monotonic() - started < 5  # killed and reaped, not left to finish
+
+
+async def test_in_flight_temp_file_is_left_out_of_the_push(env: Env, remote: Path) -> None:
+    (env.work / "Notes/.page.md.abc123.jesinia-tmp").write_text("half written")
+    (env.work / "Notes/real.md").write_text("real\n")
+    assert (await env.sync.run_cycle("manual")).outcome == "pushed"
+    files = git(remote, "ls-tree", "-r", "--name-only", "main")
+    assert "Notes/real.md" in files and "jesinia-tmp" not in files
+
+
+async def test_add_failure_retries_then_errors(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    (env.work / "Notes/a.md").write_text("x\n")
+    real = env.spy.run
+    calls = {"add": 0}
+
+    async def flaky(*args: str, check: bool = True) -> GitResult:
+        if args[:2] == ("add", "-A"):
+            calls["add"] += 1
+            return GitResult(128, "", "fatal: unable to stat 'x'")
+        return await real(*args, check=check)
+
+    monkeypatch.setattr(env.spy, "run", flaky)
+    r = await env.sync.run_cycle("manual")
+    assert r.outcome == "error" and "git add failed" in r.message and calls["add"] == 2
