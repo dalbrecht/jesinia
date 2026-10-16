@@ -322,3 +322,17 @@ def test_doctor_kb_variants(tmp_path: Path, kb: Path) -> None:
 def test_run_command() -> None:
     assert run_command(["python3", "-c", "print('hi')"], 10) == (0, "hi")
     assert run_command(["/nonexistent"], 10)[0] == 1
+
+
+def test_registry_runs_every_module_in_order() -> None:
+    from jesinia.registry import modules
+
+    assert [m.name for m in modules()] == [
+        "kb",
+        "search",
+        "kbsync",
+        "agents",
+        "github",
+        "fetch",
+        "notes",
+    ]

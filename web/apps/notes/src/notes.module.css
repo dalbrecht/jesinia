@@ -1,0 +1,196 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) minmax(320px, 400px);
+  height: calc(100vh - 38px);
+}
+@media (max-width: 1000px) {
+  .layout {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+  .chat {
+    grid-column: 1 / -1;
+    min-height: 60vh;
+  }
+}
+@media (max-width: 640px) {
+  .layout {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+}
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-3);
+  padding: var(--jx-space-3);
+  border-right: 1px solid var(--jx-border);
+  background: var(--jx-surface);
+  overflow-y: auto;
+  min-height: 0;
+}
+.tree {
+  list-style: none;
+  padding-left: var(--jx-space-3);
+  margin: 0;
+  font-size: var(--jx-text-sm);
+}
+.sidebar > .tree {
+  padding-left: 0;
+}
+.tree summary {
+  cursor: pointer;
+  padding: 2px 0;
+}
+.count {
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-xs);
+}
+.treePage,
+.result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--jx-fg);
+  border-radius: var(--jx-radius-sm);
+  padding: 3px var(--jx-space-2);
+}
+.treePage:hover,
+.result:hover {
+  background: var(--jx-surface-hover);
+}
+.treePage[aria-current="page"] {
+  background: var(--jx-row-bg-selected);
+  font-weight: var(--jx-weight-medium);
+}
+.groupLabel {
+  font-size: var(--jx-text-xs);
+  font-weight: var(--jx-weight-medium);
+  color: var(--jx-fg-muted);
+  margin: var(--jx-space-2) 0 var(--jx-space-1);
+}
+.results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 2px;
+}
+.result {
+  display: grid;
+  gap: 1px;
+  padding: var(--jx-space-1) var(--jx-space-2);
+}
+.resultTitle {
+  font-weight: var(--jx-weight-medium);
+  font-size: var(--jx-text-sm);
+}
+.resultPath {
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-xs);
+  color: var(--jx-fg-muted);
+}
+.snippet {
+  font-size: var(--jx-text-xs);
+  color: var(--jx-fg-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.snippet mark {
+  background: var(--jx-highlight);
+  color: var(--jx-fg);
+}
+.main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--jx-space-4) var(--jx-space-6) 0;
+  overflow: hidden;
+}
+.pageHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--jx-space-3);
+}
+.title {
+  font-size: var(--jx-text-2xl);
+  line-height: var(--jx-leading-2xl);
+}
+.properties {
+  font-size: var(--jx-text-xs);
+  color: var(--jx-fg-muted);
+  margin: var(--jx-space-1) 0 var(--jx-space-2);
+}
+.mono {
+  font-family: var(--jx-font-mono);
+}
+.editor {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.empty {
+  margin: auto;
+  display: grid;
+  gap: var(--jx-space-3);
+  justify-items: center;
+  color: var(--jx-fg-muted);
+}
+.muted {
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+}
+.error {
+  color: var(--jx-danger);
+  font-size: var(--jx-text-sm);
+}
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--jx-border);
+  background: var(--jx-surface);
+}
+.chatHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jx-space-2);
+  padding: var(--jx-space-2) var(--jx-space-3);
+  border-bottom: 1px solid var(--jx-border);
+}
+.runnerPick {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+}
+.runnerPick select {
+  border: 1px solid var(--jx-border-strong);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-surface);
+  padding: 2px var(--jx-space-1);
+}
+.banner {
+  margin: var(--jx-space-2) var(--jx-space-3);
+  padding: var(--jx-space-2);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-warn-bg);
+  font-size: var(--jx-text-sm);
+}
+.transcript {
+  flex: 1;
+  min-height: 0;
+}
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--jx-space-2);
+  padding: var(--jx-space-2) var(--jx-space-3) var(--jx-space-3);
+  border-top: 1px solid var(--jx-border);
+}

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from jesinia.apps.notes.module import NOTES_DB
+from jesinia.apps.notes.module import NOTES_DB, NotesModule
 from jesinia.core.db import ModuleDb
 from jesinia.core.module import Module
 from jesinia.services.agents.module import SESSIONS_DB, AgentsModule
@@ -15,7 +15,8 @@ from jesinia.services.search.module import SEARCH_DB, SearchModule
 
 
 def modules() -> list[Module]:
-    """Fresh module instances: kb first (search and kbsync depend on it)."""
+    """Fresh module instances, in start order: kb first (search, kbsync and notes depend
+    on it); notes last (it needs kb, search and agents)."""
     return [
         KbModule(),
         SearchModule(),
@@ -23,6 +24,7 @@ def modules() -> list[Module]:
         AgentsModule(),
         GitHubModule(),
         FetchModule(),
+        NotesModule(),
     ]
 
 

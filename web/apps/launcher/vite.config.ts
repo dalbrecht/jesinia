@@ -20,6 +20,7 @@ function serviceWorker(): Plugin {
 export default defineConfig({
   base: "/",
   plugins: [react(), serviceWorker()],
-  build: { outDir: out, emptyOutDir: true },
+  // No data: URIs (the CSP allows same-origin fonts and images only).
+  build: { outDir: out, emptyOutDir: true, assetsInlineLimit: 0 },
   server: { proxy: { "/api": "http://127.0.0.1:4870", "/healthz": "http://127.0.0.1:4870" } },
 });

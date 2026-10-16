@@ -15,7 +15,7 @@ export default defineConfig({
   workers: 1,
   use: { baseURL: `http://127.0.0.1:${PORT}`, trace: "retain-on-failure" },
   webServer: {
-    command: "pnpm --filter @jesinia/launcher build && bash tests/e2e/serve.sh",
+    command: "pnpm --filter @jesinia/launcher --filter @jesinia/notes build && bash tests/e2e/serve.sh",
     url: `http://127.0.0.1:${PORT}/healthz`,
     env: { E2E_HOME: home, E2E_PORT: String(PORT) },
     reuseExistingServer: false,
