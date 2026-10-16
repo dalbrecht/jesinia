@@ -16,15 +16,16 @@
       "Bash(git commit*)",
       "Bash(git branch*)",
       "Bash(git worktree*)",
-      "Bash(python *)",
-      "Bash(python3 *)",
-      "Bash(uv *)",
       "Bash(ruff *)",
       "Bash(pytest *)",
       "Bash(mypy *)",
       "Bash(pyright *)",
       "Bash(bandit *)",
-      "Bash(pip-audit *)"
+      "Bash(pip-audit *)",
+      "Bash(uv run pytest*)",
+      "Bash(uv run ruff *)",
+      "Bash(uv run mypy*)",
+      "Bash(uv run lint-imports)"
     ],
     "deny": [
       "Bash(git push --force*)",

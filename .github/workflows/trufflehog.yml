@@ -38,4 +38,4 @@ jobs:
           path: ./
           # extra_args: no --only-verified (verification off by default);
           # --exclude-paths respects the committed allowlist.
-          extra_args: --results=verified,unknown --exclude-paths=.trufflehog-ignore
+          extra_args: --no-verification --exclude-paths=.trufflehog-ignore
