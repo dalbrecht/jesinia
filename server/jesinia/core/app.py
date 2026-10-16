@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from starlette.routing import Route
 
 from jesinia.core.auth import auth_router, require_owner
 from jesinia.core.config import Config
@@ -22,9 +23,17 @@ log = logging.getLogger(__name__)
 def create_app(cfg: Config, modules: Sequence[Module]) -> FastAPI:
     """Build the server app. Modules start in order and stop in reverse; a module whose
     ``start`` raises is reported unhealthy and the rest keep running."""
+    from jesinia.mcp.server import DefaultGate, WriteGate, build_mcp  # core hosts /mcp
+
     ctx = AppContext(cfg=cfg, bus=EventBus(), scheduler=Scheduler())
     failed: dict[str, str] = {}
     started: list[Module] = []
+
+    def gate() -> WriteGate:
+        installed = ctx.services.get("agents.gate")  # set by the agents module (Task 18)
+        return installed if installed is not None else DefaultGate()  # type: ignore[return-value]
+
+    mcp = build_mcp(ctx, [t for m in modules for t in m.mcp_tools()], gate)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -37,7 +46,8 @@ def create_app(cfg: Config, modules: Sequence[Module]) -> FastAPI:
                 failed[module.name] = f"start failed: {exc}"
         await ctx.scheduler.start()
         try:
-            yield
+            async with mcp.manager.run():
+                yield
         finally:
             await ctx.scheduler.stop()
             for module in reversed(started):
@@ -83,5 +93,6 @@ def create_app(cfg: Config, modules: Sequence[Module]) -> FastAPI:
             report[module.name] = {"ok": health.ok, "detail": health.detail}
         return {"ok": all(m["ok"] for m in report.values()), "modules": report}
 
+    app.router.routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))
     app.add_middleware(LocalOriginGuard, port=cfg.port)
     return app

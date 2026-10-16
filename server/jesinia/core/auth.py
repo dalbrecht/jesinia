@@ -58,6 +58,10 @@ def register_session_token(token: str, session_id: str) -> None:
     _session_tokens[token] = session_id
 
 
+def session_for_token(token: str) -> str | None:
+    return _session_tokens.get(token)
+
+
 def revoke_session_token(token: str) -> None:
     _session_tokens.pop(token, None)
 

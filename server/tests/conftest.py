@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,9 +27,36 @@ def _reset_auth() -> Iterator[None]:
 
 
 @asynccontextmanager
+async def running(app: FastAPI) -> AsyncIterator[None]:
+    """Run the app's lifespan in one dedicated task, as uvicorn does.
+
+    Entering and exiting the lifespan from different tasks (pytest-asyncio fixtures do)
+    breaks anyio cancel scopes such as the MCP session manager's.
+    """
+    started, stop = asyncio.Event(), asyncio.Event()
+
+    async def run() -> None:
+        async with app.router.lifespan_context(app):
+            started.set()
+            await stop.wait()
+
+    task = asyncio.create_task(run())
+    waiter = asyncio.create_task(started.wait())
+    done, _ = await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+    if task in done:
+        waiter.cancel()
+        await task  # re-raises a startup failure
+    try:
+        yield
+    finally:
+        stop.set()
+        await task
+
+
+@asynccontextmanager
 async def lifespan_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     """An httpx client against ``app`` with its lifespan (startup/shutdown) running."""
-    async with app.router.lifespan_context(app):
+    async with running(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
             yield client
