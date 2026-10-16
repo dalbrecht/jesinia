@@ -148,7 +148,12 @@ The PWAs, other apps, and terminal agents therefore all exercise the same code p
 - Writes accept an optional **base version** (the content hash the writer last read);
   if the file on disk no longer matches, the write fails with a conflict instead of
   overwriting. The Notes editor depends on this (§11, ADR 0008).
-- `kb.move` rewrites inbound `[[links]]` to the moved page.
+- **Body-only updates** replace the body and keep the raw front-matter block
+  byte-identical (no YAML re-serialization), so ordinary edits never reformat user
+  metadata. Full re-serialization is used only for new pages and explicit front-matter
+  edits.
+- Links resolve by `id`, so moves never break them; a **rename** updates the `Title`
+  text of inbound `[[id|Title]]` links (each a rev-checked body-only update).
 - MCP tools: `kb.search` (delegates to `search`), `kb.read`, `kb.write`, `kb.move`,
   `kb.tree` (folders with page counts, for the Notes file tree), `kb.link` (resolve
   `[[id|Title]]`), `kb.sync_status` (delegates to `kbsync`).

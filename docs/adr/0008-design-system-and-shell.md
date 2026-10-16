@@ -117,7 +117,8 @@ The tracer app goes beyond the spec's read-only page view:
 - **No permanent toolbar on desktop.** Formatting uses Markdown shortcuts and a floating
   toolbar on selection.
 - **File tree** next to search: compact, with page counts. It can create notes and
-  folders, and moving a file rewrites links via `kb.*`.
+  folders. Links resolve by id, so moving a file never breaks them; renaming updates
+  the title text of inbound links via `kb.*`.
 - **Search results** fill the main column: compact density, titles grouped before
   content, with folder scope and sort.
 - **Pending writes on the open page** apply as one undoable edit, so unsaved typing is
@@ -130,16 +131,22 @@ The tracer app goes beyond the spec's read-only page view:
 - **§1 non-goals:** the final visual identity is no longer deferred; it's defined by this
   ADR.
 - **§4.1 `kb`:** writes accept an optional base version and fail with a conflict when
-  the file has changed. Two operations are added:
-  - `kb.tree` lists folders with page counts, for the file tree;
-  - `kb.move` rewrites inbound links.
+  the file has changed. Body-only updates keep the raw front-matter bytes, so editor
+  saves never reformat user YAML. `kb.tree` lists folders with page counts, and a
+  rename updates the title text of inbound `[[id|Title]]` links.
 - **§9:** the design system is now the full identity: eleven components, the shell
   pattern, and app icons. Its values are no longer placeholders.
 - **§11:** Notes edits pages and has a file tree.
 
 **Plan changes in this commit**
 
-- **Task 24:** adds the editing and tree routes.
+- **Tasks 10–12 (KB service):**
+  - Task 10 adds raw front-matter split and body replacement, and link retitling.
+  - Task 11 adds `update_body`, `tree`, and relinking on rename.
+  - Task 12 adds `GET /api/kb/tree`, a body-only `PATCH` (409 on conflict), and the
+    `kb_tree` MCP tool.
+- **Task 24:** Notes consumes those shared KB routes and adds no KB access of its
+  own.
 - **Task 25:**
   - adds the editor and the tree;
   - adds e2e steps for autosave and the changed-on-disk flow;
