@@ -96,6 +96,15 @@ def require_user(request: Request) -> Principal:
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authentication required")
 
 
+def is_authorized(request: Request) -> bool:
+    """Whether the request's credentials are still valid (long-lived streams recheck)."""
+    try:
+        require_user(request)
+    except HTTPException:
+        return False
+    return True
+
+
 def require_owner(principal: Annotated[Principal, Depends(require_user)]) -> Principal:
     """Like ``require_user`` but refuses agent session tokens."""
     if principal.kind != "user":

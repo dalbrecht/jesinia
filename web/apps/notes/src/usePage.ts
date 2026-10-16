@@ -137,8 +137,17 @@ export function usePage(id: string | null): OpenPage {
         // Any writer counts (an approved agent write, another window, an editor); only
         // our own acknowledged save matches rev.current and is ignored below.
         if (e.data.id !== id || saving.current.has(id)) return;
+        const generation = openGeneration.current;
         void getPage(client, id).then((p) => {
-          if (!p || p.rev === rev.current || saving.current.has(id)) return;
+          if (generation !== openGeneration.current || saving.current.has(id)) return;
+          if (!p) {
+            // The file is gone: nothing left to edit or save.
+            dirty.current = false;
+            setPage(null);
+            setMissing(true);
+            return;
+          }
+          if (p.rev === rev.current) return;
           if (dirty.current) {
             conflicted.current = true;
             setTheirs({ rev: p.rev, body: p.body });

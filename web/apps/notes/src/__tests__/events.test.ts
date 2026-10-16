@@ -29,6 +29,22 @@ describe("chat events", () => {
     expect(s.lastReply).toBeNull(); // never pair a new question with an earlier answer
   });
 
+  it("shows terminal progress notes as completed messages that never leave the chat busy", () => {
+    const term = (text: string): AgentEvent => ({ ...ev("text", { text }), origin: "terminal" });
+    let s = run([ev("attached"), term("Reading the page"), term("Done")]);
+    expect(s.busy).toBe(false);
+    expect(s.messages.filter((m) => m.kind === "agent")).toEqual([
+      expect.objectContaining({ markdown: "Reading the page", streaming: false }),
+      expect.objectContaining({ markdown: "Done", streaming: false }),
+    ]);
+    s = run([ev("user_message", { text: "Hi" }), ev("text", { text: "Hel" }), term("note")], EMPTY);
+    expect(s.busy).toBe(true); // a terminal note does not end the PWA's own turn
+    expect(s.messages.filter((m) => m.kind === "agent")).toEqual([
+      expect.objectContaining({ markdown: "Hel", streaming: true }),
+      expect.objectContaining({ markdown: "note", streaming: false }),
+    ]);
+  });
+
   it("tracks tool calls, pending writes and their resolution", () => {
     let s = run([
       ev("tool_use", { name: "kb_search", input: { q: "a".repeat(80) } }),

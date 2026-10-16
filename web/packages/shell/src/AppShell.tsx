@@ -151,6 +151,11 @@ function Shell({ app, children, controls, ownSearch, appSearch, commands = [] }:
             open a new login link from <code>jesinia status</code> in a terminal.
           </Banner>
         ) : null}
+        {st.unreachable ? (
+          <Banner tone="danger" cause="Jesinia isn't answering:" action={{ label: "Retry", onAction: () => void st.refresh() }}>
+            it may be restarting. Check <code>jesinia status</code> in a terminal.
+          </Banner>
+        ) : null}
         {kb && !kb.ok ? (
           <Banner tone="danger" cause="KB unavailable:" action={{ label: "Open Settings", onAction: () => go("/settings/#kb", false) }}>
             {kb.detail}. Choose a folder to continue.

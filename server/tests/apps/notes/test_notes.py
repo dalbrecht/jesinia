@@ -326,3 +326,61 @@ async def test_agent_save_cap_holds_when_the_note_log_is_broken(
         await env.notes.service.save_note(
             s.id, title="over", user_text="", agent_text="t", model="m", by_agent=True
         )
+
+
+async def test_user_save_proceeds_when_the_note_log_cannot_count(
+    env: Env, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+
+    def broken(*a: object) -> int:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(env.notes.service.log, "count_for_session", broken)
+    n = await env.notes.service.save_note(
+        s.id, title="Still saved", user_text="", agent_text="t", model="m"
+    )
+    assert (env.root / "Notes/Still saved.md").exists() and n.page.title == "Still saved"
+    assert "counting saves in notes.sqlite failed" in caplog.text
+    assert "database is locked" in caplog.text
+
+
+async def test_agent_save_fails_closed_when_the_note_log_cannot_count(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jesinia.apps.notes.application.service import SaveCapUnavailableError
+
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+
+    def broken(*a: object) -> int:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(env.notes.service.log, "count_for_session", broken)
+    with pytest.raises(SaveCapUnavailableError, match="save it from the Notes app") as err:
+        await env.notes.service.save_note(
+            s.id, title="Agent", user_text="", agent_text="t", model="m", by_agent=True
+        )
+    assert isinstance(err.value.__cause__, RuntimeError)
+    assert not (env.root / "Notes/Agent.md").exists()
+
+
+async def test_start_session_survives_a_broken_search_index(
+    env: Env, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    assert env.notes.service.search is not None
+
+    async def broken(*a: object, **k: object) -> list[object]:
+        raise RuntimeError("database disk image is malformed")
+
+    monkeypatch.setattr(env.notes.service.search, "query", broken)
+    r = await env.client.post(
+        "/api/notes/sessions", json={"page_id": subj.page.id, "runner": "fake"}
+    )
+    assert r.status_code == 201
+    related = env.cfg.data_dir / "sessions" / r.json()["id"] / "related.md"
+    assert "(search is unavailable)" in related.read_text()
+    assert "related-pages search failed" in caplog.text
+    assert "database disk image is malformed" in caplog.text

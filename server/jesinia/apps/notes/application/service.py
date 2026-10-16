@@ -56,6 +56,10 @@ class TooManySavesError(ValueError):
     """An agent hit the per-session cap on pre-authorized saves."""
 
 
+class SaveCapUnavailableError(ValueError):
+    """The per-session save count could not be read, so an agent save cannot be checked."""
+
+
 class NotSubjectSessionError(ValueError):
     """The session is not a Notes session about a KB page."""
 
@@ -96,11 +100,12 @@ class NotesService:
     async def _related(self, id: PageId, title: str) -> str:
         if self.search is None:
             return "(search is unavailable)\n"
-        hits = [
-            h
-            for h in await self.search.query(title, limit=RELATED + 1, sources={"kb"})
-            if h.key != id
-        ]
+        try:
+            found = await self.search.query(title, limit=RELATED + 1, sources={"kb"})
+        except Exception:  # derived index; a session about the page still works without it
+            log.exception("related-pages search failed for page %s", id)
+            return "(search is unavailable)\n"
+        hits = [h for h in found if h.key != id]
         if not hits:
             return "(no related pages found)\n"
         return "".join(f"- [[{h.key}|{h.title}]]: {_plain(h.snippet)}\n" for h in hits[:RELATED])
@@ -135,7 +140,17 @@ class NotesService:
         # Count, write and record under one per-session lock, so concurrent agent calls
         # cannot slip past the cap.
         async with self._locks[session_id]:
-            saved = max(self._saves[session_id], self.log.count_for_session(session_id))
+            try:
+                logged = self.log.count_for_session(session_id)
+            except Exception as exc:  # derived log: user saves go on, agent saves fail closed
+                log.exception("counting saves in notes.sqlite failed for session %s", session_id)
+                if by_agent:
+                    raise SaveCapUnavailableError(
+                        "cannot check this session's save limit right now; "
+                        "save it from the Notes app"
+                    ) from exc
+                logged = 0
+            saved = max(self._saves[session_id], logged)
             if by_agent and saved >= MAX_AGENT_SAVES:
                 raise TooManySavesError(
                     f"this session already saved {MAX_AGENT_SAVES} notes; "
