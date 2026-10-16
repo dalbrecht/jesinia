@@ -148,6 +148,9 @@ class KbModule:
         self._ctx = ctx
         self._conn = open_db(ctx.cfg.data_dir, KB_DB)
         self._idempotency = SqliteIdempotencyStore(self._conn)
+        # Single process and nothing served yet: any pending key was left by a crash.
+        if cleared := self._idempotency.clear_pending():
+            log.info("cleared %d idempotency keys left pending by an unclean stop", cleared)
         ctx.scheduler.every(IDEMPOTENCY_PRUNE_JOB, timedelta(days=1), self.prune_idempotency_keys)
         self._svc = KbService(None, SqliteIndex(self._conn), ctx.bus)
         ctx.services["kb"] = self._svc

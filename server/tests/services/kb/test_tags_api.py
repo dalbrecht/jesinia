@@ -2,6 +2,7 @@
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -202,6 +203,23 @@ async def test_tag_writes_require_a_key_and_reads_do_not(
     assert (await client.get(TAGS)).json() == []
 
 
+async def test_a_key_left_pending_by_a_crash_is_cleared_on_the_next_start(
+    kb_cfg: Config,
+) -> None:
+    crashed = KbModule()
+    async with lifespan_client(create_app(kb_cfg, [crashed])):
+        # The process dies mid-request: the reservation is never completed or released.
+        crashed.idempotency.reserve("k", f"POST {TAGS}", datetime.now(UTC))
+    restarted = KbModule()
+    async with lifespan_client(create_app(kb_cfg, [restarted])) as c:
+        c.headers.update(bearer(kb_cfg.token))
+        key = {IDEMPOTENCY_HEADER: "k"}
+        first = await c.post(TAGS, json={"tag": "wal"}, headers=key)
+        again = await c.post(TAGS, json={"tag": "wal"}, headers=key)
+        assert first.status_code == again.status_code == 204  # acted once, then replayed
+        assert [t["tag"] for t in (await c.get(TAGS)).json()] == ["wal"]
+
+
 async def test_stale_catalog_write_returns_409(
     client: httpx.AsyncClient, module: KbModule, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -233,7 +251,7 @@ def test_tags_unavailable_before_start() -> None:
 async def test_daily_job_prunes_keys_older_than_seven_days(
     client: httpx.AsyncClient, module: KbModule
 ) -> None:
-    from datetime import UTC, datetime, timedelta
+    from datetime import timedelta
 
     from jesinia.services.kb.module import IDEMPOTENCY_PRUNE_JOB
 

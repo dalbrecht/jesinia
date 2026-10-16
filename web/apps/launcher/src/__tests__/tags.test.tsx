@@ -511,4 +511,39 @@ describe("Settings → Tags", () => {
     expect(keys).toHaveLength(2);
     expect(keys[1]).toBe(keys[0]);
   });
+
+  it("an offline add stops loading, shows the cause, and the retry reuses the key", async () => {
+    let fail = true;
+    const calls = renderTags({
+      "POST /api/kb/tags": () =>
+        fail ? Promise.reject(new TypeError("offline")) : new Response(null, { status: 204 }),
+    });
+    const tags = await section();
+    await userEvent.type(await tags.findByLabelText("New tag"), "graphs");
+    await userEvent.click(tags.getByRole("button", { name: "Add tag" }));
+    expect(await tags.findByText("Couldn't add that tag: offline")).toBeInTheDocument();
+    expect(tags.getByRole("button", { name: "Add tag" })).not.toHaveAttribute("aria-busy");
+    fail = false;
+    await userEvent.click(tags.getByRole("button", { name: "Add tag" }));
+    await screen.findAllByText("Added #graphs.");
+    const keys = callsTo(calls, "POST", "/api/kb/tags").map(keyOf);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("an offline apply stops loading and shows the cause", async () => {
+    renderTags({
+      "POST /api/kb/tags/rename/preview": { pages: [{ id: "p1", title: "A", rev: "r1" }], skipped_reserved: [] },
+      "POST /api/kb/tags/rename": () => Promise.reject(new TypeError("offline")),
+    });
+    const tags = await section();
+    const row = (await tags.findByText("#sqlite")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    await userEvent.type(dialog.getByLabelText("New name"), "db");
+    await userEvent.click(dialog.getByRole("button", { name: "Preview" }));
+    await userEvent.click(await dialog.findByRole("button", { name: "Apply" }));
+    expect(await dialog.findByText("Couldn't apply that change: offline")).toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "Apply" })).not.toHaveAttribute("aria-busy");
+  });
 });

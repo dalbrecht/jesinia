@@ -211,3 +211,14 @@ def test_prune_removes_keys_older_than_the_cutoff(
     store.reserve("new", "r", NOW - timedelta(days=6))
     assert store.prune(NOW - timedelta(days=7)) == 1
     assert [row[0] for row in conn.execute("SELECT key FROM idempotency")] == ["new"]
+
+
+def test_clear_pending_drops_unfinished_reservations_only(
+    store: SqliteIdempotencyStore,
+) -> None:
+    store.reserve("crashed", "POST /a", NOW)
+    store.reserve("done", "POST /a", NOW)
+    store.complete("done", "POST /a", StoredResponse(204, None))
+    assert store.clear_pending() == 1
+    assert store.reserve("crashed", "POST /a", NOW) is None  # free to act again
+    assert store.reserve("done", "POST /a", NOW) == StoredResponse(204, None)

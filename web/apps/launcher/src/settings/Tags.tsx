@@ -24,6 +24,9 @@ function matchesFilter(info: TagInfo, needle: string): boolean {
 type Answered = { response: Response; error?: unknown };
 type ActionTag = { action: string; key: string };
 
+/** Why a request never got an answer (e.g. offline), for an inline error. */
+const failureCause = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 const isInProgress = (error: unknown) =>
   typeof error === "object" && error !== null && (error as { error?: unknown }).error === "IdempotencyInProgress";
 
@@ -157,17 +160,23 @@ function ChangeDialog({
     const revs = Object.fromEntries(preview.pages.map((p) => [p.id, p.rev]));
     setBusy(true);
     setError(null);
-    const r =
+    const request =
       mode === "rename"
-        ? await send(["rename", target.source, destination, revs], (header) =>
+        ? send(["rename", target.source, destination, revs], (header) =>
             client.POST("/api/kb/tags/rename", {
               body: { old: target.source, new: destination, revs },
               params: { header },
             }),
           )
-        : await send(["merge", sources, destination, revs], (header) =>
+        : send(["merge", sources, destination, revs], (header) =>
             client.POST("/api/kb/tags/merge", { body: { sources, into: destination, revs }, params: { header } }),
           );
+    const r = await request.catch((cause: unknown) => {
+      setBusy(false);
+      setError(`Couldn't apply that change: ${failureCause(cause)}`);
+      return null;
+    });
+    if (r === null) return;
     setBusy(false);
     if (!r.data) {
       setError(errorText(r.error, "Couldn't apply that change."));
@@ -313,7 +322,13 @@ function AddTagForm({ onAdded }: { onAdded: () => void }) {
     setError(null);
     const r = await send(["add", tag, meaning, force], (header) =>
       client.POST("/api/kb/tags", { body: { tag, meaning, force }, params: { header } }),
-    );
+    ).catch((cause: unknown) => {
+      setBusy(false);
+      setSuggestion(null);
+      setError(`Couldn't add that tag: ${failureCause(cause)}`);
+      return null;
+    }); // offline: the key is kept, so submitting again is the same action
+    if (r === null) return;
     setBusy(false);
     if (r.response.ok) {
       toast.show({ tone: "success", message: `Added #${tag.trim().replace(/^#/, "")}.` });

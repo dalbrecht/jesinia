@@ -18,6 +18,10 @@ migrations and hands ``idempotent`` a store over its own connection::
         created_at TEXT NOT NULL,
         PRIMARY KEY (key, route)
     );
+
+The keys live in the owning module's database, so rebuilding a DERIVED database
+(``jesinia reindex``) forgets them. At start the module calls ``clear_pending``: nothing is in
+flight then, so a pending row was left by a crash and would otherwise block retries with 409.
 """
 
 from __future__ import annotations
@@ -73,6 +77,10 @@ class IdempotencyStore(Protocol):
         """Forget keys created before ``before``; how many were removed."""
         ...
 
+    def clear_pending(self) -> int:
+        """Drop reservations that never completed (call at start, before serving)."""
+        ...
+
 
 class SqliteIdempotencyStore:
     """``IdempotencyStore`` over a module's own (autocommit) connection from ``open_db``."""
@@ -111,6 +119,10 @@ class SqliteIdempotencyStore:
             "DELETE FROM idempotency WHERE created_at < ?", (before.isoformat(),)
         )
         return removed.rowcount
+
+    def clear_pending(self) -> int:
+        cleared = self._conn.execute("DELETE FROM idempotency WHERE status IS NULL")
+        return cleared.rowcount
 
 
 def _refusal(code: int, error: str, detail: str) -> JSONResponse:
