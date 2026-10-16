@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jesinia Palette Directions</title>
+<style>
+/* Layout: three full palettes; each renders a swatch strip plus a light and a dark mini-scene (launcher tiles, list, tags, highlight, chat). */
+:root{
+  --bg:oklch(97% 0.004 90); --fg:oklch(24% 0.01 80); --muted:oklch(48% 0.01 80); --border:oklch(88% 0.006 80);
+  --ui:system-ui,-apple-system,"Segoe UI",sans-serif; --read:Georgia,"Times New Roman",serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:oklch(17% 0.005 80);--fg:oklch(92% 0.006 80);--muted:oklch(70% 0.008 80);--border:oklch(32% 0.006 80);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:oklch(17% 0.005 80);--fg:oklch(92% 0.006 80);--muted:oklch(70% 0.008 80);--border:oklch(32% 0.006 80);color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--ui);padding-inline:16px;padding-block:28px 56px}
+.wrap{max-width:1200px;margin:0 auto;display:grid;gap:44px}
+h1{font-size:22px;font-weight:600;margin:0}
+.lede{color:var(--muted);max-width:72ch;line-height:1.5;margin:6px 0 0}
+.dir{display:grid;gap:12px}
+.dir h2{font-size:17px;margin:0;font-weight:600}
+.dir>p{margin:0;color:var(--muted);font-size:14px;line-height:1.5;max-width:80ch}
+.sw{display:flex;flex-wrap:wrap;gap:10px}
+.chip{display:grid;gap:4px;font-size:11.5px;color:var(--muted);width:92px}
+.chip i{display:block;height:34px;border-radius:6px;border:1px solid var(--border)}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px}
+@media (max-width:440px){.pair{grid-template-columns:1fr}}
+.scene{background:var(--s-bg);color:var(--s-fg);border:1px solid var(--border);border-radius:10px;padding:16px;display:grid;gap:14px;min-width:0}
+.lbl{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--s-mut)}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.tile{border-radius:8px;padding:10px 8px;display:grid;gap:6px;background:var(--s-surf);border:1px solid var(--s-bd);font-size:12.5px;font-weight:600}
+.tile i{width:22px;height:22px;border-radius:6px;display:block}
+.rows{background:var(--s-surf);border:1px solid var(--s-bd);border-radius:6px;overflow:hidden;font-size:13.5px}
+.rows div{padding:8px 11px;border-bottom:1px solid var(--s-bd);display:flex;justify-content:space-between;gap:8px}
+.rows div:last-child{border-bottom:0}
+.rows span:last-child{color:var(--s-mut);font-size:12px;white-space:nowrap}
+.rows .on{background:var(--sel);font-weight:560}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:12px;padding:2px 8px;border-radius:999px}
+.read{font-family:var(--read);font-size:15px;line-height:1.55}
+.read mark{background:var(--hl);color:inherit;padding:0 2px;border-radius:2px}
+.read a{color:var(--link);text-decoration-color:color-mix(in oklch,var(--link) 45%,transparent);text-underline-offset:2px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{font:inherit;font-size:13.5px;border-radius:6px;padding:6px 12px;border:1px solid transparent}
+.btn.p{background:var(--pri);color:var(--pri-on)}
+.btn.s{background:var(--s-surf);color:var(--s-fg);border-color:var(--s-bd)}
+.btn.f{outline:2px solid var(--focus);outline-offset:2px}
+.chat{display:grid;gap:6px;font-size:13.5px;line-height:1.42}
+.msg{padding:8px 11px;border-radius:8px;max-width:90%}
+.msg.u{justify-self:end;background:var(--s-surf);border:1px solid var(--s-bd)}
+.msg.ai{background:var(--ai)}
+.who{font-size:11.5px;color:var(--s-mut);margin-bottom:2px}
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Palette directions</h1>
+    <p class="lede">Each direction is a small family of tones, not one accent on grey. <b>Primary</b> drives buttons, links, and focus. <b>Secondary</b> handles reading highlights, markers, and the occasional warm touch. A <b>label set</b> of four or five muted tones covers tags and Issues labels. <b>App hues</b> appear only on launcher tiles and glyphs. Neutrals are tinted so surfaces feel like materials rather than plain greys. Selected rows get a soft fill and nothing else. Values are rough and get tuned to AA in Task 3.</p>
+  </header>
+  <div id="out" style="display:grid;gap:44px"></div>
+</div>
+
+<script>
+const P=[
+ {name:"1 · Bindery",
+  note:"A bookbinder's bench: teal-ink primary, madder-rose secondary, with ochre, moss, and slate for labels. Linen-warm neutrals in light; dark is walnut rather than black. The most 'studious workshop' of the three.",
+  L:{bg:"oklch(97.6% 0.008 85)",surf:"oklch(99.4% 0.004 85)",bd:"oklch(88.5% 0.012 80)",fg:"oklch(24% 0.015 60)",mut:"oklch(47% 0.015 60)",
+     pri:"oklch(46% 0.08 210)",priOn:"#fff",link:"oklch(44% 0.08 210)",focus:"oklch(55% 0.1 210)",sel:"oklch(93.5% 0.022 210)",hl:"oklch(90% 0.06 20 / .55)",ai:"oklch(95.2% 0.018 210)"},
+  D:{bg:"oklch(19.5% 0.012 55)",surf:"oklch(23.5% 0.013 55)",bd:"oklch(33% 0.014 55)",fg:"oklch(92% 0.012 80)",mut:"oklch(71% 0.014 75)",
+     pri:"oklch(75% 0.085 205)",priOn:"oklch(20% 0.03 210)",link:"oklch(79% 0.08 205)",focus:"oklch(78% 0.1 205)",sel:"oklch(30% 0.035 210)",hl:"oklch(45% 0.08 20 / .55)",ai:"oklch(27% 0.025 210)"},
+  sec:"oklch(58% 0.11 20)", labels:[["ochre",75],["moss",145],["madder",20],["slate",250],["plum",330]], apps:[["Notes",210,.09],["RSS",70,.11],["Review",20,.11],["Issues",145,.09]]},
+ {name:"2 · Botanical plate",
+  note:"A hand-coloured herbarium print: sage-green primary, marigold secondary, with plum, cornflower, and clay for labels. Neutrals lean faintly green-grey, like rag paper. Gentler and more organic, with the most personality.",
+  L:{bg:"oklch(97.4% 0.007 120)",surf:"oklch(99.3% 0.004 120)",bd:"oklch(88.5% 0.012 120)",fg:"oklch(24% 0.015 140)",mut:"oklch(47% 0.015 140)",
+     pri:"oklch(46% 0.075 155)",priOn:"#fff",link:"oklch(43% 0.075 155)",focus:"oklch(55% 0.09 155)",sel:"oklch(93.5% 0.024 150)",hl:"oklch(91% 0.09 85 / .6)",ai:"oklch(95.3% 0.018 150)"},
+  D:{bg:"oklch(19% 0.012 150)",surf:"oklch(23% 0.013 150)",bd:"oklch(33% 0.014 150)",fg:"oklch(92% 0.012 120)",mut:"oklch(71% 0.014 120)",
+     pri:"oklch(76% 0.08 155)",priOn:"oklch(20% 0.03 155)",link:"oklch(80% 0.08 155)",focus:"oklch(79% 0.1 155)",sel:"oklch(30% 0.035 155)",hl:"oklch(48% 0.09 80 / .5)",ai:"oklch(27% 0.025 155)"},
+  sec:"oklch(72% 0.13 80)", labels:[["marigold",80],["plum",340],["cornflower",260],["clay",40],["fern",165]], apps:[["Notes",155,.08],["RSS",80,.12],["Review",340,.09],["Issues",260,.09]]},
+ {name:"3 · Cartographer",
+  note:"An old survey map: deep indigo-ink primary, brick-red secondary, with sea-teal, wheat, and forest for labels. Neutrals lean cool-parchment. The most precise of the three, with enough warmth from brick and wheat to stay human.",
+  L:{bg:"oklch(97.6% 0.006 95)",surf:"oklch(99.4% 0.003 95)",bd:"oklch(88.5% 0.01 260)",fg:"oklch(23% 0.02 265)",mut:"oklch(47% 0.018 265)",
+     pri:"oklch(43% 0.11 268)",priOn:"#fff",link:"oklch(43% 0.11 268)",focus:"oklch(53% 0.13 268)",sel:"oklch(93.5% 0.022 268)",hl:"oklch(91% 0.05 35 / .6)",ai:"oklch(95.4% 0.016 268)"},
+  D:{bg:"oklch(19% 0.016 265)",surf:"oklch(23% 0.018 265)",bd:"oklch(33% 0.02 265)",fg:"oklch(92% 0.01 95)",mut:"oklch(71% 0.014 265)",
+     pri:"oklch(75% 0.1 270)",priOn:"oklch(20% 0.04 268)",link:"oklch(79% 0.09 270)",focus:"oklch(78% 0.11 270)",sel:"oklch(30% 0.045 268)",hl:"oklch(44% 0.08 35 / .5)",ai:"oklch(27% 0.03 268)"},
+  sec:"oklch(55% 0.13 35)", labels:[["brick",35],["sea",195],["wheat",85],["forest",150],["indigo",268]], apps:[["Notes",268,.11],["RSS",35,.12],["Review",195,.09],["Issues",85,.1]]}
+];
+const out=document.getElementById('out');
+const tagCss=(h,dark)=>dark?`background:oklch(32% 0.05 ${h});color:oklch(86% 0.07 ${h})`:`background:oklch(93% 0.04 ${h});color:oklch(40% 0.08 ${h})`;
+function scene(p,t,dark){
+  const v=`--s-bg:${t.bg};--s-surf:${t.surf};--s-bd:${t.bd};--s-fg:${t.fg};--s-mut:${t.mut};--pri:${t.pri};--pri-on:${t.priOn};--link:${t.link};--focus:${t.focus};--sel:${t.sel};--hl:${t.hl};--ai:${t.ai}`;
+  return `<div class="scene" style="${v}"><span class="lbl">${dark?"Dark":"Light"}</span>
+   <div class="tiles">${p.apps.map(([n,h,c])=>`<div class="tile"><i style="background:oklch(${dark?70:58}% ${c} ${h})"></i>${n}</div>`).join("")}</div>
+   <div class="rows"><div><span>What SQLite's WAL mode actually guarantees</span><span>5 h</span></div><div class="on"><span>The quiet economics of maintenance</span><span>2 h</span></div><div><span>On keeping a commonplace book</span><span>1 d</span></div></div>
+   <div class="tags">${p.labels.map(([n,h])=>`<span class="tag" style="${tagCss(h,dark)}">${n}</span>`).join("")}</div>
+   <p class="read" style="margin:0">Locke indexed his commonplace book by <mark>the first letter and first vowel of each heading</mark>, a scheme that still works. See <a href="#x">On keeping a commonplace book</a>.</p>
+   <div class="bar"><button class="btn p">Save to KB</button><button class="btn s">Discard</button><button class="btn s f">Focused</button></div>
+   <div class="chat"><div class="msg u">What's the core claim here?</div><div class="msg ai"><div class="who">Claude</div>Maintenance fails because budgets reward new building. Two of the three cities fixed it by funding upkeep from the same pool.</div></div>
+  </div>`;
+}
+P.forEach(p=>{
+  const s=document.createElement('section'); s.className='dir';
+  const chips=[["primary",p.L.pri],["secondary",p.sec],...p.labels.map(([n,h])=>[n,`oklch(62% 0.1 ${h})`]),["paper",p.L.bg],["walnut / ink",p.D.bg]];
+  s.innerHTML=`<h2>${p.name}</h2><p>${p.note}</p>
+   <div class="sw">${chips.map(([n,c])=>`<div class="chip"><i style="background:${c}"></i>${n}</div>`).join("")}</div>
+   <div class="pair">${scene(p,p.L,false)}${scene(p,p.D,true)}</div>`;
+  out.append(s);
+});
+</script>
+
+</body>
+</html>
