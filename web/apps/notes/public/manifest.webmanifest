@@ -12,6 +12,6 @@
     { "src": "/notes/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/notes/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
     { "src": "/notes/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "/notes/icons/monochrome-512.png", "sizes": "512x512", "type": "image/png", "purpose": "monochrome" }
+    { "src": "/notes/icons/monochrome.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "monochrome" }
   ]
 }

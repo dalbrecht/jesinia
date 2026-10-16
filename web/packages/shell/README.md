@@ -7,7 +7,7 @@ The frame every Jesinia PWA uses.
 ```tsx
 import { AppShell } from "@jesinia/shell";
 
-<AppShell app={{ id: "notes", name: "Notes", glyph: "/notes/icons/monochrome-512.png" }} ownSearch>
+<AppShell app={{ id: "notes", name: "Notes", glyph: "/notes/icons/monochrome.svg" }} ownSearch>
   {(status) => <Workspace status={status} />}
 </AppShell>;
 ```

@@ -8,7 +8,7 @@ import { Settings } from "./Settings";
 export function App({ path, client }: { path: string; client?: JesiniaClient }) {
   const settings = path.startsWith("/settings");
   return (
-    <AppShell app={{ id: settings ? "settings" : "launcher", name: settings ? "Settings" : "Jesinia", glyph: "/icons/monochrome-512.png" }} {...(client ? { client } : {})}>
+    <AppShell app={{ id: settings ? "settings" : "launcher", name: settings ? "Settings" : "Jesinia", glyph: settings ? "/icons/settings.svg" : "/icons/monochrome.svg" }} {...(client ? { client } : {})}>
       {(status) => (settings ? <Settings status={status} /> : <Launcher status={status} />)}
     </AppShell>
   ); // prettier-ignore

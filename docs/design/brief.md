@@ -196,8 +196,10 @@ a **contrasting monochrome symbol** for the app centered on top.
 - **32 px and below** (favicon, tabs): no image; a flat `--jx-app` fill plus the
   symbol.
 - **16 px:** the symbol alone.
-- **Layout:** `docs/design/icons/<app>/` holds the source image, graded master, symbol
-  SVG, and exports.
+- **Layout:** `docs/design/icons/<app>/` holds the source image and symbol SVG;
+  `make icons` renders `export/` (the 1024 master, 512/192 `any`, 512 `maskable`, the 180
+  Apple touch icon, 32 and 16 px favicons, and `monochrome.svg`) and copies the built
+  apps' icons into their `public/icons/`.
 
 ## 9. UI voice
 
