@@ -37,3 +37,4 @@ server/jesinia/static/
 .env
 .env.*
 !.env.example
+server/.audit-requirements.txt

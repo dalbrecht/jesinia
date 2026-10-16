@@ -14,7 +14,9 @@ from pathlib import Path
 HEADER = "SPDX-License-Identifier: AGPL-3.0-or-later"
 HEADER_WINDOW = 3
 SKIP_DIRS = frozenset({".standards", "node_modules", ".venv", "dist", "static", ".git"})
-CHECKED_SUFFIXES = frozenset({".py", ".ts", ".tsx", ".css", ".sh"})
+CHECKED_SUFFIXES = frozenset(
+    {".py", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".css", ".sh"}
+)
 CHECKED_NAMES = frozenset({"setup"})
 
 

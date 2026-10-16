@@ -49,17 +49,16 @@ def _migrations(source: Traversable) -> list[tuple[int, str, str]]:
 
 
 def _statements(sql: str) -> list[str]:
+    """Split at SQLite statement boundaries (``;`` outside strings/comments), not lines."""
     out: list[str] = []
-    buf = ""
-    for line in sql.splitlines(keepends=True):
-        buf += line
-        if sqlite3.complete_statement(buf):
-            out.append(buf)
-            buf = ""
-    if buf.strip() and not all(
-        ln.strip().startswith("--") or not ln.strip() for ln in buf.splitlines()
-    ):
-        out.append(buf)
+    start = 0
+    for i, ch in enumerate(sql):
+        if ch == ";" and sqlite3.complete_statement(sql[start : i + 1]):
+            out.append(sql[start : i + 1])
+            start = i + 1
+    rest = sql[start:]
+    if any(ln.strip() and not ln.strip().startswith("--") for ln in rest.splitlines()):
+        out.append(rest)
     return out
 
 

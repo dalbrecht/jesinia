@@ -91,3 +91,14 @@ def test_trailing_statement_without_semicolon(tmp_path: Path) -> None:
     tables = {r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
     assert {"a", "b", "c"} <= tables
     conn.close()
+
+
+def test_two_statements_on_one_line(tmp_path: Path) -> None:
+    d = tmp_path / "compact"
+    d.mkdir()
+    (d / "0001_a.sql").write_text(
+        "CREATE TABLE a (v TEXT); INSERT INTO a VALUES ('x;y'); INSERT INTO a VALUES ('z');\n"
+    )
+    conn = open_db(tmp_path, ModuleDb("t", DbClass.DERIVED, d))
+    assert [r[0] for r in conn.execute("SELECT v FROM a ORDER BY v")] == ["x;y", "z"]
+    conn.close()

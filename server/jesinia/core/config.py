@@ -116,7 +116,29 @@ def _section(doc: Mapping[str, object], name: str) -> Mapping[str, object]:
     return value
 
 
+_ALLOWED: dict[str, frozenset[str] | None] = {
+    "server": frozenset({"port", "token"}),
+    "kb": frozenset({"path"}),
+    "kbsync": frozenset({"interval", "quiet"}),
+    "folders": None,  # any folder kind; validated by _apply
+}
+
+
+def _check_keys(doc: Mapping[str, object]) -> None:
+    for table in doc:
+        if table not in _ALLOWED:
+            raise ConfigError(f"unknown section [{table}]")
+    for table, allowed in _ALLOWED.items():
+        section = _section(doc, table)
+        if allowed is None:
+            continue
+        unknown = sorted(set(section) - allowed)
+        if unknown:
+            raise ConfigError(f"unknown key(s) in [{table}]: {', '.join(unknown)}")
+
+
 def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
+    _check_keys(doc)
     server, kb, kbsync, folders = (_section(doc, s) for s in ("server", "kb", "kbsync", "folders"))
     token = server.get("token")
     if not isinstance(token, str) or not token:

@@ -19,6 +19,7 @@ dev = [
     "import-linter>=2.5",
     "httpx>=0.28",
     "pytest-asyncio>=1.2",
+    "pip-audit>=2.9",
 ]
 
 [build-system]

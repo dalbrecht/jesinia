@@ -39,8 +39,10 @@ async def test_rejects_cross_origin_writes(client: httpx.AsyncClient, cfg: Confi
 async def test_security_headers(client: httpx.AsyncClient) -> None:
     r = await client.get("/healthz")
     assert r.headers["content-security-policy"] == (
-        "default-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'"
+        "default-src 'self'; frame-src 'self'; frame-ancestors 'none'; "
+        "object-src 'none'; base-uri 'none'"
     )
+    assert r.headers["x-frame-options"] == "DENY"
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["referrer-policy"] == "no-referrer"
 

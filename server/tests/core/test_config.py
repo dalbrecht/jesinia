@@ -174,3 +174,15 @@ def test_invalid_structure_rejected(tmp_path: Path, text: str) -> None:
     p.write_text(text)
     with pytest.raises(ConfigError):
         load_config(p)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ['[kbsync]\nintervel = "5m"\n', '[server]\ntoken = "abc"\nprot = 1\n', "[sever]\nport = 1\n"],
+)
+def test_unknown_keys_fail_fast(tmp_path: Path, extra: str) -> None:
+    p = tmp_path / "config.toml"
+    base = '[server]\ntoken = "abc"\n' if not extra.startswith("[server]") else ""
+    p.write_text(base + extra)
+    with pytest.raises(ConfigError, match="unknown"):
+        load_config(p)

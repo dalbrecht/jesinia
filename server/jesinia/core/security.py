@@ -4,19 +4,24 @@
 - ``421`` when ``Host`` is not ``127.0.0.1:<port>`` or ``localhost:<port>``
   (DNS-rebinding defense).
 - ``403`` for state-changing requests whose ``Origin`` is present and not the local origin.
-- A strict CSP plus ``nosniff`` and ``no-referrer`` on every response.
+- A strict CSP (including ``frame-ancestors 'none'``: no other local port may frame the
+  authenticated UI) plus ``X-Frame-Options``, ``nosniff``, and ``no-referrer``.
 """
 
 from __future__ import annotations
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-CSP = "default-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'"
+CSP = (
+    "default-src 'self'; frame-src 'self'; frame-ancestors 'none'; "
+    "object-src 'none'; base-uri 'none'"
+)
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _HEADERS = [
     (b"content-security-policy", CSP.encode()),
     (b"x-content-type-options", b"nosniff"),
     (b"referrer-policy", b"no-referrer"),
+    (b"x-frame-options", b"DENY"),  # legacy equivalent of frame-ancestors 'none'
 ]
 
 

@@ -7,7 +7,7 @@ PNPM := cd web && pnpm  # run inside web/ so Corepack reads its packageManager p
 
 .DEFAULT_GOAL := help
 .PHONY: help install build test test-py test-js test-e2e lint fmt fmt-check coverage-check \
-        typecheck spdx imports hooks ci-py ci-js ci lint-standards sync-standards doctor
+        typecheck spdx imports audit audit-py audit-js hooks ci-py ci-js ci lint-standards sync-standards doctor
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -57,6 +57,15 @@ coverage-check: ## Python tests with the per-module coverage gate (>= 95% per fi
 spdx: ## Check every source file has the SPDX header
 	python3 scripts/check_spdx.py .
 
+audit: audit-py audit-js ## Scan Python and JS dependencies for known vulnerabilities
+
+audit-py: # audits the exact locked set exported from uv.lock
+	$(UV) export --frozen --no-emit-project --format requirements-txt --quiet -o .audit-requirements.txt
+	$(UV) run pip-audit --strict --progress-spinner off --disable-pip --no-deps -r .audit-requirements.txt
+
+audit-js:
+	$(PNPM) audit --audit-level low
+
 hooks: ## Install a pre-commit hook that runs fmt-check, lint, and spdx
 	@hook="$$(git rev-parse --git-path hooks)/pre-commit"; \
 	mkdir -p "$$(dirname "$$hook")"; \
@@ -70,6 +79,7 @@ ci-py: ## Everything CI runs for Python
 	$(UV) run lint-imports
 	$(MAKE) coverage-check
 	python3 scripts/check_spdx.py .
+	$(MAKE) audit-py
 
 ci-js: ## Everything CI runs for JS
 	$(PNPM) run fmt:check
@@ -77,6 +87,7 @@ ci-js: ## Everything CI runs for JS
 	$(PNPM) run typecheck
 	$(PNPM) run test
 	$(PNPM) run build
+	$(MAKE) audit-js
 
 ci: ci-py ci-js lint-standards ## Full CI pipeline
 

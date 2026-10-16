@@ -45,3 +45,10 @@ def test_cli_exit_codes(tmp_path: Path, capsys: object) -> None:
     assert main([str(tmp_path)]) == 0
     (tmp_path / "bad.css").write_text("a {}\n")
     assert main([str(tmp_path)]) == 1
+
+
+def test_cli_checks_javascript(tmp_path: Path) -> None:
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "eslint.config.js").write_text("export default [];\n")
+    (tmp_path / "web" / "x.mjs").write_text("// SPDX-License-Identifier: AGPL-3.0-or-later\n")
+    assert main([str(tmp_path)]) == 1
