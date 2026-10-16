@@ -172,8 +172,10 @@ def test_near_matches() -> None:
 **Interfaces:**
 - Consumes: `normalise_tag` (Task 1).
 - Produces:
-  - `CatalogEntry(tag: str, meaning: str = "", aliases: tuple[str, ...] = (), retired: bool = False)`,
-    a frozen dataclass;
+  - `CatalogEntry(tag: str, meaning: str = "", aliases: tuple[str, ...] = (), retired: bool = False, ignored: bool = False)`,
+    a frozen dataclass. An ignored entry is written as `- #tag (ignored)`. It is not an
+    approved tag: `resolve` and suggestions skip it, and it is kept only so `uncataloged`
+    stops reporting it.
   - `TagCatalog(entries: Mapping[str, CatalogEntry], lines: tuple[str, ...])`, a frozen
     dataclass;
   - `parse_catalog(body: str) -> TagCatalog`;
@@ -278,7 +280,9 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     where `RenameResult(updated: list[PageId], skipped_changed: list[PageId])`;
   - `async merge(sources: list[str], into: str, revs) -> RenameResult`;
   - `async retire(tag: str) -> None`;
-  - `async adopt(tag: str) -> None`.
+  - `async adopt(tag: str) -> None`;
+  - `async ignore(tag: str) -> None`, which records `- #tag (ignored)` in the catalog so
+    `uncataloged()` stops listing it.
 
   The catalog page is created on first `add` (title `Tags`, folder root, `jesinia.kind:
   tag-catalog`). A rename adds `old` as an alias of `new`.
@@ -288,7 +292,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `POST /suggest {text}`;
   - `POST` add;
   - `GET /uncataloged`;
-  - `POST /rename/preview`, `POST /rename`, `POST /merge`, `POST /retire`, `POST /adopt`.
+  - `POST /rename/preview`, `POST /rename`, `POST /merge`, `POST /retire`, `POST /adopt`, `POST /ignore`.
 - MCP (read-only, `writes=False`): `tags_list`, `tags_suggest {text}`, `tags_check {tag}`.
 
 - [ ] **Step 1: Failing tests:**
@@ -299,6 +303,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `test_rename_skips_pages_changed_since_preview`;
   - `test_rename_leaves_reserved_folders_and_reports_them`;
   - `test_uncataloged_lists_hashtags_missing_from_catalog`;
+  - `test_ignored_tags_leave_uncataloged_and_are_never_suggested`;
   - `test_tools_are_read_only`;
   - one API test per route, covering status codes and the 409 on `NearDuplicate` with
     `near` in the body.
@@ -322,7 +327,12 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 
 **Interfaces:**
 - Produces:
-  - `SessionService.one_shot(runner: str, pack: ContextPack, prompt: str, *, timeout: float = 45.0) -> str`.
+  - `SessionService.ask(session_id: str, prompt: str, *, timeout: float = 45.0) -> str`. It
+    sends one turn to an existing session (resuming its agent context), waits for its
+    `TurnDone`, and returns that turn's concatenated text. It raises `SessionNotFound` /
+    `TimeoutError`.
+  - `SessionService.one_shot(runner: str, pack: ContextPack, prompt: str, *, timeout: float = 45.0) -> str`,
+    built on `create` + `ask` + close.
     It creates a session with no tools allowed, runs one turn, returns the concatenated text,
     and closes the session. It raises `RunnerUnavailable` / `TimeoutError`.
   - `AgentTagAdvisor(sessions, runner: Callable[[], str | None])`, which implements the
@@ -337,6 +347,8 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 - [ ] **Step 1: Failing tests:**
   - `test_one_shot_returns_text_and_closes_session` (FakeRunner);
   - `test_one_shot_times_out`;
+  - `test_ask_continues_an_existing_session`, which asserts the turn carries the session's
+    resume id;
   - `test_advisor_parses_json_and_ignores_garbage`;
   - `test_advisor_treats_post_text_as_untrusted`, which asserts the prompt contains the
     `<untrusted-data` fence.
@@ -420,61 +432,11 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 
 ## PR 2: RSS backend (Tasks 8–12)
 
-### Task 8: The `rss` module, schema, feeds and OPML
+### Task 8: Feed parsing and autodiscovery
 
 **Files:**
-- Create:
-  - `server/jesinia/apps/rss/{__init__,module,api}.py`;
-  - `apps/rss/domain/{feed,opml}.py`;
-  - `apps/rss/application/feeds.py`;
-  - `apps/rss/infrastructure/store.py`;
-  - `apps/rss/migrations/0001_init.sql`.
-- Modify: `server/jesinia/registry.py` (add `RssModule` after `NotesModule`, and `RSS_DB` to
-  `DATABASES`), and the import-linter contracts.
-- Test: `server/tests/apps/rss/{test_opml,test_feeds_api}.py`
-
-**Interfaces:**
-- **`RSS_DB = ModuleDb("rss", DbClass.HISTORY, …)`.** It holds read state, which is not
-  rebuildable, so it is included in backup.
-- **Schema:**
-  - `folders(id, name UNIQUE, position)`;
-  - `feeds(id, url UNIQUE, title, site_url, folder_id NULL, interval_s, next_poll_at,
-    etag, last_modified, fail_count, last_error, last_ok_at)`;
-  - `posts(id, feed_id, guid, url, title, author, published_at, snippet, content_html,
-    full_md NULL, read, saved, kept_page_id NULL, archive_state NULL, archive_error NULL,
-    UNIQUE(feed_id, guid))`;
-  - indexes on `(read, published_at)` and on `url`.
-- **Domain:**
-  - `parse_opml(xml: str) -> list[OpmlFeed]`, where `OpmlFeed(url, title, folder)`; one
-    folder level, deeper levels flattened into their top folder;
-  - `render_opml(feeds) -> str`.
-- **`FeedService` (application):**
-  - `add(url: str, folder: str | None) -> Feed`, using autodiscovery from Task 9's parser;
-  - `remove(id)`;
-  - `move(id, folder)`;
-  - `rename_folder`;
-  - `import_opml(xml) -> ImportResult(added, existing, failed)`;
-  - `export_opml() -> str`;
-  - `list() -> list[FeedView]`, where
-    `FeedView(id, title, url, folder, unread, warning: str | None)`.
-- **REST `/api/rss`:**
-  - `GET /feeds`, `POST /feeds`, `DELETE /feeds/{id}`, `PATCH /feeds/{id}`;
-  - `POST /opml` (upload), `GET /opml`;
-  - `PATCH /folders/{id}`.
-
-- [ ] **Step 1: Failing tests:**
-  - `test_opml_round_trip_keeps_one_folder_level`;
-  - `test_import_opml_skips_existing_and_reports_failures`;
-  - API tests for each route (auth required, 404/409 shapes).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(rss): module, feeds and OPML`.
-
-### Task 9: Feed parsing and autodiscovery
-
-**Files:**
-- Create: `apps/rss/infrastructure/parse.py`, plus fixtures in
+- Create: the package skeleton `server/jesinia/apps/rss/{__init__,infrastructure/__init__}.py`
+  and `apps/rss/infrastructure/parse.py`, plus fixtures in
   `server/tests/apps/rss/fixtures/` (rss2, atom, jsonfeed, broken, html-with-link-alternate,
   hn).
 - Modify: `server/pyproject.toml` (add `feedparser`).
@@ -498,6 +460,58 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run.** Expected: PASS.
 - [ ] **Step 5: Commit** `feat(rss): feed parsing and discovery`.
+
+### Task 9: The `rss` module, schema, feeds and OPML
+
+**Files:**
+- Create:
+  - `server/jesinia/apps/rss/{__init__,module,api}.py`;
+  - `apps/rss/domain/{feed,opml}.py`;
+  - `apps/rss/application/feeds.py`;
+  - `apps/rss/infrastructure/store.py`;
+  - `apps/rss/migrations/0001_init.sql`.
+- Modify: `server/jesinia/registry.py` (add `RssModule` after `NotesModule`, and `RSS_DB` to
+  `DATABASES`), and the import-linter contracts.
+- Test: `server/tests/apps/rss/{test_opml,test_feeds_api}.py`
+
+**Interfaces:**
+- **`RSS_DB = ModuleDb("rss", DbClass.HISTORY, …)`.** It holds read state, which is not
+  rebuildable, so it is included in backup.
+- **Schema:**
+  - `folders(id, name UNIQUE, position)`;
+  - `feeds(id, url UNIQUE, title, site_url, folder_id NULL, interval_s, next_poll_at,
+    etag, last_modified, fail_count, last_error, last_ok_at)`;
+  - `posts(id, feed_id, guid, url, title, author, published_at, snippet, content_html,
+    discussion_url NULL, full_md NULL, read, saved, kept_page_id NULL, archive_state NULL,
+    archive_error NULL,
+    UNIQUE(feed_id, guid))`;
+  - indexes on `(read, published_at)` and on `url`.
+- **Domain:**
+  - `parse_opml(xml: str) -> list[OpmlFeed]`, where `OpmlFeed(url, title, folder)`; one
+    folder level, deeper levels flattened into their top folder;
+  - `render_opml(feeds) -> str`.
+- **`FeedService` (application):**
+  - `add(url: str, folder: str | None) -> Feed`, using autodiscovery from Task 8's parser;
+  - `remove(id)`;
+  - `move(id, folder)`;
+  - `rename_folder`;
+  - `import_opml(xml) -> ImportResult(added, existing, failed)`;
+  - `export_opml() -> str`;
+  - `list() -> list[FeedView]`, where
+    `FeedView(id, title, url, folder, unread, warning: str | None)`.
+- **REST `/api/rss`:**
+  - `GET /feeds`, `POST /feeds`, `DELETE /feeds/{id}`, `PATCH /feeds/{id}`;
+  - `POST /opml` (upload), `GET /opml`;
+  - `PATCH /folders/{id}`.
+
+- [ ] **Step 1: Failing tests:**
+  - `test_opml_round_trip_keeps_one_folder_level`;
+  - `test_import_opml_skips_existing_and_reports_failures`;
+  - API tests for each route (auth required, 404/409 shapes).
+- [ ] **Step 2: Run.** Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 5: Commit** `feat(rss): module, feeds and OPML`.
 
 ### Task 10: Polling
 
@@ -550,11 +564,15 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 
 **Interfaces:**
 - **Fetch:**
-  - `extract_article(html: bytes, url: str) -> Article | None`, where
-    `Article(title, markdown, image_urls: list[str])`, using trafilatura's Markdown output
-    with images and links;
-  - `FetchService.article(url) -> Article | None`, which composes `get` and
-    `extract_article`.
+  - an application port in `services/fetch/application/ports.py`:
+    `ArticleExtractor` Protocol with `extract(html: bytes, url: str) -> Article | None`,
+    where `Article(title, markdown, image_urls: list[str])` is also defined there;
+  - the infrastructure implementation `TrafilaturaExtractor` in
+    `services/fetch/infrastructure/extract.py`, using trafilatura's Markdown output with
+    images and links;
+  - `FetchService(..., extractor: ArticleExtractor | None = None)` gains
+    `article(url) -> Article | None`, composing `get` and the injected extractor. `FetchModule`
+    injects `TrafilaturaExtractor`, so the application layer never imports infrastructure.
 - **`PostService`:**
   - `list(view: Literal["unread","saved","kept","all"], feed_id: int | None, folder_id: int | None, before: tuple[str,int] | None, limit: int = 100) -> Page[PostView]`,
     keyset-paginated newest first;
@@ -600,7 +618,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 - Consumes:
   - `KbService.write`, `PageIndex.by_source` (Task 3);
   - `TagService.add` / `check` (Task 4);
-  - `SessionService.create` / `one_shot` (Task 5);
+  - `SessionService.create` / `ask` (Task 5);
   - `FetchService.article` / `get` (Task 11);
   - `wrap_ai`, `inert`, `provenance_label`.
 - **`KeepService.keep(post_id, note: str, tags: list[str], takeaway: Takeaway | None) -> KeepResult`:**
@@ -614,6 +632,13 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     after the note block, merge tags into the `Tags:` line, and leave the article
     untouched.
   - Then it sets `archive_state = "archiving"` and schedules `archive(page_id, post_id)`.
+- **Idempotency:** `POST …/keep` requires an `Idempotency-Key` header (the PWA sends a
+  `crypto.randomUUID()` per Keep action). `rss.sqlite` table
+  `keep_requests(key PRIMARY KEY, post_id, result_json, created_at)` stores the result. A
+  repeated key returns the stored `KeepResult` without writing again, and a missing key is a
+  400. Keys older than 7 days are pruned with the daily job.
+- **Recovery:** on module start, every post with `archive_state = "archiving"` is
+  rescheduled, so a restart mid-archive resumes instead of showing "Archiving…" forever.
 - **`archive`:**
   - fetches the full article if not cached;
   - downloads up to 20 images and 10 MB in total into `_assets/<page-id>/`, with
@@ -627,8 +652,9 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `start(post_id, runner) -> Session`, with a ContextPack role prompt about discussing the
     post and the post as `UntrustedDoc(source=url)`. Session subject:
     `Subject("rss", str(post_id), title)`.
-  - `takeaway(session_id) -> Takeaway`, a one-shot "1–3 sentence takeaway" ask that is
-    returned for the author to edit, not written.
+  - `takeaway(session_id) -> Takeaway`, which uses `SessionService.ask` on the *engaged*
+    session ("1–3 sentence takeaway"), so the agent summarises the conversation it actually
+    had. It is returned for the author to edit, not written.
 - **REST:**
   - `POST /api/rss/posts/{id}/keep {note, tags, takeaway?}`;
   - `POST /posts/{id}/engage {runner}`;
@@ -641,6 +667,8 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `test_keep_again_appends_note_and_merges_tags`;
   - `test_archive_saves_images_with_gitignore_and_caps`;
   - `test_archive_failure_is_visible_and_retryable`;
+  - `test_keep_retry_with_same_idempotency_key_writes_once`;
+  - `test_stranded_archiving_posts_resume_on_start`;
   - `test_hn_keep_records_discussion`;
   - `test_takeaway_is_returned_not_written`;
   - `test_engaged_keep_wraps_takeaway_in_provenance`;
