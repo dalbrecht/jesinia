@@ -10,24 +10,24 @@
 <link rel="stylesheet" href="wire.css">
 <script src="wire.js" defer></script>
 <style>
-/* RSS silhouette: marigold-washed feeds sidebar | Desk list | serif reader (| chat rail). */
+/* RSS silhouette: feeds sidebar | Desk list | serif reader (| chat rail). Marigold only in the title bar and glyph. */
 .rss3 { grid-template-columns: 220px 360px 1fr; }
 .rss-eng { grid-template-columns: 52px 320px 1fr 6px 380px; }
-.feeds { background: var(--jx-app-chrome); border-right: 1px solid var(--jx-border); display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+.feeds { background: var(--jx-surface); border-right: 1px solid var(--jx-border); display: grid; grid-template-rows: 1fr auto; min-height: 0; }
 .feeds .fl { overflow: auto; padding: var(--jx-space-2) 0; }
 .feeds .grp { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; display: flex; gap: 6px; align-items: center; }
 .feed { display: flex; align-items: center; gap: 8px; padding: 5px var(--jx-space-3); font-size: var(--jx-text-sm); color: var(--jx-fg); text-decoration: none; }
 .feed .fn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.feed .fav { width: 14px; height: 14px; border-radius: 3px; background: var(--jx-app); opacity: .55; flex: none; }
+.feed .fav { width: 14px; height: 14px; border-radius: 3px; background: var(--jx-surface-sunken); border: 1px solid var(--jx-border); flex: none; }
 .feed.on { background: var(--jx-surface); font-weight: 600; }
 .feed.bad .fn { color: var(--jx-fg-muted); }
 .feed .wn { color: var(--jx-warn); font-weight: 600; }
 .feed-err { padding: 0 var(--jx-space-3) 6px 34px; font-size: var(--jx-text-xs); color: var(--jx-warn); }
 .feeds .ft { border-top: 1px solid var(--jx-border); padding: var(--jx-space-2); display: grid; gap: 2px; }
 .feeds .ft .btn { justify-content: flex-start; }
-.rail { background: var(--jx-app-chrome); border-right: 1px solid var(--jx-border); display: grid; align-content: start; justify-items: center; gap: 6px; padding-top: var(--jx-space-3); }
-.rail .fav { width: 22px; height: 22px; border-radius: 6px; background: var(--jx-app); opacity: .5; display: block; }
-.rail .fav.on { opacity: 1; box-shadow: 0 0 0 2px var(--jx-surface), 0 0 0 4px var(--jx-app); }
+.rail { background: var(--jx-surface); border-right: 1px solid var(--jx-border); display: grid; align-content: start; justify-items: center; gap: 6px; padding-top: var(--jx-space-3); }
+.rail .fav { width: 22px; height: 22px; border-radius: 6px; background: var(--jx-surface-sunken); border: 1px solid var(--jx-border); display: block; }
+.rail .fav.on { background: var(--jx-row-bg-selected); border-color: var(--jx-border-strong); }
 .reader-tb { gap: 6px; }
 .reader-tb .sp { gap: 6px; }
 .reader { padding: var(--jx-space-6) var(--jx-space-7) var(--jx-space-7); }
@@ -38,7 +38,7 @@
 .composer .row-inline { justify-content: space-between; }
 .inline-banner { background: var(--jx-warn-bg); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); padding: var(--jx-space-2) var(--jx-space-3); font-size: var(--jx-text-sm); display: grid; gap: 6px; }
 .inline-banner b { color: var(--jx-warn); font-weight: 600; }
-.subbar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 var(--jx-space-2); border-bottom: 1px solid var(--jx-border); background: var(--jx-app-chrome); font-size: var(--jx-text-sm); }
+.subbar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 var(--jx-space-2); border-bottom: 1px solid var(--jx-border); background: var(--jx-bg); font-size: var(--jx-text-sm); }
 .subbar b { font-weight: 600; font-size: var(--jx-text-base); }
 .subbar .sp { margin-left: auto; display: flex; gap: 4px; color: var(--jx-fg-muted); }
 .narrow-reader { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
@@ -64,7 +64,7 @@
   <header class="doc-head">
     <div>
       <h1>RSS</h1>
-      <p><code>/rss/</code>. Product screen at lower fidelity; it feeds RSS's own spec later. A classic three-pane reader in marigold: feeds, a Desk-density item list, and a serif reader. Engage a post to open a chat rail with the post as context, then save what matters to the KB.</p>
+      <p><code>/rss/</code>. Product screen at lower fidelity; it feeds RSS's own spec later. A classic three-pane reader, with marigold only in the title bar: feeds, a Desk-density item list, and a serif reader. Engage a post to open a chat rail with the post as context, then save what matters to the KB.</p>
     </div>
     <div class="row-inline">
       <nav class="doc-nav" aria-label="Wireframes"><a href="README.md">Index</a><a href="launcher.html">Launcher</a><a href="settings.html">Settings</a><a href="notes.html">Notes</a><a href="rss.html">RSS</a><a href="review.html">Review</a><a href="issues.html">Issues</a><a href="overview.html">Mission Control</a></nav>
