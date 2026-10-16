@@ -1,0 +1,152 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Polite, guarded outbound HTTP for apps (spec §4.5).
+
+Only ``http``/``https``; every hop (including redirects, followed by hand) must resolve to
+public addresses only. The transport the module wires in re-checks at connect time, so a
+DNS answer that changes between the check and the connection is refused too. Requests to
+one host are spaced at least ``min_interval`` apart; responses are revalidated with
+ETag / Last-Modified and bodies are capped at ``max_bytes``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import socket
+import time
+from dataclasses import dataclass
+from urllib.parse import urljoin, urlsplit
+
+import httpx
+
+from jesinia.services.fetch.application.ports import CachedFetch, FetchCache, Resolver
+from jesinia.services.fetch.domain.address import is_public
+
+MAX_REDIRECTS = 5
+REDIRECTS = frozenset({301, 302, 303, 307, 308})
+TIMEOUT = httpx.Timeout(20.0)
+USER_AGENT = "Jesinia/0.1 (+personal feed reader)"
+
+
+class FetchError(RuntimeError):
+    """Base for fetch failures callers should report to the user."""
+
+
+class FetchBlocked(FetchError):  # noqa: N818 - public name fixed by the plan interface
+    """The URL is not allowed (scheme, private address, or redirect loop)."""
+
+
+class FetchTooLarge(FetchError):  # noqa: N818 - public name fixed by the plan interface
+    """The body is larger than ``max_bytes``."""
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    url: str
+    status: int
+    content_type: str
+    body: bytes
+    from_cache: bool
+
+
+async def system_resolve(host: str) -> list[str]:
+    """Every address ``host`` resolves to (empty when it does not resolve)."""
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    return sorted({str(info[4][0]) for info in infos})
+
+
+class FetchService:
+    def __init__(
+        self,
+        cache: FetchCache,
+        *,
+        resolve: Resolver = system_resolve,
+        min_interval: float = 1.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._cache = cache
+        self._resolve = resolve
+        self._min_interval = min_interval
+        self._transport = transport
+        self._hosts: dict[str, tuple[asyncio.Lock, list[float]]] = {}
+
+    async def check(self, url: str) -> str:
+        """The URL's host, if it may be fetched; ``FetchBlocked`` otherwise."""
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise FetchBlocked(f"only http(s) URLs can be fetched: {url}")
+        host = parts.hostname
+        if host == "localhost" or host.endswith(".localhost"):
+            raise FetchBlocked(f"{host} is not a public host")
+        addresses = [host] if _is_ip(host) else await self._resolve(host)
+        if not addresses or not all(is_public(a) for a in addresses):
+            raise FetchBlocked(f"{host} does not resolve to a public address")
+        return host
+
+    async def _pace(self, host: str) -> None:
+        lock, last = self._hosts.setdefault(host, (asyncio.Lock(), [0.0]))
+        async with lock:
+            wait = last[0] + self._min_interval - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            last[0] = time.monotonic()
+
+    async def get(self, url: str, *, max_bytes: int = 5_000_000) -> FetchResult:
+        async with httpx.AsyncClient(
+            timeout=TIMEOUT,
+            transport=self._transport,
+            trust_env=False,
+            follow_redirects=False,
+            headers={"User-Agent": USER_AGENT},
+        ) as client:
+            for _ in range(MAX_REDIRECTS + 1):
+                host = await self.check(url)
+                await self._pace(host)
+                cached = self._cache.get(url)
+                headers: dict[str, str] = {}
+                if cached is not None and cached.etag:
+                    headers["If-None-Match"] = cached.etag
+                if cached is not None and cached.last_modified:
+                    headers["If-Modified-Since"] = cached.last_modified
+                async with client.stream("GET", url, headers=headers) as resp:
+                    if resp.status_code in REDIRECTS and "location" in resp.headers:
+                        url = urljoin(url, resp.headers["location"])
+                        continue
+                    if resp.status_code == 304 and cached is not None:
+                        return FetchResult(
+                            url, cached.status, cached.content_type, cached.body, True
+                        )
+                    body = await _read_capped(resp, max_bytes)
+                    content_type = resp.headers.get("content-type", "")
+                    etag = resp.headers.get("etag")
+                    modified = resp.headers.get("last-modified")
+                    if resp.status_code == 200 and (etag or modified):
+                        self._cache.put(url, CachedFetch(etag, modified, 200, content_type, body))
+                    return FetchResult(url, resp.status_code, content_type, body, False)
+        raise FetchBlocked(f"too many redirects (more than {MAX_REDIRECTS})")
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+async def _read_capped(resp: httpx.Response, max_bytes: int) -> bytes:
+    declared = resp.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > max_bytes:
+        raise FetchTooLarge(f"response is {declared} bytes (limit {max_bytes})")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in resp.aiter_bytes():
+        size += len(chunk)
+        if size > max_bytes:
+            raise FetchTooLarge(f"response exceeds {max_bytes} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)

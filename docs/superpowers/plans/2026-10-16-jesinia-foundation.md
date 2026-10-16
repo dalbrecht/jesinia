@@ -701,7 +701,7 @@ async def test_attach_returns_pack_and_transcript_and_terminal_notes_stream(app_
   - `class FetchService: async get(url: str, *, max_bytes: int = 5_000_000) -> FetchResult`; `FetchResult(url: str, status: int, content_type: str, body: bytes, from_cache: bool)`; `FetchTooLarge`, `FetchBlocked`. Conditional requests via ETag/Last-Modified; per-host minimum interval 1 s; only `http`/`https`; refuses hosts resolving to loopback/private ranges.
   - `sanitize_html(html: str, base_url: str) -> str` via `nh3` with allowlist (headings, p, a[href], img[src,alt], lists, blockquote, pre, code, em, strong, table family); rewrites relative URLs absolute; adds `rel="noopener noreferrer"` to links.
 
-- [ ] **Step 1: Failing tests** (respx for HTTP; monkeypatched subprocess for auth):
+- [x] **Step 1: Failing tests** (respx for HTTP; monkeypatched subprocess for auth):
 
 ```python
 async def test_etag_reuse(gh, respx_mock):
@@ -722,7 +722,7 @@ def test_sanitize_strips_script_and_handlers():
     assert "script" not in out and "onclick" not in out and 'href="https://s.example/b"' in out
 ```
 
-- [ ] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat: github and fetch services with caching and sanitization`.
+- [x] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat: github and fetch services with caching and sanitization`.
 
 ### Task 20: `jesinia` CLI
 
