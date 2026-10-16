@@ -71,8 +71,13 @@ class PageIndex(Protocol):
         title: str,
         mtime: float,
         links: Iterable[PageId] | None = None,
+        tags: Iterable[str] | None = None,
+        source: str | None = None,
     ) -> None:
-        """Upsert a page row; with ``links``, replace its outbound links atomically."""
+        """Upsert a page row; with ``links``, replace its outbound links atomically.
+
+        With ``tags``, also replace its tags and its ``source`` (``None`` clears it).
+        """
         ...
 
     def delete(self, id: PageId) -> None: ...
@@ -80,6 +85,18 @@ class PageIndex(Protocol):
     def all(self) -> list[IndexRow]: ...
 
     def set_links(self, src: PageId, dsts: Iterable[PageId]) -> None: ...
+
+    def set_tags(self, id: PageId, tags: Iterable[str]) -> None: ...
+
+    def set_source(self, id: PageId, url: str | None) -> None: ...
+
+    def tag_counts(self) -> dict[str, int]:
+        """How many pages carry each tag."""
+        ...
+
+    def pages_with_tag(self, tag: str) -> list[PageId]: ...
+
+    def by_source(self, url: str) -> PageId | None: ...
 
     def reset(self) -> None:
         """Forget everything (a different KB root)."""

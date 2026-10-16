@@ -39,8 +39,14 @@ repository; this skill is the working summary.
 - Link to another page as `[[<id>|<Title>]]`. Links resolve by id, so they survive
   renames. Get the id with `kb_search` or `kb_link`; a rename updates the link text for
   you.
-- Tags are inline `#tags` in the body. Reuse existing tags (search for them) before
-  inventing new ones.
+- Tags are inline `#tags` in the body (lowercase, letters, digits and `-`, like
+  `#wal-mode`). The KB-wide catalog is the `Tags` page.
+- Before writing tags, call `tags_suggest` with the text (catalog tags it mentions) or
+  `tags_check` for a tag you have in mind. Use the catalog's spelling, and when
+  `tags_check` reports a `near` tag, use that one. These tools answer from the catalog
+  alone: judge same-meaning tags yourself from `tags_list` meanings and aliases. Never invent a
+  near-duplicate of an existing tag (`#databases` when `#database` exists); ask the user
+  if a genuinely new tag is needed.
 
 ## Provenance
 

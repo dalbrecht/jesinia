@@ -26,6 +26,22 @@ export function createClient(opts: ClientOptions = {}): JesiniaClient {
   return client;
 }
 
+/** The header the server's write routes require (one key per user action). */
+export const IDEMPOTENCY_HEADER = "Idempotency-Key";
+
+export type IdempotencyHeaders = { "Idempotency-Key": string };
+
+/**
+ * Headers for a non-idempotent request. Pass the key of an earlier attempt to retry that same
+ * action (the server answers a repeated key with the first response instead of acting twice);
+ * omit it for a new action.
+ *
+ * @example client.POST("/api/kb/tags/retire", { body, params: { header: withIdempotency() } })
+ */
+export function withIdempotency(key: string = crypto.randomUUID()): IdempotencyHeaders {
+  return { [IDEMPOTENCY_HEADER]: key };
+}
+
 /** The server's error detail (`{"detail": …}`), or a fallback message. */
 export function errorText(error: unknown, fallback = "Something went wrong."): string {
   if (error && typeof error === "object" && "detail" in error) {

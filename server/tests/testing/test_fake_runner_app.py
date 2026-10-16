@@ -70,3 +70,15 @@ async def test_real_post_against_a_live_mcp_endpoint(cfg, tmp_path: Path) -> Non
         runner = McpScriptRunner()
         events = [e async for e in runner.run(_req(tmp_path))]
     assert ToolResult("kb_write", False) in events
+
+
+async def test_tag_prompts_get_a_json_tag_list(tmp_path: Path) -> None:
+    async def post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+        raise AssertionError("a tag ask never writes")
+
+    runner = McpScriptRunner(post)
+    req = TurnRequest("TAGS: which?", tmp_path, "sys", None, tmp_path / "mcp.json", [])
+    events = [e async for e in runner.run(req)]
+    text = "".join(e.text for e in events if isinstance(e, TextDelta))
+    assert json.loads(text) == ["fixture", "new-fixture-tag"]
+    assert isinstance(events[-1], TurnDone)

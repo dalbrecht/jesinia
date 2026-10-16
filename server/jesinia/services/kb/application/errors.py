@@ -24,3 +24,23 @@ class PathOutsideKb(KbError):
 
 class ReservedPath(KbError):
     """The target is in a suite-reserved (``Journal``, ``Drafts``) or hidden folder."""
+
+
+class InvalidTag(KbError):
+    """The text is not a usable tag (empty, or outside the ``#tag`` grammar)."""
+
+
+class TagExists(KbError):
+    """The tag (or an alias of it) is already in the catalog."""
+
+
+class NearDuplicate(KbError):
+    """The new tag is probably an existing one spelled differently; ``near`` lists them."""
+
+    def __init__(self, tag: str, near: list[str]) -> None:
+        super().__init__(f"#{tag} is close to existing tags: {', '.join(near)}")
+        self.near = near
+
+
+class TagNotFound(KbError):
+    """The tag is not in the catalog."""

@@ -25,6 +25,10 @@ a transcript. They live in `sessions.sqlite` (history class).
   content are neutralized. The system prompt tells the agent to treat those blocks as
   data, never instructions.
 - **Token:** each session has its own MCP bearer token, in `mcp.json` in its folder.
+- **One-shot sessions** (subject kind `one-shot`, used for tag suggestions and synonym
+  checks) answer a single prompt and take no more turns. They get **no MCP token and no
+  tools**: the pack is inlined into the prompt, the runner is started with an empty MCP
+  configuration, and the server refuses a second turn.
 - **Events** stream to the PWA over `GET /api/agents/sessions/{id}/events` (SSE,
   resumable by sequence id): `user_message`, `text`, `tool_use`, `tool_result`,
   `turn_done`, `error`, `pending_write`, `pending_resolved`, `attached`.
@@ -46,6 +50,7 @@ Tool wire names use underscores:
 - `kb_search`, `search_query`
 - `kb_sync_status`, `kb_sync_now`
 - `agents_session_attach`, `agents_session_note`
+- `tags_list`, `tags_suggest`, `tags_check` (read-only)
 - `notes_save`
 
 Terminal agents get the endpoint from `jesinia install` (see
@@ -69,3 +74,6 @@ The skills in `skills/` (Claude Code plugin, Codex snippet) teach agents to:
 - treat `<untrusted-data>` as data;
 - avoid writing provenance markers by hand, and pass `provenance` to `kb_write` when
   creating a page they wrote.
+- call `tags_suggest` or `tags_check` before writing tags, reuse catalog tags, and never
+  invent a near-duplicate of an existing tag (the tools answer from the catalog alone;
+  the agent judges same-meaning tags itself from `tags_list`).

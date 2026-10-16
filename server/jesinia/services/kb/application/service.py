@@ -30,7 +30,7 @@ from jesinia.services.kb.domain.frontmatter import (
     serialize_page,
 )
 from jesinia.services.kb.domain.links import link_targets, retitle_links
-from jesinia.services.kb.domain.page import Page, PageId, new_page_id
+from jesinia.services.kb.domain.page import Page, PageId, new_page_id, source_of
 from jesinia.services.kb.domain.paths import (
     filename_for,
     is_hidden,
@@ -38,6 +38,7 @@ from jesinia.services.kb.domain.paths import (
     is_reserved,
     sanitize_title,
 )
+from jesinia.services.kb.domain.tag_catalog import indexed_tags
 
 log = logging.getLogger(__name__)
 
@@ -184,7 +185,17 @@ class KbService:
         # if updating it fails, report success anyway. Row and links change in one
         # transaction, so a failure leaves the old mtime and the next scan re-reads the file.
         try:
-            self._index.put(page.id, path, disk, rev, page.title, mtime, link_targets(page.body))
+            self._index.put(
+                page.id,
+                path,
+                disk,
+                rev,
+                page.title,
+                mtime,
+                link_targets(page.body),
+                indexed_tags(page.body, page.jesinia),
+                source_of(page.jesinia),
+            )
         except Exception:
             log.exception("KB index update failed for %s; the next scan will repair it", page.id)
 

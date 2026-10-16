@@ -41,6 +41,8 @@ class SqliteIndex:
         title: str,
         mtime: float,
         links: Iterable[PageId] | None = None,
+        tags: Iterable[str] | None = None,
+        source: str | None = None,
     ) -> None:
         with transaction(self.conn):
             self.conn.execute("DELETE FROM pages WHERE path = ? AND id != ?", (str(path), id))
@@ -52,15 +54,21 @@ class SqliteIndex:
             )
             if links is not None:
                 self._replace_links(id, links)
+            if tags is not None:
+                # `source` is only meaningful alongside `tags`: both come from the page content.
+                self._replace_tags(id, tags)
+                self._replace_source(id, source)
 
     def delete(self, id: PageId) -> None:
         with transaction(self.conn):
             self.conn.execute("DELETE FROM pages WHERE id = ?", (id,))
             self.conn.execute("DELETE FROM links WHERE src = ?", (id,))
+            self.conn.execute("DELETE FROM page_tags WHERE page_id = ?", (id,))
+            self.conn.execute("DELETE FROM page_sources WHERE page_id = ?", (id,))
 
     def reset(self) -> None:
         with transaction(self.conn):
-            for table in ("pages", "links", "conflicts"):
+            for table in ("pages", "links", "conflicts", "page_tags", "page_sources"):
                 self.conn.execute(f"DELETE FROM {table}")
 
     def all(self) -> list[IndexRow]:
@@ -75,6 +83,41 @@ class SqliteIndex:
         self.conn.executemany(
             "INSERT OR IGNORE INTO links (src, dst) VALUES (?, ?)", [(src, d) for d in dsts]
         )
+
+    def set_tags(self, id: PageId, tags: Iterable[str]) -> None:
+        with transaction(self.conn):
+            self._replace_tags(id, tags)
+
+    def _replace_tags(self, id: PageId, tags: Iterable[str]) -> None:
+        self.conn.execute("DELETE FROM page_tags WHERE page_id = ?", (id,))
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO page_tags (page_id, tag) VALUES (?, ?)", [(id, t) for t in tags]
+        )
+
+    def set_source(self, id: PageId, url: str | None) -> None:
+        with transaction(self.conn):
+            self._replace_source(id, url)
+
+    def _replace_source(self, id: PageId, url: str | None) -> None:
+        self.conn.execute("DELETE FROM page_sources WHERE page_id = ?", (id,))
+        if url is not None:
+            self.conn.execute("INSERT INTO page_sources (page_id, url) VALUES (?, ?)", (id, url))
+
+    def tag_counts(self) -> dict[str, int]:
+        rows = self.conn.execute("SELECT tag, COUNT(*) FROM page_tags GROUP BY tag ORDER BY tag")
+        return {str(tag): int(count) for tag, count in rows}
+
+    def pages_with_tag(self, tag: str) -> list[PageId]:
+        rows = self.conn.execute(
+            "SELECT page_id FROM page_tags WHERE tag = ? ORDER BY page_id", (tag,)
+        )
+        return [PageId(r[0]) for r in rows]
+
+    def by_source(self, url: str) -> PageId | None:
+        r = self.conn.execute(
+            "SELECT page_id FROM page_sources WHERE url = ? ORDER BY page_id LIMIT 1", (url,)
+        ).fetchone()
+        return PageId(r[0]) if r else None
 
     def indexed_root(self) -> str | None:
         r = self.conn.execute("SELECT value FROM meta WHERE key = 'root'").fetchone()

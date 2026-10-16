@@ -26,8 +26,12 @@ from jesinia.services.agents.infrastructure.cli import CliRunner, checked_resume
 TOKEN_ENV = "JESINIA_MCP_TOKEN"
 
 
-def _mcp_endpoint(req: TurnRequest) -> tuple[str, str]:
-    server = json.loads(req.mcp_config.read_text())["mcpServers"]["jesinia"]
+def _mcp_endpoint(req: TurnRequest) -> tuple[str, str] | None:
+    """The Jesinia MCP url and token, or None when the session has no MCP server (a
+    tool-less one-shot session)."""
+    server = json.loads(req.mcp_config.read_text()).get("mcpServers", {}).get("jesinia")
+    if not isinstance(server, dict):
+        return None
     token = str(server.get("headers", {}).get("Authorization", "")).removeprefix("Bearer ")
     return str(server["url"]), token
 
@@ -78,8 +82,7 @@ class CodexRunner(CliRunner):
     binary = "codex"
 
     def build_argv(self, req: TurnRequest) -> list[str]:
-        url, _ = _mcp_endpoint(req)
-        tools = ", ".join(json.dumps(t) for t in req.allowed_tools)
+        endpoint = _mcp_endpoint(req)
         argv = [
             self.binary,
             "exec",
@@ -94,13 +97,17 @@ class CodexRunner(CliRunner):
             "--skip-git-repo-check",
             "-C",
             str(req.workdir),
-            "-c",
-            f"mcp_servers.jesinia.url={json.dumps(url)}",
-            "-c",
-            f'mcp_servers.jesinia.bearer_token_env_var="{TOKEN_ENV}"',
-            "-c",
-            f"mcp_servers.jesinia.enabled_tools=[{tools}]",
         ]
+        if endpoint is not None:
+            tools = ", ".join(json.dumps(t) for t in req.allowed_tools)
+            argv += [
+                "-c",
+                f"mcp_servers.jesinia.url={json.dumps(endpoint[0])}",
+                "-c",
+                f'mcp_servers.jesinia.bearer_token_env_var="{TOKEN_ENV}"',
+                "-c",
+                f"mcp_servers.jesinia.enabled_tools=[{tools}]",
+            ]
         if self.model:
             argv += ["-m", self.model]
         if req.resume_id:
@@ -109,8 +116,8 @@ class CodexRunner(CliRunner):
         return argv
 
     def build_env(self, req: TurnRequest) -> dict[str, str]:
-        _, token = _mcp_endpoint(req)
-        return minimal_env({TOKEN_ENV: token})
+        endpoint = _mcp_endpoint(req)
+        return minimal_env({TOKEN_ENV: endpoint[1]} if endpoint is not None else None)
 
     def stdin(self, req: TurnRequest) -> str:
         if req.resume_id:

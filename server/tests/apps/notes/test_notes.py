@@ -16,6 +16,7 @@ from jesinia.services.agents.domain.events import TextDelta, TurnDone
 from jesinia.services.agents.infrastructure.fake import FakeRunner
 from jesinia.services.agents.module import AgentsModule
 from jesinia.services.kb.application.service import KbService, PageDraft
+from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.module import KbModule
 from jesinia.services.search.module import SearchModule
 from tests.conftest import BASE_URL, bearer, running
@@ -34,6 +35,12 @@ class Env:
     def kb(self) -> KbService:
         svc = self.app.state.ctx.services["kb"]
         assert isinstance(svc, KbService)
+        return svc
+
+    @property
+    def tags(self) -> TagService:
+        svc = self.app.state.ctx.services["tags"]
+        assert isinstance(svc, TagService)
         return svc
 
 
@@ -384,3 +391,87 @@ async def test_start_session_survives_a_broken_search_index(
     assert "(search is unavailable)" in related.read_text()
     assert "related-pages search failed" in caplog.text
     assert "database disk image is malformed" in caplog.text
+
+
+async def test_save_note_writes_tag_line_and_catalogs_new_tags(env: Env) -> None:
+    await env.tags.add("sqlite", "The SQLite database")
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+    n = await env.notes.service.save_note(
+        s.id,
+        title="Tagged",
+        user_text="Mine.",
+        agent_text="Theirs.",
+        model="m",
+        tags=["SQLite", "#wal-mode", "sqlite"],
+    )
+    assert n.page.body.startswith("Mine.\n\nTags: #sqlite #wal-mode\n\n<!-- jesinia:ai ")
+    catalog = {info.tag: info for info in await env.tags.catalog()}
+    assert set(catalog) == {"sqlite", "wal-mode"}  # the new tag is catalogued
+    assert catalog["sqlite"].meaning == "The SQLite database"  # the existing one is untouched
+    assert catalog["wal-mode"].count == 1
+    untagged = await env.notes.service.save_note(
+        s.id, title="Plain", user_text="", agent_text="t", model="m"
+    )
+    assert "Tags:" not in untagged.page.body
+    only_tags = await env.notes.service.save_note(
+        s.id, title="Only tags", user_text="", agent_text="t", model="m", tags=["sqlite"]
+    )
+    assert only_tags.page.body.startswith("Tags: #sqlite\n\n<!-- jesinia:ai ")
+
+
+async def test_save_note_refuses_near_duplicate_and_invalid_tags(env: Env) -> None:
+    await env.tags.add("sqlite")
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    sid = (
+        await env.client.post(
+            "/api/notes/sessions", json={"page_id": subj.page.id, "runner": "fake"}
+        )
+    ).json()["id"]
+    near = await env.client.post(
+        f"/api/notes/sessions/{sid}/save",
+        json={"title": "Near", "agent_text": "a", "tags": ["sqlites"]},
+    )
+    assert near.status_code == 409
+    assert near.json()["detail"] == "#sqlites is close to existing tags: sqlite"
+    bad = await env.client.post(
+        f"/api/notes/sessions/{sid}/save",
+        json={"title": "Bad", "agent_text": "a", "tags": ["no good!"]},
+    )
+    assert bad.status_code == 400 and "not a valid tag" in bad.json()["detail"]
+    assert not (env.root / "Notes/Near.md").exists() and not (env.root / "Notes/Bad.md").exists()
+    assert [info.tag for info in await env.tags.catalog()] == ["sqlite"]
+    ok = await env.client.post(
+        f"/api/notes/sessions/{sid}/save",
+        json={"title": "Fine", "agent_text": "a", "tags": ["sqlite", "wal-mode"]},
+    )
+    assert ok.status_code == 201
+    assert "Tags: #sqlite #wal-mode" in (env.root / "Notes/Fine.md").read_text()
+
+
+async def test_save_note_writes_the_canonical_tag_for_an_alias(env: Env) -> None:
+    await env.tags.add("sqlite")
+    await env.tags.add("sql-db", force=True)
+    await env.tags.merge(["sql-db"], "sqlite", {})  # sql-db becomes an alias of sqlite
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+    n = await env.notes.service.save_note(
+        s.id, title="Alias", user_text="", agent_text="t", model="m", tags=["SQL-DB", "sqlite"]
+    )
+    assert n.page.body.startswith("Tags: #sqlite\n\n")
+
+
+async def test_save_note_refused_part_way_adds_nothing_to_the_catalog(env: Env) -> None:
+    from jesinia.services.kb.application.errors import NearDuplicate
+
+    await env.tags.add("sqlite")
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+    with pytest.raises(NearDuplicate) as near:
+        await env.notes.service.save_note(
+            s.id, title="Refused", user_text="", agent_text="t", model="m",
+            tags=["sqlite", "database", "databases"],
+        )  # fmt: skip
+    assert near.value.near == ["database"]  # near the first new tag of this same save
+    assert [info.tag for info in await env.tags.catalog()] == ["sqlite"]
+    assert not (env.root / "Notes/Refused.md").exists()

@@ -3,7 +3,7 @@
 
 The subject page and related search hits go to the agent as *untrusted* context (spec
 §4.3). Saving writes an ordinary KB page in the notes folder with the agent's text inside
-provenance comments and a back-link to the subject.
+provenance comments, an optional ``Tags:`` line and a back-link to the subject.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import html
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Protocol
@@ -22,8 +22,10 @@ from jesinia.services.agents.application.packs import ContextPack, UntrustedDoc
 from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.agents.domain.session import Session, Subject
 from jesinia.services.kb.application.service import KbService, PageDraft, PageWithRev
+from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.domain.page import PageId
 from jesinia.services.kb.domain.provenance import inert, provenance_label, wrap_ai
+from jesinia.services.kb.domain.tags import render_tag_line
 from jesinia.services.search.application.service import SearchService
 
 log = logging.getLogger(__name__)
@@ -82,6 +84,7 @@ class NotesService:
         kb: KbService,
         search: SearchService | None,
         sessions: SessionService,
+        tags: TagService,
         log: NoteLog,
         folder: Callable[[], str],
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -89,6 +92,7 @@ class NotesService:
         self.kb = kb
         self.search = search
         self.sessions = sessions
+        self.tags = tags
         self.log = log
         self.folder = folder
         self.now = now
@@ -133,7 +137,14 @@ class NotesService:
         agent_text: str,
         model: str,
         by_agent: bool = False,
+        tags: Sequence[str] = (),
     ) -> PageWithRev:
+        """Write the note; ``tags`` go on a ``Tags:`` line after the user's text.
+
+        Tags are written by their canonical catalog name. New ones are added to the catalog
+        first (``TagService.ensure``); a near-duplicate or invalid tag raises
+        ``NearDuplicate`` / ``InvalidTag`` and nothing is written, note or catalog.
+        """
         session = self.sessions.get(session_id)
         if session.subject.kind != "kb":
             raise NotSubjectSessionError(f"session {session_id} is not about a KB page")
@@ -156,16 +167,26 @@ class NotesService:
                     f"this session already saved {MAX_AGENT_SAVES} notes; "
                     "save more from the Notes app"
                 )
-            note = await self._write_note(session, title, user_text, agent_text, model)
+            # Canonical names (aliases resolved); new tags are catalogued all-or-nothing.
+            wanted = await self.tags.ensure(tags) if tags else []
+            note = await self._write_note(session, title, user_text, agent_text, model, wanted)
             self._saves[session_id] = saved + 1
             return note
 
     async def _write_note(
-        self, session: Session, title: str, user_text: str, agent_text: str, model: str
+        self,
+        session: Session,
+        title: str,
+        user_text: str,
+        agent_text: str,
+        model: str,
+        tags: list[str],
     ) -> PageWithRev:
         session_id = session.id
         at = self.now()
         parts = [inert(user_text.strip())] if user_text.strip() else []
+        if tags:
+            parts.append(render_tag_line(tags))
         model = provenance_label(model)
         text = inert(agent_text.strip())
         parts.append(wrap_ai(text, agent=session.runner, model=model, at=at, session=session_id))

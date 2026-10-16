@@ -289,3 +289,17 @@ async def test_previews_use_the_real_target_resolution(app_env: AppEnv) -> None:
     # The id is only chosen at write time, so the preview names it instead of guessing.
     assert targets[1]["path"] == "Notes/Taken [new page id].md"
     assert "id will be added" in targets[1]["note"]
+
+
+def test_preferred_runner_is_the_first_available_preferring_claude_code() -> None:
+    mod = AgentsModule()
+    assert mod.preferred_runner() is None  # not started: nothing known to be available
+    mod._status = {
+        "codex": {"available": True},
+        "claude-code": {"available": True},
+    }
+    assert mod.preferred_runner() == "claude-code"
+    mod._status["claude-code"] = {"available": False}
+    assert mod.preferred_runner() == "codex"
+    mod._status["codex"] = {"available": False}
+    assert mod.preferred_runner() is None

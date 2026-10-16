@@ -1,0 +1,37 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.picker {
+  display: grid;
+  gap: var(--jx-space-2);
+}
+.chips,
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--jx-space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jx-space-1);
+}
+.offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2);
+  font-size: var(--jx-text-sm);
+}
+.offer p {
+  margin: 0;
+}
+.add {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--jx-space-2);
+}
+.add > :first-child {
+  flex: 1;
+}

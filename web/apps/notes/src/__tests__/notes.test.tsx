@@ -76,6 +76,7 @@ function routes(over: Routes = {}): Routes {
       subject: { kind: "kb", ref: "p1", title: "Topic" },
     },
     "POST /api/agents/sessions/s1/messages": { ok: true },
+    "POST /api/kb/tags/suggest": [{ tag: "topic", new: false }],
     "POST /api/notes/sessions/s1/save": { id: "n1", title: "Note on Topic", path: "Notes/Note on Topic.md", rev: "x" },
     "POST /api/agents/sessions/s1/pending/w1/approve": { id: "w1", state: "approved" },
     "POST /api/agents/sessions/s1/pending/w1/reject": { id: "w1", state: "rejected" },
@@ -144,6 +145,12 @@ describe("Notes", () => {
     expect(save).toBeDisabled();
     agent("turn_done", { model: "fake-model" });
     await waitFor(() => expect(save).toBeEnabled());
+    // A finished turn alone never asks for suggestions (they may run an agent): the user does.
+    expect(calls.some((c) => c.url.endsWith("/api/kb/tags/suggest"))).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Suggest tags" }));
+    await userEvent.click(await screen.findByRole("button", { name: "#topic" }));
+    const suggest = calls.find((c) => c.url.endsWith("/api/kb/tags/suggest"));
+    expect(await suggest?.json()).toMatchObject({ text: "What is this?\n\nIt is a topic." });
     await userEvent.click(save);
     const body = await calls.find((c) => c.url.endsWith("/save"))?.json();
     expect(body).toEqual({
@@ -151,8 +158,10 @@ describe("Notes", () => {
       user_text: "What is this?",
       agent_text: "It is a topic.",
       model: "fake-model",
+      tags: ["topic"],
     });
     expect((await screen.findAllByText("Saved to Notes/Note on Topic.md.")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("list", { name: "Tags" })).not.toBeInTheDocument(); // cleared for the next note
   });
 
   it("pending writes: approve and reject reach the server", async () => {

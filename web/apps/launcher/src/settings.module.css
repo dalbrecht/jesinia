@@ -80,3 +80,35 @@
   font-size: var(--jx-text-sm);
   overflow-wrap: anywhere;
 }
+.plainList {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--jx-space-1);
+  font-size: var(--jx-text-sm);
+}
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: var(--jx-space-4);
+  background: var(--jx-scrim);
+}
+.dialog {
+  width: min(560px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+}
+.chips {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--jx-space-2);
+}
+.chips li {
+  display: inline-flex;
+  align-items: center;
+}

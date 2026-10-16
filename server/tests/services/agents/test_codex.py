@@ -123,3 +123,11 @@ def test_pack_inline_limit(tmp_path) -> None:  # type: ignore[no-untyped-def]
     (tmp_path / ".hidden").write_text("secret")
     out = pack_contents(tmp_path, limit=60)
     assert "x" * 50 in out and "(omitted" in out and "secret" not in out
+
+
+def test_codex_without_a_jesinia_server_configures_no_mcp(req: TurnRequest) -> None:
+    req.mcp_config.write_text('{"mcpServers": {}}')  # a tool-less one-shot session
+    r = CodexRunner()
+    argv = r.build_argv(replace(req, allowed_tools=[]))
+    assert not any(a.startswith("mcp_servers.") for a in argv)
+    assert "JESINIA_MCP_TOKEN" not in r.build_env(req)
