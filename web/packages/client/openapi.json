@@ -2909,7 +2909,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 200
+                "maxLength": 100
               },
               {
                 "type": "null"
@@ -2994,7 +2994,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 200
+                "maxLength": 100
               },
               {
                 "type": "null"
@@ -3032,7 +3032,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "maxLength": 200,
+            "maxLength": 100,
             "minLength": 1,
             "title": "Name"
           }

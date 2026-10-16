@@ -90,7 +90,13 @@ class FeedService:
                 raise FeedUnavailable(
                     f"{url} is not a readable feed: {parse_error}"
                 ) from parse_error
-            raise FeedUnavailable(f"no feed found at {url}: the page links to none")
+            try:
+                # Feeds are often mislabelled text/html: with no feed link, read it as one.
+                return url, self._reader.parse(result.body, result.url)
+            except FeedParseError as exc:
+                raise FeedUnavailable(
+                    f"no feed found at {url}: the page links to none and is not a feed ({exc})"
+                ) from exc
         self._refuse_existing(found)
         linked = await self._fetch(found)
         try:

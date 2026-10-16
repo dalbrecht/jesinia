@@ -17,6 +17,8 @@ from fastapi import APIRouter
 from jesinia.apps.rss.application.ports import NewFeed
 from jesinia.apps.rss.domain.feed import (
     FeedNotFound,
+    FeedParseError,
+    FeedUnavailable,
     InvalidFeedUrl,
     InvalidFolderName,
     ParsedItem,
@@ -227,6 +229,14 @@ async def test_add_falls_back_to_discovery_when_a_non_html_body_is_not_a_feed(
     assert added.status_code == 201, added.text
 
 
+async def test_add_parses_a_feed_served_as_html(env: Env, mock: respx.MockRouter) -> None:
+    # A common misconfiguration: the feed itself is labelled text/html and links no feed.
+    _serve(mock, FEED_URL, _fixture("rss2.xml"), "text/html; charset=utf-8")
+    added = await _add(env)
+    assert added.status_code == 201, added.text
+    assert added.json()["url"] == FEED_URL and added.json()["unread"] == 2
+
+
 async def test_add_existing_feed_is_a_conflict(env: Env, mock: respx.MockRouter) -> None:
     route = _serve(mock, FEED_URL, _fixture("rss2.xml"), "application/rss+xml")
     assert (await _add(env)).status_code == 201
@@ -252,6 +262,9 @@ async def test_add_reports_why_a_feed_could_not_be_added(env: Env, mock: respx.M
     _serve(mock, "https://plain.example/", b"<html><head></head></html>", "text/html")
     detail = _error(await _add(env, "https://plain.example/"), 502, "FeedUnavailable")
     assert "no feed" in detail
+    with pytest.raises(FeedUnavailable) as info:
+        await env.module.service.add("https://plain.example/", None)
+    assert isinstance(info.value.__cause__, FeedParseError)  # the parse attempt is kept
 
     _serve(mock, "https://junk.example/x", _fixture("broken.xml"), "application/xml")
     detail = _error(await _add(env, "https://junk.example/x"), 502, "FeedUnavailable")

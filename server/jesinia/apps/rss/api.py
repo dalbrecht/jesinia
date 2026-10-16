@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from jesinia.apps.rss.application.feeds import FeedService, ImportResult
 from jesinia.apps.rss.domain.feed import (
+    FOLDER_NAME_MAX,
     FeedExists,
     FeedNotFound,
     FeedUnavailable,
@@ -25,7 +26,6 @@ from jesinia.apps.rss.domain.feed import (
 from jesinia.core.idempotency import IdempotencyStore, IdempotentCall, idempotent
 
 URL_MAX = 2048
-NAME_MAX = 200
 OPML_MAX = 5_000_000
 OPML_MEDIA_TYPE = "text/x-opml"
 
@@ -44,15 +44,15 @@ class FeedIn(BaseModel):
     url: str = Field(
         min_length=1, max_length=URL_MAX, description="A feed URL, or a site that links one"
     )
-    folder: str | None = Field(default=None, max_length=NAME_MAX)
+    folder: str | None = Field(default=None, max_length=FOLDER_NAME_MAX)
 
 
 class FeedPatchIn(BaseModel):
-    folder: str | None = Field(max_length=NAME_MAX, description="The folder; null for none")
+    folder: str | None = Field(max_length=FOLDER_NAME_MAX, description="The folder; null for none")
 
 
 class FolderPatchIn(BaseModel):
-    name: str = Field(min_length=1, max_length=NAME_MAX)
+    name: str = Field(min_length=1, max_length=FOLDER_NAME_MAX)
 
 
 class OpmlIn(BaseModel):
