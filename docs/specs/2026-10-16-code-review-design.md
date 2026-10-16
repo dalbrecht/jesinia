@@ -74,14 +74,37 @@ volume)**. It extends the wireframe's PR picker:
   - the number, title, author, author kind (you, agent or developer), size and age;
   - the **kind**: new, re-review, rebase, or part of a stack;
   - the **proposed depth**: quick or deep;
-  - the **pre-review state**: queued, ready, or failed with its cause;
+  - **CI state:** running, passing or failing (user);
+  - **reviews already on the PR (user):** whether automated reviewers (Copilot, Codex and
+    similar) and humans have commented yet, with the number of review comments;
+  - the **pre-review state**: waiting for CI, waiting for automated reviews, queued, ready,
+    or failed with its cause;
   - the **recommendation** with its evidence summary (CI, tests, finding counts by group).
-- **Pre-review:** each PR is reviewed in the background as soon as it appears, or when its
-  head changes, so the result is ready when the author opens it.
+- **Pre-review timing:**
+  - **Gates (user):**
+    - **CI first:** no review, background or on open, starts until CI on the head is
+      passing. Until then the row shows **waiting for CI**. A failing CI shows the failure
+      and offers **Review anyway**.
+    - **Automated reviews first (user):** automated reviewers often make the first pass.
+      When a repo has one configured, Jesinia waits for its review to land on the head
+      before reviewing, with a timeout of 30 minutes (builder's call). It then reads those
+      comments as input: it doesn't repeat them, and it says whether it agrees.
+  - **How much runs in the background is a setting (user):** Settings → Review → *Pre-review*.
+    1. **Triage**, the default (builder's call): the recommendation, correctness pass,
+       findings and depth run in the background. Overview, Background, Walkthrough, Quiz and
+       stack walkthroughs generate when the PR is opened.
+    2. **Everything:** the full review is generated in the background.
+    3. **On open only:** nothing runs until the author opens the PR.
+
+    The setting can be overridden per repo.
+  - **Debounce (builder's call):** a new head waits for 10 quiet minutes, then the CI gate,
+    before a background run starts, so rapid agent pushes cost one review.
   - **Concurrency (builder's call):** at most 2 pre-reviews run at once.
   - **Order:** requested reviews first, then agent PRs, then the rest.
 - **Rebases** of approved PRs that pass the check in §4.1 drop into a collapsed **Still
   approved** group. No action is needed.
+- **Loading** is described under *Load a PR* below. Loaded PRs still respect the CI gate,
+  with a **Review anyway** override.
 - **Watched repos** are chosen in Settings → Review, starting from the repos where the author
   has review requests.
 - **Load a PR (user):** the author can load any PR for review on demand, whether or not it's
