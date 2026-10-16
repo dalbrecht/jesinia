@@ -31,6 +31,7 @@ from jesinia.services.kbsync.domain.state import GitState
 Outcome = Literal["skipped", "committed", "pushed", "conflict", "blocked", "error"]
 Trigger = Literal["timer", "manual", "shutdown"]
 BACKOFF_BASE = timedelta(minutes=5)
+MAX_BACKOFF_EXPONENT = 16  # 5 min × 2^16 is far beyond any interval
 
 
 @dataclass(frozen=True)
@@ -149,7 +150,9 @@ class SyncService:
             self._last_run, self._last_result = now, result
             if result.outcome == "error":
                 self._failures += 1
-                delay = min(self.interval, BACKOFF_BASE * 2 ** (self._failures - 1))
+                # Cap the exponent first: a huge timedelta would overflow before min().
+                exponent = min(self._failures - 1, MAX_BACKOFF_EXPONENT)
+                delay = min(self.interval, BACKOFF_BASE * 2**exponent)
             else:
                 self._failures = 0
                 delay = self.interval
@@ -179,9 +182,14 @@ class SyncService:
             return SyncResult("blocked", state.problem_text or "blocked")
         if not state.dirty and state.ahead == 0:
             return SyncResult("skipped", "nothing to sync")
-        git = self.git
+        git, root = self.git, self.root
         if trigger != "shutdown":
             await self._wait_for_quiet()
+            if self.git is not git or self.root != root:
+                # The KB folder changed while we waited: never touch the old one.
+                return SyncResult(
+                    "skipped", "the KB folder changed; the next cycle syncs the new one"
+                )
             # The user may have started a rebase or merge (or detached HEAD) while we
             # waited: never touch the index in those states.
             state = await self.refresh()
@@ -210,6 +218,15 @@ class SyncService:
                     "Sync paused: the KB has a merge conflict. Resolve it, then choose Resume.",
                 )
             return SyncResult("error", f"pull failed: {redact(pull.err)}")
+        # --autostash can leave conflicted files after a "successful" pull (the stash
+        # pop conflicted). Never push, or later commit, conflict markers: pause instead.
+        unmerged = await git.run("diff", "--name-only", "--diff-filter=U", check=False)
+        if unmerged.out.strip():
+            self._paused = True
+            return SyncResult(
+                "conflict",
+                "Sync paused: the KB has a merge conflict. Resolve it, then choose Resume.",
+            )
         push = await git.run("push", "-q", check=False)
         if push.code != 0:
             return SyncResult("error", f"push failed: {redact(push.err)}")

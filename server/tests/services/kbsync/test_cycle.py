@@ -261,3 +261,51 @@ async def test_checked_git_failure_becomes_error_result(env: Env) -> None:
     assert st.consecutive_failures == 1 and st.last_result == r
     assert st.next_run == env.clock.now() + timedelta(minutes=5)
     assert env.events and env.events[-1].payload["last_result"]["outcome"] == "error"  # type: ignore[index]
+
+
+async def test_unmerged_files_after_autostash_pause_instead_of_push(env: Env) -> None:
+    (env.work / "Notes/a.md").write_text("x\n")
+    real = env.spy.run
+
+    async def autostash_conflict(*args: str, check: bool = True) -> GitResult:
+        if "--diff-filter=U" in args:
+            return GitResult(0, "Notes/a.md", "")
+        return await real(*args, check=check)
+
+    env.spy.run = autostash_conflict  # type: ignore[method-assign]
+    r = await env.sync.run_cycle("manual")
+    assert r.outcome == "conflict" and env.sync.status().paused
+    assert not any(c[0] == "push" for c in env.spy.calls)
+
+
+async def test_root_change_during_quiet_wait_never_touches_old_repo(
+    env: Env, tmp_path: Path
+) -> None:
+    env.activity = env.clock.now()
+    (env.work / "Notes/a.md").write_text("x\n")
+    real_sleep = env.clock.sleep
+
+    async def user_switches_kb(seconds: float) -> None:
+        env.sync.configure(tmp_path, GitRunner(tmp_path))
+        await real_sleep(seconds)
+
+    env.clock.sleep = user_switches_kb  # type: ignore[method-assign]
+    before = fingerprint(env.work)
+    r = await env.sync.run_cycle("timer")
+    assert r.outcome == "skipped" and "changed" in r.message and fingerprint(env.work) == before
+
+
+async def test_backoff_never_overflows(env: Env) -> None:
+    env.sync._failures = 60
+    real = env.spy.run
+
+    async def failing(*args: str, check: bool = True) -> GitResult:
+        if args[0] == "add":
+            raise OSError("index.lock exists")
+        return await real(*args, check=check)
+
+    env.spy.run = failing  # type: ignore[method-assign]
+    (env.work / "Notes/a.md").write_text("x\n")
+    r = await env.sync.run_cycle("manual")
+    assert r.outcome == "error"
+    assert env.sync.status().next_run == env.clock.now() + timedelta(hours=4)

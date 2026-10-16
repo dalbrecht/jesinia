@@ -31,6 +31,7 @@ class SearchModule:
         self._svc: SearchService | None = None
         self._conn: sqlite3.Connection | None = None
         self._task: asyncio.Task[int] | None = None
+        self._error: str | None = None
 
     @property
     def service(self) -> SearchService:
@@ -54,6 +55,15 @@ class SearchModule:
         ctx.services["search"] = self._svc
         self._svc.indexing = True
         self._task = asyncio.create_task(self._svc.reindex(), name="search-reindex")
+        self._task.add_done_callback(self._reindexed)
+
+    def _reindexed(self, task: asyncio.Task[int]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.error("search reindex failed", exc_info=exc)
+            self._error = f"reindex failed: {exc}"
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -66,6 +76,8 @@ class SearchModule:
             self._conn = None
 
     def health(self) -> ModuleHealth:
+        if self._error is not None:
+            return ModuleHealth(False, f"{self._error} (run `jesinia reindex`)")
         if self._svc is not None and self._svc.indexing:
             return ModuleHealth(True, "indexing")
         return ModuleHealth(True, "ready")

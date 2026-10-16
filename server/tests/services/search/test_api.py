@@ -91,3 +91,26 @@ def test_service_before_start() -> None:
 
     with pytest.raises(HTTPException):
         _ = SearchModule().service
+
+
+async def test_failed_startup_reindex_is_reported(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    async def broken(self: SearchService) -> int:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(SearchService, "reindex", broken)
+    root = cfg.data_dir.parent / "kb-r"
+    root.mkdir()
+    mod = SearchModule()
+    async with lifespan_client(create_app(replace(cfg, kb_path=root), [KbModule(), mod])) as c:
+        for _ in range(50):
+            h = (await c.get("/healthz")).json()["modules"]["search"]
+            if not h["ok"]:
+                break
+            await asyncio.sleep(0.01)
+        assert h == {
+            "ok": False,
+            "detail": "reindex failed: database is locked (run `jesinia reindex`)",
+        }
