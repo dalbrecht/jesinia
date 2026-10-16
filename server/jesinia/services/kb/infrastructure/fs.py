@@ -29,6 +29,10 @@ def _move_no_clobber(src: Path, dst: Path) -> None:
     src.unlink()
 
 
+# Atomic-write temp files; kbsync never stages them (they may vanish mid-`git add`).
+TMP_SUFFIX = ".jesinia-tmp"
+
+
 class LocalFiles:
     def __init__(self, root: Path) -> None:
         self.root = root

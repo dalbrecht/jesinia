@@ -10,6 +10,7 @@ stream-json`` (requires ``--verbose``), ``--include-partial-messages`` (text del
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from jesinia.services.agents.application.runner import TurnRequest
 from jesinia.services.agents.domain.events import (
@@ -20,12 +21,28 @@ from jesinia.services.agents.domain.events import (
     ToolUse,
     TurnDone,
 )
-from jesinia.services.agents.infrastructure.cli import CliRunner
+from jesinia.services.agents.infrastructure.cli import CliRunner, checked_resume_id
 
 MCP_PREFIX = "mcp__jesinia__"
-# Shell, file-writing, and network tools stay off; reading the pack in the scratch dir is fine.
-DISALLOWED = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task")
-READ_TOOLS = ("Read", "Glob", "Grep")
+# Shell, file-writing, search-anywhere, and network tools stay off. Reading is allowed only
+# inside the session scratch dir (the context pack), via a path-scoped Read rule.
+DISALLOWED = (
+    "Bash",
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+    "Task",
+    "Glob",
+    "Grep",
+)
+
+
+def read_rule(workdir: Path) -> str:
+    """``Read(//abs/dir/**)``: Claude Code's absolute-path permission rule syntax."""
+    return f"Read(//{str(workdir.resolve()).lstrip('/')}/**)"
 
 
 def _tool_name(raw: str) -> str:
@@ -87,7 +104,7 @@ class ClaudeCodeRunner(CliRunner):
     binary = "claude"
 
     def build_argv(self, req: TurnRequest) -> list[str]:
-        allowed = [*READ_TOOLS, *(MCP_PREFIX + t for t in req.allowed_tools)]
+        allowed = [read_rule(req.workdir), *(MCP_PREFIX + t for t in req.allowed_tools)]
         argv = [
             self.binary,
             "-p",
@@ -108,7 +125,7 @@ class ClaudeCodeRunner(CliRunner):
         if self.model:
             argv += ["--model", self.model]
         if req.resume_id:
-            argv += ["--resume", req.resume_id]
+            argv += ["--resume", checked_resume_id(req.resume_id)]
         return argv
 
     def parser(self) -> ClaudeStreamParser:

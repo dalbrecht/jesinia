@@ -21,6 +21,9 @@ def test_claude_argv_confined(req: TurnRequest) -> None:
     assert value_after(argv, "--output-format") == "stream-json" and "--verbose" in argv
     allowed = value_after(argv, "--allowedTools").split(",")
     assert "mcp__jesinia__kb_read" in allowed and "Bash" not in allowed
+    assert f"Read(//{str(req.workdir.resolve()).lstrip('/')}/**)" in allowed
+    assert not {"Read", "Glob", "Grep"} & set(allowed)
+    assert {"Glob", "Grep"} <= set(value_after(argv, "--disallowedTools").split(","))
     assert value_after(argv, "--append-system-prompt") == req.system_prompt
     assert req.prompt not in argv  # the prompt goes on stdin
     assert "--resume" not in argv
@@ -94,3 +97,16 @@ async def test_status(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(cli, "_capture", broken)
     assert not (await ClaudeCodeRunner().status()).available
+
+
+@pytest.mark.parametrize("bad", ["--dangerously-skip-permissions", "-x", "a b", "x" * 200])
+def test_resume_id_validated(req: TurnRequest, bad: str) -> None:
+    with pytest.raises(ValueError):
+        ClaudeCodeRunner().build_argv(replace(req, resume_id=bad))
+
+
+def test_minimal_env(monkeypatch: pytest.MonkeyPatch, req: TurnRequest) -> None:
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "nope")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/x")
+    env = ClaudeCodeRunner().build_env(req)
+    assert "AWS_SECRET_ACCESS_KEY" not in env and env["CLAUDE_CONFIG_DIR"] == "/x" and "PATH" in env

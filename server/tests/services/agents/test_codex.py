@@ -34,9 +34,11 @@ def test_codex_resume_and_model(req: TurnRequest) -> None:
     assert argv[i + 1] == "t-1" and argv[-1] == "-" and value_after(argv, "-m") == "gpt-5.6-sol"
 
 
-def test_codex_env_and_stdin(req: TurnRequest) -> None:
+def test_codex_env_and_stdin(req: TurnRequest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
     r = CodexRunner()
-    assert r.build_env(req)["JESINIA_MCP_TOKEN"] == "sess-token"
+    env = r.build_env(req)
+    assert env["JESINIA_MCP_TOKEN"] == "sess-token" and "GITHUB_TOKEN" not in env
     assert r.stdin(req).startswith(req.system_prompt) and req.prompt in r.stdin(req)
     assert r.stdin(replace(req, resume_id="t")) == req.prompt  # system prompt only on turn one
 
@@ -76,3 +78,10 @@ async def test_run_uses_env_and_reports_exit(req: TurnRequest) -> None:
     bad = FakeProc([], code=2)
     evs = [e async for e in CodexRunner(spawn=spawn_from(bad)).run(req)]
     assert evs == [RunError("codex exited with code 2")]
+
+
+def test_codex_resume_id_validated(req: TurnRequest) -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        CodexRunner().build_argv(replace(req, resume_id="--last"))

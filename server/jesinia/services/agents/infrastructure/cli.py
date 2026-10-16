@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -13,6 +14,26 @@ from typing import Protocol
 from jesinia.services.agents.application.runner import RunnerStatus, TurnRequest
 from jesinia.services.agents.domain.events import AgentEvent, RunError, TurnDone
 from jesinia.services.agents.infrastructure.subprocess_stream import Spawn, default_spawn
+
+# Agent CLIs get a minimal environment: enough to run and find their own login, nothing
+# else from the server's environment (spec §7.5).
+_ENV_KEEP = frozenset(
+    {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM"}
+)
+_ENV_PREFIXES = ("CLAUDE_", "ANTHROPIC_", "CODEX_", "OPENAI_")
+_RESUME_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def minimal_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k in _ENV_KEEP or k.startswith(_ENV_PREFIXES)}
+    return {**env, **(extra or {})}
+
+
+def checked_resume_id(value: str) -> str:
+    """Resume ids go into argv; refuse anything that could be read as a flag."""
+    if not _RESUME_ID.match(value):
+        raise ValueError(f"invalid agent session id {value!r}")
+    return value
 
 
 class StreamParser(Protocol):
@@ -40,7 +61,7 @@ class CliRunner:
         raise NotImplementedError
 
     def build_env(self, req: TurnRequest) -> dict[str, str]:
-        return dict(os.environ)
+        return minimal_env()
 
     def stdin(self, req: TurnRequest) -> str:
         return req.prompt

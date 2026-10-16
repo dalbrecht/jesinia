@@ -10,7 +10,6 @@ append-system-prompt flag, so the role prompt leads the first turn's prompt.
 from __future__ import annotations
 
 import json
-import os
 
 from jesinia.services.agents.application.runner import TurnRequest
 from jesinia.services.agents.domain.events import (
@@ -21,7 +20,7 @@ from jesinia.services.agents.domain.events import (
     ToolUse,
     TurnDone,
 )
-from jesinia.services.agents.infrastructure.cli import CliRunner
+from jesinia.services.agents.infrastructure.cli import CliRunner, checked_resume_id, minimal_env
 
 TOKEN_ENV = "JESINIA_MCP_TOKEN"
 
@@ -82,6 +81,11 @@ class CodexRunner(CliRunner):
             "--json",
             "--sandbox",
             "read-only",
+            # No shell at all: the read-only sandbox would still let it read any file.
+            "--disable",
+            "shell_tool",
+            "--disable",
+            "unified_exec",
             "--skip-git-repo-check",
             "-C",
             str(req.workdir),
@@ -95,13 +99,13 @@ class CodexRunner(CliRunner):
         if self.model:
             argv += ["-m", self.model]
         if req.resume_id:
-            argv += ["resume", req.resume_id]
+            argv += ["resume", checked_resume_id(req.resume_id)]
         argv.append("-")
         return argv
 
     def build_env(self, req: TurnRequest) -> dict[str, str]:
         _, token = _mcp_endpoint(req)
-        return {**os.environ, TOKEN_ENV: token}
+        return minimal_env({TOKEN_ENV: token})
 
     def stdin(self, req: TurnRequest) -> str:
         if req.resume_id:

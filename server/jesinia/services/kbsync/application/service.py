@@ -198,7 +198,12 @@ class SyncService:
             if state.blocked:
                 return SyncResult("blocked", state.problem_text or "blocked")
 
-        await git.run(*ADD_ARGS)
+        added = await git.run(*ADD_ARGS, check=False)
+        if added.code != 0:  # a file changed mid-add (e.g. a write in progress): retry once
+            await self.clock.sleep(0.5)
+            added = await git.run(*ADD_ARGS, check=False)
+            if added.code != 0:
+                return SyncResult("error", f"git add failed: {redact(added.err)}")
         staged = parse_name_status((await git.run("diff", "--cached", "--name-status", "-M")).out)
         committed = False
         if staged:
