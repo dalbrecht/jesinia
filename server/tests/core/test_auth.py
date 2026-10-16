@@ -87,3 +87,38 @@ async def test_reload_token_adopts_rotated_token_and_signs_out(
     assert (await client.get("/api/ping")).status_code == 401  # cookie signed out
     assert (await client.get("/api/ping", headers=bearer(cfg.token))).status_code == 401
     assert (await client.get("/api/ping", headers=bearer("n" * 43))).status_code == 200
+
+
+async def test_rotate_issues_new_token_signs_out_and_calls_hook(cfg: Config) -> None:
+    from jesinia.core.config import load_config, save_config
+
+    save_config(cfg, cfg.data_dir / "config.toml")
+    seen: list[str] = []
+    app = create_app(cfg, [], static_root=None, on_token_rotated=lambda c: seen.append(c.token))
+    async with lifespan_client(app) as c:
+        await c.get(f"/login?nonce={issue_login_nonce()}")
+        assert (await c.post("/api/auth/rotate")).status_code == 200  # cookie auth
+        new = load_config(cfg.data_dir / "config.toml").token
+        assert new != cfg.token and seen == [new]
+        assert (await c.get("/api/ping")).status_code == 401
+        assert (await c.get("/api/ping", headers=bearer(new))).status_code == 200
+    app2 = create_app(cfg, [], static_root=None)
+    async with lifespan_client(app2) as c:
+        assert (await c.post("/api/auth/rotate", headers=bearer(cfg.token))).status_code == 200
+
+
+async def test_rotation_survives_a_failing_agent_refresh(cfg: Config) -> None:
+    from jesinia.core.config import load_config, save_config
+
+    save_config(cfg, cfg.data_dir / "config.toml")
+
+    def broken(c: Config) -> None:
+        raise PermissionError("~/.claude.json is read-only")
+
+    app = create_app(cfg, [], static_root=None, on_token_rotated=broken)
+    async with lifespan_client(app) as c:
+        r = await c.post("/api/auth/rotate", headers=bearer(cfg.token))
+        assert r.status_code == 200 and r.json()["agents_refreshed"] is False
+        assert "read-only" in r.json()["warning"]
+        new = load_config(cfg.data_dir / "config.toml").token
+        assert (await c.get("/api/ping", headers=bearer(new))).status_code == 200

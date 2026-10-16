@@ -13,6 +13,7 @@
   --jx-paper-800: oklch(29% 0.013 145);
   --jx-paper-900: oklch(23.5% 0.013 148);
   --jx-paper-950: oklch(19.5% 0.012 150);
+  --jx-scrim: oklch(19.5% 0.012 150 / 0.25); /* --jx-paper-950 at 25%: modal scrim only */
   --jx-sage-50: oklch(97.5% 0.013 155);
   --jx-sage-100: oklch(95% 0.022 155);
   --jx-sage-200: oklch(90% 0.041 155);

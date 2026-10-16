@@ -1,0 +1,359 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { UNAUTHORIZED_EVENT } from "@jesinia/client";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  APPS,
+  AppShell,
+  appCommands,
+  applyTheme,
+  baseRoutes,
+  cycleTheme,
+  fakeClient,
+  readTheme,
+  registerServiceWorker,
+  statusItems,
+  syncStatus,
+  useClient,
+  type ServerStatus,
+} from "../index";
+
+class FakeSource {
+  static last: FakeSource | null = null;
+  listeners = new Map<string, (e: MessageEvent<string>) => void>();
+  onerror: (() => void) | null = null;
+  constructor(public url: string) {
+    FakeSource.last = this;
+  }
+  addEventListener(name: string, fn: (e: MessageEvent<string>) => void) {
+    this.listeners.set(name, fn);
+  }
+  close() {}
+  emit(name: string, id: number, data: unknown) {
+    this.listeners.get(name)?.(new MessageEvent(name, { data: JSON.stringify(data), lastEventId: String(id) }));
+  }
+}
+
+const assign = vi.fn();
+const open = vi.fn();
+
+function setNotesBuilt(built: boolean) {
+  for (const a of APPS) if (a.id === "notes") a.built = built;
+}
+
+afterEach(() => {
+  setNotesBuilt(false);
+  assign.mockReset();
+  open.mockReset();
+  localStorage.clear();
+  delete document.documentElement.dataset.theme;
+});
+
+function setup(over = {}, props: Partial<Parameters<typeof AppShell>[0]> = {}) {
+  vi.stubGlobal("EventSource", FakeSource);
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: { ...window.location, assign, origin: "http://localhost:3000" },
+  });
+  vi.stubGlobal("open", open);
+  const { client, calls } = fakeClient(baseRoutes(over));
+  render(
+    <AppShell app={{ id: "notes", name: "Notes" }} client={client} {...props}>
+      {(st) => <p>{st.loading ? "loading" : "ready"}</p>}
+    </AppShell>,
+  );
+  return calls;
+}
+
+describe("AppShell", () => {
+  it("renders the title bar, ⌕ and settings, and the healthy state", async () => {
+    setup();
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Notes: back to the launcher" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("button", { name: "Status: all clear" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings/");
+    await userEvent.click(screen.getByRole("button", { name: "Search and commands (⌘K)" }));
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+    expect(document.querySelector("[data-app='notes']")).not.toBeNull();
+  });
+
+  it("shows blocking banners and resumes sync", async () => {
+    const calls = setup({
+      "GET /healthz": { ok: false, modules: { kb: { ok: false, detail: "KB folder not found: /x" } } },
+      "GET /api/kbsync/status": syncStatus({ paused: true }),
+      "POST /api/kbsync/resume": syncStatus(),
+    });
+    expect(await screen.findByText("KB unavailable:")).toBeInTheDocument();
+    expect(screen.getByText("Sync paused:")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+    expect(assign).toHaveBeenCalledWith("/settings/#kb");
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(assign).toHaveBeenCalledWith("/settings/#sync");
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(screen.queryByText("Sync paused:")).toBeNull());
+    expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/api/kbsync/resume"))).toBe(true);
+    expect((await screen.findAllByText("Sync resumed.")).length).toBeGreaterThan(0);
+  });
+
+  it("follows sync status over SSE and refetches conflicts on page changes", async () => {
+    const calls = setup();
+    await screen.findByText("ready");
+    expect(decodeURIComponent(FakeSource.last?.url ?? "")).toContain(
+      "/api/events?topics=kbsync.status,kb.page_changed",
+    );
+    act(() => FakeSource.last?.emit("kbsync.status", 1, syncStatus({ paused: true })));
+    expect(await screen.findByText("Sync paused:")).toBeInTheDocument();
+    const before = calls.filter((c) => c.url.endsWith("/api/kb/conflicts")).length;
+    act(() => FakeSource.last?.emit("kb.page_changed", 2, { change: "created" }));
+    await waitFor(() => expect(calls.filter((c) => c.url.endsWith("/api/kb/conflicts")).length).toBe(before + 1));
+  });
+
+  it("a server that doesn't answer settles loading and offers Retry", async () => {
+    let down = true;
+    setup({
+      "GET /healthz": () =>
+        down ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ok: true, modules: {} }),
+    });
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+    expect(screen.getByText("Jesinia isn't answering:")).toBeInTheDocument();
+    down = false;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText("Jesinia isn't answering:")).toBeNull());
+  });
+
+  it("a 401 shows the signed-out banner", async () => {
+    setup();
+    await screen.findByText("ready");
+    act(() => {
+      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+    });
+    expect(await screen.findByText("Signed out:")).toBeInTheDocument();
+  });
+
+  it("palette: shell commands, app commands, KB results", async () => {
+    setNotesBuilt(true);
+    const appRun = vi.fn();
+    const calls = setup(
+      {
+        "GET /api/search": [
+          {
+            source: "kb",
+            key: "p1",
+            title: "Budget",
+            snippet: "",
+            path: "Notes/Budget.md",
+            authoritative: true,
+            score: 1,
+            url: null,
+          },
+        ],
+        "POST /api/kbsync/run": { result: { outcome: "error", message: "push failed" }, status: syncStatus() },
+      },
+      { commands: [{ id: "new", label: "New note", group: "command", onRun: appRun }], controls: <span>ctl</span> },
+    );
+    await screen.findByText("ready");
+    expect(screen.getByText("ctl")).toBeInTheDocument();
+    const openPalette = () => fireEvent.keyDown(window, { key: "k", metaKey: true });
+    openPalette();
+    expect(screen.queryByText("Open Notes")).toBeNull(); // the current app
+    await userEvent.click(screen.getByText("New note"));
+    expect(appRun).toHaveBeenCalled();
+    openPalette();
+    await userEvent.click(screen.getByText("Open launcher"));
+    expect(assign).toHaveBeenCalledWith("/");
+    openPalette();
+    fireEvent.click(screen.getByText("Open Settings"), { metaKey: true });
+    expect(open).toHaveBeenCalledWith("/settings/", "_blank", "noopener");
+    openPalette();
+    await userEvent.click(screen.getByText("Toggle theme"));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    openPalette();
+    await userEvent.click(screen.getByText("Sync now"));
+    expect((await screen.findAllByText("Sync: push failed")).length).toBeGreaterThan(0);
+    openPalette();
+    await userEvent.type(screen.getByRole("combobox"), "budget");
+    await userEvent.click(await screen.findByText("Budget"));
+    expect(assign).toHaveBeenCalledWith("/notes/page/p1");
+    openPalette();
+    await userEvent.type(screen.getByRole("combobox"), "budget");
+    fireEvent.click(await screen.findByText("Budget"), { metaKey: true });
+    expect(open).toHaveBeenCalledWith("/notes/page/p1", "_blank", "noopener");
+    const search = calls.find((c) => c.url.includes("/api/search"));
+    expect(new URL(search?.url ?? "").searchParams.get("source")).toBe("kb");
+  });
+
+  it("apps with their own search have no ⌕ button; static children render", async () => {
+    vi.stubGlobal("EventSource", FakeSource);
+    const { client } = fakeClient(baseRoutes());
+    render(
+      <AppShell app={{ id: "settings", name: "Settings", glyph: "/g.png" }} client={client} ownSearch>
+        <p>static</p>
+      </AppShell>,
+    );
+    expect(screen.getByText("static")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /⌘K/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
+    await screen.findByRole("button", { name: "Status: all clear" });
+  });
+});
+
+describe("AppShell edge cases", () => {
+  it("tolerates failing endpoints, opens other apps, and collapses extra banners", async () => {
+    vi.stubGlobal("EventSource", FakeSource);
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, assign, origin: "http://localhost:3000" },
+    });
+    const fail = () => Response.json({ detail: "down" }, { status: 500 });
+    const { client } = fakeClient({
+      "GET /healthz": { ok: false, modules: { kb: { ok: false, detail: "gone" } } },
+      "GET /api/kbsync/status": syncStatus({ paused: true }),
+      "GET /api/kb/conflicts": fail,
+      "GET /api/agents/runners": fail,
+      "POST /api/kbsync/resume": fail,
+      "POST /api/kbsync/run": fail,
+      "GET /api/search": [
+        {
+          source: "kb",
+          key: "p2",
+          title: "No path",
+          snippet: "",
+          path: null,
+          authoritative: true,
+          score: 1,
+          url: null,
+        },
+      ],
+    });
+    render(
+      <AppShell app={{ id: "launcher", name: "Jesinia" }} client={client}>
+        <p>x</p>
+      </AppShell>,
+    );
+    expect(await screen.findByText("Sync paused:")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(screen.getByText("Sync paused:")).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "+1 more" }));
+    expect(assign).toHaveBeenCalledWith("/settings/");
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.queryByText("Open Notes")).toBeNull(); // not built yet
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await userEvent.click(screen.getByText("Sync now"));
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await userEvent.type(screen.getByRole("combobox"), "no");
+    // Notes isn't built, so the palette offers no KB results to route into it.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(screen.queryByText("No path")).toBeNull();
+  });
+
+  it("creates its own client when none is given", async () => {
+    vi.stubGlobal("EventSource", FakeSource);
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => Response.json({ detail: "x" }, { status: 404 }));
+    render(
+      <AppShell app={{ id: "notes", name: "Notes" }}>
+        <p>own</p>
+      </AppShell>,
+    );
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    fetch.mockRestore();
+  });
+});
+
+describe("appCommands", () => {
+  it("offers every built app except the current one", () => {
+    Object.defineProperty(window, "location", { configurable: true, value: { ...window.location, assign } });
+    const apps = [
+      { id: "notes", name: "Notes", href: "/notes/", description: "", built: true },
+      { id: "rss", name: "RSS", href: "/rss/", description: "", built: false },
+      { id: "here", name: "Here", href: "/here/", description: "", built: true },
+    ];
+    const cmds = appCommands(apps, "here");
+    expect(cmds.map((c) => c.label)).toEqual(["Open Notes"]);
+    cmds[0]?.onRun({ newWindow: false });
+    expect(assign).toHaveBeenCalledWith("/notes/");
+  });
+});
+
+describe("statusItems", () => {
+  it("lists blocking and minor conditions", () => {
+    const st = {
+      health: { ok: false, modules: { kb: { ok: false, detail: "gone" } } },
+      sync: syncStatus({ paused: true }),
+      conflicts: [
+        { kind: "duplicate_id", id: "a", paths: [], detected_at: "" },
+        { kind: "duplicate_id", id: "b", paths: [], detected_at: "" },
+        { kind: "missing", id: "c", paths: [], detected_at: "" },
+      ],
+      runners: {
+        codex: { available: false, version: null, detail: "not logged in" },
+        x: { available: false, version: null, detail: "?" },
+      },
+    } as unknown as ServerStatus;
+    const items = statusItems(st);
+    expect(items.map((i) => i.id)).toEqual(["kb", "sync", "dups", "missing", "runner-codex", "runner-x"]);
+    expect(items.find((i) => i.id === "dups")?.title).toBe("2 duplicate page ids");
+    expect(items.find((i) => i.id === "runner-codex")?.title).toBe("Codex isn't available");
+    const one = statusItems({
+      health: null,
+      sync: syncStatus({ last_result: { outcome: "error", message: "push failed" } }),
+      conflicts: [
+        { kind: "duplicate_id", id: "a", paths: [], detected_at: "" },
+        { kind: "missing", id: "b", paths: [], detected_at: "" },
+      ],
+      runners: null,
+    } as unknown as ServerStatus);
+    expect(one.map((i) => i.title)).toEqual(["Sync failed", "1 duplicate page id", "1 missing page"]);
+  });
+});
+
+describe("theme, PWA, context", () => {
+  it("cycles system → light → dark → system and persists", () => {
+    expect(readTheme()).toBe("system");
+    expect(cycleTheme()).toBe("light");
+    expect(localStorage.getItem("jesinia.theme")).toBe("light");
+    expect(cycleTheme()).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(cycleTheme()).toBe("system");
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+  });
+
+  it("survives unavailable storage", () => {
+    const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    expect(readTheme()).toBe("system");
+    applyTheme("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    get.mockRestore();
+    set.mockRestore();
+  });
+
+  it("registers the service worker when supported", async () => {
+    const register = vi.fn().mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("no"));
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { register } });
+    expect(await registerServiceWorker("/notes/")).toBe(true);
+    expect(register).toHaveBeenCalledWith("/notes/sw.js", { scope: "/notes/" });
+    expect(await registerServiceWorker("/")).toBe(false);
+    // @ts-expect-error -- removing the API to simulate an unsupported browser
+    delete navigator.serviceWorker;
+    expect(await registerServiceWorker("/")).toBe(false);
+  });
+
+  it("useClient needs a provider", () => {
+    const Bad = () => {
+      useClient();
+      return null;
+    };
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => render(<Bad />)).toThrow("ClientProvider");
+  });
+});

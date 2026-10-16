@@ -800,9 +800,9 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
 - Consumes: Task 3 `docs/design/tokens.md` (exact names/values), Task 4 `docs/design/components.md` (props signatures).
 - Produces: `import "@jesinia/design/tokens.css"`, `reset.css`, `fonts.css`; React exports `Button, Input, Panel, List, Row, Badge, Tabs, Toast, ToastProvider, useToast, ChatTranscript, CommandPalette, Banner, StatusIndicator` and the `ChatMessage` type, with the exact props and message shapes from Task 4 (`docs/design/components.md`; e.g. `ChatTranscript({runner, messages, onApprove, onReject, onRetry})`). Task 4 is authoritative where this line and that spec differ.
 
-- [ ] **Step 1: Failing tests:** `contrast.test.ts` parses `tokens.css`, resolves each pair from the Task 3 contrast table in light and dark, and asserts ratios ≥ the table's required minimum (oklch → sRGB → WCAG luminance). `components.test.tsx`: Button `loading` sets `aria-busy` and disables; Tabs arrow-key roving focus; ChatTranscript renders a pending-write card whose Approve calls `onApprove(id)`, announces new agent text through a polite live region, and does not auto-scroll when the user has scrolled up.
-- [ ] **Step 2–4:** FAIL → implement from the Phase 0 docs → PASS.
-- [ ] **Step 5: Demo app** renders every token and component in both themes with a theme toggle (`data-theme`). Commit `feat(design): @jesinia/design tokens, components, and demo`.
+- [x] **Step 1: Failing tests:** `contrast.test.ts` parses `tokens.css`, resolves each pair from the Task 3 contrast table in light and dark, and asserts ratios ≥ the table's required minimum (oklch → sRGB → WCAG luminance). `components.test.tsx`: Button `loading` sets `aria-busy` and disables; Tabs arrow-key roving focus; ChatTranscript renders a pending-write card whose Approve calls `onApprove(id)`, announces new agent text through a polite live region, and does not auto-scroll when the user has scrolled up.
+- [x] **Step 2–4:** FAIL → implement from the Phase 0 docs → PASS.
+- [x] **Step 5: Demo app** renders every token and component in both themes with a theme toggle (`data-theme`). Commit `feat(design): @jesinia/design tokens, components, and demo`.
 
 ### Task 23: `@jesinia/client`, PWA shell, launcher and settings
 
@@ -818,9 +818,9 @@ def test_install_is_idempotent(cli, launchctl_spy): ...  # second run: bootout t
   - `AppShell({app, children})` — nav per Task 5 README, sync banner driven by `GET /api/kbsync/status` + `kbsync.status` SSE (`GET /api/events?topics=kbsync.status,kb.page_changed` — add this core SSE route in this task), conflict banner from `/api/kb/conflicts`.
   - Settings view: KB path field (`PUT /api/kb/path`, shows validation error), git mode + last sync + next run + Sync now / Resume / Initialize git, runner status (`/api/agents/runners`), conflicts list, token rotate.
 
-- [ ] **Step 1: Failing tests:** `sse.test.ts` — reconnect resumes from last id; `settings.test.tsx` — invalid KB path shows the server's error, "Resume" appears only when `paused`; e2e `launcher.spec.ts` against a server started with a temp `JESINIA_HOME` and a fixture KB repo: login via nonce URL, set KB path, see mode "push", click Sync now, see last result.
-- [ ] **Step 2–4:** FAIL → implement → PASS (`make test-e2e` starts the server via Playwright `webServer`).
-- [ ] **Step 5: Commit** `feat(web): typed client, app shell, launcher and settings PWA`.
+- [x] **Step 1: Failing tests:** `sse.test.ts` — reconnect resumes from last id; `settings.test.tsx` — invalid KB path shows the server's error, "Resume" appears only when `paused`; e2e `launcher.spec.ts` against a server started with a temp `JESINIA_HOME` and a fixture KB repo: login via nonce URL, set KB path, see mode "push", click Sync now, see last result.
+- [x] **Step 2–4:** FAIL → implement → PASS (`make test-e2e` starts the server via Playwright `webServer`).
+- [x] **Step 5: Commit** `feat(web): typed client, app shell, launcher and settings PWA`.
 
 ---
 

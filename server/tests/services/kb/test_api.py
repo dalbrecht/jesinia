@@ -229,3 +229,17 @@ async def test_root_changed_while_stopped_resets_index(kb_cfg: Config, tmp_path:
     async with lifespan_client(create_app(cfg2, [KbModule()])) as c:  # same root: kept
         c.headers.update(bearer(cfg2.token))
         assert (await c.get("/api/kb/conflicts")).json() == []
+
+
+async def test_get_path_reports_folder_and_problem(
+    client: httpx.AsyncClient, kb_root: Path, cfg: Config
+) -> None:
+    info = (await client.get("/api/kb/path")).json()
+    assert info == {"path": str(kb_root), "problem": None, "pages": 0}
+    async with lifespan_client(create_app(cfg, [KbModule()])) as c:
+        c.headers.update(bearer(cfg.token))
+        assert (await c.get("/api/kb/path")).json() == {
+            "path": None,
+            "problem": "no KB path configured",
+            "pages": 0,
+        }

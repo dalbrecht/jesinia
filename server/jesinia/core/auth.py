@@ -12,6 +12,8 @@ State is process-local: the server is a single process (spec §6).
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import secrets
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -20,11 +22,12 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 
-from jesinia.core.config import Config, load_config
+from jesinia.core.config import Config, load_config, save_config
 
 COOKIE = "jesinia_session"
 DEFAULT_NONCE_TTL = timedelta(minutes=5)
 
+log = logging.getLogger(__name__)
 _nonces: dict[str, datetime] = {}
 _cookie_sessions: set[str] = set()
 _session_tokens: dict[str, str] = {}
@@ -93,6 +96,15 @@ def require_user(request: Request) -> Principal:
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authentication required")
 
 
+def is_authorized(request: Request) -> bool:
+    """Whether the request's credentials are still valid (long-lived streams recheck)."""
+    try:
+        require_user(request)
+    except HTTPException:
+        return False
+    return True
+
+
 def require_owner(principal: Annotated[Principal, Depends(require_user)]) -> Principal:
     """Like ``require_user`` but refuses agent session tokens."""
     if principal.kind != "user":
@@ -120,6 +132,33 @@ def auth_router() -> APIRouter:
         cfg: Config = request.app.state.ctx.cfg
         nonce = issue_login_nonce()
         return {"nonce": nonce, "url": f"http://127.0.0.1:{cfg.port}/login?nonce={nonce}"}
+
+    @router.post("/api/auth/rotate")
+    async def rotate(
+        request: Request, _: Annotated[Principal, Depends(require_owner)]
+    ) -> dict[str, object]:
+        """Settings → Rotate token: a new install token; every browser is signed out
+        (a new login link comes from ``jesinia status``) and agents are re-registered."""
+        ctx = request.app.state.ctx
+        path = ctx.cfg.data_dir / "config.toml"
+        fresh = replace(load_config(path), token=secrets.token_urlsafe(32))
+        save_config(fresh, path)
+        ctx.cfg = replace(ctx.cfg, token=fresh.token)
+        invalidate_sessions()
+        hook = ctx.services.get("auth.token_rotated")
+        if callable(hook):
+            # Re-registering agents is secondary: the rotation already succeeded.
+            try:
+                await asyncio.to_thread(hook, ctx.cfg)
+            except Exception as exc:
+                log.exception("token rotated, but refreshing agent registrations failed")
+                return {
+                    "ok": True,
+                    "agents_refreshed": False,
+                    "warning": f"Agents were not re-registered ({type(exc).__name__}: {exc}). "
+                    "Run `jesinia token rotate` or ./setup again.",
+                }
+        return {"ok": True, "agents_refreshed": True}
 
     @router.post("/api/auth/reload-token")
     async def reload_token(

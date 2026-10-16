@@ -2,5 +2,7 @@ node_modules
 dist
 coverage
 pnpm-lock.yaml
+packages/client/src/openapi.d.ts
+packages/client/openapi.json
 test-results
 playwright-report

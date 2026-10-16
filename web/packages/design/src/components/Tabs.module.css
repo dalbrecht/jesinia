@@ -1,0 +1,46 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.list {
+  position: relative;
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--jx-border);
+  mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+}
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+  height: var(--jx-tab-height);
+  padding: 0 var(--jx-tab-pad-x);
+  border: 0;
+  background: transparent;
+  color: var(--jx-tab-fg);
+  white-space: nowrap;
+  transition: color var(--jx-duration-fast) var(--jx-ease);
+}
+.tab:hover,
+.tab:active {
+  color: var(--jx-tab-fg-hover);
+}
+.tab[aria-selected="true"] {
+  color: var(--jx-tab-fg-selected);
+  font-weight: var(--jx-tab-weight-selected);
+}
+.tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: var(--jx-tab-pad-x);
+  right: var(--jx-tab-pad-x);
+  bottom: -1px;
+  height: var(--jx-tab-indicator-height);
+  background: var(--jx-tab-indicator);
+}
+.tab[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.panel:focus-visible {
+  outline-offset: 2px;
+}
