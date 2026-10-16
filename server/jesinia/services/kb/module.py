@@ -105,6 +105,10 @@ class KbModule:
         self._conn = open_db(ctx.cfg.data_dir, KB_DB)
         self._svc = KbService(None, SqliteIndex(self._conn), ctx.bus)
         ctx.services["kb"] = self._svc
+        # kbsync's quiet period reads the watcher's last activity (spec §4.4 step 2).
+        ctx.services["kb.activity"] = lambda: (
+            self._watcher.last_activity if self._watcher is not None else None
+        )
         await self._attach(ctx.cfg.kb_path)
 
     async def stop(self) -> None:

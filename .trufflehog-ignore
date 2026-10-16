@@ -30,3 +30,7 @@
 #
 # Binary/asset data that base64-decodes to non-secrets (fonts, image URIs):
 # \.(woff2?|ttf|eot|png|jpe?g|gif|ico)$
+
+# Redaction tests: fake credential URIs by design (also marked inline; earlier commits
+# in a PR range predate the markers).
+(^|/)server/tests/services/kbsync/test_redact\.py$
