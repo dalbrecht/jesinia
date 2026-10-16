@@ -1,0 +1,283 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review queue</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../wire.css">
+<script src="../wire.js" defer></script>
+<style>
+.crumb { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.loadpr { display: flex; gap: 6px; align-items: center; padding: var(--jx-space-2) var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.loadpr input { flex: 1; font: inherit; font-size: var(--jx-text-sm); padding: 5px 8px; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); background: var(--jx-bg); color: var(--jx-fg); }
+.repos { align-content: start; } .repos .row { grid-template-columns: 1fr auto; }
+.grp { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--jx-row-divider); }
+.q { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 8px var(--jx-space-3); border-bottom: 1px solid var(--jx-row-divider); }
+.q.sel { background: var(--jx-row-bg-selected); }
+.q .t { font-weight: 500; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q .meta { grid-column: 1; color: var(--jx-fg-muted); font-size: var(--jx-text-sm); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.q .right { grid-row: 1 / span 2; grid-column: 2; display: grid; justify-items: end; gap: 4px; align-content: center; }
+.verdict { font-size: var(--jx-text-sm); font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.v-ok { color: var(--jx-success); } .v-no { color: var(--jx-danger); } .v-look { color: var(--jx-warn); }
+.ev { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); display: flex; gap: 8px; }
+.pill { font-size: var(--jx-text-xs); border: 1px solid var(--jx-border); border-radius: 999px; padding: 0 7px; background: var(--jx-surface); color: var(--jx-fg-muted); white-space: nowrap; }
+.pill.wait { border-color: var(--jx-warn); color: var(--jx-warn); }
+.pill.fail { border-color: var(--jx-danger); color: var(--jx-danger); }
+.pill.ok { border-color: var(--jx-success); color: var(--jx-success); }
+.pill.deep { border-color: var(--jx-app); color: var(--jx-app); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dot.run { background: var(--jx-warn); } .dot.pass { background: var(--jx-success); } .dot.fail { background: var(--jx-danger); }
+.cov { font-variant-numeric: tabular-nums; }
+.collapsed { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); padding: 8px var(--jx-space-3); }
+figure { margin: 0 0 var(--jx-space-6); } figcaption { margin-top: var(--jx-space-2); color: var(--jx-fg-muted); font-size: var(--jx-text-sm); max-width: 900px; }
+
+.wtabs { display: flex; align-items: flex-end; gap: 2px; padding: 6px var(--jx-space-3) 0; background: var(--jx-surface-sunken); border-bottom: 1px solid var(--jx-border); }
+.wtab { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid transparent; border-bottom: 0; border-radius: var(--jx-radius-md) var(--jx-radius-md) 0 0; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wtab.on { background: var(--jx-bg); border-color: var(--jx-border); color: var(--jx-fg); font-weight: 600; margin-bottom: -1px; }
+.wtab .x { color: var(--jx-fg-subtle); }
+.wtab .vd { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.stabs { display: flex; gap: 4px; padding: var(--jx-space-3) var(--jx-space-3) 0; border-bottom: 1px solid var(--jx-border); }
+.stab { display: flex; gap: 8px; align-items: center; padding: 8px 14px; font-size: var(--jx-text-sm); font-weight: 500; color: var(--jx-fg-muted); border-bottom: 3px solid transparent; }
+.stab.on { color: var(--jx-fg); border-bottom-color: var(--jx-app); }
+.stab .n { font-variant-numeric: tabular-nums; background: var(--jx-surface-sunken); border-radius: 999px; padding: 0 7px; font-size: var(--jx-text-xs); }
+.stab.on .n { background: var(--jx-app); color: var(--jx-paper-0); }
+.secintro { display: flex; align-items: center; gap: 12px; margin: var(--jx-space-3); padding: var(--jx-space-3) var(--jx-space-4); border: 1px solid var(--jx-border); border-left: 4px solid var(--jx-success); border-radius: var(--jx-radius-md); background: var(--jx-surface); font-size: var(--jx-text-sm); }
+.secintro b { font-size: var(--jx-text-base); }
+.secintro .sp { margin-left: auto; display: flex; gap: 6px; }
+.cards { display: grid; gap: 8px; padding: 0 var(--jx-space-3) var(--jx-space-3); }
+.cards .q { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); padding: 10px 12px; }
+.cards .q.sel { border-color: var(--jx-app); box-shadow: 0 0 0 1px var(--jx-app); }
+.mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 var(--jx-space-3) var(--jx-space-3); }
+.mini div { border: 1px dashed var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: 8px 10px; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.mini b { color: var(--jx-fg); }
+.cols > .pane:last-child { display: grid; grid-template-rows: auto auto minmax(0, 1fr); align-content: start; }
+.cols > .pane:last-child > .scroll { align-content: start; }
+
+/* Review: wide diff + narrative column. Page-local layout only; all values are tokens. */
+.crumb { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.crumb .sep { color: var(--jx-fg-subtle); }
+.rv { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; height: 100%; }
+.prbar { display: flex; align-items: center; gap: 12px; padding: var(--jx-space-2) var(--jx-space-4); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); min-width: 0; }
+.prbar .tt { font-weight: 600; font-size: var(--jx-text-lg); font-variation-settings: "opsz" 48; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prbar .meta { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prbar .sp { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.plus { color: var(--jx-success); } .minus { color: var(--jx-danger); }
+.rv .tabs { background: var(--jx-surface); }
+.tabs.scrollx { overflow-x: auto; flex-wrap: nowrap; }
+.split { grid-template-columns: minmax(0, 3fr) 6px minmax(0, 2fr); }
+.rightcol { display: grid; grid-template-rows: minmax(0, 1fr) 6px minmax(0, 1fr); min-height: 0; }
+.hhandle { height: 6px; cursor: row-resize; border-top: 1px solid var(--jx-border); position: relative; }
+.hhandle::after { content: ""; position: absolute; left: 50%; top: 1px; width: 28px; height: 3px; transform: translateX(-50%); border-radius: 3px; background: var(--jx-border-strong); }
+.fileh { display: flex; align-items: center; gap: 8px; padding: 6px var(--jx-space-3); font-family: var(--jx-font-mono); font-size: var(--jx-text-sm); background: var(--jx-surface); border-block: 1px solid var(--jx-border); position: sticky; top: 0; }
+.fileh .sp { margin-left: auto; font-family: var(--jx-font-ui); color: var(--jx-fg-muted); }
+.diff .hunk { white-space: normal; padding: 0; }
+.diff .fileh { white-space: normal; padding: 6px var(--jx-space-3); }
+.diff .hunk.cur { background: var(--jx-accent-subtle); }
+.diff .hunk.cur .h { background: var(--jx-highlight); color: var(--jx-fg); }
+.walk { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+.steph { display: flex; align-items: center; gap: 8px; padding: var(--jx-space-3) var(--jx-space-4) var(--jx-space-2); }
+.steph .n { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; }
+.stepb { padding: 0 var(--jx-space-4) var(--jx-space-3); }
+.stepb h3 { margin: 0 0 var(--jx-space-2); font-size: var(--jx-text-lg); font-weight: 600; font-variation-settings: "opsz" 48; }
+.stepb p { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0 0 var(--jx-space-2); }
+.stepnav { display: flex; align-items: center; gap: 6px; padding: var(--jx-space-2) var(--jx-space-4); border-top: 1px solid var(--jx-border); }
+.stepnav .dots { display: flex; gap: 4px; margin-inline: auto; }
+.stepnav .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--jx-border-strong); display: block; }
+.stepnav .dots i.on { background: var(--jx-app); }
+.repos .row { grid-template-columns: 1fr auto; }
+.prrow .t { font-weight: var(--jx-weight-medium); }
+.chg { color: var(--jx-warn); font-size: var(--jx-text-sm); }
+.tabbody { padding: var(--jx-space-5) var(--jx-space-6); display: grid; gap: var(--jx-space-4); align-content: start; max-width: 860px; }
+.tabbody h3 { margin: 0; font-size: var(--jx-text-lg); font-weight: 600; }
+.tabbody .lede { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0; }
+.frame.half .tabbody { padding: var(--jx-space-4); gap: var(--jx-space-3); }
+.mtable { width: 100%; border-collapse: collapse; font-size: var(--jx-text-sm); }
+.mtable th { text-align: left; font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--jx-border); }
+.mtable td { padding: 8px; border-bottom: 1px solid var(--jx-border); vertical-align: top; }
+.mtable td.c { font-weight: 500; white-space: nowrap; }
+.mtable td.r { color: var(--jx-fg-muted); }
+.score { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.bar { width: 80px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; display: block; }
+.bar > span { display: block; height: 100%; background: var(--jx-app); }
+.quiz fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; }
+.quiz legend { font-family: var(--jx-font-read); font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); font-weight: 600; margin-bottom: var(--jx-space-2); padding: 0; }
+.opt { display: flex; gap: 10px; align-items: flex-start; padding: var(--jx-space-2) var(--jx-space-3); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); }
+.opt input { margin-top: 4px; accent-color: var(--jx-accent); }
+.opt.picked { border-color: var(--jx-accent); background: var(--jx-accent-subtle); }
+.feedback { padding: var(--jx-space-2) var(--jx-space-3); background: var(--jx-success-bg); border-radius: var(--jx-radius-sm); font-size: var(--jx-text-sm); }
+.feedback b { color: var(--jx-success); }
+.qprog { display: flex; align-items: center; gap: 10px; color: var(--jx-fg-muted); font-size: var(--jx-text-sm); }
+.qprog .bar { width: 140px; }
+.rec { display: flex; align-items: center; gap: 10px; }
+.rec .verdict { font-size: var(--jx-text-xl); font-weight: 600; font-variation-settings: "opsz" 72; }
+.reasons { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); }
+.advisory { border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: var(--jx-space-2) var(--jx-space-3); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); background: var(--jx-surface-sunken); }
+.advisory b { color: var(--jx-fg); font-weight: 500; }
+.inline-err { border: 1px solid var(--jx-danger); background: var(--jx-danger-bg); border-radius: var(--jx-radius-md); padding: var(--jx-space-3); display: grid; gap: 8px; font-size: var(--jx-text-sm); }
+.inline-err b { color: var(--jx-danger); font-weight: 600; }
+.reflist { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: var(--jx-text-sm); }
+.reflist li { display: flex; gap: 8px; align-items: baseline; }
+.reflist .why { color: var(--jx-fg-muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--jx-space-3); }
+.toggle { display: flex; gap: 6px; padding: var(--jx-space-2) var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.sheet { position: absolute; inset: 64px 0 0 0; background: var(--jx-bg); border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0; box-shadow: var(--jx-shadow-2); z-index: 5; display: grid; grid-template-rows: auto 1fr; overflow: hidden; border-top: 1px solid var(--jx-border); }
+.sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--jx-border-strong); margin: 6px auto; }
+.frame.narrow .prbar { flex-wrap: wrap; gap: 4px 8px; padding: var(--jx-space-2) var(--jx-space-3); }
+.frame.narrow .prbar .tt { font-size: var(--jx-text-base); white-space: normal; }
+.frame.narrow .stepb, .frame.narrow .steph, .frame.narrow .stepnav { padding-inline: var(--jx-space-3); }
+.frame.narrow .row .t { white-space: normal; }
+.chatbtn { position: absolute; right: 12px; bottom: 12px; z-index: 3; box-shadow: var(--jx-shadow-2); }
+
+.covbar { display: flex; align-items: center; gap: 10px; padding: 8px var(--jx-space-4); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); font-size: var(--jx-text-sm); }
+.covbar .meter { width: 120px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; }
+.covbar .meter span { display: block; height: 100%; width: 82%; background: var(--jx-app); }
+.covbar b { font-variant-numeric: tabular-nums; }
+.covbar .sp { margin-left: auto; display: flex; gap: 6px; }
+.notwalked { margin: var(--jx-space-2) var(--jx-space-4) var(--jx-space-3); border: 1px dashed var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: 8px 10px; font-size: var(--jx-text-sm); display: grid; gap: 4px; }
+.notwalked .r { display: flex; gap: 8px; align-items: center; }
+.notwalked code { font-size: var(--jx-text-xs); }
+.notwalked .why { color: var(--jx-fg-muted); }
+.notwalked .sp { margin-left: auto; }
+.stabs2 { display: flex; gap: 2px; padding: 0 var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.stabs2 .stab { padding: 9px 14px; }
+.ctx { display: block; font-size: var(--jx-text-xs); color: var(--jx-fg-muted); padding: 0 var(--jx-space-4) var(--jx-space-2); }
+.chatdock { border-top: 1px solid var(--jx-border); padding: 8px var(--jx-space-4); display: flex; gap: 8px; align-items: center; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); background: var(--jx-surface); }
+.chatdock input { flex: 1; font: inherit; padding: 5px 8px; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); background: var(--jx-bg); color: var(--jx-fg); }
+.rvbody { display: grid; grid-template-rows: auto auto auto minmax(0,1fr); min-height: 0; height: 100%; }
+
+.book { display: grid; grid-template-columns: 280px minmax(0,1fr); min-height: 0; height: 100%; }
+.outline { border-right: 1px solid var(--jx-border); background: var(--jx-surface); display: grid; grid-template-rows: auto minmax(0,1fr) auto; min-height: 0; }
+.outline .oh { padding: var(--jx-space-3); border-bottom: 1px solid var(--jx-border); display: grid; gap: 4px; }
+.outline .oh .t { font-weight: 600; }
+.outline .oh .m { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); }
+.outline ol { list-style: none; margin: 0; padding: var(--jx-space-2) 0; overflow: auto; }
+.outline .part { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; }
+.outline li.e { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; align-items: baseline; padding: 5px var(--jx-space-3); font-size: var(--jx-text-sm); }
+.outline li.e.sub { padding-left: 30px; }
+.outline li.e.on { background: var(--jx-row-bg-selected); box-shadow: inset 3px 0 0 var(--jx-app); font-weight: 600; }
+.outline li.e .st { color: var(--jx-fg-subtle); font-size: 11px; }
+.outline li.e .st.done { color: var(--jx-success); }
+.outline li.e .k { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); white-space: nowrap; }
+.outline li.e .k.bad { color: var(--jx-danger); }
+.outline .of { border-top: 1px solid var(--jx-border); padding: var(--jx-space-3); font-size: var(--jx-text-sm); display: grid; gap: 6px; }
+.view { display: grid; grid-template-rows: auto minmax(0,1fr) auto; min-height: 0; }
+.vtool { display: flex; align-items: center; gap: 8px; padding: 6px var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); font-size: var(--jx-text-sm); flex-wrap: wrap; }
+.vtool .sep { width: 1px; height: 18px; background: var(--jx-border); }
+.vtool .sp { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.vtool .meter { width: 80px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; display: inline-block; }
+.vtool .meter span { display: block; height: 100%; width: 82%; background: var(--jx-app); }
+.page { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); min-height: 0; }
+.page .narr { overflow: auto; padding: var(--jx-space-5) var(--jx-space-5); border-right: 1px solid var(--jx-border); }
+.page .narr h2 { margin: 0 0 var(--jx-space-2); font-size: var(--jx-text-xl); font-weight: 600; font-variation-settings: "opsz" 72; }
+.page .narr p { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0 0 var(--jx-space-3); }
+.vact { display: flex; align-items: center; gap: 8px; padding: var(--jx-space-2) var(--jx-space-3); border-top: 1px solid var(--jx-border); background: var(--jx-surface); }
+.vact .sp { margin-left: auto; display: flex; gap: 6px; }
+.btn.danger { border-color: var(--jx-danger); color: var(--jx-danger); }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head"><div><h1>PR view: deep review</h1><p>Design pass, screen 2 of 6 (revision 2: a book). A review opens as a workspace tab and reads like a book: the outline on the left, the page on the right with a toolbar on top and actions along the bottom.</p></div><button class="theme-toggle" type="button">Theme: system</button></header>
+  <figure>
+    <div class="frame desktop">
+      <div class="titlebar"><i></i><i></i><i></i><span>Review · Jesinia</span></div>
+      <div class="app" data-app="review">
+        <div class="hdr">
+          <a class="home" href="#"><span class="glyph-app"></span><span class="name">Review</span></a>
+          <div class="mid"><span class="crumb">c65llc/platform<span class="sep">/</span><b>#812</b></span></div>
+          <div class="right"><span class="kbtn"><span class="lbl">Load a PR, search, or jump to…</span><kbd>⌘K</kbd></span><span class="sdot" title="All good"></span><button class="iconbtn" aria-label="Settings">⚙</button></div>
+        </div>
+        <div class="wtabs" role="tablist" aria-label="Open reviews">
+          <span class="wtab" role="tab">☰ Queue <span class="n" style="font-size:var(--jx-text-xs);color:var(--jx-fg-muted)">6 ready</span></span>
+          <span class="wtab on" role="tab" aria-selected="true"><span class="vd" style="background:var(--jx-warn)"></span>platform#812 billing: prorate… <span class="x">✕</span></span>
+          <span class="wtab" role="tab"><span class="vd" style="background:var(--jx-danger)"></span>platform#808 auth: rotate… <span class="x">✕</span></span>
+          <span class="wtab" role="tab"><span class="vd" style="background:var(--jx-success)"></span>jesinia#55–57 Stack: KB tags <span class="x">✕</span></span>
+        </div>
+        <div class="body">
+          <div class="book">
+            <nav class="outline" aria-label="Review outline">
+              <div class="oh"><span class="t">billing: prorate mid-cycle plan changes</span><span class="m">#812 · contractor-b · +1,240 −310 · 23 files · CI passing · Copilot 6 comments</span></div>
+              <ol>
+                <li class="part">Before you read</li>
+                <li class="e"><span class="st done">✓</span><span>Overview: why this PR</span><span class="k"></span></li>
+                <li class="e"><span class="st done">✓</span><span>Background: billing today</span><span class="k">new to you</span></li>
+                <li class="part">Walkthrough · 82% of the change</li>
+                <li class="e sub"><span class="st done">✓</span><span>1. The new PlanChange model</span><span class="k">2 files</span></li>
+                <li class="e sub on"><span class="st">●</span><span>2. How a mid-cycle change is priced</span><span class="k bad">1 important</span></li>
+                <li class="e sub"><span class="st">○</span><span>3. Posting to the ledger</span><span class="k">1 minor</span></li>
+                <li class="e sub"><span class="st">○</span><span>4. Zero and near-zero amounts</span><span class="k"></span></li>
+                <li class="e sub"><span class="st">○</span><span>5. The webhook path</span><span class="k bad">1 important</span></li>
+                <li class="e sub"><span class="st">○</span><span>6. Tests</span><span class="k">3 minor</span></li>
+                <li class="e sub"><span class="st">○</span><span>7. Config and flags</span><span class="k">1 minor</span></li>
+                <li class="e sub"><span class="st" style="color:var(--jx-warn)">◌</span><span>Not walked through</span><span class="k">4 files · 18%</span></li>
+                <li class="part">After you read</li>
+                <li class="e"><span class="st">○</span><span>Findings</span><span class="k bad">2 · 5</span></li>
+                <li class="e"><span class="st">○</span><span>Metrics</span><span class="k"></span></li>
+                <li class="e"><span class="st">○</span><span>Quiz</span><span class="k">5 questions</span></li>
+                <li class="e"><span class="st">○</span><span>Your comments</span><span class="k">4 drafts</span></li>
+                <li class="e"><span class="st">○</span><span>Recommendation</span><span class="k" style="color:var(--jx-warn)">closer look</span></li>
+              </ol>
+              <div class="of"><span>Read 4 of 16 · 25%</span><span class="meter" style="width:100%;height:6px;border-radius:3px;background:var(--jx-surface-sunken);display:block;overflow:hidden"><span style="display:block;height:100%;width:25%;background:var(--jx-app)"></span></span></div>
+            </nav>
+            <section class="view" aria-label="Page">
+              <div class="vtool">
+                <span class="verdict v-look">◐ Needs a closer look</span><span class="sep"></span>
+                <span class="pill deep">Deep</span><button class="btn g sm">Switch to quick</button><span class="sep"></span>
+                <span class="meter"><span></span></span><span>Walkthrough covers <b>82%</b> · 19 of 23 files</span>
+                <span class="sp"><button class="btn g sm">Show diff: split ▾</button><button class="btn g sm">💬 Ask (⌘J)</button><button class="btn g sm">GitHub ↗</button></span>
+              </div>
+              <div class="page">
+                <article class="narr">
+                  <div class="ctx">Step 2 of 7 · Background shown in full: you last touched <code>billing/</code> 14 months ago, and it has changed a lot since.</div>
+                  <h2>How a mid-cycle change is priced</h2>
+                  <p>Until now a plan change took effect at the next renewal. This PR charges or credits the difference right away: the unused share of the current period is credited at the old price and charged at the new one.</p>
+                  <p>The share is time-based. <code>used</code> comes from wall-clock time, so a change made seconds before renewal still posts a tiny proration; the ledger skips zero amounts (step 4), but not near-zero ones.</p>
+                  <div style="border-left:3px solid var(--jx-danger);background:var(--jx-danger-bg);padding:8px 10px;border-radius:var(--jx-radius-sm);font-size:var(--jx-text-sm)"><b>Finding · Important · Correctness</b><br>Rounding happens once on the difference, not per side, so it disagrees with how invoices round. <span style="color:var(--jx-fg-muted)">python.md › Money · base</span></div>
+                </article>
+                <div class="scroll diff" aria-label="Diff for this step">
+                  <div class="fileh">billing/proration.py<span class="sp"><span class="plus">+188</span> <span class="minus">−0</span></span></div>
+                  <div class="hunk cur">
+<div class="h">@@ -0,0 +41,22 @@ def prorate(sub, change, at) -&gt; Money:</div>
+<div class="a"><span class="ln">41</span>+   period = sub.current_period</div>
+<div class="a"><span class="ln">42</span>+   used = (at - period.start) / (period.end - period.start)</div>
+<div class="a"><span class="ln">43</span>+   credit = sub.plan.price * (1 - used)</div>
+<div class="a"><span class="ln">44</span>+   charge = change.new_plan.price * (1 - used)</div>
+<div class="a"><span class="ln">45</span>+   return round_money(charge - credit, sub.currency)</div>
+                  </div>
+                  <div class="hunk">
+<div class="h">@@ -88,9 +110,15 @@ def apply_change(sub, change):</div>
+<div class="d"><span class="ln">111</span>-       sub.plan = change.new_plan</div>
+<div class="a"><span class="ln">111</span>+       amount = prorate(sub, change, clock.now())</div>
+<div class="a"><span class="ln">112</span>+       ledger.post(sub.account, amount, kind="proration")</div>
+                  </div>
+                </div>
+              </div>
+              <div class="vact">
+                <button class="btn g sm">← Step 1</button><button class="btn s sm">Step 3: Posting to the ledger →</button>
+                <span class="sp"><button class="btn g sm">Draft comment on this finding</button><button class="btn g sm">Mark step read</button><button class="btn danger sm">Request changes…</button><button class="btn p sm">Approve…</button></span>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+    <figcaption><b>Desktop, 1280, revision 2.</b> Left: the outline, like a table of contents: what to read before (Overview, Background), the walkthrough as chapters with their findings, what was not walked through, and what comes after (Findings, Metrics, Quiz, your comments, Recommendation). Ticks show what you have read; the footer shows progress. Right: the view pane, with a toolbar on top (verdict, depth, coverage, diff layout, ask, GitHub), the page in the middle (narrative beside the diff for this step), and actions along the bottom (previous/next step, draft a comment, mark read, and the review actions).</figcaption>
+  </figure>
+  <figure>
+    <div class="notwalked" style="max-width:720px">
+      <b>Not walked through (4 files, 18% of changed lines)</b>
+      <div class="r"><code>poetry.lock</code><span class="why">lockfile · 212 lines</span><button class="btn g sm sp">Show</button></div>
+      <div class="r"><code>billing/migrations/0042_proration.py</code><span class="why">generated · 40 lines</span><button class="btn g sm sp">Show</button></div>
+      <div class="r"><code>docs/billing.md</code><span class="why">judged mechanical by the agent: typo fixes · 6 lines</span><button class="btn g sm sp">Show</button></div>
+      <div class="r"><code>billing/__init__.py</code><span class="why">rename only</span><button class="btn g sm sp">Show</button></div>
+    </div>
+    <figcaption><b>The "Not walked through" list</b>, opened from the coverage bar. Each item has its reason; Show opens it in place.</figcaption>
+  </figure>
+</main>
+</body>
+</html>

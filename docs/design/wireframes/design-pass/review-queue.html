@@ -1,0 +1,123 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review queue</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../wire.css">
+<script src="../wire.js" defer></script>
+<style>
+.crumb { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.loadpr { display: flex; gap: 6px; align-items: center; padding: var(--jx-space-2) var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.loadpr input { flex: 1; font: inherit; font-size: var(--jx-text-sm); padding: 5px 8px; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); background: var(--jx-bg); color: var(--jx-fg); }
+.repos { align-content: start; } .repos .row { grid-template-columns: 1fr auto; }
+.grp { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--jx-row-divider); }
+.q { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 8px var(--jx-space-3); border-bottom: 1px solid var(--jx-row-divider); }
+.q.sel { background: var(--jx-row-bg-selected); }
+.q .t { font-weight: 500; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q .meta { grid-column: 1; color: var(--jx-fg-muted); font-size: var(--jx-text-sm); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.q .right { grid-row: 1 / span 2; grid-column: 2; display: grid; justify-items: end; gap: 4px; align-content: center; }
+.verdict { font-size: var(--jx-text-sm); font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.v-ok { color: var(--jx-success); } .v-no { color: var(--jx-danger); } .v-look { color: var(--jx-warn); }
+.ev { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); display: flex; gap: 8px; }
+.pill { font-size: var(--jx-text-xs); border: 1px solid var(--jx-border); border-radius: 999px; padding: 0 7px; background: var(--jx-surface); color: var(--jx-fg-muted); white-space: nowrap; }
+.pill.wait { border-color: var(--jx-warn); color: var(--jx-warn); }
+.pill.fail { border-color: var(--jx-danger); color: var(--jx-danger); }
+.pill.ok { border-color: var(--jx-success); color: var(--jx-success); }
+.pill.deep { border-color: var(--jx-app); color: var(--jx-app); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dot.run { background: var(--jx-warn); } .dot.pass { background: var(--jx-success); } .dot.fail { background: var(--jx-danger); }
+.cov { font-variant-numeric: tabular-nums; }
+.collapsed { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); padding: 8px var(--jx-space-3); }
+figure { margin: 0 0 var(--jx-space-6); } figcaption { margin-top: var(--jx-space-2); color: var(--jx-fg-muted); font-size: var(--jx-text-sm); max-width: 900px; }
+
+.wtabs { display: flex; align-items: flex-end; gap: 2px; padding: 6px var(--jx-space-3) 0; background: var(--jx-surface-sunken); border-bottom: 1px solid var(--jx-border); }
+.wtab { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid transparent; border-bottom: 0; border-radius: var(--jx-radius-md) var(--jx-radius-md) 0 0; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wtab.on { background: var(--jx-bg); border-color: var(--jx-border); color: var(--jx-fg); font-weight: 600; margin-bottom: -1px; }
+.wtab .x { color: var(--jx-fg-subtle); }
+.wtab .vd { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.stabs { display: flex; gap: 4px; padding: var(--jx-space-3) var(--jx-space-3) 0; border-bottom: 1px solid var(--jx-border); }
+.stab { display: flex; gap: 8px; align-items: center; padding: 8px 14px; font-size: var(--jx-text-sm); font-weight: 500; color: var(--jx-fg-muted); border-bottom: 3px solid transparent; }
+.stab.on { color: var(--jx-fg); border-bottom-color: var(--jx-app); }
+.stab .n { font-variant-numeric: tabular-nums; background: var(--jx-surface-sunken); border-radius: 999px; padding: 0 7px; font-size: var(--jx-text-xs); }
+.stab.on .n { background: var(--jx-app); color: var(--jx-paper-0); }
+.secintro { display: flex; align-items: center; gap: 12px; margin: var(--jx-space-3); padding: var(--jx-space-3) var(--jx-space-4); border: 1px solid var(--jx-border); border-left: 4px solid var(--jx-success); border-radius: var(--jx-radius-md); background: var(--jx-surface); font-size: var(--jx-text-sm); }
+.secintro b { font-size: var(--jx-text-base); }
+.secintro .sp { margin-left: auto; display: flex; gap: 6px; }
+.cards { display: grid; gap: 8px; padding: 0 var(--jx-space-3) var(--jx-space-3); }
+.cards .q { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); padding: 10px 12px; }
+.cards .q.sel { border-color: var(--jx-app); box-shadow: 0 0 0 1px var(--jx-app); }
+.mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 var(--jx-space-3) var(--jx-space-3); }
+.mini div { border: 1px dashed var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: 8px 10px; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.mini b { color: var(--jx-fg); }
+.cols > .pane:last-child { display: grid; grid-template-rows: auto auto minmax(0, 1fr); align-content: start; }
+.cols > .pane:last-child > .scroll { align-content: start; }
+</style>
+</head>
+<body>
+<main class="doc">
+  <header class="doc-head"><div><h1>Review queue</h1><p>Design pass, screen 1 of 6 (revision 2: tabs). The inbox for ~100 PRs a week: CI and automated reviews gate everything, pre-reviews are ready before you open a PR, and every row says how far it got.</p></div><button class="theme-toggle" type="button">Theme: system</button></header>
+  <figure>
+    <div class="frame desktop">
+      <div class="titlebar"><i></i><i></i><i></i><span>Review · Jesinia</span></div>
+      <div class="app" data-app="review">
+        <div class="hdr">
+          <a class="home" href="#"><span class="glyph-app"></span><span class="name">Review</span></a>
+          <div class="mid"><span class="crumb"><b>All watched repos</b> · 23 open</span></div>
+          <div class="right"><span class="kbtn"><span class="lbl">Load a PR, search, or jump to…</span><kbd>⌘K</kbd></span><span class="sdot" title="All good"></span><button class="iconbtn" aria-label="Settings">⚙</button></div>
+        </div>
+        <div class="wtabs" role="tablist" aria-label="Open reviews">
+          <span class="wtab on" role="tab" aria-selected="true">☰ Queue</span>
+          <span class="wtab" role="tab"><span class="vd" style="background:var(--jx-warn)"></span>platform#812 billing: prorate… <span class="x">✕</span></span>
+          <span class="wtab" role="tab"><span class="vd" style="background:var(--jx-danger)"></span>platform#808 auth: rotate… <span class="x">✕</span></span>
+          <span class="wtab" role="tab"><span class="vd" style="background:var(--jx-success)"></span>jesinia#55–57 Stack: KB tags <span class="x">✕</span></span>
+        </div>
+        <div class="body">
+          <div class="cols" style="grid-template-columns: 230px 1fr">
+            <div class="pane">
+              <div class="pane-h"><b>Repos</b></div>
+              <div class="scroll list repos">
+                <div class="row sel"><span class="t">All watched</span><span class="m"><span class="badge plum">23</span></span></div>
+                <div class="row"><span class="t">dalbrecht/jesinia</span><span class="m"><span class="badge neutral">11</span></span></div>
+                <div class="row"><span class="t">c65llc/platform</span><span class="m"><span class="badge neutral">9</span></span></div>
+                <div class="row"><span class="t">c65llc/coding-standards</span><span class="m"><span class="badge neutral">3</span></span></div>
+              </div>
+            </div>
+            <div class="pane">
+              <div class="loadpr"><input value="" placeholder="Load a PR: paste a URL or owner/repo#123"><button class="btn s sm">Load</button><span class="sp" style="margin-left:auto;display:flex;gap:6px"><button class="btn g sm">Mine</button><button class="btn g sm">Agents</button><button class="btn g sm">Sort: priority ▾</button></span></div>
+              <div class="stabs" role="tablist" aria-label="Queue sections">
+                <span class="stab on" role="tab" aria-selected="true">Ready for you <span class="n">6</span></span>
+                <span class="stab" role="tab">Waiting <span class="n">4</span></span>
+                <span class="stab" role="tab">Loaded <span class="n">1</span></span>
+                <span class="stab" role="tab">Still approved <span class="n">12</span></span>
+              </div>
+              <div class="scroll">
+                <div class="secintro"><span><b>Ready for you</b><br>Pre-reviewed with CI passing. Quick ones first; deep reviews open in their own tab.</span><span class="sp"><button class="btn s sm">Open next</button><button class="btn g sm">Open all quick (3)</button></span></div>
+                <div class="cards">
+                <div class="q sel"><span class="t">dalbrecht/jesinia#57 · notes: tag chips on Save note</span>
+                  <span class="meta"><span>claude-code (agent)</span><span>+342 −40 · 9 files</span><span class="pill">Quick</span><span><span class="dot pass"></span> CI passing</span><span>Codex reviewed · 0 comments</span></span>
+                  <span class="right"><span class="verdict v-ok">✓ Approve</span><span class="ev"><span>0 important · 2 minor</span><span class="cov">walk 100%</span></span></span></div>
+                <div class="q"><span class="t">c65llc/platform#808 · auth: rotate session keys</span>
+                  <span class="meta"><span>dev-a</span><span>Re-review · 3 of 4 requests addressed</span><span class="pill deep">Deep</span><span><span class="dot pass"></span> CI passing</span><span>4 your comments</span></span>
+                  <span class="right"><span class="verdict v-no">✕ Request changes</span><span class="ev"><span>1 not addressed</span><span class="cov">walk 100% of new</span></span></span></div>
+                <div class="q"><span class="t">dalbrecht/jesinia#55–#57 · Stack: KB tags (3 PRs)</span>
+                  <span class="meta"><span>you</span><span>+2,910 −204 · 41 files</span><span class="pill deep">Deep · stack</span><span><span class="dot pass"></span> CI passing on all 3</span></span>
+                  <span class="right"><span class="verdict v-ok">✓ Ready to request review</span><span class="ev"><span>own PRs</span><span class="cov">walk 88%</span></span></span></div>
+
+                </div>
+                <div class="mini"><div><b>Waiting · 4</b><br>2 on CI · 1 on Copilot · 1 CI failing</div><div><b>Loaded · 1</b><br>platform#812, needs a closer look</div><div><b>Still approved · 12</b><br>Rebased, unchanged, CI green</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <figcaption><b>Desktop, 1280, revision 2.</b> Workspace tabs across the top: the queue plus one tab per open review (the dot is its verdict), so several reviews stay open side by side. Inside the queue, sections are tabs with counts, each with a coloured intro bar and its own bulk actions; PR rows are separated cards; a summary strip shows the other sections at a glance. Previously: grouped by what you can do: Loaded (jumps the queue), Ready for you, Waiting (CI or an automated reviewer hasn't finished; nothing has run yet), and Still approved (collapsed). Each ready row ends with the recommendation and its evidence: finding counts and how much of the change the walkthrough covers. The meta line always shows CI state and which reviews have already landed.</figcaption>
+  </figure>
+</main>
+</body>
+</html>

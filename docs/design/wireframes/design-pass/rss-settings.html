@@ -1,0 +1,314 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review queue</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../wire.css">
+<script src="../wire.js" defer></script>
+<style>
+.crumb { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.loadpr { display: flex; gap: 6px; align-items: center; padding: var(--jx-space-2) var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.loadpr input { flex: 1; font: inherit; font-size: var(--jx-text-sm); padding: 5px 8px; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); background: var(--jx-bg); color: var(--jx-fg); }
+.repos { align-content: start; } .repos .row { grid-template-columns: 1fr auto; }
+.grp { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--jx-row-divider); }
+.q { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 8px var(--jx-space-3); border-bottom: 1px solid var(--jx-row-divider); }
+.q.sel { background: var(--jx-row-bg-selected); }
+.q .t { font-weight: 500; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q .meta { grid-column: 1; color: var(--jx-fg-muted); font-size: var(--jx-text-sm); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.q .right { grid-row: 1 / span 2; grid-column: 2; display: grid; justify-items: end; gap: 4px; align-content: center; }
+.verdict { font-size: var(--jx-text-sm); font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.v-ok { color: var(--jx-success); } .v-no { color: var(--jx-danger); } .v-look { color: var(--jx-warn); }
+.ev { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); display: flex; gap: 8px; }
+.pill { font-size: var(--jx-text-xs); border: 1px solid var(--jx-border); border-radius: 999px; padding: 0 7px; background: var(--jx-surface); color: var(--jx-fg-muted); white-space: nowrap; }
+.pill.wait { border-color: var(--jx-warn); color: var(--jx-warn); }
+.pill.fail { border-color: var(--jx-danger); color: var(--jx-danger); }
+.pill.ok { border-color: var(--jx-success); color: var(--jx-success); }
+.pill.deep { border-color: var(--jx-app); color: var(--jx-app); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dot.run { background: var(--jx-warn); } .dot.pass { background: var(--jx-success); } .dot.fail { background: var(--jx-danger); }
+.cov { font-variant-numeric: tabular-nums; }
+.collapsed { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); padding: 8px var(--jx-space-3); }
+figure { margin: 0 0 var(--jx-space-6); } figcaption { margin-top: var(--jx-space-2); color: var(--jx-fg-muted); font-size: var(--jx-text-sm); max-width: 900px; }
+
+.wtabs { display: flex; align-items: flex-end; gap: 2px; padding: 6px var(--jx-space-3) 0; background: var(--jx-surface-sunken); border-bottom: 1px solid var(--jx-border); }
+.wtab { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid transparent; border-bottom: 0; border-radius: var(--jx-radius-md) var(--jx-radius-md) 0 0; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wtab.on { background: var(--jx-bg); border-color: var(--jx-border); color: var(--jx-fg); font-weight: 600; margin-bottom: -1px; }
+.wtab .x { color: var(--jx-fg-subtle); }
+.wtab .vd { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.stabs { display: flex; gap: 4px; padding: var(--jx-space-3) var(--jx-space-3) 0; border-bottom: 1px solid var(--jx-border); }
+.stab { display: flex; gap: 8px; align-items: center; padding: 8px 14px; font-size: var(--jx-text-sm); font-weight: 500; color: var(--jx-fg-muted); border-bottom: 3px solid transparent; }
+.stab.on { color: var(--jx-fg); border-bottom-color: var(--jx-app); }
+.stab .n { font-variant-numeric: tabular-nums; background: var(--jx-surface-sunken); border-radius: 999px; padding: 0 7px; font-size: var(--jx-text-xs); }
+.stab.on .n { background: var(--jx-app); color: var(--jx-paper-0); }
+.secintro { display: flex; align-items: center; gap: 12px; margin: var(--jx-space-3); padding: var(--jx-space-3) var(--jx-space-4); border: 1px solid var(--jx-border); border-left: 4px solid var(--jx-success); border-radius: var(--jx-radius-md); background: var(--jx-surface); font-size: var(--jx-text-sm); }
+.secintro b { font-size: var(--jx-text-base); }
+.secintro .sp { margin-left: auto; display: flex; gap: 6px; }
+.cards { display: grid; gap: 8px; padding: 0 var(--jx-space-3) var(--jx-space-3); }
+.cards .q { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); padding: 10px 12px; }
+.cards .q.sel { border-color: var(--jx-app); box-shadow: 0 0 0 1px var(--jx-app); }
+.mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 var(--jx-space-3) var(--jx-space-3); }
+.mini div { border: 1px dashed var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: 8px 10px; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); }
+.mini b { color: var(--jx-fg); }
+.cols > .pane:last-child { display: grid; grid-template-rows: auto auto minmax(0, 1fr); align-content: start; }
+.cols > .pane:last-child > .scroll { align-content: start; }
+
+/* Review: wide diff + narrative column. Page-local layout only; all values are tokens. */
+.crumb { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb b { color: var(--jx-fg); font-weight: 500; }
+.crumb .sep { color: var(--jx-fg-subtle); }
+.rv { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; height: 100%; }
+.prbar { display: flex; align-items: center; gap: 12px; padding: var(--jx-space-2) var(--jx-space-4); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); min-width: 0; }
+.prbar .tt { font-weight: 600; font-size: var(--jx-text-lg); font-variation-settings: "opsz" 48; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prbar .meta { color: var(--jx-fg-muted); font-size: var(--jx-text-sm); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prbar .sp { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.plus { color: var(--jx-success); } .minus { color: var(--jx-danger); }
+.rv .tabs { background: var(--jx-surface); }
+.tabs.scrollx { overflow-x: auto; flex-wrap: nowrap; }
+.split { grid-template-columns: minmax(0, 3fr) 6px minmax(0, 2fr); }
+.rightcol { display: grid; grid-template-rows: minmax(0, 1fr) 6px minmax(0, 1fr); min-height: 0; }
+.hhandle { height: 6px; cursor: row-resize; border-top: 1px solid var(--jx-border); position: relative; }
+.hhandle::after { content: ""; position: absolute; left: 50%; top: 1px; width: 28px; height: 3px; transform: translateX(-50%); border-radius: 3px; background: var(--jx-border-strong); }
+.fileh { display: flex; align-items: center; gap: 8px; padding: 6px var(--jx-space-3); font-family: var(--jx-font-mono); font-size: var(--jx-text-sm); background: var(--jx-surface); border-block: 1px solid var(--jx-border); position: sticky; top: 0; }
+.fileh .sp { margin-left: auto; font-family: var(--jx-font-ui); color: var(--jx-fg-muted); }
+.diff .hunk { white-space: normal; padding: 0; }
+.diff .fileh { white-space: normal; padding: 6px var(--jx-space-3); }
+.diff .hunk.cur { background: var(--jx-accent-subtle); }
+.diff .hunk.cur .h { background: var(--jx-highlight); color: var(--jx-fg); }
+.walk { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+.steph { display: flex; align-items: center; gap: 8px; padding: var(--jx-space-3) var(--jx-space-4) var(--jx-space-2); }
+.steph .n { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; }
+.stepb { padding: 0 var(--jx-space-4) var(--jx-space-3); }
+.stepb h3 { margin: 0 0 var(--jx-space-2); font-size: var(--jx-text-lg); font-weight: 600; font-variation-settings: "opsz" 48; }
+.stepb p { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0 0 var(--jx-space-2); }
+.stepnav { display: flex; align-items: center; gap: 6px; padding: var(--jx-space-2) var(--jx-space-4); border-top: 1px solid var(--jx-border); }
+.stepnav .dots { display: flex; gap: 4px; margin-inline: auto; }
+.stepnav .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--jx-border-strong); display: block; }
+.stepnav .dots i.on { background: var(--jx-app); }
+.repos .row { grid-template-columns: 1fr auto; }
+.prrow .t { font-weight: var(--jx-weight-medium); }
+.chg { color: var(--jx-warn); font-size: var(--jx-text-sm); }
+.tabbody { padding: var(--jx-space-5) var(--jx-space-6); display: grid; gap: var(--jx-space-4); align-content: start; max-width: 860px; }
+.tabbody h3 { margin: 0; font-size: var(--jx-text-lg); font-weight: 600; }
+.tabbody .lede { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0; }
+.frame.half .tabbody { padding: var(--jx-space-4); gap: var(--jx-space-3); }
+.mtable { width: 100%; border-collapse: collapse; font-size: var(--jx-text-sm); }
+.mtable th { text-align: left; font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--jx-border); }
+.mtable td { padding: 8px; border-bottom: 1px solid var(--jx-border); vertical-align: top; }
+.mtable td.c { font-weight: 500; white-space: nowrap; }
+.mtable td.r { color: var(--jx-fg-muted); }
+.score { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.bar { width: 80px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; display: block; }
+.bar > span { display: block; height: 100%; background: var(--jx-app); }
+.quiz fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; }
+.quiz legend { font-family: var(--jx-font-read); font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); font-weight: 600; margin-bottom: var(--jx-space-2); padding: 0; }
+.opt { display: flex; gap: 10px; align-items: flex-start; padding: var(--jx-space-2) var(--jx-space-3); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); background: var(--jx-surface); }
+.opt input { margin-top: 4px; accent-color: var(--jx-accent); }
+.opt.picked { border-color: var(--jx-accent); background: var(--jx-accent-subtle); }
+.feedback { padding: var(--jx-space-2) var(--jx-space-3); background: var(--jx-success-bg); border-radius: var(--jx-radius-sm); font-size: var(--jx-text-sm); }
+.feedback b { color: var(--jx-success); }
+.qprog { display: flex; align-items: center; gap: 10px; color: var(--jx-fg-muted); font-size: var(--jx-text-sm); }
+.qprog .bar { width: 140px; }
+.rec { display: flex; align-items: center; gap: 10px; }
+.rec .verdict { font-size: var(--jx-text-xl); font-weight: 600; font-variation-settings: "opsz" 72; }
+.reasons { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); }
+.advisory { border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: var(--jx-space-2) var(--jx-space-3); font-size: var(--jx-text-sm); color: var(--jx-fg-muted); background: var(--jx-surface-sunken); }
+.advisory b { color: var(--jx-fg); font-weight: 500; }
+.inline-err { border: 1px solid var(--jx-danger); background: var(--jx-danger-bg); border-radius: var(--jx-radius-md); padding: var(--jx-space-3); display: grid; gap: 8px; font-size: var(--jx-text-sm); }
+.inline-err b { color: var(--jx-danger); font-weight: 600; }
+.reflist { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: var(--jx-text-sm); }
+.reflist li { display: flex; gap: 8px; align-items: baseline; }
+.reflist .why { color: var(--jx-fg-muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--jx-space-3); }
+.toggle { display: flex; gap: 6px; padding: var(--jx-space-2) var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.sheet { position: absolute; inset: 64px 0 0 0; background: var(--jx-bg); border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0; box-shadow: var(--jx-shadow-2); z-index: 5; display: grid; grid-template-rows: auto 1fr; overflow: hidden; border-top: 1px solid var(--jx-border); }
+.sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--jx-border-strong); margin: 6px auto; }
+.frame.narrow .prbar { flex-wrap: wrap; gap: 4px 8px; padding: var(--jx-space-2) var(--jx-space-3); }
+.frame.narrow .prbar .tt { font-size: var(--jx-text-base); white-space: normal; }
+.frame.narrow .stepb, .frame.narrow .steph, .frame.narrow .stepnav { padding-inline: var(--jx-space-3); }
+.frame.narrow .row .t { white-space: normal; }
+.chatbtn { position: absolute; right: 12px; bottom: 12px; z-index: 3; box-shadow: var(--jx-shadow-2); }
+
+.covbar { display: flex; align-items: center; gap: 10px; padding: 8px var(--jx-space-4); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); font-size: var(--jx-text-sm); }
+.covbar .meter { width: 120px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; }
+.covbar .meter span { display: block; height: 100%; width: 82%; background: var(--jx-app); }
+.covbar b { font-variant-numeric: tabular-nums; }
+.covbar .sp { margin-left: auto; display: flex; gap: 6px; }
+.notwalked { margin: var(--jx-space-2) var(--jx-space-4) var(--jx-space-3); border: 1px dashed var(--jx-border-strong); border-radius: var(--jx-radius-md); padding: 8px 10px; font-size: var(--jx-text-sm); display: grid; gap: 4px; }
+.notwalked .r { display: flex; gap: 8px; align-items: center; }
+.notwalked code { font-size: var(--jx-text-xs); }
+.notwalked .why { color: var(--jx-fg-muted); }
+.notwalked .sp { margin-left: auto; }
+.stabs2 { display: flex; gap: 2px; padding: 0 var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); }
+.stabs2 .stab { padding: 9px 14px; }
+.ctx { display: block; font-size: var(--jx-text-xs); color: var(--jx-fg-muted); padding: 0 var(--jx-space-4) var(--jx-space-2); }
+.chatdock { border-top: 1px solid var(--jx-border); padding: 8px var(--jx-space-4); display: flex; gap: 8px; align-items: center; font-size: var(--jx-text-sm); color: var(--jx-fg-muted); background: var(--jx-surface); }
+.chatdock input { flex: 1; font: inherit; padding: 5px 8px; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); background: var(--jx-bg); color: var(--jx-fg); }
+.rvbody { display: grid; grid-template-rows: auto auto auto minmax(0,1fr); min-height: 0; height: 100%; }
+
+.book { display: grid; grid-template-columns: 280px minmax(0,1fr); min-height: 0; height: 100%; }
+.outline { border-right: 1px solid var(--jx-border); background: var(--jx-surface); display: grid; grid-template-rows: auto minmax(0,1fr) auto; min-height: 0; }
+.outline .oh { padding: var(--jx-space-3); border-bottom: 1px solid var(--jx-border); display: grid; gap: 4px; }
+.outline .oh .t { font-weight: 600; }
+.outline .oh .m { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); }
+.outline ol { list-style: none; margin: 0; padding: var(--jx-space-2) 0; overflow: auto; }
+.outline .part { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; }
+.outline li.e { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; align-items: baseline; padding: 5px var(--jx-space-3); font-size: var(--jx-text-sm); }
+.outline li.e.sub { padding-left: 30px; }
+.outline li.e.on { background: var(--jx-row-bg-selected); box-shadow: inset 3px 0 0 var(--jx-app); font-weight: 600; }
+.outline li.e .st { color: var(--jx-fg-subtle); font-size: 11px; }
+.outline li.e .st.done { color: var(--jx-success); }
+.outline li.e .k { font-size: var(--jx-text-xs); color: var(--jx-fg-muted); white-space: nowrap; }
+.outline li.e .k.bad { color: var(--jx-danger); }
+.outline .of { border-top: 1px solid var(--jx-border); padding: var(--jx-space-3); font-size: var(--jx-text-sm); display: grid; gap: 6px; }
+.view { display: grid; grid-template-rows: auto minmax(0,1fr) auto; min-height: 0; }
+.vtool { display: flex; align-items: center; gap: 8px; padding: 6px var(--jx-space-3); border-bottom: 1px solid var(--jx-border); background: var(--jx-surface); font-size: var(--jx-text-sm); flex-wrap: wrap; }
+.vtool .sep { width: 1px; height: 18px; background: var(--jx-border); }
+.vtool .sp { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.vtool .meter { width: 80px; height: 6px; border-radius: 3px; background: var(--jx-surface-sunken); overflow: hidden; display: inline-block; }
+.vtool .meter span { display: block; height: 100%; width: 82%; background: var(--jx-app); }
+.page { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); min-height: 0; }
+.page .narr { overflow: auto; padding: var(--jx-space-5) var(--jx-space-5); border-right: 1px solid var(--jx-border); }
+.page .narr h2 { margin: 0 0 var(--jx-space-2); font-size: var(--jx-text-xl); font-weight: 600; font-variation-settings: "opsz" 72; }
+.page .narr p { font-family: var(--jx-font-read); font-size: var(--jx-text-read); line-height: var(--jx-leading-read); margin: 0 0 var(--jx-space-3); }
+.vact { display: flex; align-items: center; gap: 8px; padding: var(--jx-space-2) var(--jx-space-3); border-top: 1px solid var(--jx-border); background: var(--jx-surface); }
+.vact .sp { margin-left: auto; display: flex; gap: 6px; }
+.btn.danger { border-color: var(--jx-danger); color: var(--jx-danger); }
+
+.req { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); padding: 10px 12px; margin-bottom: 10px; background: var(--jx-surface); display: grid; gap: 6px; font-size: var(--jx-text-sm); }
+.req .st { font-weight: 600; }
+.req .st.ok { color: var(--jx-success); } .req .st.part { color: var(--jx-warn); } .req .st.no { color: var(--jx-danger); }
+.req .was { color: var(--jx-fg-muted); border-left: 3px solid var(--jx-border-strong); padding-left: 8px; font-style: italic; }
+.prev { opacity: .75; border-left: 3px dashed var(--jx-border-strong); padding-left: 10px; font-size: var(--jx-text-sm); }
+.modal { position: relative; margin: 30px auto; max-width: 720px; background: var(--jx-bg); border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-lg); box-shadow: var(--jx-panel-raised-shadow); display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.modal .mh { padding: 12px 16px; border-bottom: 1px solid var(--jx-border); font-weight: 600; }
+.modal .mb { padding: 12px 16px; display: grid; gap: 10px; font-size: var(--jx-text-sm); }
+.modal .mf { padding: 10px 16px; border-top: 1px solid var(--jx-border); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.warnbox { border: 1px solid var(--jx-warn); background: var(--jx-warn-bg); border-radius: var(--jx-radius-md); padding: 10px 12px; display: grid; gap: 6px; }
+.warnbox b { color: var(--jx-warn); }
+.cmt { border: 1px solid var(--jx-border); border-radius: var(--jx-radius-sm); padding: 8px 10px; background: var(--jx-surface); }
+.cmt code { font-size: var(--jx-text-xs); }
+.cmt.block { border-color: var(--jx-danger); }
+mark.b { background: var(--jx-danger-bg); color: var(--jx-danger); font-weight: 600; padding: 0 2px; }
+.scrim { position: absolute; inset: 0; background: color-mix(in oklch, var(--jx-paper-950) 55%, transparent); z-index: 4; display: grid; align-items: start; overflow: auto; }
+
+/* RSS silhouette: feeds sidebar | Desk list | serif reader (| chat rail). Marigold only in the title bar and glyph. */
+.rss3 { grid-template-columns: 220px 360px 1fr; }
+.rss-eng { grid-template-columns: 52px 320px 1fr 6px 380px; }
+.feeds { background: var(--jx-surface); border-right: 1px solid var(--jx-border); display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+.feeds .fl { overflow: auto; padding: var(--jx-space-2) 0; }
+.feeds .grp { font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); font-weight: 600; padding: var(--jx-space-3) var(--jx-space-3) 4px; display: flex; gap: 6px; align-items: center; }
+.feed { display: flex; align-items: center; gap: 8px; padding: 5px var(--jx-space-3); font-size: var(--jx-text-sm); color: var(--jx-fg); text-decoration: none; }
+.feed .fn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed .fav { width: 14px; height: 14px; border-radius: 3px; background: var(--jx-surface-sunken); border: 1px solid var(--jx-border); flex: none; }
+.feed.on { background: var(--jx-surface); font-weight: 600; }
+.feed.bad .fn { color: var(--jx-fg-muted); }
+.feed .wn { color: var(--jx-warn); font-weight: 600; }
+.feed-err { padding: 0 var(--jx-space-3) 6px 34px; font-size: var(--jx-text-xs); color: var(--jx-warn); }
+.feeds .ft { border-top: 1px solid var(--jx-border); padding: var(--jx-space-2); display: grid; gap: 2px; }
+.feeds .ft .btn { justify-content: flex-start; }
+.rail { background: var(--jx-surface); border-right: 1px solid var(--jx-border); display: grid; align-content: start; justify-items: center; gap: 6px; padding-top: var(--jx-space-3); }
+.rail .fav { width: 22px; height: 22px; border-radius: 6px; background: var(--jx-surface-sunken); border: 1px solid var(--jx-border); display: block; }
+.rail .fav.on { background: var(--jx-row-bg-selected); border-color: var(--jx-border-strong); }
+.reader-tb { gap: 6px; }
+.reader-tb .sp { gap: 6px; }
+.reader { padding: var(--jx-space-6) var(--jx-space-7) var(--jx-space-7); }
+.rss-eng .reader { padding: var(--jx-space-5) var(--jx-space-5) var(--jx-space-6); }
+.rss-eng .read h1 { font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); }
+.save { display: flex; gap: 6px; flex-wrap: wrap; padding-inline: var(--jx-space-1); }
+.composer textarea { resize: none; font: inherit; }
+.composer .row-inline { justify-content: space-between; }
+.inline-banner { background: var(--jx-warn-bg); border: 1px solid var(--jx-border); border-radius: var(--jx-radius-md); padding: var(--jx-space-2) var(--jx-space-3); font-size: var(--jx-text-sm); display: grid; gap: 6px; }
+.inline-banner b { color: var(--jx-warn); font-weight: 600; }
+.subbar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 var(--jx-space-2); border-bottom: 1px solid var(--jx-border); background: var(--jx-bg); font-size: var(--jx-text-sm); }
+.subbar b { font-weight: 600; font-size: var(--jx-text-base); }
+.subbar .sp { margin-left: auto; display: flex; gap: 4px; color: var(--jx-fg-muted); }
+.narrow-reader { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+.bottombar { border-top: 1px solid var(--jx-border); background: var(--jx-surface); padding: var(--jx-space-2) var(--jx-space-3); display: flex; gap: 8px; align-items: center; }
+.bottombar .btn.p { flex: 1; justify-content: center; }
+.frame.narrow .reader { padding: var(--jx-space-4); }
+.frame.narrow .read h1 { font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; top: 64px; z-index: 5; background: var(--jx-bg); border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0; box-shadow: var(--jx-panel-raised-shadow); display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
+.sheet .grab { display: grid; justify-items: center; padding-top: 6px; }
+.sheet .grab i { width: 36px; height: 4px; border-radius: 2px; background: var(--jx-border-strong); display: block; }
+.frame.half .rss3 { grid-template-columns: 150px 1fr; }
+.frame.half .rss-split { grid-template-columns: 150px 210px 1fr; }
+.frame.half .rss-chat { grid-template-columns: 1fr 6px 300px; }
+.frame.half .reader { padding: var(--jx-space-4); }
+.frame.half .read h1 { font-size: var(--jx-text-read-lg); line-height: var(--jx-leading-read-lg); }
+.frame.half .feed { padding-block: 4px; }
+.skrow { padding: var(--jx-row-pad-y) var(--jx-row-pad-x); border-bottom: 1px solid var(--jx-row-divider); display: grid; gap: 6px; }
+.skread { padding: var(--jx-space-5); display: grid; gap: 10px; align-content: start; }
+
+.pop { position: absolute; right: 24px; top: 92px; width: 380px; background: var(--jx-bg); border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-lg); box-shadow: var(--jx-panel-raised-shadow); z-index: 5; display: grid; }
+.pop .ph { padding: 10px 14px; border-bottom: 1px solid var(--jx-border); font-weight: 600; font-size: var(--jx-text-sm); }
+.pop .pb { padding: 12px 14px; display: grid; gap: 10px; font-size: var(--jx-text-sm); }
+.pop textarea { box-sizing: border-box; width: 100%; font: inherit; min-height: 64px; padding: 8px; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); background: var(--jx-surface); color: var(--jx-fg); resize: none; }
+.chip { display: inline-flex; gap: 4px; align-items: center; border: 1px solid var(--jx-border-strong); border-radius: 999px; padding: 1px 9px; font-size: var(--jx-text-xs); margin: 0 4px 4px 0; }
+.chip.on { background: var(--jx-app); color: var(--jx-paper-0); border-color: var(--jx-app); }
+.chip.new { border-style: dashed; }
+.chip .nw { font-size: 10px; color: var(--jx-warn); }
+.near { border: 1px solid var(--jx-warn); background: var(--jx-warn-bg); border-radius: var(--jx-radius-sm); padding: 6px 8px; }
+.pop .pf { padding: 10px 14px; border-top: 1px solid var(--jx-border); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.kbar { display: flex; gap: 10px; padding: 4px var(--jx-space-3); border-top: 1px solid var(--jx-border); font-size: var(--jx-text-xs); color: var(--jx-fg-muted); background: var(--jx-surface); }
+.kbar kbd { font: 10px var(--jx-font-mono); border: 1px solid var(--jx-border-strong); border-radius: 3px; padding: 0 3px; }
+.arch { font-size: var(--jx-text-xs); color: var(--jx-warn); }
+.tagtab { width: 100%; border-collapse: collapse; font-size: var(--jx-text-sm); }
+.tagtab th { text-align: left; font-size: var(--jx-text-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--jx-fg-muted); padding: 6px 8px; border-bottom: 1px solid var(--jx-border); }
+.tagtab td { padding: 7px 8px; border-bottom: 1px solid var(--jx-row-divider); vertical-align: top; }
+.tagtab td.t { font-weight: 600; } .tagtab td.n { font-variant-numeric: tabular-nums; text-align: right; }
+.tagtab td.a { color: var(--jx-fg-muted); }
+.panel2 { border: 1px solid var(--jx-border); border-left: 4px solid var(--jx-warn); border-radius: var(--jx-radius-md); padding: 10px 12px; background: var(--jx-surface); display: grid; gap: 6px; font-size: var(--jx-text-sm); }
+.formrow { display: grid; grid-template-columns: 220px 1fr; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--jx-row-divider); font-size: var(--jx-text-sm); align-items: start; }
+.formrow .lbl b { display: block; } .formrow .lbl span { color: var(--jx-fg-muted); font-size: var(--jx-text-xs); }
+.seg { display: inline-flex; border: 1px solid var(--jx-border-strong); border-radius: var(--jx-radius-sm); overflow: hidden; }
+.seg span { padding: 4px 10px; border-right: 1px solid var(--jx-border-strong); }
+.seg span:last-child { border-right: 0; } .seg span.on { background: var(--jx-app); color: var(--jx-paper-0); }
+.know { display: grid; grid-template-columns: 1fr 100px auto; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--jx-row-divider); font-size: var(--jx-text-sm); }
+.know .bar { width: 100px; }
+</style></head><body><main class="doc">
+<header class="doc-head"><div><h1>RSS and Settings</h1><p>Design pass, screen 6 of 6. RSS keeps the three panes you chose, with the reader's actions along the bottom like the review view pane. Settings uses the same outline-and-view-pane pattern: sections on the left, a toolbar on top, actions at the bottom.</p></div><button class="theme-toggle" type="button">Theme: system</button></header>
+<figure><div class="frame desktop"><div class="titlebar"><i></i><i></i><i></i><span>RSS · Jesinia</span></div><div class="app" data-app="rss"><div class="hdr"><a class="home" href="#"><span class="glyph-app"></span><span class="name">RSS</span></a><div class="mid"><button class="btn g sm">↻ Refresh</button><span>Updated 3 min ago</span></div><div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot"></span><button class="iconbtn">⚙</button></div></div><div></div><div class="body" style="position:relative"><div class="cols rss3" style="height:100%"><nav class="feeds" aria-label="Feeds"><div class="fl">
+<a class="feed on" href="#"><span class="fn">All unread</span><span class="badge neutral">412</span></a>
+<a class="feed" href="#"><span class="fn">In KB</span><span class="badge neutral">31</span></a>
+<div class="grp">▾ News</div><a class="feed" href="#"><span class="fav"></span><span class="fn">Hacker News</span><span class="badge neutral">999+</span></a>
+<div class="grp">▾ Engineering</div><a class="feed" href="#"><span class="fav"></span><span class="fn">Fly.io blog</span><span class="badge neutral">4</span></a><a class="feed" href="#"><span class="fav"></span><span class="fn">Simon Willison</span><span class="badge neutral">11</span></a><a class="feed bad" href="#"><span class="fav"></span><span class="fn">Old Blog</span><span class="wn">!</span></a><div class="feed-err">Failing for 3 days: 404. Retry</div>
+<div class="grp">▸ Ideas <span class="badge neutral">16</span></div>
+</div><div class="ft"><button class="btn g sm">+ Add feed</button></div></nav>
+<div class="pane" style="display:grid;grid-template-rows:auto minmax(0,1fr)"><div class="pane-h"><b>All unread</b><span>412</span><span class="sp"><button class="btn g sm">Unread ▾</button></span></div><div class="list scroll" style="align-content:start"><div class="row unread sel"><span class="lead"><span class=udot></span></span><span class="t">The quiet economics of maintenance</span><span class="m">2h</span><span class="x">Why the cheapest infrastructure is the kind you already have.</span><span class="mm">Works in Progress</span></div><div class="row unread"><span class="lead"><span class=udot></span></span><span class="t">What SQLite's WAL mode actually guarantees</span><span class="m">4h</span><span class="x">Readers don't block writers, but checkpoints tell the rest.</span><span class="mm">Fly.io blog <span class='arch'>Archiving…</span></span></div><div class="row "><span class="lead"></span><span class="t">On keeping a commonplace book</span><span class="m">1d</span><span class="x">Locke's index, Woolf's notebooks.</span><span class="mm">The Marginalian <span class='badge fern'>In KB</span></span></div><div class="row unread"><span class="lead"><span class=udot></span></span><span class="t">Prompt injection is still unsolved</span><span class="m">1d</span><span class="x">A year of attacks on tool-using agents.</span><span class="mm">Simon Willison</span></div><div class="row unread"><span class="lead"><span class=udot></span></span><span class="t">Show HN: A tiny SQLite-backed job queue</span><span class="m">1d</span><span class="x">news.ycombinator.com · 214 comments</span><span class="mm">Hacker News</span></div><div class="row unread"><span class="lead"><span class=udot></span></span><span class="t">How DNS resolvers decide what to cache</span><span class="m">2d</span><span class="x">TTLs, negative caching, and why your change took an hour.</span><span class="mm">Julia Evans</span></div></div></div>
+<div class="pane" style="display:grid;grid-template-rows:auto minmax(0,1fr) auto"><div class="pane-h reader-tb"><span>Works in Progress</span><span class="sp"><button class="btn g sm">Open original ↗</button><button class="btn s sm">Engage (e)</button><button class="btn p sm">Keep (n)</button></span></div>
+<div class="scroll"><article class="reader read"><h1>The quiet economics of maintenance</h1><div class="byline"><span>Works in Progress</span><span>·</span><span>Sarah Constantin</span><span>·</span><span>14 Oct 2026</span><span>·</span><span>12 min</span></div><p>Every city has two budgets for its roads. One pays for new ones, and gets a ribbon-cutting. The other pays to keep the old ones from falling apart, and gets almost nothing, including attention.</p><p>The asymmetry is not irrational. New things are legible: they have a cost, a date and a photograph. Maintenance is the absence of an event.</p><p style="color:var(--jx-fg-muted);font-size:var(--jx-text-sm)">The feed has a summary only. <button class="btn g sm">Load full article</button></p></article></div>
+<div class="vact"><button class="btn g sm">← Previous</button><button class="btn g sm">Next →</button><span class="sp"><button class="btn g sm">Mark unread</button></span></div></div></div>
+<div class="pop" role="dialog" aria-label="Keep this post"><div class="ph">Keep “The quiet economics of maintenance”</div><div class="pb">
+<label><b>Your note</b><br><textarea>Good framing for why we budget for Jesinia upkeep; cite in the roadmap.</textarea></label>
+<div><b>Tags</b> <span style="color:var(--jx-fg-muted)">suggested by Claude from your catalog</span><br><span class="chip on">#maintenance ✕</span><span class="chip on">#infrastructure ✕</span><span class="chip">+ #economics</span><span class="chip new">#upkeep <span class="nw">new</span></span><span class="chip">+ add</span></div>
+<div class="near">#upkeep looks like <b>#maintenance</b> (same meaning). <button class="btn g sm">Use #maintenance</button> <button class="btn g sm">Keep #upkeep as new</button></div>
+<span style="color:var(--jx-fg-muted)">The full article is archived with the page in Sources/. Images stay on this Mac.</span></div>
+<div class="pf"><span style="margin-right:auto;color:var(--jx-fg-muted)">Esc cancels</span><button class="btn g sm">Cancel</button><button class="btn p sm">Keep ⌘↵</button></div></div></div></div></div><figcaption><b>RSS reader with the Keep popover open (n).</b> Feeds with folders and capped counts (999+), a failing feed with its cause; the reader has Engage and Keep always visible at the top right; Keep is the only way to hold on to a post (no star, no Saved for later); no key bar; OPML import and export moved to Settings → RSS; the bottom bar keeps Previous/Next and Mark unread. The Keep popover: your note first, tag chips suggested from the catalog, a dashed “new” chip, and a near-duplicate caught before it is created (“#upkeep looks like #maintenance”). A kept post shows “Archiving…” until its archive finishes, then “In KB”.</figcaption></figure>
+<figure><div class="frame desktop"><div class="titlebar"><i></i><i></i><i></i><span>Settings · Jesinia</span></div><div class="app" data-app="launcher"><div class="hdr"><a class="home" href="#"><span class="glyph-app"></span><span class="name">Jesinia</span></a><div class="mid"><span class="crumb"><b>Settings</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot"></span><button class="iconbtn">⚙</button></div></div><div></div><div class="body" style="position:relative"><div class="book"><nav class="outline"><div class="oh"><span class="t">Settings</span><span class="m">Jesinia on this Mac · port 5374</span></div><ol><li class="e"><span class="st"></span><span>KB folder</span><span class="k"></span></li><li class="e"><span class="st"></span><span>Sync</span><span class="k"></span></li><li class="e"><span class="st"></span><span>Agents</span><span class="k"></span></li><li class="e on"><span class="st"></span><span>Tags</span><span class="k">2 uncataloged</span></li><li class="e"><span class="st"></span><span>Review</span><span class="k">3 repos</span></li><li class="e"><span class="st"></span><span>RSS</span><span class="k">214 feeds</span></li><li class="e"><span class="st"></span><span>Conflicts</span><span class="k"></span></li><li class="e"><span class="st"></span><span>About</span><span class="k"></span></li></ol><div class="of"><span>Changes save as you make them.</span></div></nav><section class="view"><div class="vtool"><input placeholder="Filter tags" style="font:inherit;padding:4px 8px;border:1px solid var(--jx-border-strong);border-radius:var(--jx-radius-sm);background:var(--jx-bg);color:var(--jx-fg)"><span class="seg"><span class="on">By name</span><span>By pages</span></span><span class="sp"><span>48 tags · 2 uncataloged</span></span></div><div class="page" style="grid-template-columns:1fr"><article class="narr" style="border-right:0;max-width:900px"><h2>Tags</h2><p style="font-size:var(--jx-text-sm);font-family:var(--jx-font-ui)">One catalog for the whole KB. Agents suggest from it; new tags need your OK.</p>
+<table class="tagtab"><tr><th>Tag</th><th>Meaning</th><th>Aliases</th><th style="text-align:right">Pages</th><th></th></tr>
+<tr><td class="t">#sqlite</td><td>SQLite and its internals</td><td class="a">sql-lite, sqlite3</td><td class="n">42</td><td><button class="btn g sm">Rename</button><button class="btn g sm">Merge…</button><button class="btn g sm">Retire</button></td></tr>
+<tr><td class="t">#maintenance</td><td>Upkeep of systems and things</td><td class="a">upkeep</td><td class="n">17</td><td><button class="btn g sm">Rename</button><button class="btn g sm">Merge…</button><button class="btn g sm">Retire</button></td></tr>
+<tr><td class="t">#agents</td><td>Coding and research agents</td><td class="a">ai-agents</td><td class="n">63</td><td><button class="btn g sm">Rename</button><button class="btn g sm">Merge…</button><button class="btn g sm">Retire</button></td></tr>
+<tr><td class="t">#old-project <span class="badge neutral">retired</span></td><td></td><td class="a"></td><td class="n">5</td><td><button class="btn g sm">Restore</button></td></tr></table>
+<div class="panel2" style="margin-top:14px"><b>Uncataloged: 2 tags found in pages but not in the catalog</b><div style="display:flex;gap:8px;align-items:center"><code>#SQLite3</code><span style="color:var(--jx-fg-muted)">3 pages · looks like #sqlite</span><span style="margin-left:auto"><button class="btn g sm">Merge into #sqlite</button><button class="btn g sm">Adopt</button><button class="btn g sm">Ignore</button></span></div><div style="display:flex;gap:8px;align-items:center"><code>#wal</code><span style="color:var(--jx-fg-muted)">1 page</span><span style="margin-left:auto"><button class="btn g sm">Merge into…</button><button class="btn g sm">Adopt</button><button class="btn g sm">Ignore</button></span></div></div></article></div><div class="vact"><button class="btn g sm">Open Tags.md in Notes</button><span class="sp"><button class="btn p sm">+ Add tag</button></span></div></section></div></div></div></div><figcaption><b>Settings → Tags.</b> Every catalog tag with meaning, aliases and page count; rename, merge and retire per row; retired tags can be restored. The Uncataloged panel lists hashtags found in pages but not in the catalog, with a suggested merge when one looks like an existing tag.</figcaption></figure>
+<figure><div class="frame desktop"><div class="titlebar"><i></i><i></i><i></i><span>Settings · Jesinia</span></div><div class="app" data-app="launcher"><div class="hdr"><a class="home" href="#"><span class="glyph-app"></span><span class="name">Jesinia</span></a><div class="mid"><span class="crumb"><b>Settings</b></span></div><div class="right"><span class="kbtn"><span class="lbl">Search or jump to…</span><kbd>⌘K</kbd></span><span class="sdot"></span><button class="iconbtn">⚙</button></div></div><div></div><div class="body" style="position:relative"><div class="book"><nav class="outline"><div class="oh"><span class="t">Settings</span><span class="m">Jesinia on this Mac · port 5374</span></div><ol><li class="e"><span class="st"></span><span>KB folder</span><span class="k"></span></li><li class="e"><span class="st"></span><span>Sync</span><span class="k"></span></li><li class="e"><span class="st"></span><span>Agents</span><span class="k"></span></li><li class="e"><span class="st"></span><span>Tags</span><span class="k">2 uncataloged</span></li><li class="e on"><span class="st"></span><span>Review</span><span class="k">3 repos</span></li><li class="e"><span class="st"></span><span>RSS</span><span class="k">214 feeds</span></li><li class="e"><span class="st"></span><span>Conflicts</span><span class="k"></span></li><li class="e"><span class="st"></span><span>About</span><span class="k"></span></li></ol><div class="of"><span>Changes save as you make them.</span></div></nav><section class="view"><div class="vtool"><span>3 watched repos</span><span class="sp"><button class="btn g sm">Quality trend ↗</button></span></div><div class="page" style="grid-template-columns:1fr"><article class="narr" style="border-right:0;max-width:900px"><h2>Review</h2>
+<div class="formrow"><span class="lbl"><b>Pre-review</b><span>What runs before you open a PR</span></span><span><span class="seg"><span class="on">Triage</span><span>Everything</span><span>On open only</span></span><br><span style="color:var(--jx-fg-muted);font-size:var(--jx-text-xs)">Triage: recommendation, correctness and findings in the background; the rest when you open the PR.</span></span></div>
+<div class="formrow"><span class="lbl"><b>Gates</b><span>Before any review starts</span></span><span>✓ Wait for CI to pass · ✓ Wait for automated reviewers (up to 30 min) · Debounce new pushes: 10 min</span></div>
+<div class="formrow"><span class="lbl"><b>Watched repos</b><span>Per-repo overrides</span></span><span><table class="tagtab"><tr><th>Repo</th><th>Automated reviewer</th><th>Pre-review</th><th>Metrics</th></tr><tr><td class="t">dalbrecht/jesinia</td><td>Codex</td><td>Everything</td><td>Edit…</td></tr><tr><td class="t">c65llc/platform</td><td>Copilot</td><td>Triage (default)</td><td>Edit…</td></tr></table></span></div>
+<div class="formrow"><span class="lbl"><b>Standards</b><span>Base, then repo, then you</span></span><span><code>~/projects/coding-standards</code> <button class="btn g sm">Change</button><br>Your overrides: 3 rules <button class="btn g sm">Edit</button></span></div>
+<div class="formrow"><span class="lbl"><b>What Jesinia thinks you know</b><span>Shapes how much background reviews show. Correct it any time.</span></span><span>
+<div class="know"><span><code>jesinia / server/services/kb</code></span><span class="bar"><span style="width:92%"></span></span><span><button class="btn g sm">Mark unknown</button></span></div>
+<div class="know"><span><code>platform / billing</code> <span style="color:var(--jx-warn);font-size:var(--jx-text-xs)">changed a lot since you last saw it</span></span><span class="bar"><span style="width:28%"></span></span><span><button class="btn g sm">Mark known</button></span></div>
+<div class="know"><span>#payments <span style="color:var(--jx-fg-muted);font-size:var(--jx-text-xs)">topic</span></span><span class="bar"><span style="width:55%"></span></span><span><button class="btn g sm">Mark known</button></span></div></span></div></article></div><div class="vact"><button class="btn g sm">Add repo</button><span class="sp"><button class="btn g sm">Reset to defaults</button></span></div></section></div></div></div></div><figcaption><b>Settings → Review.</b> The pre-review setting and gates, watched repos with per-repo reviewer, pre-review and metrics overrides, the standards layers, and “What Jesinia thinks you know”, where you can correct the knowledge model.</figcaption></figure>
+<figure><div class="frame desktop"><div class="titlebar"><i></i><i></i><i></i><span>Settings · Jesinia</span></div><div class="app" data-app="launcher"><div class="hdr"><a class="home" href="#"><span class="glyph-app"></span><span class="name">Jesinia</span></a><div class="mid"><span class="crumb"><b>Settings</b></span></div><div class="right"><span class="sdot"></span></div></div><div></div><div class="body"><div class="book"><nav class="outline"><div class="oh"><span class="t">Settings</span><span class="m">Jesinia on this Mac · port 5374</span></div><ol><li class="e"><span class="st"></span><span>KB folder</span><span class="k"></span></li><li class="e"><span class="st"></span><span>Sync</span><span class="k"></span></li><li class="e"><span class="st"></span><span>Agents</span><span class="k"></span></li><li class="e"><span class="st"></span><span>Tags</span><span class="k">2 uncataloged</span></li><li class="e"><span class="st"></span><span>Review</span><span class="k">3 repos</span></li><li class="e on"><span class="st"></span><span>RSS</span><span class="k">214 feeds</span></li><li class="e"><span class="st"></span><span>Conflicts</span><span class="k"></span></li></ol><div class="of"><span>Changes save as you make them.</span></div></nav><section class="view"><div class="vtool"><span>214 feeds in 9 folders</span></div><div class="page" style="grid-template-columns:1fr"><article class="narr" style="border-right:0;max-width:900px"><h2>RSS</h2>
+<div class="formrow"><span class="lbl"><b>Import OPML</b><span>From another reader or an old Google Reader export</span></span><span><button class="btn s sm">Choose file…</button><br><span style="color:var(--jx-fg-muted);font-size:var(--jx-text-xs)">Folders are kept (one level). Feeds you already follow are skipped.</span></span></div>
+<div class="formrow"><span class="lbl"><b>Export OPML</b><span>Every feed and folder</span></span><span><button class="btn g sm">Download feeds.opml</button></span></div>
+<div class="formrow"><span class="lbl"><b>Keep unread posts for</b><span>Kept posts stay forever</span></span><span><span class="seg"><span>14 days</span><span class="on">30 days</span><span>90 days</span></span></span></div>
+<div class="formrow"><span class="lbl"><b>Kept posts go to</b><span>KB folder</span></span><span><code>Sources/</code> <button class="btn g sm">Change</button></span></div>
+</article></div><div class="vact"><span class="sp"><button class="btn g sm">Refresh all feeds now</button></span></div></section></div></div></div></div><figcaption><b>Settings → RSS (new).</b> OPML import and export live here, with retention and where kept posts go.</figcaption></figure>
+</main></body></html>
