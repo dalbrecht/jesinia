@@ -17,6 +17,10 @@ def _snippet_html(raw: str) -> str:
     return html.escape(raw).replace(_OPEN, "<mark>").replace(_CLOSE, "</mark>")
 
 
+# SQLite's messages for a MATCH expression it cannot parse (as opposed to a broken index).
+_QUERY_ERRORS = ("fts5", "syntax error", "unterminated string", "no such column", "malformed MATCH")
+
+
 class FtsIndex:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
@@ -65,8 +69,11 @@ class FtsIndex:
         params.append(limit)
         try:
             rows = self.conn.execute(sql, params).fetchall()
-        except sqlite3.OperationalError:
-            return []
+        except sqlite3.OperationalError as exc:
+            # Only a query FTS5 cannot parse means "no hits"; a broken index must surface.
+            if any(marker in str(exc) for marker in _QUERY_ERRORS):
+                return []
+            raise
         return [
             SearchHit(
                 source=r[0],

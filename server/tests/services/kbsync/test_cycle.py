@@ -309,3 +309,27 @@ async def test_backoff_never_overflows(env: Env) -> None:
     r = await env.sync.run_cycle("manual")
     assert r.outcome == "error"
     assert env.sync.status().next_run == env.clock.now() + timedelta(hours=4)
+
+
+async def test_temp_files_are_never_staged(env: Env) -> None:
+    (env.work / "Notes/a.md").write_text("x\n")
+    (env.work / "Notes/.a.md.abc.jesinia-tmp").write_text("half written")
+    r = await env.sync.run_cycle("manual")
+    assert r.outcome == "pushed"
+    tracked = git(env.work, "ls-files")
+    assert "Notes/a.md" in tracked and "jesinia-tmp" not in tracked
+
+
+async def test_cancelled_git_command_is_killed(tmp_path: Path) -> None:
+    import asyncio
+    import time
+
+    git(tmp_path, "init", "-q")
+    runner = GitRunner(tmp_path)
+    started = time.monotonic()
+    slow = asyncio.create_task(runner.run("-c", "alias.nap=!sleep 30", "nap"))
+    await asyncio.sleep(0.3)
+    slow.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await slow
+    assert time.monotonic() - started < 5  # killed and reaped, not left to finish

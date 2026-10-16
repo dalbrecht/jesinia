@@ -97,12 +97,13 @@ async def test_failed_startup_reindex_is_reported(
     cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
 
-    async def broken(self: SearchService) -> int:
+    async def broken(self: SearchService, id: object) -> None:
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(SearchService, "reindex", broken)
+    monkeypatch.setattr(SearchService, "_index_page", broken)
     root = cfg.data_dir.parent / "kb-r"
     root.mkdir()
+    (root / "page.md").write_text("one page, so the rebuild has something to index\n")
     mod = SearchModule()
     async with lifespan_client(create_app(replace(cfg, kb_path=root), [KbModule(), mod])) as c:
         for _ in range(50):

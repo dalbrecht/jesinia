@@ -30,6 +30,8 @@ from jesinia.services.kbsync.domain.state import GitState
 
 Outcome = Literal["skipped", "committed", "pushed", "conflict", "blocked", "error"]
 Trigger = Literal["timer", "manual", "shutdown"]
+# Never stage Jesinia's atomic-write temp files (kb.infrastructure.fs.TMP_SUFFIX).
+ADD_ARGS = ("add", "-A", "--", ".", ":(exclude,glob)**/*.jesinia-tmp")
 BACKOFF_BASE = timedelta(minutes=5)
 MAX_BACKOFF_EXPONENT = 16  # 5 min × 2^16 is far beyond any interval
 
@@ -196,7 +198,7 @@ class SyncService:
             if state.blocked:
                 return SyncResult("blocked", state.problem_text or "blocked")
 
-        await git.run("add", "-A")
+        await git.run(*ADD_ARGS)
         staged = parse_name_status((await git.run("diff", "--cached", "--name-status", "-M")).out)
         committed = False
         if staged:

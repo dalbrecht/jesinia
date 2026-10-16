@@ -11,6 +11,9 @@ from pathlib import Path, PurePosixPath
 
 from jesinia.services.kb.application.errors import PathOutsideKb, StaleWrite
 
+# Atomic-write temp files; kbsync never stages them (they may vanish mid-`git add`).
+TMP_SUFFIX = ".jesinia-tmp"
+
 
 def _move_no_clobber(src: Path, dst: Path) -> None:
     """Move ``src`` to ``dst``, failing if ``dst`` exists (atomic via link(2) + unlink)."""
@@ -71,7 +74,7 @@ class LocalFiles:
         # exclusively (O_EXCL: never follows or reuses a planted symlink).
         if not path.parent.resolve().is_relative_to(self.root.resolve()):
             raise PathOutsideKb(f"{disk} resolves outside the KB")
-        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=TMP_SUFFIX)
         tmp = Path(tmp_name)
         try:
             os.fchmod(fd, 0o644)

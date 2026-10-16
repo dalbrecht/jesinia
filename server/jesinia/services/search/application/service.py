@@ -90,6 +90,7 @@ class SearchService:
         self._index = index
         self._kb = kb
         self.indexing = False
+        self.error: str | None = None  # the last rebuild's failure, until one succeeds
 
     def subscribe(self, bus: EventBus) -> None:
         bus.subscribe("kb.page_changed", self._on_page_changed)
@@ -142,6 +143,11 @@ class SearchService:
                 await self._index_page(row.id)
                 count += 1
                 await asyncio.sleep(0)  # stay responsive while indexing large KBs
+        except Exception as exc:
+            self.error = f"reindex failed: {exc}"
+            raise
+        else:
+            self.error = None  # a later successful rebuild clears an earlier failure
             return count
         finally:
             self.indexing = False

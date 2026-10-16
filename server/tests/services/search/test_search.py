@@ -120,3 +120,38 @@ def test_flatten_meta() -> None:
     from jesinia.services.search.application.service import flatten_meta
 
     assert flatten_meta({"a": 1, "b": ["x", {"c": None}], "d": None}) == "a 1 b x c d"
+
+
+def test_index_failures_are_not_hidden_as_no_results(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import sqlite3
+
+    import pytest
+
+    from jesinia.core.db import open_db
+    from jesinia.services.search.infrastructure.fts import FtsIndex
+    from tests.services.search.conftest import SEARCH_DB
+
+    conn = open_db(tmp_path, SEARCH_DB)
+    conn.execute("DROP TABLE docs")
+    with pytest.raises(sqlite3.OperationalError):
+        FtsIndex(conn).match('"ok"', 5, None)
+    conn.close()
+
+
+async def test_successful_rebuild_clears_an_earlier_failure(env: Env, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import pytest
+
+    from jesinia.services.search.application.service import SearchService
+
+    await env.kb.write(PageDraft(None, "P", N, "x"))
+    real = SearchService._index_page
+
+    async def broken(self: SearchService, id: object) -> None:
+        raise RuntimeError("disk I/O error")
+
+    monkeypatch.setattr(SearchService, "_index_page", broken)
+    with pytest.raises(RuntimeError):
+        await env.search.reindex()
+    assert env.search.error == "reindex failed: disk I/O error"
+    monkeypatch.setattr(SearchService, "_index_page", real)
+    assert await env.search.reindex() == 1 and env.search.error is None
