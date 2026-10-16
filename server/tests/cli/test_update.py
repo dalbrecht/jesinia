@@ -17,6 +17,7 @@ class Git(System):
     """Scripted git/make/launchctl: answers keyed by a substring of the command."""
 
     answers: dict[str, tuple[int, str]] = field(default_factory=dict)
+    makes: list[int] = field(default_factory=list)  # exit codes for successive `make` runs
     calls: list[str] = field(default_factory=list)
     out: list[str] = field(default_factory=list)
 
@@ -27,6 +28,8 @@ class Git(System):
     def run(self, argv: list[str], *, check: bool = True) -> tuple[int, str]:
         cmd = " ".join(argv)
         self.calls.append(cmd)
+        if argv[0] == "make" and self.makes:
+            return self.makes.pop(0), ""
         for key, answer in self.answers.items():
             if key in cmd:
                 if check and answer[0] != 0:
@@ -53,8 +56,10 @@ def healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep: True)
 
 
-def run(cfg: Config, answers: dict[str, tuple[int, str]], **kw: object) -> tuple[str, Git]:
-    git = Git(answers={**BASE, **answers})
+def run(
+    cfg: Config, answers: dict[str, tuple[int, str]], makes: list[int] | None = None, **kw: object
+) -> tuple[str, Git]:
+    git = Git(answers={**BASE, **answers}, makes=list(makes or []))
     return upd.update(cfg, git, Path("/r"), **kw), git  # type: ignore[arg-type]
 
 
@@ -83,18 +88,33 @@ def test_skips_safely(cfg: Config, answers: dict[str, tuple[int, str]], why: str
     assert why in result and not any(" merge " in c for c in git.calls)
 
 
-def test_build_failure_rolls_back(cfg: Config, healthy: None) -> None:
-    result, git = run(cfg, {"make": (2, "")})
+def test_build_failure_rolls_back_without_restarting(cfg: Config, healthy: None) -> None:
+    result, git = run(cfg, {}, makes=[2, 0])
     assert result == "failed: bbbbbbbb did not build cleanly; rolled back to aaaaaaaa"
     assert "git -C /r reset --hard --quiet aaaaaaaa1111" in git.calls
+    assert not any("kickstart" in c for c in git.calls)  # the old server kept running
+
+
+def test_failed_recovery_build_leaves_the_server_alone(cfg: Config, healthy: None) -> None:
+    result, git = run(cfg, {}, makes=[2, 2])
+    assert "rebuilding aaaaaaaa also failed" in result
+    assert not any("kickstart" in c for c in git.calls)
 
 
 def test_unhealthy_restart_rolls_back(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     results = iter([False, True])
     monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep: next(results))
     result, git = run(cfg, {})
-    assert "did not restart cleanly" in result
+    assert result == "failed: bbbbbbbb did not restart cleanly; rolled back to aaaaaaaa"
     assert sum(c.startswith("launchctl kickstart") for c in git.calls) == 2
+
+
+def test_rollback_that_is_also_unhealthy_says_so(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(upd, "_healthy", lambda cfg, sleep: False)
+    result, _ = run(cfg, {})
+    assert "aaaaaaaa is not healthy either" in result
 
 
 def test_without_restart(cfg: Config) -> None:

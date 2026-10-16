@@ -251,7 +251,8 @@ def unregister(sys: System) -> None:
         sys.run([claude, "plugin", "marketplace", "remove", "jesinia"], check=False)
     if codex := sys.which("codex"):
         sys.run([codex, "mcp", "remove", MCP_NAME], check=False)
-        set_codex_instructions(sys, False)
+    # A file edit, not a codex command: clean it up even if the CLI is gone.
+    set_codex_instructions(sys, False)
 
 
 def refresh_registrations(cfg: Config, sys: System | None = None) -> None:
@@ -337,6 +338,9 @@ def _set_auto_update(sys: System, uv: str, cfg: Config, extra: Mapping[str, str]
     # Pin the remote the user installed from: the updater refuses to pull if it changes.
     remote = sys.run(["git", "-C", str(REPO), "remote", "get-url", "origin"], check=False)[1]
     env = {**extra, "JESINIA_UPDATE_REMOTE": remote} if remote else dict(extra)
+    # launchd doesn't inherit the setup shell: git fetch over SSH needs the agent socket.
+    if sock := sys.environ.get("SSH_AUTH_SOCK"):
+        env["SSH_AUTH_SOCK"] = sock
     plist = render_updater_plist(
         Path(uv), REPO, cfg.log_dir, sys.environ.get("PATH", "/usr/bin:/bin"), env
     )

@@ -84,12 +84,22 @@ def _update(cfg: Config, sys: System, repo: Path, say: Callable[[str], str], res
         return say(f"updated {old[:8]} → {new[:8]}")
 
     # Roll back to the version that was running.
-    sys.run([*git, "reset", "--hard", "--quiet", old])
-    sys.run(["make", "-C", str(repo), "install", "build"], check=False)
-    if restart:
-        _restart(cfg, sys)
     stage = "build" if not built else "restart"
-    return say(f"failed: {new[:8]} did not {stage} cleanly; rolled back to {old[:8]}")
+    sys.run([*git, "reset", "--hard", "--quiet", old])
+    if sys.run(["make", "-C", str(repo), "install", "build"], check=False)[0] != 0:
+        # Don't touch a server that may still be running fine on the old build.
+        return say(
+            f"failed: {new[:8]} did not {stage} cleanly and rebuilding {old[:8]} also failed; "
+            "the server was left as it was - run `make install build` and check update.log"
+        )
+    if not built:
+        # The running server never changed: no restart needed.
+        return say(f"failed: {new[:8]} did not build cleanly; rolled back to {old[:8]}")
+    if restart and not _restart(cfg, sys):
+        return say(
+            f"failed: {new[:8]} did not restart cleanly, and {old[:8]} is not healthy either"
+        )
+    return say(f"failed: {new[:8]} did not restart cleanly; rolled back to {old[:8]}")
 
 
 def _restart(cfg: Config, sys: System) -> bool:

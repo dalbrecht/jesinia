@@ -367,3 +367,23 @@ def test_updater_pins_the_install_remote(tmp_home: Path, kb: Path, healthy: None
         (tmp_home / "Library/LaunchAgents/com.jesinia.updater.plist").read_bytes()
     )["EnvironmentVariables"]
     assert env["JESINIA_UPDATE_REMOTE"] == "https://github.com/dalbrecht/jesinia.git"
+
+
+def test_updater_gets_the_ssh_agent_socket(tmp_home: Path, kb: Path, healthy: None) -> None:
+    inst.install(kb, Spy(yes=True), auto_update=True)
+    env = plistlib.loads(
+        (tmp_home / "Library/LaunchAgents/com.jesinia.updater.plist").read_bytes()
+    )["EnvironmentVariables"]
+    assert env["SSH_AUTH_SOCK"] == "/tmp/ssh"
+
+
+def test_uninstall_cleans_codex_instructions_without_the_cli(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    inst.install(kb, Spy(yes=True))
+    agents_md = tmp_home / ".codex/AGENTS.md"
+    assert "jesinia:begin" in agents_md.read_text()
+    gone = Spy(yes=True)
+    gone.which = lambda n: "/bin/uv" if n == "uv" else None
+    inst.uninstall(gone, purge_data=False)
+    assert "jesinia:begin" not in agents_md.read_text()
