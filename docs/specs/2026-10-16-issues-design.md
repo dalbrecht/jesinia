@@ -283,6 +283,51 @@ anything changes")**. Local-only drops apply at once, with Undo: queues, queue o
 and touch sensors, such as `@dnd-kit` (MIT), wrapped once in `@jesinia/design` as `Draggable`,
 `DropTarget` and `SortableList`, so every app shares it.
 
+## 6.2 Rules settled during the builder check (builder's calls)
+
+- **Build order:** Issues is built after RSS PR 1 (the core idempotency keys) and review PR 1
+  (GitHub writes with `require_owner`, recorded fixtures). It reuses both and adds only
+  issue-specific writes. Agent JSON jobs reuse the review tool's job runner once that lands;
+  until then Issues uses the same pattern in its own module.
+- **Epics:**
+  - An issue is an epic when it has the `epic` label **or** has sub-issues. When the two
+    disagree, Jesinia suggests adding the label.
+  - `initiative` sits above epics, with the same rule and its own label.
+  - An epic needs **priority** but not type or area. Its readiness is derived: ready when every
+    *direct* child is ready.
+  - Children in another repo are allowed (GitHub supports them) but get a warning, "won't fit
+    one PR".
+- **Applying an approval:**
+  - Each approval runs as one **ordered series** of calls for that issue, in this order:
+    1. labels;
+    2. parent epic link;
+    3. close (if any);
+    4. comment (if any).
+  - Labels are applied as **add/remove against a fresh read**, never by replacing the whole
+    set, so a change someone made on GitHub since the last sync isn't wiped.
+  - The series stops at the first failure, keeps what succeeded, and shows exactly which steps
+    applied and which didn't, with the cause, so it can be retried. Replace §3.1's "single
+    write" with this.
+- **Triage state:**
+  - "Triaged" means **complete** (§2), however the labels got there, including directly on
+    GitHub.
+  - The **Inbox** holds issues opened after the repo was added, plus any issue that *becomes*
+    incomplete. Comments and body edits don't send an issue back.
+  - When a repo is first added, its existing issues go to the **Backlog**, not the Inbox.
+- **Labels on GitHub:**
+  - An alias counts toward completeness.
+  - Jesinia writes the label name that already exists on GitHub until the repo is migrated.
+  - Jesinia never implicitly creates a label. Canonical labels are created in an approved
+    **setup batch** per repo.
+  - **Migration** relabels affected issues and then deletes the old labels, as one previewed,
+    approved batch.
+- **New areas:** the agent may propose an area that isn't in the schema yet, marked *new*. It
+  joins the schema, and is created on GitHub, only when the author approves (as with tags).
+- **Order:** only queues hold an order. A priority suggestion's ordering is a draft the author
+  turns into a queue, or discards.
+- **Duplicates:** accepting a duplicate closes the issue as a duplicate (`state_reason`) with a
+  comment linking the original, as an approved change in the series above.
+
 ## 7. Architecture
 
 - **The `issues` app module** (`server/jesinia/apps/issues/`, owning `issues.sqlite`), layered
