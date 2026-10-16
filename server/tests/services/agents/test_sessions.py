@@ -75,7 +75,7 @@ def make(tmp_path: Path, runner: object) -> SessionService:
         SqliteSessionStore(conn),
         {"fake": runner},  # type: ignore[dict-item]
         tmp_path / "sessions",
-        "http://127.0.0.1:4870/mcp",
+        "http://127.0.0.1:5374/mcp",
         lambda: TOOLS,
     )
 
@@ -133,7 +133,7 @@ async def test_session_dir_pack_and_token(svc: SessionService) -> None:
     assert (d / "subject.md").read_text().startswith('<untrusted-data source="kb:p1">')
     cfg = json.loads((d / "mcp.json").read_text())["mcpServers"]["jesinia"]
     assert (
-        cfg["url"] == "http://127.0.0.1:4870/mcp"
+        cfg["url"] == "http://127.0.0.1:5374/mcp"
         and oct((d / "mcp.json").stat().st_mode)[-3:] == "600"
     )
     token = cfg["headers"]["Authorization"].removeprefix("Bearer ")

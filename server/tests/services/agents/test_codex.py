@@ -22,7 +22,7 @@ def test_codex_argv_read_only_sandbox(req: TurnRequest) -> None:
         req.workdir
     )
     overrides = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
-    assert 'mcp_servers.jesinia.url="http://127.0.0.1:4870/mcp"' in overrides
+    assert 'mcp_servers.jesinia.url="http://127.0.0.1:5374/mcp"' in overrides
     assert 'mcp_servers.jesinia.bearer_token_env_var="JESINIA_MCP_TOKEN"' in overrides
     assert 'mcp_servers.jesinia.enabled_tools=["kb_read", "kb_search"]' in overrides
     assert argv[-1] == "-" and "resume" not in argv

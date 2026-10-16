@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-Jesinia is a personal knowledge base plus a small suite of local apps that feed it. A Python (FastAPI, uv) server under a per-user LaunchAgent serves React PWAs at `http://127.0.0.1:4870/`, mediates between the user's local AI agents (Claude Code, Codex) and shared services (KB, search, KB git sync, agents, MCP), and treats Markdown files on disk as the source of truth. License: AGPL-3.0-or-later.
+Jesinia is a personal knowledge base plus a small suite of local apps that feed it. A Python (FastAPI, uv) server under a per-user LaunchAgent serves React PWAs at `http://127.0.0.1:5374/`, mediates between the user's local AI agents (Claude Code, Codex) and shared services (KB, search, KB git sync, agents, MCP), and treats Markdown files on disk as the source of truth. License: AGPL-3.0-or-later.
 
 ## Key Commands
 

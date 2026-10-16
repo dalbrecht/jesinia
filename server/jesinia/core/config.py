@@ -21,7 +21,9 @@ from types import MappingProxyType
 
 from jesinia.core.paths import default_log_dir
 
-DEFAULT_PORT = 4870
+# "JESI" on a phone keypad: memorable, below the ephemeral range, clear of common dev
+# ports (and of macOS AirPlay on 5000/7000).
+DEFAULT_PORT = 5374
 DEFAULT_INTERVAL = timedelta(hours=4)
 DEFAULT_QUIET = timedelta(seconds=30)
 DEFAULT_FOLDERS: Mapping[str, str] = MappingProxyType({"note": "Notes"})

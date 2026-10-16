@@ -232,10 +232,27 @@ def install(
     kb_path: Annotated[Path, typer.Option("--kb-path", help="The KB folder")],
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print actions only")] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Don't ask")] = False,
+    auto_update: Annotated[
+        bool | None,
+        typer.Option(
+            "--auto-update/--no-auto-update",
+            help="Keep this checkout on the latest main (an update agent checks every 15 min)",
+        ),
+    ] = None,
 ) -> None:
     """Install the LaunchAgent, start the server, and register agents."""
     sys_ = install_mod.System(dry_run=dry_run, yes=yes, echo=typer.echo)
-    raise typer.Exit(install_mod.install(kb_path, sys_))
+    raise typer.Exit(install_mod.install(kb_path, sys_, auto_update=auto_update))
+
+
+@app.command()
+def update() -> None:
+    """Fast-forward this checkout to origin/main, rebuild, and restart (with rollback)."""
+    from jesinia.cli.update import update as run_update
+
+    result = run_update(_cfg(), install_mod.System(echo=typer.echo))
+    if result.startswith("failed"):
+        raise typer.Exit(1)
 
 
 @app.command()

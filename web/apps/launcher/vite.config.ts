@@ -22,5 +22,5 @@ export default defineConfig({
   plugins: [react(), serviceWorker()],
   // No data: URIs (the CSP allows same-origin fonts and images only).
   build: { outDir: out, emptyOutDir: true, assetsInlineLimit: 0 },
-  server: { proxy: { "/api": "http://127.0.0.1:4870", "/healthz": "http://127.0.0.1:4870" } },
+  server: { proxy: { "/api": "http://127.0.0.1:5374", "/healthz": "http://127.0.0.1:5374" } },
 });

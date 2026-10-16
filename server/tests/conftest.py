@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from jesinia.core import auth
 from jesinia.core.config import Config
 
-BASE_URL = "http://127.0.0.1:4870"
+BASE_URL = "http://127.0.0.1:5374"
 
 
 @pytest.fixture

@@ -66,7 +66,11 @@ def test_plist_is_valid_and_keepalive_on_crash_only(tmp_path: Path) -> None:
     p = plistlib.loads(
         render_plist(Path("/opt/uv"), Path("/r"), tmp_path, "/usr/bin", "/tmp/ssh").encode()
     )
-    assert p["Label"] == "com.jesinia.server" and p["KeepAlive"] == {"SuccessfulExit": False}
+    assert (
+        p["Label"] == "com.jesinia.server"
+        and p["KeepAlive"] is True
+        and p["ThrottleInterval"] == 10
+    )
     assert p["EnvironmentVariables"]["SSH_AUTH_SOCK"] == "/tmp/ssh"
     assert p["ProgramArguments"] == ["/opt/uv", "run", "--project", "/r/server", "jesinia", "serve"]
     assert p["RunAtLoad"] is True and p["StandardErrorPath"].startswith(str(tmp_path))
@@ -96,7 +100,7 @@ def test_install_then_idempotent(tmp_home: Path, kb: Path, healthy: None) -> Non
     assert any(c[:3] == ["/bin/claude", "mcp", "add"] for c in spy.calls)
     codex = tomllib.loads((tmp_home / ".codex/config.toml").read_text())
     assert codex["mcp_servers"]["jesinia"]["http_headers"]["Authorization"] == f"Bearer {token}"
-    assert spy.out[-1].endswith("Open: http://127.0.0.1:4870/login?nonce=n")
+    assert spy.out[-1].endswith("Open: http://127.0.0.1:5374/login?nonce=n")
 
     spy2 = Spy(yes=True)
     assert inst.install(kb, spy2) == 0
@@ -128,16 +132,16 @@ def test_wait_healthy_times_out(tmp_home: Path, monkeypatch: pytest.MonkeyPatch)
     cfg = load_config(tmp_home / "c/config.toml")
     monkeypatch.setattr(inst, "HEALTH_TIMEOUT", 0.0)
     with respx.mock:
-        respx.get("http://127.0.0.1:4870/healthz").mock(side_effect=ConnectError("x"))
+        respx.get("http://127.0.0.1:5374/healthz").mock(side_effect=ConnectError("x"))
         assert inst._wait_healthy(Spy(), cfg) is False
-        respx.get("http://127.0.0.1:4870/healthz").mock(return_value=Response(200, json=HEALTHY))
+        respx.get("http://127.0.0.1:5374/healthz").mock(return_value=Response(200, json=HEALTHY))
         assert inst._wait_healthy(Spy(), cfg) is True
     monkeypatch.setattr(inst, "HEALTH_TIMEOUT", 5.0)
     slept: list[float] = []
     spy = Spy()
     spy.sleep = slept.append
     with respx.mock:
-        respx.get("http://127.0.0.1:4870/healthz").mock(
+        respx.get("http://127.0.0.1:5374/healthz").mock(
             side_effect=[ConnectError("x"), Response(200, json=HEALTHY)]
         )
         assert inst._wait_healthy(spy, cfg) is True and slept == [0.5]
@@ -250,12 +254,96 @@ def test_degraded_server_is_not_healthy(tmp_home: Path, monkeypatch: pytest.Monk
         "modules": {"kb": {"ok": True, "detail": "ok"}, "agents": {"ok": False, "detail": "x"}},
     }
     with respx.mock:
-        respx.get("http://127.0.0.1:4870/healthz").mock(return_value=Response(200, json=degraded))
+        respx.get("http://127.0.0.1:5374/healthz").mock(return_value=Response(200, json=degraded))
         assert inst._wait_healthy(Spy(), cfg) is False
-        respx.get("http://127.0.0.1:4870/healthz").mock(
+        respx.get("http://127.0.0.1:5374/healthz").mock(
             return_value=Response(200, json=optional_only)
         )
         assert inst._wait_healthy(Spy(), cfg) is True
-        respx.get("http://127.0.0.1:4870/healthz").mock(return_value=Response(200, text="not json"))
+        respx.get("http://127.0.0.1:5374/healthz").mock(return_value=Response(200, text="not json"))
         assert inst._wait_healthy(Spy(), cfg) is False
     assert inst.unhealthy_modules([]) == ["?"]
+
+
+def test_updater_plist(tmp_path: Path) -> None:
+    p = plistlib.loads(
+        inst.render_updater_plist(Path("/opt/uv"), Path("/r"), tmp_path, "/usr/bin").encode()
+    )
+    assert (
+        p["Label"] == "com.jesinia.updater" and p["StartInterval"] == 900 and p["RunAtLoad"] is True
+    )
+    assert p["ProgramArguments"][-2:] == ["jesinia", "update"]
+    assert p["StandardOutPath"] == str(tmp_path / "update.log")
+
+
+def test_auto_update_on_then_off(tmp_home: Path, kb: Path, healthy: None) -> None:
+    updater = tmp_home / "Library/LaunchAgents/com.jesinia.updater.plist"
+    spy = Spy(yes=True)
+    assert inst.install(kb, spy, auto_update=True) == 0
+    assert updater.exists()
+    assert ["launchctl", "bootstrap"] in [c[:2] for c in spy.calls if "updater" in " ".join(c)]
+    assert inst.install(kb, Spy(yes=True)) == 0 and updater.exists()  # None keeps it
+    assert inst.install(kb, Spy(yes=True), auto_update=False) == 0 and not updater.exists()
+    inst.install(kb, Spy(yes=True), auto_update=True)
+    inst.uninstall(Spy(yes=True), purge_data=False)
+    assert not updater.exists()
+
+
+def test_agents_get_the_plugin_and_codex_instructions(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    agents_md = tmp_home / ".codex/AGENTS.md"
+    agents_md.parent.mkdir(parents=True)
+    agents_md.write_text("# My own rules\n\nBe brief.\n")
+    spy = Spy(yes=True)
+    inst.install(kb, spy)
+    assert ["/bin/claude", "plugin", "install", "jesinia@jesinia", "--scope", "user"] in spy.calls
+    assert any(
+        c[:4] == ["/bin/claude", "plugin", "marketplace", "add"]
+        and c[4].endswith("skills/claude-code")
+        for c in spy.calls
+    )
+    text = agents_md.read_text()
+    assert text.startswith("# My own rules") and text.count("<!-- jesinia:begin") == 1
+    inst.install(kb, Spy(yes=True))  # re-install: still exactly one block
+    assert agents_md.read_text().count("<!-- jesinia:begin") == 1
+    spy2 = Spy(yes=True)
+    inst.uninstall(spy2, purge_data=False)
+    assert agents_md.read_text() == "# My own rules\n\nBe brief.\n"
+    assert ["/bin/claude", "plugin", "uninstall", "jesinia@jesinia"] in spy2.calls
+    inst.uninstall(Spy(yes=True), purge_data=False)  # no block: unchanged
+    agents_md.unlink()
+    inst.uninstall(Spy(yes=True), purge_data=False)  # no file: nothing created
+    assert not agents_md.exists()
+    dry = Spy(dry_run=True)
+    inst.set_codex_instructions(dry, True)
+    assert "would update the Jesinia section" in dry.out[-1]
+
+
+def test_command_shim(tmp_home: Path, kb: Path, healthy: None) -> None:
+    shim = tmp_home / ".local/bin/jesinia"
+    spy = Spy(yes=True)
+    inst.install(kb, spy)
+    text = shim.read_text()
+    assert (
+        text.startswith("#!/bin/sh\n# jesinia command shim")
+        and '"/bin/uv" run --quiet --project' in text
+    )
+    assert shim.stat().st_mode & 0o777 == 0o755
+    assert any("add" in o and ".local/bin" in o for o in spy.out)  # not on the spy's PATH
+    inst.uninstall(Spy(yes=True), purge_data=False)
+    assert not shim.exists()
+    shim.parent.mkdir(parents=True, exist_ok=True)
+    shim.write_text("#!/bin/sh\necho mine\n")
+    other = Spy(yes=True)
+    inst.install(kb, other)
+    assert shim.read_text() == "#!/bin/sh\necho mine\n" and any(
+        "left alone" in o for o in other.out
+    )
+    inst.uninstall(Spy(yes=True), purge_data=False)
+    assert shim.exists()  # someone else's file is never removed
+    on_path = Spy(yes=True)
+    on_path.environ = {**on_path.environ, "PATH": f"{shim.parent}:/usr/bin"}
+    shim.unlink()
+    inst.install(kb, on_path)
+    assert not any("add" in o and ".local/bin" in o for o in on_path.out)

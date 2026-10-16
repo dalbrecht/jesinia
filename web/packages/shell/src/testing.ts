@@ -10,7 +10,7 @@ export type Routes = Record<string, Route | object>;
 export function fakeClient(routes: Routes): { client: JesiniaClient; calls: Request[] } {
   const calls: Request[] = [];
   const client = createClient({
-    baseUrl: "http://127.0.0.1:4870",
+    baseUrl: "http://127.0.0.1:5374",
     fetch: async (req: Request) => {
       calls.push(req);
       const key = `${req.method} ${new URL(req.url).pathname}`;
