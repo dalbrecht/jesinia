@@ -736,7 +736,7 @@ def test_sanitize_strips_script_and_handlers():
 - `doctor` checks: config readable + 0600; KB path exists/writable; git mode + `git ls-remote` reachability (timeout 10 s); `uv`, `node`, `pnpm`, `gh` (+ `gh auth status`), `claude`, `codex` presence/versions; LaunchAgent loaded (`launchctl print gui/$UID/com.jesinia.server`); server `/healthz`. Each line `ok|warn|fail <check>: <detail> [→ remedy]`; exit 1 if any `fail`.
 - `backup` copies every `DbClass.HISTORY` database (sqlite online backup API) plus `config.toml` into `<dest or data_dir/backups>/<UTC timestamp>/`.
 
-- [ ] **Step 1: Failing tests** (Typer `CliRunner`, `JESINIA_HOME=tmp`):
+- [x] **Step 1: Failing tests** (Typer `CliRunner`, `JESINIA_HOME=tmp`):
 
 ```python
 def test_config_set_and_get(cli): 
@@ -749,7 +749,7 @@ def test_doctor_reports_missing_kb_as_fail_with_remedy(cli): ...  # "fail kb.pat
 def test_openapi_includes_kb_routes(cli): assert "/api/kb/pages/{id}" in json.loads(cli(["openapi"]).stdout)["paths"]
 ```
 
-- [ ] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(cli): jesinia CLI with doctor, backup, and config`.
+- [x] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(cli): jesinia CLI with doctor, backup, and config`.
 
 ### Task 21: launchd, `./setup`, install/uninstall, agent registration
 

@@ -11,9 +11,13 @@ dependencies = [
     "mcp>=1.15",
     "nh3>=0.2",
     "pyyaml>=6.0.2",
+    "typer>=0.15",
     "uvicorn>=0.37",
     "watchfiles>=1.1",
 ]
+
+[project.scripts]
+jesinia = "jesinia.cli.main:app"
 
 [dependency-groups]
 dev = [
