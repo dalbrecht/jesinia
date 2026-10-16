@@ -1,6 +1,6 @@
 # Jesinia — Issues Design
 
-- **Status:** Draft for review
+- **Status:** Approved (2026-10-16)
 - **Date:** 2026-10-16
 - **Author:** Don Albrecht (with Claude)
 - **Builds on:**
@@ -325,6 +325,24 @@ and touch sensors, such as `@dnd-kit` (MIT), wrapped once in `@jesinia/design` a
   joins the schema, and is created on GitHub, only when the author approves (as with tags).
 - **Order:** only queues hold an order. A priority suggestion's ordering is a draft the author
   turns into a queue, or discards.
+- **Board views:**
+  - **Readiness** and **priority** columns are drop targets, and dropping sets that label.
+  - **Status** (Triage, Backlog, In progress (has a linked open PR), In review, Done) is
+    derived and read-only, with no drops.
+- **Which actions write at once:**
+  - **Approving a suggestion** applies at once, since the approval is the go-ahead.
+  - **Every other GitHub-changing action** stages in the Pending changes tray: drags, the
+    toolbar pickers, menu actions and the bulk bar. One apply engine serves both.
+- **Milestones:**
+  - A milestone can be a **queue item and a filter**, standing for its open issues, with
+    readiness rolled up and a brief built from them.
+  - Jesinia never writes milestones.
+- **Theme labels:**
+  - Publishing a theme creates a `theme:<tag>` label. `theme:` is an allowed free-form prefix,
+    like `review:*` and `campaign:*`.
+  - A new theme passes the tag catalog's instant, catalog-only near-duplicate check, with no
+    agent involved, so a drag never waits on a runner.
+- **Assignees:** not suggested or written. Assignment belongs to the later dispatch tool.
 - **Duplicates:** accepting a duplicate closes the issue as a duplicate (`state_reason`) with a
   comment linking the original, as an approved change in the series above.
 
