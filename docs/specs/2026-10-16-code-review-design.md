@@ -84,6 +84,12 @@ volume)**. It extends the wireframe's PR picker:
   approved** group. No action is needed.
 - **Watched repos** are chosen in Settings → Review, starting from the repos where the author
   has review requests.
+- **Load a PR (user):** the author can load any PR for review on demand, whether or not it's
+  in the queue or a watched repo.
+  - Ways to load: paste a PR URL or `owner/repo#123` into a **Load PR** field at the top of
+    the queue, use ⌘K, or open `/review/<owner>/<repo>/<n>` directly.
+  - A loaded PR is reviewed at once, ahead of background pre-reviews, and then stays in the
+    queue under **Loaded** until it is closed or dismissed **(builder's call)**.
 
 ## 3. Reviewing a PR
 
