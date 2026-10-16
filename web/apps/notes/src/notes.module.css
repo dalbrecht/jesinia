@@ -194,3 +194,13 @@
   padding: var(--jx-space-2) var(--jx-space-3) var(--jx-space-3);
   border-top: 1px solid var(--jx-border);
 }
+.compare {
+  max-height: 40vh;
+  overflow: auto;
+  margin: var(--jx-space-2) 0;
+  padding: var(--jx-space-2) var(--jx-space-3);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-surface-sunken);
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-xs);
+}

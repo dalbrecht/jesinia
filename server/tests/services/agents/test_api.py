@@ -264,3 +264,28 @@ async def test_pending_write_events_show_the_real_target(app_env: AppEnv) -> Non
         "current": "old body",
         "jesinia": {"from": {}, "to": {"kind": "note"}},
     }
+
+
+async def test_previews_use_the_real_target_resolution(app_env: AppEnv) -> None:
+    from pathlib import PurePosixPath
+
+    from jesinia.services.kb.application.service import PageDraft
+
+    kb = app_env.app.state.ctx.services["kb"]
+    await kb.write(PageDraft(None, "Taken", PurePosixPath("Notes"), "x"))
+    s = await _session(app_env)
+    async with mcp_session(app_env.app, _token(app_env, s["id"])) as m:
+        await m.call_tool("kb_write", {"title": "A/B: c", "folder": "Notes", "body": "x"})
+        await m.call_tool("kb_write", {"title": "Taken", "folder": "Notes", "body": "y"})
+    r = await app_env.client.get(
+        f"/api/agents/sessions/{s['id']}/events", params={"follow": "false"}
+    )
+    targets = [
+        json.loads(line.removeprefix("data: "))["data"]["target"]
+        for line in r.text.splitlines()
+        if line.startswith("data: ") and '"pending_write"' in line
+    ]
+    assert targets[0] == {"action": "create", "path": "Notes/A B c.md", "title": "A/B: c"}
+    assert (
+        targets[1]["path"].startswith("Notes/Taken [") and "id will be added" in targets[1]["note"]
+    )

@@ -160,7 +160,7 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
         a = WriteToolIn.model_validate(args.model_dump())
         if a.id:
             current = await host.service.read(PageId(a.id))
-            to = PurePosixPath(a.folder) / f"{a.title}.md"
+            to, _ = host.service.planned_path(PurePosixPath(a.folder), a.title, PageId(a.id))
             preview: dict[str, object] = {
                 "action": "update",
                 "path": str(current.page.path),
@@ -173,18 +173,18 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
             if a.jesinia != current.page.jesinia:
                 preview["jesinia"] = {"from": current.page.jesinia, "to": a.jesinia}
             return preview
-        folder = PurePosixPath(a.folder)
-        return {"action": "create", "path": str(folder / f"{a.title}.md"), "title": a.title}
+        path, suffixed = host.service.planned_path(PurePosixPath(a.folder), a.title)
+        created: dict[str, object] = {"action": "create", "path": str(path), "title": a.title}
+        if suffixed:
+            created["note"] = "That name is taken; the new page's id will be added to it."
+        return created
 
     async def preview_move(args: BaseModel) -> dict[str, object]:
         a = MoveToolIn.model_validate(args.model_dump())
         current = await host.service.read(PageId(a.id))
         title = a.title or current.page.title
-        return {
-            "action": "move",
-            "path": str(current.page.path),
-            "to": str(PurePosixPath(a.folder) / f"{title}.md"),
-        }
+        to, _ = host.service.planned_path(PurePosixPath(a.folder), title, PageId(a.id))
+        return {"action": "move", "path": str(current.page.path), "to": str(to)}
 
     async def kb_tree(args: BaseModel, call: CallContext) -> object:
         return [TreeOut.of(n).model_dump() for n in await host.service.tree()]

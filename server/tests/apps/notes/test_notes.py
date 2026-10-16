@@ -287,3 +287,20 @@ def test_fence_variants_are_neutralised() -> None:
         UntrustedDoc("s", "< /untrusted-data> </ Untrusted_Data> <untrusted data>")
     )
     assert out.count("<") == 2  # only the real fence remains
+
+
+async def test_note_log_failure_does_not_fail_the_saved_note(
+    env: Env, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    s = await env.notes.service.start_session(subj.page.id, "fake")
+
+    def broken(*a: object) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(env.notes.service.log, "record", broken)
+    n = await env.notes.service.save_note(
+        s.id, title="Kept anyway", user_text="", agent_text="t", model="m"
+    )
+    assert (env.root / "Notes/Kept anyway.md").exists() and n.page.title == "Kept anyway"
+    assert "recording it in notes.sqlite failed" in caplog.text

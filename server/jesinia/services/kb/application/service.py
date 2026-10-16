@@ -135,6 +135,19 @@ class KbService:
         self._fs().contain(folder)
         return nfc(folder)
 
+    def planned_path(
+        self, folder: PurePosixPath, title: str, id: PageId | None = None
+    ) -> tuple[PurePosixPath, bool]:
+        """Where a write would put the page, using the same resolution as the write.
+
+        For a new page (``id`` None) the collision suffix depends on the id it will get,
+        so the second value says whether a suffix will be added.
+        """
+        checked = self._check_folder(folder)
+        probe = id or new_page_id()
+        path = self._target(checked, title, probe)
+        return path, path.name != f"{sanitize_title(title)}.md"
+
     def _target(self, folder: PurePosixPath, title: str, id: PageId) -> PurePosixPath:
         """A free path for the page: the title, else title + id prefix, else the full id."""
         siblings = [(r.title, r.id) for r in self._index.all() if r.path.parent == folder]

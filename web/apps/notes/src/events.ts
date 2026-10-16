@@ -45,6 +45,7 @@ type Target = {
   new_title?: string;
   current?: string;
   error?: string;
+  note?: string;
   jesinia?: { from: unknown; to: unknown };
 };
 
@@ -114,8 +115,10 @@ function describe(
       diff: parts.join("\n"),
     };
   }
-  if (target.action === "create")
-    return { path: str(target.path), summary: `Creates a new page (${count})`, diff: plus };
+  if (target.action === "create") {
+    const note = target.note ? ` ${str(target.note)}` : "";
+    return { path: str(target.path), summary: `Creates a new page (${count}).${note}`, diff: plus };
+  }
   if (tool === "notes_save")
     return { path: `Notes/${str(args.title, "Untitled")}.md`, summary: `Saves a note (${count})`, diff: plus };
   return { path: tool, summary: target.error ? `${tool}: ${target.error}` : `${tool} (${count})`, diff: plus };
@@ -128,7 +131,8 @@ export function reduce(state: ChatState, e: AgentEvent, now = new Date().toISOSt
     case "user_message": {
       const text = str(e.data.text);
       messages.push({ id: `e${e.seq}`, kind: "user", text, at: now });
-      return { ...state, messages, busy: true, lastUserText: text };
+      // A new turn: Save note must never pair this question with an earlier answer.
+      return { ...state, messages, busy: true, lastUserText: text, lastReply: null };
     }
     case "text": {
       const chunk = str(e.data.text);

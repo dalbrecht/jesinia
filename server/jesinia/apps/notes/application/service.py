@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import re
 from collections import defaultdict
 from collections.abc import Callable
@@ -24,6 +25,8 @@ from jesinia.services.kb.application.service import KbService, PageDraft, PageWi
 from jesinia.services.kb.domain.page import PageId
 from jesinia.services.kb.domain.provenance import wrap_ai
 from jesinia.services.search.application.service import SearchService
+
+log = logging.getLogger(__name__)
 
 NOTES_ROLE = """\
 You are helping the user think about one page of their personal knowledge base.
@@ -158,5 +161,8 @@ class NotesService:
             PageDraft(None, title.strip() or "Untitled note", PurePosixPath(self.folder()), body,
                       {"kind": "note", "captured": captured})
         )  # fmt: skip
-        self.log.record(note.page.id, session_id, session.subject.ref, at)
+        try:
+            self.log.record(note.page.id, session_id, session.subject.ref, at)
+        except Exception:  # derived log; the note itself is saved
+            log.exception("note %s saved, but recording it in notes.sqlite failed", note.page.id)
         return note

@@ -26,7 +26,7 @@ describe("chat events", () => {
     expect(s.lastReply).toEqual({ text: "Hello", model: "m1" });
     expect(s.lastUserText).toBe("Hi");
     s = run([ev("user_message", { text: "Again" }), ev("turn_done", {})], s);
-    expect(s.lastReply?.text).toBe("Hello"); // no new agent text this turn
+    expect(s.lastReply).toBeNull(); // never pair a new question with an earlier answer
   });
 
   it("tracks tool calls, pending writes and their resolution", () => {
@@ -68,7 +68,7 @@ describe("chat events", () => {
     ]);
     const pending = s.messages.filter((m) => m.kind === "pending-write");
     expect(pending.map((p) => (p.kind === "pending-write" ? [p.path, p.summary, p.diff] : null))).toEqual([
-      ["Notes/Draft.md", "Creates a new page (2 lines)", "+ a\n+ b"],
+      ["Notes/Draft.md", "Creates a new page (2 lines).", "+ a\n+ b"],
       ["Notes/N.md", "Saves a note (1 line)", "+ one"],
       ["Ideas/Real.md", "Changes an existing page (2 lines)", "  keep\n- old\n+ new"],
       ["Ideas/Real.md", "Moves the page to Archive/Real.md", "- Ideas/Real.md\n+ Archive/Real.md"],

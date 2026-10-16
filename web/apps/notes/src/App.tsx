@@ -4,6 +4,7 @@ import { Banner, Button } from "@jesinia/design";
 import { AppShell, useClient, type ServerStatus } from "@jesinia/shell";
 import { useCallback, useEffect, useState } from "react";
 import { pageFromPath, search } from "./api";
+import { lineDiff } from "./events";
 import { Chat } from "./Chat";
 import { Editor } from "./Editor";
 import s from "./notes.module.css";
@@ -32,6 +33,10 @@ function Workspace({ status }: { status: ServerStatus }) {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   const doc = usePage(id);
+  const [comparing, setComparing] = useState(false);
+  useEffect(() => {
+    if (doc.state !== "conflict") setComparing(false);
+  }, [doc.state]);
   const findPages = useCallback(
     async (q: string) => (await search(client, q)).map((h) => ({ id: h.key, title: h.title })),
     [client],
@@ -53,14 +58,24 @@ function Workspace({ status }: { status: ServerStatus }) {
               <span className={s.mono}>{doc.page.path}</span> · <span className={s.mono}>id: {doc.page.id}</span>
             </p>
             {doc.state === "conflict" ? (
-              <Banner
-                tone="warn"
-                cause="Changed on disk:"
-                action={{ label: "Keep mine", onAction: () => void doc.keepMine() }}
-                secondaryAction={{ label: "Use theirs", onAction: doc.useTheirs }}
-              >
-                this page was edited outside Notes while you had unsaved changes.
-              </Banner>
+              <>
+                <Banner
+                  tone="warn"
+                  cause="Changed on disk:"
+                  action={{ label: "Keep mine", onAction: () => void doc.keepMine() }}
+                  secondaryAction={{ label: "Use theirs", onAction: doc.useTheirs }}
+                >
+                  this page changed elsewhere while you had unsaved edits.{" "}
+                  <Button variant="ghost" size="sm" aria-expanded={comparing} onClick={() => setComparing(!comparing)}>
+                    {comparing ? "Hide comparison" : "Compare"}
+                  </Button>
+                </Banner>
+                {comparing && doc.theirs !== null ? (
+                  <section aria-label="Comparison: on disk (−) and yours (+)" className={s.compare}>
+                    <pre>{lineDiff(doc.theirs.split("\n"), doc.mine().split("\n"))}</pre>
+                  </section>
+                ) : null}
+              </>
             ) : null}
             {doc.error ? <p className={s.error}>{doc.error}</p> : null}
             <div className={s.editor}>

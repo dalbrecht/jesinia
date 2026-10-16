@@ -216,7 +216,8 @@ describe("AppShell edge cases", () => {
     await userEvent.click(await screen.findByRole("button", { name: "+1 more" }));
     expect(assign).toHaveBeenCalledWith("/settings/");
     fireEvent.keyDown(window, { key: "k", metaKey: true });
-    expect(screen.queryByText("Open Notes")).toBeNull(); // not built yet
+    await userEvent.click(screen.getByText("Open Notes"));
+    expect(assign).toHaveBeenCalledWith("/notes/");
     fireEvent.keyDown(window, { key: "k", metaKey: true });
     await userEvent.click(screen.getByText("Sync now"));
     fireEvent.keyDown(window, { key: "k", metaKey: true });

@@ -20,6 +20,9 @@ export type OpenPage = {
   flush: (resolving?: boolean) => Promise<void>;
   keepMine: () => Promise<void>;
   useTheirs: () => void;
+  /** The on-disk text that conflicts with the local edit (null when no conflict). */
+  theirs: string | null;
+  mine: () => string;
 };
 
 export function usePage(id: string | null): OpenPage {
@@ -35,6 +38,8 @@ export function usePage(id: string | null): OpenPage {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirty = useRef(false);
   const conflicted = useRef(false); // while open, only "Keep mine" may write
+  const saving = useRef(false);
+  const openGeneration = useRef(0); // bumped on every page switch
   const [, force] = useState(0);
 
   const flush = useCallback(
@@ -42,9 +47,16 @@ export function usePage(id: string | null): OpenPage {
       if (timer.current) clearTimeout(timer.current);
       timer.current = null;
       if (!id || !dirty.current || (conflicted.current && !resolving)) return;
+      const generation = openGeneration.current;
       setState("saving");
+      saving.current = true;
       const sent = text.current;
-      const r = await saveBody(client, id, sent, rev.current);
+      const r = await saveBody(client, id, sent, rev.current).finally(() => {
+        saving.current = false;
+      });
+      // The user switched pages while this save was in flight: it still landed, but it
+      // must not touch the newly opened page's state.
+      if (generation !== openGeneration.current) return;
       if (r.ok) {
         rev.current = r.page.rev;
         setPage(r.page);
@@ -66,6 +78,7 @@ export function usePage(id: string | null): OpenPage {
   // Load (and save the previous page on switch).
   useEffect(() => {
     let live = true;
+    openGeneration.current += 1;
     setPage(null);
     setMissing(false);
     setTheirs(null);
@@ -95,9 +108,11 @@ export function usePage(id: string | null): OpenPage {
     return subscribe<{ id: string; origin: string; change: string }>(
       "/api/events?topics=kb.page_changed",
       (e) => {
-        if (e.data.id !== id || e.data.origin === "jesinia") return;
+        // Any writer counts (an approved agent write, another window, an editor); only
+        // our own acknowledged save matches rev.current and is ignored below.
+        if (e.data.id !== id || saving.current) return;
         void getPage(client, id).then((p) => {
-          if (!p || p.rev === rev.current) return;
+          if (!p || p.rev === rev.current || saving.current) return;
           if (dirty.current) {
             conflicted.current = true;
             setTheirs({ rev: p.rev, body: p.body });
@@ -137,6 +152,8 @@ export function usePage(id: string | null): OpenPage {
     await flush(true);
   }, [theirs, flush]);
 
+  const mine = useCallback(() => text.current, []);
+
   const useTheirs = useCallback(() => {
     if (!theirs) return;
     text.current = theirs.body;
@@ -148,5 +165,18 @@ export function usePage(id: string | null): OpenPage {
     setRevision((n) => n + 1);
   }, [theirs]);
 
-  return { page, missing, text: text.current, state, error, revision, edit, flush, keepMine, useTheirs };
+  return {
+    page,
+    missing,
+    text: text.current,
+    state,
+    error,
+    revision,
+    theirs: theirs?.body ?? null,
+    mine,
+    edit,
+    flush,
+    keepMine,
+    useTheirs,
+  };
 }

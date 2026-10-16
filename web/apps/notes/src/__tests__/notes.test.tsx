@@ -31,12 +31,12 @@ function agent(kind: string, data: Record<string, unknown> = {}) {
     ),
   );
 }
-function kbChanged(id: string) {
+function kbChanged(id: string, origin = "external") {
   const src = [...FakeSource.all].reverse().find((s) => s.url.includes("kb.page_changed") && !s.url.includes("kbsync"));
   act(() =>
     src?.listeners.get("kb.page_changed")?.(
       new MessageEvent("kb.page_changed", {
-        data: JSON.stringify({ id, origin: "external", change: "updated" }),
+        data: JSON.stringify({ id, origin, change: "updated" }),
         lastEventId: String(++seq),
       }),
     ),
@@ -340,5 +340,49 @@ describe("Notes", () => {
       startCompletion(view);
     });
     await waitFor(() => expect(calls.some((c) => c.url.includes("/api/search") && c.url.includes("q=Oth"))).toBe(true));
+  });
+
+  it("writes made through Jesinia elsewhere reload a clean page; Compare shows the diff", async () => {
+    let body = "v1";
+    let rev = "r1";
+    setup({ "GET /api/kb/pages/p1": () => Response.json({ ...PAGE, body, rev }) });
+    const editor = await screen.findByRole("textbox", { name: "Edit Topic" });
+    const { EditorView } = await import("@codemirror/view");
+    const view = EditorView.findFromDOM(editor);
+    if (!view) throw new Error("no editor view");
+    body = "approved agent edit";
+    rev = "r2";
+    kbChanged("p1", "jesinia");
+    await waitFor(() => expect(view.state.doc.toString()).toBe("approved agent edit"));
+    act(() => view.dispatch({ changes: { from: 0, insert: "mine " }, userEvent: "input.type" }));
+    body = "theirs again";
+    rev = "r3";
+    kbChanged("p1", "jesinia");
+    await userEvent.click(await screen.findByRole("button", { name: "Compare" }));
+    const cmp = screen.getByRole("region", { name: /Comparison/ });
+    expect(cmp).toHaveTextContent("- theirs again");
+    expect(cmp).toHaveTextContent("+ mine approved agent edit");
+    await userEvent.click(screen.getByRole("button", { name: "Hide comparison" }));
+    expect(screen.queryByRole("region", { name: /Comparison/ })).toBeNull();
+  });
+
+  it("a save still in flight when switching pages does not touch the next page", async () => {
+    let release: (r: Response) => void = () => {};
+    setup({
+      "GET /api/kb/pages/p2": { ...PAGE, id: "p2", title: "Other", path: "Ideas/Other.md", body: "other", rev: "o1" },
+      "PATCH /api/kb/pages/p1/body": () => new Promise<Response>((resolve) => (release = resolve)),
+    });
+    const editor = await screen.findByRole("textbox", { name: "Edit Topic" });
+    const { EditorView } = await import("@codemirror/view");
+    const view = EditorView.findFromDOM(editor);
+    if (!view) throw new Error("no editor view");
+    act(() => view.dispatch({ changes: { from: 0, insert: "x" }, userEvent: "input.type" }));
+    fireEvent.blur(view.contentDOM); // starts the save
+    window.history.pushState(null, "", "/notes/page/p2");
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    expect(await screen.findByRole("heading", { name: "Other", level: 1 })).toBeInTheDocument();
+    await act(async () => release(Response.json({ ...PAGE, body: "xHello body", rev: "r9" })));
+    expect(screen.getByRole("heading", { name: "Other", level: 1 })).toBeInTheDocument();
+    expect(screen.getByTestId("save-state")).toHaveTextContent("Saved");
   });
 });
