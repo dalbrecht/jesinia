@@ -240,6 +240,9 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `by_source(url: str) -> PageId | None`.
 
   Every write and scan sets tags from the body and the source from `jesinia.source`.
+  **The catalog page itself (`jesinia.kind: tag-catalog`) is never indexed into `page_tags`,**
+  so a tag only counts pages that use it. Test: `test_catalog_page_does_not_count_as_a_use`
+  (an approved tag no content page uses has count 0).
 
 - [ ] **Step 1: Failing tests:**
   - `test_write_indexes_tags_and_source` writes a page with `#a #b` and `jesinia.source=u`.
@@ -538,7 +541,11 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     folder level, deeper levels flattened into their top folder;
   - `render_opml(feeds) -> str`.
 - **`FeedService` (application):**
-  - `add(url: str, folder: str | None) -> Feed`, using autodiscovery from Task 8's parser;
+  - `add(url: str, folder: str | None) -> Feed`. Autodiscovery and parsing are injected through
+    an application port, `FeedReader` Protocol in `apps/rss/application/ports.py`
+    (`discover(html, base) -> str | None`, `parse(body, url) -> ParsedFeed`, with `ParsedFeed`
+    and `ParsedItem` defined in `apps/rss/domain/feed.py`). Task 8's `parse.py` implements it,
+    and `RssModule` wires it in, so the application layer never imports infrastructure;
   - `remove(id)`;
   - `move(id, folder)`;
   - `rename_folder`;
@@ -704,6 +711,11 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `takeaway(session_id) -> Takeaway`, which uses `SessionService.ask` on the *engaged*
     session ("1–3 sentence takeaway"), so the agent summarises the conversation it actually
     had. It is returned for the author to edit, not written.
+- **Settings (for Settings → RSS):** `GET /api/rss/settings` returns `{retention, source_folder}`,
+  and `PUT /api/rss/settings` (idempotent by key, validated: retention 1–365 days, folder a
+  valid KB folder) persists to `config.toml` via `save_config` and updates the live config
+  (`ctx.cfg`), so the retention job and the next Keep use the new values without a restart.
+  Test: `test_settings_round_trip_and_apply_live`.
 - **REST:**
   - `POST /api/rss/posts/{id}/keep {note, tags, takeaway?}`;
   - `POST /posts/{id}/engage {runner}`;
