@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 
+from jesinia.services.agents.application.packs import pack_contents
 from jesinia.services.agents.application.runner import TurnRequest
 from jesinia.services.agents.domain.events import (
     AgentEvent,
@@ -114,7 +115,10 @@ class CodexRunner(CliRunner):
     def stdin(self, req: TurnRequest) -> str:
         if req.resume_id:
             return req.prompt
-        return f"{req.system_prompt}\n\n{req.prompt}"
+        # Codex runs with its shell disabled, so it can't open the pack files itself:
+        # the first turn carries them (untrusted ones still fenced).
+        pack = pack_contents(req.workdir)
+        return "\n\n".join(p for p in (req.system_prompt, pack, req.prompt) if p)
 
     def parser(self) -> CodexStreamParser:
         return CodexStreamParser()

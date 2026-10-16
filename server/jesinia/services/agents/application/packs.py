@@ -74,3 +74,27 @@ def system_prompt(pack_dir: Path) -> str:
         else ""
     )
     return f"{SYSTEM_PREAMBLE}\n\n{role}".strip()
+
+
+PACK_INLINE_LIMIT = 200_000  # characters of pack files inlined into a prompt
+
+
+def pack_contents(pack_dir: Path, limit: int = PACK_INLINE_LIMIT) -> str:
+    """The pack's files (untrusted ones already fenced) as one block, for runners that
+    cannot read the session folder themselves. ``ROLE.md`` and ``mcp.json`` are left out
+    (the role is in the system prompt; the MCP config holds a token)."""
+    parts: list[str] = []
+    used = 0
+    for path in sorted(p for p in pack_dir.rglob("*") if p.is_file()):
+        rel = path.relative_to(pack_dir).as_posix()
+        if rel in {"ROLE.md", "mcp.json"} or rel.startswith("."):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if used + len(text) > limit:
+            parts.append(f"## {rel}\n(omitted: the context pack is over {limit} characters)")
+            continue
+        used += len(text)
+        parts.append(f"## {rel}\n{text.rstrip()}")
+    if not parts:
+        return ""
+    return "# Context pack (files in your working directory)\n\n" + "\n\n".join(parts)

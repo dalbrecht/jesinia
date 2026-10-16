@@ -94,3 +94,32 @@ def test_malformed_record_fails_an_otherwise_successful_turn() -> None:
     assert p.feed('{"type": "item.completed", "item": {"type": "agent_message", "text": "Hi"') == []
     out = p.feed('{"type": "turn.completed"}')
     assert len(out) == 1 and isinstance(out[0], RunError) and "malformed record" in out[0].message
+
+
+def test_first_turn_carries_the_context_pack(req: TurnRequest) -> None:
+    from jesinia.services.agents.application.packs import ContextPack, UntrustedDoc, write_pack
+
+    write_pack(
+        ContextPack(
+            "Discuss.",
+            {"notes.md": "plain file"},
+            {"subject.md": UntrustedDoc("kb:p1", "the page")},
+        ),
+        req.workdir,
+    )
+    text = CodexRunner().stdin(req)
+    assert '## subject.md\n<untrusted-data source="kb:p1">\nthe page' in text
+    assert "## notes.md\nplain file" in text
+    assert "ROLE.md" not in text and "Bearer" not in text  # the MCP config's token stays out
+    assert text.index(req.system_prompt) < text.index("# Context pack") < text.index(req.prompt)
+
+
+def test_pack_inline_limit(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from jesinia.services.agents.application.packs import pack_contents
+
+    assert pack_contents(tmp_path) == ""
+    (tmp_path / "a.md").write_text("x" * 50)
+    (tmp_path / "b.md").write_text("y" * 50)
+    (tmp_path / ".hidden").write_text("secret")
+    out = pack_contents(tmp_path, limit=60)
+    assert "x" * 50 in out and "(omitted" in out and "secret" not in out
