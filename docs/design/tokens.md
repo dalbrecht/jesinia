@@ -319,13 +319,13 @@ Light and dark values reference primitives.
 | Token | Light | Dark | Use |
 |---|---|---|---|
 | `--jx-app-notes` | `sage-600` | `sage-400` | notes identity hue: tile glyph, PWA icon |
-| `--jx-app-notes-chrome` | `sage-100` | `sage-900` | notes header band / chrome wash |
+| `--jx-app-notes-chrome` | `sage-200` | `sage-800` | notes header band / chrome wash |
 | `--jx-app-rss` | `marigold-600` | `marigold-400` | rss identity hue: tile glyph, PWA icon |
-| `--jx-app-rss-chrome` | `marigold-100` | `marigold-900` | rss header band / chrome wash |
+| `--jx-app-rss-chrome` | `marigold-200` | `marigold-800` | rss header band / chrome wash |
 | `--jx-app-review` | `plum-600` | `plum-400` | review identity hue: tile glyph, PWA icon |
-| `--jx-app-review-chrome` | `plum-100` | `plum-900` | review header band / chrome wash |
+| `--jx-app-review-chrome` | `plum-200` | `plum-800` | review header band / chrome wash |
 | `--jx-app-issues` | `cornflower-600` | `cornflower-400` | issues identity hue: tile glyph, PWA icon |
-| `--jx-app-issues-chrome` | `cornflower-100` | `cornflower-900` | issues header band / chrome wash |
+| `--jx-app-issues-chrome` | `cornflower-200` | `cornflower-800` | issues header band / chrome wash |
 
 ### Runner glyphs
 
@@ -343,10 +343,10 @@ Notes:
   `--jx-app-<name>-chrome` is the header band or chrome wash (brief §10).
 - The PWA manifest `theme_color` uses each app's `-chrome` value in the light theme:
 
-  - notes: `#e4f3e8`
-  - rss: `#fcecd3`
-  - review: `#fde7f5`
-  - issues: `#e6efff`
+  - notes: `#cae7d2`
+  - rss: `#f6daab`
+  - review: `#f8d1e9`
+  - issues: `#cddfff`
 
 ## 4. Scales and other tokens
 
@@ -651,21 +651,21 @@ stable.
 | `--jx-label-clay-fg` | `--jx-label-clay-bg` | 4.5 | 9.52 | 11.21 | Label pill: clay |
 | `--jx-label-fern-fg` | `--jx-label-fern-bg` | 4.5 | 9.23 | 11.17 | Label pill: fern |
 | `--jx-app-notes` | `--jx-surface` | 3 | 4.74 | 7.45 | notes tile glyph (UI 3:1) |
-| `--jx-fg` | `--jx-app-notes-chrome` | 4.5 | 14.47 | 13.71 | Text on notes chrome |
-| `--jx-fg-muted` | `--jx-app-notes-chrome` | 4.5 | 5.42 | 7.42 | Metadata on notes chrome |
-| `--jx-accent-text` | `--jx-app-notes-chrome` | 4.5 | 6.22 | 8.98 | Link/active nav on notes chrome |
+| `--jx-fg` | `--jx-app-notes-chrome` | 4.5 | 12.51 | 9.75 | Text on notes chrome |
+| `--jx-fg-muted` | `--jx-app-notes-chrome` | 4.5 | 4.69 | 5.28 | Metadata on notes chrome |
+| `--jx-accent-text` | `--jx-app-notes-chrome` | 4.5 | 5.38 | 6.39 | Link/active nav on notes chrome |
 | `--jx-app-rss` | `--jx-surface` | 3 | 5.02 | 7.10 | rss tile glyph (UI 3:1) |
-| `--jx-fg` | `--jx-app-rss-chrome` | 4.5 | 14.33 | 14.04 | Text on rss chrome |
-| `--jx-fg-muted` | `--jx-app-rss-chrome` | 4.5 | 5.37 | 7.60 | Metadata on rss chrome |
-| `--jx-accent-text` | `--jx-app-rss-chrome` | 4.5 | 6.17 | 9.20 | Link/active nav on rss chrome |
+| `--jx-fg` | `--jx-app-rss-chrome` | 4.5 | 12.27 | 10.16 | Text on rss chrome |
+| `--jx-fg-muted` | `--jx-app-rss-chrome` | 4.5 | 4.60 | 5.50 | Metadata on rss chrome |
+| `--jx-accent-text` | `--jx-app-rss-chrome` | 4.5 | 5.28 | 6.66 | Link/active nav on rss chrome |
 | `--jx-app-review` | `--jx-surface` | 3 | 5.29 | 6.85 | review tile glyph (UI 3:1) |
-| `--jx-fg` | `--jx-app-review-chrome` | 4.5 | 14.19 | 14.33 | Text on review chrome |
-| `--jx-fg-muted` | `--jx-app-review-chrome` | 4.5 | 5.32 | 7.76 | Metadata on review chrome |
-| `--jx-accent-text` | `--jx-app-review-chrome` | 4.5 | 6.11 | 9.39 | Link/active nav on review chrome |
+| `--jx-fg` | `--jx-app-review-chrome` | 4.5 | 12.06 | 10.54 | Text on review chrome |
+| `--jx-fg-muted` | `--jx-app-review-chrome` | 4.5 | 4.52 | 5.71 | Metadata on review chrome |
+| `--jx-accent-text` | `--jx-app-review-chrome` | 4.5 | 5.19 | 6.91 | Link/active nav on review chrome |
 | `--jx-app-issues` | `--jx-surface` | 3 | 5.01 | 7.16 | issues tile glyph (UI 3:1) |
-| `--jx-fg` | `--jx-app-issues-chrome` | 4.5 | 14.35 | 14.04 | Text on issues chrome |
-| `--jx-fg-muted` | `--jx-app-issues-chrome` | 4.5 | 5.38 | 7.60 | Metadata on issues chrome |
-| `--jx-accent-text` | `--jx-app-issues-chrome` | 4.5 | 6.18 | 9.20 | Link/active nav on issues chrome |
+| `--jx-fg` | `--jx-app-issues-chrome` | 4.5 | 12.32 | 10.16 | Text on issues chrome |
+| `--jx-fg-muted` | `--jx-app-issues-chrome` | 4.5 | 4.62 | 5.50 | Metadata on issues chrome |
+| `--jx-accent-text` | `--jx-app-issues-chrome` | 4.5 | 5.30 | 6.66 | Link/active nav on issues chrome |
 | `--jx-runner-claude-fg` | `--jx-runner-claude` | 4.5 | 7.58 | 10.66 | claude monogram |
 | `--jx-runner-codex-fg` | `--jx-runner-codex` | 4.5 | 7.17 | 11.03 | codex monogram |
 
@@ -886,13 +886,13 @@ The complete token stylesheet, as `@jesinia/design` will ship it in `tokens.css`
   --jx-label-fern-bg: var(--jx-fern-100);
   --jx-label-fern-fg: var(--jx-fern-800);
   --jx-app-notes: var(--jx-sage-600);
-  --jx-app-notes-chrome: var(--jx-sage-100);
+  --jx-app-notes-chrome: var(--jx-sage-200);
   --jx-app-rss: var(--jx-marigold-600);
-  --jx-app-rss-chrome: var(--jx-marigold-100);
+  --jx-app-rss-chrome: var(--jx-marigold-200);
   --jx-app-review: var(--jx-plum-600);
-  --jx-app-review-chrome: var(--jx-plum-100);
+  --jx-app-review-chrome: var(--jx-plum-200);
   --jx-app-issues: var(--jx-cornflower-600);
-  --jx-app-issues-chrome: var(--jx-cornflower-100);
+  --jx-app-issues-chrome: var(--jx-cornflower-200);
   --jx-runner-claude: var(--jx-clay-700);
   --jx-runner-claude-fg: var(--jx-paper-0);
   --jx-runner-codex: var(--jx-fern-700);
@@ -944,13 +944,13 @@ The complete token stylesheet, as `@jesinia/design` will ship it in `tokens.css`
     --jx-label-fern-bg: var(--jx-fern-900);
     --jx-label-fern-fg: var(--jx-fern-200);
     --jx-app-notes: var(--jx-sage-400);
-    --jx-app-notes-chrome: var(--jx-sage-900);
+    --jx-app-notes-chrome: var(--jx-sage-800);
     --jx-app-rss: var(--jx-marigold-400);
-    --jx-app-rss-chrome: var(--jx-marigold-900);
+    --jx-app-rss-chrome: var(--jx-marigold-800);
     --jx-app-review: var(--jx-plum-400);
-    --jx-app-review-chrome: var(--jx-plum-900);
+    --jx-app-review-chrome: var(--jx-plum-800);
     --jx-app-issues: var(--jx-cornflower-400);
-    --jx-app-issues-chrome: var(--jx-cornflower-900);
+    --jx-app-issues-chrome: var(--jx-cornflower-800);
     --jx-runner-claude: var(--jx-clay-300);
     --jx-runner-claude-fg: var(--jx-paper-950);
     --jx-runner-codex: var(--jx-fern-300);
@@ -1000,13 +1000,13 @@ The complete token stylesheet, as `@jesinia/design` will ship it in `tokens.css`
   --jx-label-fern-bg: var(--jx-fern-900);
   --jx-label-fern-fg: var(--jx-fern-200);
   --jx-app-notes: var(--jx-sage-400);
-  --jx-app-notes-chrome: var(--jx-sage-900);
+  --jx-app-notes-chrome: var(--jx-sage-800);
   --jx-app-rss: var(--jx-marigold-400);
-  --jx-app-rss-chrome: var(--jx-marigold-900);
+  --jx-app-rss-chrome: var(--jx-marigold-800);
   --jx-app-review: var(--jx-plum-400);
-  --jx-app-review-chrome: var(--jx-plum-900);
+  --jx-app-review-chrome: var(--jx-plum-800);
   --jx-app-issues: var(--jx-cornflower-400);
-  --jx-app-issues-chrome: var(--jx-cornflower-900);
+  --jx-app-issues-chrome: var(--jx-cornflower-800);
   --jx-runner-claude: var(--jx-clay-300);
   --jx-runner-claude-fg: var(--jx-paper-950);
   --jx-runner-codex: var(--jx-fern-300);
