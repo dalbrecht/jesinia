@@ -16,6 +16,7 @@ from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.tags import TagService
 from jesinia.services.search.application.service import SearchService
 
 NOTES_DB = ModuleDb("notes", DbClass.DERIVED, files("jesinia.apps.notes.migrations"))
@@ -42,7 +43,12 @@ class NotesModule:
 
     async def start(self, ctx: AppContext) -> None:
         kb, sessions = ctx.services.get("kb"), ctx.services.get("agents")
-        if not isinstance(kb, KbService) or not isinstance(sessions, SessionService):
+        tags = ctx.services.get("tags")
+        if not (
+            isinstance(kb, KbService)
+            and isinstance(tags, TagService)
+            and isinstance(sessions, SessionService)
+        ):
             raise RuntimeError("notes requires the kb and agents services (start them first)")
         search = ctx.services.get("search")
         self._conn = open_db(ctx.cfg.data_dir, NOTES_DB)
@@ -50,6 +56,7 @@ class NotesModule:
             kb,
             search if isinstance(search, SearchService) else None,
             sessions,
+            tags,
             SqliteNoteLog(self._conn),
             lambda: ctx.cfg.folders.get("note", "Notes"),
         )

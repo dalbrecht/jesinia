@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Annotated, Protocol
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -13,7 +13,8 @@ from jesinia.apps.notes.application.service import NotesService, NotSubjectSessi
 from jesinia.core.module import CallContext, ToolDef
 from jesinia.services.agents.application.sessions import SessionNotFound
 from jesinia.services.agents.domain.session import Session
-from jesinia.services.kb.application.errors import KbError, PageNotFound
+from jesinia.services.kb.api.schemas import TAG_MAX
+from jesinia.services.kb.application.errors import InvalidTag, KbError, PageNotFound
 from jesinia.services.kb.application.service import PageWithRev
 from jesinia.services.kb.domain.page import PageId
 
@@ -33,6 +34,11 @@ class SaveIn(BaseModel):
     user_text: str = ""
     agent_text: str = Field(min_length=1)
     model: str = "unknown"
+    tags: list[Annotated[str, Field(min_length=1, max_length=TAG_MAX)]] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Tags for the note; one not in the catalog yet is added to it",
+    )
 
 
 class NotesSaveIn(BaseModel):
@@ -77,10 +83,11 @@ def build_router(host: NotesHost) -> APIRouter:
                 user_text=body.user_text,
                 agent_text=body.agent_text,
                 model=body.model,
+                tags=body.tags,
             )
         except SessionNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"no session {id}") from exc
-        except NotSubjectSessionError as exc:
+        except (NotSubjectSessionError, InvalidTag) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         except KbError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

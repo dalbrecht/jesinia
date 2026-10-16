@@ -186,6 +186,10 @@
   flex: 1;
   min-height: 0;
 }
+.tagBar {
+  padding: var(--jx-space-2) var(--jx-space-3);
+  border-top: 1px solid var(--jx-border);
+}
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;

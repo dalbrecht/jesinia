@@ -870,6 +870,11 @@ export interface components {
              * @default unknown
              */
             model: string;
+            /**
+             * Tags
+             * @description Tags for the note; one not in the catalog yet is added to it
+             */
+            tags?: string[];
         };
         /** SessionIn */
         SessionIn: {

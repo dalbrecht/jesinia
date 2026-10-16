@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { errorText, subscribe } from "@jesinia/client";
 import { Button, ChatTranscript, Input, useToast } from "@jesinia/design";
-import { RUNNER_NAMES, useClient, type Runners } from "@jesinia/shell";
+import { RUNNER_NAMES, TagPicker, useClient, type Runners } from "@jesinia/shell";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { EMPTY, EVENT_KINDS, markApproving, reduce, type AgentEvent, type ChatState } from "./events";
 import s from "./notes.module.css";
@@ -28,6 +28,7 @@ export function Chat({ page, runners, onSaved }: ChatProps) {
   const [session, setSession] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  const [tags, setTags] = useState<string[]>([]);
   const [state, dispatch] = useReducer(reducer, EMPTY);
   const chosen = runner || available[0]?.[0] || "";
   const currentPage = useRef<string | null>(page.id);
@@ -36,6 +37,7 @@ export function Chat({ page, runners, onSaved }: ChatProps) {
   useEffect(() => {
     currentPage.current = page.id;
     setSession(null);
+    setTags([]);
     dispatch({ type: "reset" });
     return () => {
       currentPage.current = null; // switching pages may unmount the chat while it loads
@@ -95,6 +97,7 @@ export function Chat({ page, runners, onSaved }: ChatProps) {
         user_text: state.lastUserText,
         agent_text: state.lastReply.text,
         model: state.lastReply.model,
+        tags,
       },
     });
     setSaving(false);
@@ -103,6 +106,7 @@ export function Chat({ page, runners, onSaved }: ChatProps) {
       return;
     }
     const saved = r.data as { path: string };
+    setTags([]);
     toast.show({ tone: "success", message: `Saved to ${saved.path}.` });
     onSaved(saved.path);
   };
@@ -149,6 +153,11 @@ export function Chat({ page, runners, onSaved }: ChatProps) {
           onRetry={() => void send(state.lastUserText)}
         />
       </div>
+      {state.lastReply ? (
+        <div className={s.tagBar}>
+          <TagPicker text={`${state.lastUserText}\n\n${state.lastReply.text}`} value={tags} onChange={setTags} />
+        </div>
+      ) : null}
       <div className={s.composer}>
         <Input
           label="Message"

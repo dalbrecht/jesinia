@@ -2480,6 +2480,17 @@
             "type": "string",
             "title": "Model",
             "default": "unknown"
+          },
+          "tags": {
+            "items": {
+              "type": "string",
+              "maxLength": 100,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Tags",
+            "description": "Tags for the note; one not in the catalog yet is added to it"
           }
         },
         "type": "object",
