@@ -31,7 +31,9 @@ from jesinia.apps.review.domain.followup import (
     LineMaps,
     PrevReview,
     classify,
+    compare,
     differing_paths,
+    effective_followup,
     line_map,
     pr_kind,
     reanchor,
@@ -41,6 +43,8 @@ from jesinia.apps.review.domain.followup import (
 )
 from jesinia.apps.review.domain.posting import (
     Draft,
+    EarlierReviewPosted,
+    PostingStillUncertain,
     ReviewedHeadGone,
     RoundChanged,
     RoundFrozen,
@@ -114,6 +118,7 @@ class Repo:
     conflict_base: str
     conflict: str
     pushed: str
+    whitespace: str  # rebased onto rebased_base with a whitespace-only change to line 10
 
 
 @pytest.fixture
@@ -150,9 +155,16 @@ def repo(tmp_path: Path) -> Repo:
     moved[13] = "line twelve"  # was line 12, now line 14
     pushed = commit(work, {"app.py": text(moved)}, "more")
 
-    for branch in ("main", "feature", "main2", "rebased", "main3", "conflict"):
+    git(work, "checkout", "-q", "-b", "spaced", rebased_base)
+    spaced = [*LINES]
+    spaced[9] = "    line  ten"  # indentation and a doubled space: whitespace only
+    whitespace = commit(work, {"app.py": text(spaced), "new.txt": "new file\n"}, "spaced")
+
+    for branch in ("main", "feature", "main2", "rebased", "main3", "conflict", "spaced"):
         git(work, "push", "-q", "origin", branch)
-    return Repo(remote, base, head, rebased_base, rebased, conflict_base, conflict, pushed)
+    return Repo(
+        remote, base, head, rebased_base, rebased, conflict_base, conflict, pushed, whitespace
+    )
 
 
 @pytest.fixture
@@ -547,6 +559,23 @@ def test_classify_rules() -> None:
     assert pr_kind(FollowUp("changed_hunks_only", ["a"])) == "rereview"
 
 
+def test_ci_is_applied_when_read_not_when_compared() -> None:
+    """C2: same content is stored as still approved; CI decides each time it is read."""
+    ids = {"a.py": "1"}
+    same = compare(_prev(), _Pr(), ids, dict(ids))
+    assert same.kind == "still_approved"
+    for ci in ("passing", "pending", "none"):
+        assert effective_followup(same, ci) == same
+    failing = effective_followup(same, "failing")
+    assert failing.kind == "rereview" and "failing" in failing.note
+    assert failing.prev_head == SHA_A and failing.differing_paths == []
+    changed = compare(_prev(), _Pr(), ids, {"a.py": "2"})
+    assert effective_followup(changed, "failing") == changed
+    unchecked = FollowUp("new", error="GitHub was unreachable")
+    assert effective_followup(unchecked, "failing") == unchecked
+    assert pr_kind(FollowUp("still_approved", error="x")) == "new"
+
+
 def test_differing_paths_and_verdicts() -> None:
     assert differing_paths({"a": "1", "gone": "2"}, {"a": "1", "new": "3"}) == ["gone", "new"]
     assert verdict_of_review_state("APPROVED") == "approved"
@@ -596,8 +625,14 @@ def test_reanchor_moves_ranges_only_when_every_line_is_unchanged() -> None:
     note = Draft("f.py", "x", outside_diff=True)
     assert reanchor(note, maps) == note
     labelled = Draft("f.py", "x", line=2, outside_diff=True, outdated=True)
-    only_right: LineMaps = {("f.py", "RIGHT"): {2: 5}}
+    only_right: LineMaps = {("f.py", "RIGHT"): {1: 4, 2: 5}}
     assert reanchor(labelled, only_right) == replace(labelled, line=5, outdated=False)
+    # M4: a lone common line (a blank, a brace) that matched by coincidence, with neither
+    # neighbour moving with it, is not trusted.
+    lone: LineMaps = {("f.py", "RIGHT"): {1: 1, 5: 40, 9: 9}}
+    assert reanchor(Draft("f.py", "}", line=5, side="RIGHT"), lone).outdated
+    after: LineMaps = {("f.py", "RIGHT"): {5: 40, 6: 41}}
+    assert reanchor(Draft("f.py", "}", line=5, side="RIGHT"), after).line == 40
 
 
 def test_restrict_diff_leaves_incomplete_diffs_alone() -> None:
@@ -613,16 +648,54 @@ def test_restrict_diff_leaves_incomplete_diffs_alone() -> None:
 # --- the application's edges --------------------------------------------------------------------
 
 
-async def test_stored_round_counts_when_github_reviews_cannot_be_read(env: Env) -> None:
+async def test_unreadable_reviews_leave_the_head_unchecked_and_retried(env: Env) -> None:
+    """I1: a GitHub blip never classifies a head from a stale verdict: the author may have
+    requested changes on GitHub after Jesinia's approval."""
     repo = env.repo
     env.sync(repo.head, repo.base)
-    round_id = env.approved_round(repo.head, repo.base)
+    env.approved_round(repo.head, repo.base)
+    env.github.reviews_of[(REPO, 1)].append(
+        ReviewSummary("me", False, "CHANGES_REQUESTED", repo.head, START, 1, "Fix it")
+    )
     env.sync(repo.rebased, repo.rebased_base)
     env.github.error = GitHubRequestError(502, "Bad Gateway")
     stored = env.store.pr(env.ref)
     assert stored is not None
-    prev = await env.followups.previous_review(stored)
-    assert prev == PrevReview(repo.head, repo.base, "approved", "round", round_id)
+    with pytest.raises(GitHubRequestError):
+        await env.followups.previous_review(stored)
+    assert await env.followups.refresh() == 0
+    unchecked = env.followups.followup(env.ref, repo.rebased)
+    assert unchecked is not None and unchecked.error is not None
+    queue = QueueService(env.github, env.store, env.clock)
+    (row,) = (await queue.list(QueueFilter())).rows
+    assert row.kind == "new" and row.followup_kind is None
+    assert "couldn't check" in row.followup_note.lower() and "Bad Gateway" in row.followup_note
+    # Not filed as still approved, so the scheduler treats it as any new head.
+    assert env.store.current_followups()[env.ref].error is not None
+    # The next refresh, with GitHub back, classifies it from the author's latest verdict.
+    env.github.error = None
+    assert await env.followups.refresh() == 1
+    followup = env.followups.followup(env.ref, repo.rebased)
+    assert followup is not None and followup.kind == "rereview" and followup.error is None
+
+
+async def test_an_unreadable_current_head_is_unchecked_not_guessed(env: Env) -> None:
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    env.approved_round(repo.head, repo.base)
+    env.sync(repo.rebased, repo.rebased_base)
+    await env.workspace.ensure_mirror(REPO)
+    real = env.workspace.merge_base
+
+    async def merge_base(name: str, a: str, b: str) -> str:
+        if b == repo.rebased:
+            raise GitCommandError(("git", "merge-base"), 128, "bad object")
+        return await real(name, a, b)
+
+    env.workspace.merge_base = merge_base  # type: ignore[method-assign,assignment]
+    assert await env.followups.refresh() == 0
+    unchecked = env.followups.followup(env.ref, repo.rebased)
+    assert unchecked is not None and unchecked.error is not None
 
 
 async def test_an_unreachable_reviewed_head_counts_as_changed(env: Env) -> None:
@@ -658,7 +731,8 @@ async def test_refresh_classifies_each_new_head_once_and_isolates_failures(env: 
     env.github.reviews = reviews  # type: ignore[method-assign,assignment]
     assert await env.followups.refresh() == 1
     assert env.followups.followup(env.ref, repo.rebased) is not None
-    assert env.followups.followup(PrRef(REPO, 2), SHA_A) is None
+    unchecked = env.followups.followup(PrRef(REPO, 2), SHA_A)
+    assert unchecked is not None and unchecked.error is not None and "boom" in unchecked.error
     assert await env.followups.refresh() == 0  # PR 1's head is done; PR 2 fails again
 
     # A suggested repo's PR is never mirrored, so it is never classified.
@@ -692,6 +766,7 @@ async def test_background_refresh_ticks_after_and_stops_cleanly(env: Env) -> Non
     assert ticks == [1]
     await followups.stop()
     await followups.stop()  # nothing running: a no-op
+    await followups.drain()  # nothing running: returns at once
     # A shutdown cancels a running refresh.
     env.sync(repo.conflict, repo.conflict_base)
     followups.start_refresh()
@@ -711,11 +786,12 @@ async def test_reanchor_degrades_to_outdated_when_git_fails(env: Env) -> None:
         raise GitCommandError(("git", "merge-base"), 128, "bad object")
 
     env.workspace.merge_base = broken  # type: ignore[method-assign]
-    with pytest.raises(GitCommandError):
-        await env.followups.reanchor(new, repo.pushed, repo.base)
+    # M2: an earlier head git can't read (force-pushed away) settles its drafts as outdated,
+    # once, instead of failing every preparation.
+    assert await env.followups.reanchor(new, repo.pushed, repo.base) == 1
     (draft,) = env.store.drafts(new)
     assert draft.outdated  # never moved by guesswork
-    assert env.store.carried_drafts(new)  # still pending: the next preparation tries again
+    assert env.store.carried_drafts(new) == []
 
 
 async def test_no_drafts_carry_from_a_posted_or_unsettled_round(env: Env) -> None:
@@ -861,3 +937,191 @@ async def test_a_failed_reanchor_is_a_round_warning_and_rereviews_keep_the_whole
     assert isinstance(warnings, list) and any("re-anchored" in w for w in warnings)
     followup = store.artifact(result.round_id, "followup")
     assert isinstance(followup, dict) and followup["kind"] == "rereview"
+
+
+# --- fix round 1 --------------------------------------------------------------------------------
+
+
+async def test_a_whitespace_only_change_is_never_still_approved(env: Env) -> None:
+    """C1: indentation and spaces inside a line are content (Python, YAML, literals)."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    env.approved_round(repo.head, repo.base)
+    env.sync(repo.whitespace, repo.rebased_base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    followup = await env.followups.classify(stored)
+    assert followup.kind == "changed_hunks_only" and followup.differing_paths == ["app.py"]
+    # The pure rebase next to it is still approved.
+    env.sync(repo.rebased, repo.rebased_base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    assert (await env.followups.classify(stored)).kind == "still_approved"
+
+
+async def test_still_approved_follows_ci_after_classification(env: Env) -> None:
+    """C2: classified while CI is pending, then CI fails on that head: no longer still
+    approved, on the row and for the scheduler."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    env.approved_round(repo.head, repo.base)
+    env.sync(repo.rebased, repo.rebased_base, ci="pending")
+    assert await env.followups.refresh() == 1
+    queue = QueueService(env.github, env.store, env.clock)
+    (row,) = (await queue.list(QueueFilter())).rows
+    assert row.kind == "rebase" and row.followup_kind == "still_approved"
+
+    env.sync(repo.rebased, repo.rebased_base, ci="failing")
+    (row,) = (await queue.list(QueueFilter())).rows
+    assert row.kind == "rereview" and row.followup_kind == "rereview"
+    assert "failing" in row.followup_note
+    reads = ReviewReads(env.store, lambda: SyncStatus(None, False, None))
+    assert reads.pr(env.ref).row.followup_kind == "rereview"
+    scheduler = Scheduler(env.store, lambda: env.clock() + timedelta(hours=1))
+    await scheduler.tick()
+    stored = env.store.pr(env.ref)
+    assert stored is not None and "still approved" not in stored.state_reason
+    assert stored.state == "ci_failing"  # the CI gate holds it, as any new head
+    followup = env.followups.followup(env.ref, repo.rebased)
+    assert followup is not None and followup.kind == "rereview"  # what the pipeline sees
+
+
+async def test_drafts_follow_once_a_frozen_rounds_uncertain_posting_settles(env: Env) -> None:
+    """I2: drafts held back because a lost response may have posted them reach the current
+    round once that attempt is known not to be on GitHub, and never while it could be."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    old = env.store.start_round(env.ref, repo.head, repo.base, "quick", env.clock())
+    env.store.save_drafts(
+        old,
+        "Held back.",
+        [
+            Draft("app.py", "On a line.", line=10, side="RIGHT"),
+            Draft("app.py", "A general note.", outside_diff=True),
+        ],
+    )
+    first = env.store.start_posting(old, "COMMENT", "k1", "d", "", [], env.clock())
+    env.store.settle_posting(first.id, "uncertain", "timeout")
+    env.sync(repo.pushed, repo.base)
+    new = env.store.start_round(env.ref, repo.pushed, repo.base, "quick", env.clock())
+    env.store.save_drafts(new, "", [Draft("app.py", "A general note.", outside_diff=True)])
+    assert len(env.store.drafts(new)) == 1  # not copied while it may be on GitHub
+
+    env.store.settle_posting(first.id, "not_posted", "not on GitHub")
+
+    assert env.store.review_summary(new) == "Held back."
+    bodies = [(d.body, d.outdated) for d in env.store.drafts(new)]
+    assert bodies == [("A general note.", False), ("On a line.", True)]  # no duplicate
+    assert [h for _, h, _ in env.store.carried_drafts(new)] == [repo.head]
+    # Once only: settling again (or another attempt) copies nothing more.
+    env.store.settle_posting(first.id, "not_posted", "not on GitHub")
+    assert len(env.store.drafts(new)) == 2
+
+
+async def test_drafts_never_follow_a_frozen_round_whose_posting_landed(env: Env) -> None:
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    old = env.store.start_round(env.ref, repo.head, repo.base, "quick", env.clock())
+    env.store.save_drafts(old, "", [Draft("app.py", "Posted.", outside_diff=True)])
+    attempt = env.store.start_posting(old, "COMMENT", "k1", "d", "", [], env.clock())
+    env.store.settle_posting(attempt.id, "uncertain", "timeout")
+    env.sync(repo.pushed, repo.base)
+    new = env.store.start_round(env.ref, repo.pushed, repo.base, "quick", env.clock())
+    env.store.finish_posting(attempt.id, "https://github.com/acme/web/pull/1#r2")
+    assert env.store.drafts(new) == []
+    # Even a later write over that attempt can't release them: the round itself was posted.
+    env.store.settle_posting(attempt.id, "failed", "probe")
+    assert env.store.drafts(new) == []
+
+
+async def _frozen_attempt(env: Env) -> tuple[PostingService, PostingGitHub, int, int, int]:
+    """Round A on the old head with a lost-response APPROVE, then round B on the new head."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    old = env.store.start_round(env.ref, repo.head, repo.base, "quick", env.clock())
+    env.store.finish_round(old, env.clock(), None, "approve")
+    attempt = env.store.start_posting(old, "APPROVE", "k1", "d", "LGTM", [], env.clock())
+    env.store.settle_posting(attempt.id, "uncertain", "timeout")
+    env.sync(repo.pushed, repo.base)
+    new = env.store.start_round(env.ref, repo.pushed, repo.base, "quick", env.clock())
+    env.store.finish_round(new, env.clock(), None, "approve")
+    env.store.save_drafts(new, "Second look.", [])
+    github = PostingGitHub(pull(1, REPO, head=repo.pushed), commits=[repo.head, repo.pushed])
+    github.clock = env.clock
+    service = PostingService(
+        github=github, writer=github, files=FileSource(), store=env.store, clock=env.clock
+    )
+    return service, github, old, new, attempt.id
+
+
+async def test_posting_on_the_new_round_waits_for_the_frozen_rounds_attempt(env: Env) -> None:
+    """I2: round A's lost-response attempt is checked before round B posts: within its
+    grace, retry later; after it, with no such review on GitHub, A is not posted and B posts."""
+    service, github, old, new, attempt = await _frozen_attempt(env)
+    shown = await service.preview(new, "COMMENT")
+    with pytest.raises(PostingStillUncertain):
+        await service.post(new, "COMMENT", [], key="k2", digest=shown.digest)
+    assert github.posted == []
+    env.clock.advance(10)
+    await service.post(new, "COMMENT", [], key="k2", digest=shown.digest)
+    assert len(github.posted) == 1
+    assert [p.state for p in env.store.postings(old)] == ["not_posted"]
+
+
+async def test_posting_on_the_new_round_refuses_when_the_frozen_rounds_review_landed(
+    env: Env,
+) -> None:
+    """I2: found on GitHub, A's review is adopted and B's post is refused: never two reviews."""
+    service, github, old, new, attempt = await _frozen_attempt(env)
+    github.reviews_on_pr.append(
+        ReviewSummary(
+            "me", False, "APPROVED", env.repo.head, START, 0, MARKER_REVIEW.format(attempt), "u1"
+        )
+    )
+    shown = await service.preview(new, "COMMENT")
+    with pytest.raises(EarlierReviewPosted) as earlier:
+        await service.post(new, "COMMENT", [], key="k2", digest=shown.digest)
+    assert earlier.value.url == "u1" and earlier.value.event == "APPROVE"
+    assert github.posted == []
+    assert [p.state for p in env.store.postings(old)] == ["posted"]
+
+
+async def test_posting_clears_the_heads_followup_so_the_row_is_current(env: Env) -> None:
+    """M5: after the author reviews the re-review head, its row no longer asks for one."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    env.approved_round(repo.head, repo.base)
+    env.sync(repo.conflict, repo.conflict_base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    await env.followups.classify(stored)
+    env.approved_round(repo.conflict, repo.conflict_base)
+    assert env.followups.followup(env.ref, repo.conflict) is None
+    assert await env.followups.refresh() == 1
+    followup = env.followups.followup(env.ref, repo.conflict)
+    assert followup is not None and followup.kind == "new"
+
+
+async def test_a_sync_drops_followups_of_heads_no_longer_current(env: Env) -> None:
+    """M6: one row per current head, not one per head forever."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    env.approved_round(repo.head, repo.base)
+    env.sync(repo.rebased, repo.rebased_base)
+    await env.followups.refresh()
+    env.sync(repo.conflict, repo.conflict_base)
+    assert env.followups.followup(env.ref, repo.rebased) is None
+
+
+async def test_a_save_with_stale_ids_keeps_untouched_drafts_pending(env: Env) -> None:
+    """M8: a draft is matched by its content when its id is from before another save."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    old = env.store.start_round(env.ref, repo.head, repo.base, "quick", env.clock())
+    env.store.save_drafts(old, "", [Draft("app.py", "x", line=10, side="RIGHT")])
+    env.sync(repo.pushed, repo.base)
+    new = env.store.start_round(env.ref, repo.pushed, repo.base, "quick", env.clock())
+    stale = env.store.drafts(new)
+    env.store.save_drafts(new, "first save", stale)
+    env.store.save_drafts(new, "second save, old ids", stale)
+    assert [d.body for d, _, _ in env.store.carried_drafts(new)] == ["x"]

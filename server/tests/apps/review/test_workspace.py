@@ -453,6 +453,26 @@ async def test_patch_ids_cover_renames_deletes_and_binaries(
     assert len(set(ids.values())) == 3 and all(len(v) == 40 for v in ids.values())
 
 
+async def test_patch_ids_count_whitespace(tmp_path: Path, fixture: Fixture) -> None:
+    """C1: Python indentation and spaces inside a literal are content: a change to either is
+    never taken for a pure rebase."""
+    work = tmp_path / "ws-work"
+    subprocess.run(["git", "clone", "-q", str(fixture.remote), str(work)], check=True)
+    git(work, "checkout", "-q", "-b", "py", fixture.base)
+    (work / "app.py").write_text('if x:\n    a("p q")\n    c()\n')
+    nested = commit_all(work, "nested")
+    (work / "app.py").write_text('if x:\n    a("p q")\nc()\n')
+    dedented = commit_all(work, "dedented")
+    (work / "app.py").write_text('if x:\n    a("pq")\n    c()\n')
+    squeezed = commit_all(work, "squeezed")
+    git(work, "push", "-q", "origin", "py")
+    ws = make_workspace(tmp_path, fixture)
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/py"])
+    ids = [await ws.patch_ids(REPO, fixture.base, sha) for sha in (nested, dedented, squeezed)]
+    assert len({i["app.py"] for i in ids}) == 3
+
+
 async def test_prune_never_follows_symlinks(tmp_path: Path, fixture: Fixture) -> None:
     ws = await fetched(tmp_path, fixture)
     kept = await ws.worktree(REPO, fixture.head)

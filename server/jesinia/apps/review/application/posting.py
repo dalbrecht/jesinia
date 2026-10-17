@@ -176,6 +176,8 @@ class PostingStore(Protocol):
 
     def unsettled_posting_rounds(self) -> builtins.list[int]: ...
 
+    def unsettled_rounds_of(self, ref: PrRef) -> builtins.list[int]: ...
+
     def start_posting(
         self,
         round_id: int,
@@ -508,7 +510,8 @@ class PostingService:
             EmptyReview: GitHub needs a body for this event.
             ReviewBodyTooLong: the composed body would be over GitHub's limit.
             EarlierReviewPosted: an earlier attempt turned out to be on GitHub and it isn't
-                this digest and event; nothing was sent.
+                this digest and event, or it was an attempt of an earlier round of the PR
+                (frozen by a head change); nothing was sent.
             ReviewedHeadGone: the reviewed commit is no longer on the PR.
             PostingFailed: GitHub didn't confirm the review (with ``maybe_posted``).
             RoundFrozen: a newer round took it over: nothing is posted from it.
@@ -557,6 +560,7 @@ class PostingService:
     async def _post(
         self, rnd: RoundRecord, event: ReviewEvent, confirm: Collection[str], key: str, digest: str
     ) -> str:
+        await self._reconcile_earlier_rounds(rnd)
         adopted = await self._reconcile(rnd)
         if adopted is not None:
             # The earlier attempt is on GitHub: never a second review in this call, and
@@ -597,6 +601,25 @@ class PostingService:
         if attempt.state == "posted":  # the key of a posted attempt: never sent again
             return attempt.review_url or _pr_url(rnd)
         return await self._send(rnd, attempt, preview)
+
+    async def _reconcile_earlier_rounds(self, rnd: RoundRecord) -> None:
+        """Settle the unsettled attempts of the PR's other rounds first (I2): a round frozen
+        by a head change may hold a lost-response attempt that is on GitHub, and nothing is
+        posted while it might be.
+
+        Raises:
+            EarlierReviewPosted: that attempt is on GitHub; nothing was sent.
+            PostingStillUncertain: it may still appear (within its grace); retry later.
+            GitHubError: the reviews couldn't be listed.
+        """
+        for other_id in self._store.unsettled_rounds_of(rnd.ref):
+            if other_id == rnd.id:
+                continue
+            other = self._round(other_id)
+            async with self._round_lock(other_id):
+                adopted = await self._reconcile(other)
+            if adopted is not None:
+                raise EarlierReviewPosted(adopted.review_url or _pr_url(other), adopted.event)
 
     async def _send(self, rnd: RoundRecord, attempt: Posting, preview: PostPreview) -> str:
         try:

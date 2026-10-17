@@ -266,13 +266,14 @@ def _posting(row: tuple[object, ...]) -> Posting:
 
 
 def _followup(row: tuple[object, ...]) -> FollowUp:
-    kind, paths, note, prev_head, prev_source = row
+    kind, paths, note, prev_head, prev_source, error = row
     return FollowUp(
         kind=cast(FollowUpKind, kind),
         differing_paths=list(json.loads(cast(str, paths))),
         note=cast(str, note),
         prev_head=cast(str | None, prev_head),
         prev_source=cast(PrevSource | None, prev_source),
+        error=cast(str | None, error),
     )
 
 
@@ -468,6 +469,12 @@ class SqliteReviewStore:
             for pr, error in failed:
                 values = (*_snapshot_values(pr), _time(now), error, _time(now))
                 self._conn.execute(_UPSERT_FAILED, values)
+            # Follow-ups are per current head (M6): a moved or removed PR's old rows go.
+            self._conn.execute(
+                "DELETE FROM followups WHERE NOT EXISTS (SELECT 1 FROM prs p "
+                "WHERE p.repo = followups.repo AND p.number = followups.number "
+                "AND p.head_sha = followups.head_sha)"
+            )
             for ref in removed:
                 for table in ("prs", "pr_files"):
                     self._conn.execute(
@@ -547,8 +554,14 @@ class SqliteReviewStore:
         ).fetchone()
         if old.posted_review_url is not None or posted is not None:
             return
+        self._copy_drafts(old, new_id, head_sha)
+
+    def _copy_drafts(self, old: RoundRecord, new_id: int, head_sha: str) -> None:
+        """Copy ``old``'s summary (where the new round has none) and drafts (not repeating
+        one already there, same file and text) to round ``new_id`` on ``head_sha``."""
         self._conn.execute(
-            "UPDATE rounds SET summary = (SELECT summary FROM rounds WHERE id = ?) WHERE id = ?",
+            "UPDATE rounds SET summary = (SELECT summary FROM rounds WHERE id = ?) "
+            "WHERE id = ? AND summary = ''",
             (old.id, new_id),
         )
         same = old.head_sha == head_sha
@@ -563,9 +576,30 @@ class SqliteReviewStore:
             "THEN carried_head ELSE COALESCE(carried_head, ?) END, "
             "CASE WHEN ? OR line IS NULL OR (outdated = 1 AND carried_head IS NULL) "
             "THEN carried_base ELSE COALESCE(carried_base, ?) END "
-            "FROM drafts WHERE round_id = ? ORDER BY id",
-            (new_id, same, same, old.head_sha, same, old.base_sha, old.id),
+            "FROM drafts d WHERE round_id = ? AND NOT EXISTS (SELECT 1 FROM drafts n "
+            "WHERE n.round_id = ? AND n.path = d.path AND n.body = d.body) ORDER BY id",
+            (new_id, same, same, old.head_sha, same, old.base_sha, old.id, new_id),
         )
+
+    def _release_held_drafts(self, round_id: int) -> None:
+        """A frozen round whose drafts were held back (a posting of it might have landed)
+        and whose every attempt is now known not to be on GitHub hands them to the PR's
+        current round (I2). Never while any attempt is unsettled or posted."""
+        row = self._conn.execute(
+            f"SELECT {_ROUND_COLUMNS} FROM rounds WHERE id = ? AND frozen_at IS NOT NULL "
+            "AND posted_review_url IS NULL AND NOT EXISTS (SELECT 1 FROM postings "
+            "WHERE round_id = ? AND state IN ('started', 'uncertain', 'posted'))",
+            (round_id, round_id),
+        ).fetchone()
+        if row is None:
+            return
+        old = _round(row)
+        current = self._conn.execute(
+            "SELECT id, head_sha FROM rounds WHERE repo = ? AND number = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (old.ref.repo, old.ref.number),
+        ).fetchone()
+        self._copy_drafts(old, cast(int, current[0]), cast(str, current[1]))
 
     def _refuse_frozen(self, round_id: int) -> None:
         row = self._conn.execute(
@@ -830,7 +864,7 @@ class SqliteReviewStore:
                 row[0]: row[1:]
                 for row in self._conn.execute(
                     "SELECT id, path, line, side, start_line, start_side, outdated, "
-                    "carried_head, carried_base FROM drafts "
+                    "carried_head, carried_base, body FROM drafts "
                     "WHERE round_id = ? AND carried_head IS NOT NULL",
                     (round_id,),
                 )
@@ -839,9 +873,17 @@ class SqliteReviewStore:
             self._conn.execute("DELETE FROM drafts WHERE round_id = ?", (round_id,))
             carried: list[tuple[str | None, str | None]] = []
             for d in drafts:
-                was = pending.get(d.id)
                 anchor = (d.path, d.line, d.side, d.start_line, d.start_side, int(d.outdated))
-                if was is not None and tuple(was[:6]) == anchor:
+                was = pending.get(d.id) if d.id is not None else None
+                if was is None or tuple(was[:6]) != anchor:
+                    # Ids change with every save: a draft sent with an older id is matched
+                    # by its anchor and text instead (M8).
+                    was = next(
+                        (w for w in pending.values() if tuple(w[:6]) == anchor and w[8] == d.body),
+                        None,
+                    )
+                if was is not None:
+                    pending = {k: v for k, v in pending.items() if v is not was}
                     carried.append((cast(str, was[6]), cast(str, was[7])))
                 else:
                     carried.append((None, None))
@@ -853,6 +895,16 @@ class SqliteReviewStore:
             (round_id,),
         )
         return [_posting(row) for row in rows]
+
+    def unsettled_rounds_of(self, ref: PrRef) -> list[int]:
+        """The PR's rounds with an attempt whose outcome isn't known, oldest first."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT p.round_id FROM postings p JOIN rounds r ON r.id = p.round_id "
+            "WHERE r.repo = ? AND r.number = ? AND p.state IN ('started', 'uncertain') "
+            "ORDER BY p.round_id",
+            (ref.repo, ref.number),
+        )
+        return [round_id for (round_id,) in rows]
 
     def unsettled_posting_rounds(self) -> list[int]:
         """Rounds with an attempt whose outcome isn't known (``started`` or ``uncertain``)."""
@@ -920,13 +972,29 @@ class SqliteReviewStore:
                 "WHERE id = (SELECT round_id FROM postings WHERE id = ?)",
                 (review_url, posting_id),
             )
+            # The author just reviewed this head: its follow-up (against the earlier review)
+            # is out of date and is worked out again (M5).
+            self._conn.execute(
+                "DELETE FROM followups WHERE EXISTS (SELECT 1 FROM rounds r JOIN postings p "
+                "ON p.round_id = r.id WHERE p.id = ? AND r.repo = followups.repo "
+                "AND r.number = followups.number AND r.head_sha = followups.head_sha)",
+                (posting_id,),
+            )
 
     def settle_posting(self, posting_id: int, state: PostingState, error: str) -> None:
         """Record how an unposted attempt ended: ``failed`` (GitHub refused it),
         ``uncertain`` (it may be on GitHub) or ``not_posted`` (reconciled: it isn't)."""
-        self._conn.execute(
-            "UPDATE postings SET state = ?, error = ? WHERE id = ?", (state, error, posting_id)
-        )
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE postings SET state = ?, error = ? WHERE id = ?",
+                (state, error, posting_id),
+            )
+            if state in ("not_posted", "failed"):
+                rounds = self._conn.execute(
+                    "SELECT round_id FROM postings WHERE id = ?", (posting_id,)
+                ).fetchall()
+                for (round_id,) in rounds:
+                    self._release_held_drafts(cast(int, round_id))
 
     def posted_rounds(self, ref: PrRef) -> list[tuple[RoundRecord, Posting]]:
         """The PR's rounds with a review posted, each with that posting, oldest first."""
@@ -943,10 +1011,11 @@ class SqliteReviewStore:
     def put_followup(self, ref: PrRef, head_sha: str, followup: FollowUp) -> None:
         self._conn.execute(
             "INSERT INTO followups (repo, number, head_sha, kind, differing_paths, note, "
-            "prev_head, prev_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "prev_head, prev_source, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (repo, number, head_sha) DO UPDATE SET kind = excluded.kind, "
             "differing_paths = excluded.differing_paths, note = excluded.note, "
-            "prev_head = excluded.prev_head, prev_source = excluded.prev_source",
+            "prev_head = excluded.prev_head, prev_source = excluded.prev_source, "
+            "error = excluded.error",
             (
                 ref.repo,
                 ref.number,
@@ -956,12 +1025,13 @@ class SqliteReviewStore:
                 followup.note,
                 followup.prev_head,
                 followup.prev_source,
+                followup.error,
             ),
         )
 
     def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
         row = self._conn.execute(
-            "SELECT kind, differing_paths, note, prev_head, prev_source FROM followups "
+            "SELECT kind, differing_paths, note, prev_head, prev_source, error FROM followups "
             "WHERE repo = ? AND number = ? AND head_sha = ?",
             (ref.repo, ref.number, head_sha),
         ).fetchone()
@@ -971,7 +1041,7 @@ class SqliteReviewStore:
         """Each queued PR's follow-up for its current head, where it is known."""
         rows = self._conn.execute(
             "SELECT f.repo, f.number, f.kind, f.differing_paths, f.note, f.prev_head, "
-            "f.prev_source FROM followups f JOIN prs p ON p.repo = f.repo "
+            "f.prev_source, f.error FROM followups f JOIN prs p ON p.repo = f.repo "
             "AND p.number = f.number AND p.head_sha = f.head_sha"
         )
         return {PrRef(row[0], row[1]): _followup(row[2:]) for row in rows}

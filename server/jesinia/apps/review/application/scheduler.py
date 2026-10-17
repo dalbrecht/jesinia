@@ -22,6 +22,7 @@ from pathlib import Path
 from jesinia.apps.review.application.errors import RoundInterruptedError
 from jesinia.apps.review.application.ports import PrunableWorkspace, QueueStore
 from jesinia.apps.review.domain.errors import ReviewError
+from jesinia.apps.review.domain.followup import effective_followup
 from jesinia.apps.review.domain.gates import (
     DEFAULT_GATES,
     Depth,
@@ -152,10 +153,13 @@ class Scheduler:
                     continue
                 status = rounds.get((ref, head))
                 followup = followups.get(ref)
+                if followup is not None:  # under CI as it is now (C2)
+                    followup = effective_followup(followup, stored.pr.ci_state)
                 if (
                     status is None
                     and not stored.loaded
                     and followup is not None
+                    and followup.error is None
                     and followup.kind == "still_approved"
                 ):
                     # A loaded PR is the author asking for a review now: it still runs.

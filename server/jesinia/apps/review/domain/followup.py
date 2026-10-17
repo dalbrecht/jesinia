@@ -106,13 +106,16 @@ class PrevReview:
 class FollowUp:
     """What a new head needs. ``differing_paths``: the files whose patch IDs differ from the
     previous review's (the only ones a ``changed_hunks_only`` round reviews); ``note``: one
-    line for the queue row, in Jesinia's words (it names no path: paths are PR text)."""
+    line for the queue row, in Jesinia's words (it names no path: paths are PR text).
+    ``error``: the head couldn't be checked (GitHub or git failed); it is checked again on
+    the next sync, and meanwhile counts as an ordinary new head (``pr_kind`` "new")."""
 
     kind: FollowUpKind
     differing_paths: list[str] = field(default_factory=list)
     note: str = ""
     prev_head: str | None = None
     prev_source: PrevSource | None = None
+    error: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in FOLLOW_UP_KINDS:
@@ -140,7 +143,9 @@ def verdict_of_event(event: ReviewEvent) -> PrevVerdict:
 def pr_kind(followup: FollowUp | None) -> PrKind:
     """The queue row's kind (spec §2): a still-approved rebase is ``rebase``, any re-review
     ``rereview``."""
-    return "new" if followup is None else _PR_KINDS[followup.kind]
+    if followup is None or followup.error is not None:
+        return "new"
+    return _PR_KINDS[followup.kind]
 
 
 def differing_paths(old: Mapping[str, str], new: Mapping[str, str]) -> list[str]:
@@ -159,12 +164,36 @@ def classify(
     patch_ids_new: Mapping[str, str] | None,
     ci: CiState,
 ) -> FollowUp:
-    """What ``pr``'s head needs after ``prev`` (spec §4.1).
+    """What ``pr``'s head needs after ``prev`` (spec §4.1): ``compare`` with the CI rule
+    applied (``effective_followup``).
 
     ``patch_ids_old``: per-file patch IDs of the reviewed diff (merge base to reviewed head);
     ``patch_ids_new``: the same for the head now. Either is ``None`` when it couldn't be
     computed: nothing is then assumed unchanged (Review Focus 1).
     """
+    return effective_followup(compare(prev, pr, patch_ids_old, patch_ids_new), ci)
+
+
+def effective_followup(followup: FollowUp, ci: CiState) -> FollowUp:
+    """``followup`` under the head's CI now (C2): same content as the approval stays still
+    approved only while CI is green, running or absent; a failing CI makes it a re-review.
+    Applied each time a follow-up is read, so CI that fails later is never missed."""
+    if followup.kind != "still_approved" or followup.error is not None:
+        return followup
+    if ci in _CI_KEEPS_APPROVAL:
+        return followup
+    note = "Same changes as you approved, but CI is failing"
+    return FollowUp("rereview", [], note, followup.prev_head, followup.prev_source)
+
+
+def compare(
+    prev: PrevReview | None,
+    pr: HasHead,
+    patch_ids_old: Mapping[str, str] | None,
+    patch_ids_new: Mapping[str, str] | None,
+) -> FollowUp:
+    """What ``pr``'s head needs by content alone: the result stored per head. CI is not
+    part of it (``effective_followup`` applies it when read)."""
     if prev is None or prev.head_sha == pr.head_sha:
         return FollowUp("new")
     if patch_ids_old is None or patch_ids_new is None:
@@ -177,8 +206,6 @@ def classify(
     if differing:
         note = f"Rebased with changes since your approval: {_files(len(differing))} to review"
         return _after(prev, "changed_hunks_only", differing, note)
-    if ci not in _CI_KEEPS_APPROVAL:
-        return _after(prev, "rereview", [], "Same changes as you approved, but CI is failing")
     note = f"Still approved: a rebase with the same changes as {prev.head_sha[:12]}"
     return _after(prev, "still_approved", [], note)
 
@@ -208,10 +235,17 @@ def line_map(old_text: str, new_text: str) -> dict[int, int]:
     return mapped
 
 
+def _neighbour_moved(mapped: Mapping[int, int], line: int) -> bool:
+    """Whether the line before or after ``line`` maps right next to where ``line`` maps."""
+    return mapped.get(line - 1) == mapped[line] - 1 or mapped.get(line + 1) == mapped[line] + 1
+
+
 def reanchor(draft: Draft, maps: LineMaps) -> Draft:
     """``draft`` on the new head: moved to where its lines' text is now, when every line of
     it (its whole range) is unchanged and still consecutive; otherwise kept where it was and
-    flagged ``outdated``. A draft without a line (a general note) is unchanged. An
+    flagged ``outdated``. A single line moves only with a neighbour that moved with it, so
+    a common line (a blank, a brace) matched by coincidence in rewritten code isn't trusted.
+    A draft without a line (a general note) is unchanged. An
     outside-the-diff draft's line only labels it: it is mapped by its right side."""
     if draft.line is None:
         return draft
@@ -224,6 +258,8 @@ def reanchor(draft: Draft, maps: LineMaps) -> Draft:
         return replace(draft, outdated=True)
     if mapped[draft.line] - mapped[start] != draft.line - start:
         return replace(draft, outdated=True)  # lines were inserted inside the range
+    if start == draft.line and not _neighbour_moved(mapped, draft.line):
+        return replace(draft, outdated=True)
     return replace(
         draft,
         line=mapped[draft.line],

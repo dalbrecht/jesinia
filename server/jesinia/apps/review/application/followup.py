@@ -3,10 +3,12 @@
 previous review, and the drafts a new round carries over from the head before.
 
 ``classify`` finds the author's previous review (their latest review on GitHub, recognised
-as Jesinia's own by its posting marker, or a stored posted round when GitHub can't be read),
-rebuilds both diffs in the local mirror and compares them per file with
-``git patch-id --stable``. ``refresh`` does that once per new head, in the background after
-each sync; a PR whose classification fails is left for the next run, never guessed.
+as Jesinia's own round by its posting marker), rebuilds both diffs in the local mirror and
+compares them per file with ``git patch-id --verbatim`` (whitespace counts). What is stored
+is the comparison by content; the CI rule is applied each time a follow-up is read.
+``refresh`` does that once per new head, in the background after each sync; a head that
+can't be checked (GitHub or git failed) is recorded as unchecked, with the cause, and is
+checked again on the next run: never classified from a stale or partial view.
 
 ``reanchor`` finishes a head change: the drafts a new round took over (outdated until then)
 move to the lines their text is on at the new head, or stay outdated.
@@ -27,7 +29,8 @@ from jesinia.apps.review.domain.followup import (
     FollowUp,
     LineMaps,
     PrevReview,
-    classify,
+    compare,
+    effective_followup,
     line_map,
     reanchor,
     verdict_of_event,
@@ -76,6 +79,8 @@ class FollowUpStore(Protocol):
 
     def viewer(self) -> str | None: ...
 
+    def pr(self, ref: PrRef) -> StoredPr | None: ...
+
     def prs(self, include_dismissed: bool = False) -> list[StoredPr]: ...
 
     def repo_configs(self) -> dict[str, RepoConfig]: ...
@@ -119,31 +124,30 @@ class FollowUps:
         self._task: asyncio.Task[None] | None = None
 
     def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
-        """What ``head_sha`` needs, once classified."""
-        return self._store.followup(ref, head_sha)
+        """What ``head_sha`` needs, once checked, under the PR's CI as cached now (C2)."""
+        found = self._store.followup(ref, head_sha)
+        stored = self._store.pr(ref)
+        if found is None or stored is None or stored.pr.head_sha != head_sha:
+            return found
+        return effective_followup(found, stored.pr.ci_state)
 
     # --- the previous review --------------------------------------------------------------
 
     async def previous_review(self, stored: StoredPr) -> PrevReview | None:
         """The author's latest review of the PR (spec §4.1): their newest submitted review on
-        GitHub, a stored round when it carries that round's posting marker (a review GitHub
-        has since dismissed counts as the verdict Jesinia posted), or, when GitHub's reviews
-        can't be read, the latest round Jesinia posted.
+        GitHub, read as a stored round when it carries that round's posting marker (a review
+        GitHub has since dismissed counts as the verdict Jesinia posted).
+
+        There is no fallback when GitHub can't be read (I1): a round Jesinia posted may not be
+        the author's latest verdict (they may have requested changes on GitHub since).
 
         Raises:
-            GitHubError: GitHub couldn't be read and no round of the PR was posted.
+            GitHubError: GitHub's reviews couldn't be read.
         """
         ref, pr = stored.pr.ref, stored.pr
         posted = self._store.posted_rounds(ref)
-        try:
-            viewer = (self._store.viewer() or await self._github.viewer()).lower()
-            reviews = await self._github.reviews(ref.repo, ref.number)
-        except _GITHUB_ERRORS as exc:
-            if not posted:
-                raise
-            log.warning("review.followup %s: GitHub's reviews unread, using rounds: %s", ref, exc)
-            rnd, posting = posted[-1]
-            return await self._from_round(rnd, posting)
+        viewer = (self._store.viewer() or await self._github.viewer()).lower()
+        reviews = await self._github.reviews(ref.repo, ref.number)
         marked = {posting_marker(posting.id): (rnd, posting) for rnd, posting in posted}
         for review in reversed(reviews):
             if review.author.lower() != viewer or review.commit_sha is None:
@@ -184,24 +188,28 @@ class FollowUps:
     # --- classifying a head ---------------------------------------------------------------
 
     async def classify(self, stored: StoredPr) -> FollowUp:
-        """Classify the PR's current head, store it and return it.
+        """Compare the PR's current head with the author's previous review, store that and
+        return it under the head's CI now.
 
         Raises:
-            GitHubError: GitHub couldn't be read and no round of the PR was posted.
+            GitHubError: GitHub's reviews couldn't be read.
+            WorkspaceError: the current head's merge base couldn't be computed (it must be
+                in the mirror: a failure here is transient, so nothing is stored).
         """
         pr = stored.pr
         prev = await self.previous_review(stored)
         old_ids = new_ids = None
         if prev is not None and prev.head_sha != pr.head_sha:
-            base = await self._merge_base(pr.ref.repo, pr.base_sha, pr.head_sha)
-            if base is not None:
-                new_ids = await self._patch_ids(pr.ref.repo, base, pr.head_sha)
+            await self._workspace.ensure_mirror(pr.ref.repo)
+            await self._fetch(pr.ref.repo, [pr.base_sha, pr.head_sha])
+            base = await self._workspace.merge_base(pr.ref.repo, pr.base_sha, pr.head_sha)
+            new_ids = await self._patch_ids(pr.ref.repo, base, pr.head_sha)
             if prev.merge_base is not None:
                 old_ids = await self._patch_ids(pr.ref.repo, prev.merge_base, prev.head_sha)
-        followup = classify(prev, pr, old_ids, new_ids, pr.ci_state)
+        followup = compare(prev, pr, old_ids, new_ids)
         self._store.put_followup(pr.ref, pr.head_sha, followup)
         log.info("review.followup %s@%s: %s", pr.ref, pr.head_sha[:12], followup.kind)
-        return followup
+        return effective_followup(followup, pr.ci_state)
 
     async def _patch_ids(self, repo: str, base: str, head: str) -> dict[str, str] | None:
         try:
@@ -211,22 +219,26 @@ class FollowUps:
             return None
 
     async def refresh(self) -> int:
-        """Classify every queued PR head not classified yet; return how many were. A PR in a
-        suggested repo the author didn't load is skipped (it is never mirrored, R29a); one
-        whose classification fails is logged and tried again next time."""
+        """Check every queued PR head not checked yet (or that couldn't be checked last
+        time); return how many were classified. A PR in a suggested repo the author didn't
+        load is skipped (it is never mirrored, R29a). One whose check fails is recorded as
+        unchecked with its cause (shown on its row) and tried again next time."""
         configs = self._store.repo_configs()
         done = 0
         for stored in self._store.prs():
             ref, head = stored.pr.ref, stored.pr.head_sha
             config = configs.get(ref.repo)
-            if stored.fetch_error is not None or self._store.followup(ref, head) is not None:
+            known = self._store.followup(ref, head)
+            if stored.fetch_error is not None or (known is not None and known.error is None):
                 continue
             if config is not None and config.suggested and not stored.loaded:
                 continue
             try:
                 await self.classify(stored)
-            except Exception as exc:  # one PR's failure must not stop the others; cause logged
-                log.warning("review.followup %s left unclassified: %s", ref, exc, exc_info=exc)
+            except Exception as exc:  # one PR's failure must not stop the others; cause kept
+                log.warning("review.followup %s left unchecked: %s", ref, exc, exc_info=exc)
+                cause = str(exc) or type(exc).__name__
+                self._store.put_followup(ref, head, FollowUp("new", error=cause))
                 continue
             done += 1
         return done
@@ -263,8 +275,9 @@ class FollowUps:
         settled (moved, or confirmed outdated).
 
         Raises:
-            WorkspaceError: git failed; the drafts stay outdated and pending, so the next
-                preparation of the round tries again.
+            WorkspaceError: the mirror itself couldn't be set up; the drafts stay outdated and
+                pending, so the next preparation of the round tries again. An earlier head
+                that can't be read only settles its own drafts as outdated.
         """
         pending = self._store.carried_drafts(round_id)
         rnd = self._store.round(round_id)
@@ -278,17 +291,35 @@ class FollowUps:
         settled: list[Draft] = []
         for (old_head, old_base), drafts in groups.items():
             await self._fetch(repo, [old_head, old_base, head_sha, merge_base])
-            old_merge_base = await self._workspace.merge_base(repo, old_base, old_head)
-            commits: dict[ReviewSide, tuple[str, str]] = {
-                "RIGHT": (old_head, head_sha),
-                "LEFT": (old_merge_base, merge_base),
-            }
-            maps: LineMaps = {
-                (path, side): await self._line_map(repo, *commits[side], path)
-                for path, side in {(d.path, d.side or "RIGHT") for d in drafts}
-            }
+            try:
+                maps = await self._maps(repo, old_head, old_base, head_sha, merge_base, drafts)
+            except WorkspaceError as exc:
+                # The earlier head can't be read (force-pushed away, say): its drafts stay
+                # outdated for good rather than failing every preparation (M2).
+                log.warning("review.followup %s: drafts from %s stay outdated: %s",
+                            repo, old_head[:12], exc)  # fmt: skip
+                maps = {}
             settled.extend(reanchor(draft, maps) for draft in drafts)
         return self._store.reanchor_drafts(round_id, settled)
+
+    async def _maps(
+        self,
+        repo: str,
+        old_head: str,
+        old_base: str,
+        head_sha: str,
+        merge_base: str,
+        drafts: list[Draft],
+    ) -> LineMaps:
+        old_merge_base = await self._workspace.merge_base(repo, old_base, old_head)
+        commits: dict[ReviewSide, tuple[str, str]] = {
+            "RIGHT": (old_head, head_sha),
+            "LEFT": (old_merge_base, merge_base),
+        }
+        return {
+            (path, side): await self._line_map(repo, *commits[side], path)
+            for path, side in {(d.path, d.side or "RIGHT") for d in drafts}
+        }
 
     async def _line_map(self, repo: str, old: str, new: str, path: str) -> dict[int, int] | None:
         """Old line to new line for ``path`` between two commits; ``None`` when the file isn't

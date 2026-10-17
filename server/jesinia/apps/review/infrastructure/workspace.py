@@ -303,7 +303,12 @@ class GitWorkspace:
 
         Conservative by design: context lines are hashed, so a base change within three
         lines of a hunk, or to a renamed file's old content, changes the ID. Callers see
-        that as "content differs" and re-review, never as a missed change.
+        that as "content differs" and re-review, never as a missed change. Whitespace is
+        hashed too (``--verbatim``, C1): plain ``patch-id`` strips it, which would take a
+        Python re-indentation or a change inside a string literal for a pure rebase. Each
+        chunk is one file, so ``--stable`` (which git refuses beside ``--verbatim``) adds
+        nothing. A git without ``--verbatim`` (older than 2.39) fails the command, and the
+        caller then assumes nothing is unchanged.
 
         Raises:
             DiffTooLargeError: the (binary) patch is over the workspace's ``diff_limit``.
@@ -327,7 +332,7 @@ class GitWorkspace:
         numbered = b"".join(
             b"commit %040x\n" % index + chunk for index, chunk in enumerate(chunks, start=1)
         )
-        out = await self._git(mirror, "patch-id", "--stable", stdin=numbered)
+        out = await self._git(mirror, "patch-id", "--verbatim", stdin=numbered)
         pairs = (line.split() for line in out.splitlines())
         by_index = {int(commit, 16): patch_id for patch_id, commit in pairs}
         missing = [path for index, path in enumerate(paths, start=1) if index not in by_index]

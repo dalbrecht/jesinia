@@ -215,8 +215,8 @@ When the head of a PR the author already **approved** changes, Jesinia checks wh
 change is only a rebase:
 
 - **Same content:** the PR's own diff against its new base equals the approved diff against
-  its old base, compared as **per-file patch IDs** (`git patch-id --stable`) **(builder's
-  call)**.
+  its old base, compared as **per-file patch IDs** (`git patch-id --verbatim`, so whitespace
+  counts) **(builder's call)**.
 - **CI:** CI on the new head is green, or still running.
 
 If both hold, the approval is shown as **still approved**, with a one-line note. Nothing is

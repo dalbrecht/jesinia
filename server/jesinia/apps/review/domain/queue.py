@@ -14,7 +14,12 @@ from datetime import datetime
 from typing import Literal
 
 from jesinia.apps.review.domain.errors import ReviewError
-from jesinia.apps.review.domain.followup import FollowUp, FollowUpKind, pr_kind
+from jesinia.apps.review.domain.followup import (
+    FollowUp,
+    FollowUpKind,
+    effective_followup,
+    pr_kind,
+)
 from jesinia.apps.review.domain.gates import CiState, Depth, GateState, propose_depth
 from jesinia.apps.review.domain.workspace import InvalidRepoError, canonical_repo
 from jesinia.services.github.domain.pr import PullRequest, ReviewSummary
@@ -414,6 +419,16 @@ def queue_row(
     ``followup``: what the PR's current head needs after the author's previous review; its
     kind is the row's (a still-approved rebase files under Still approved)."""
     pr = stored.pr
+    if followup is not None:
+        followup = effective_followup(followup, pr.ci_state)  # CI as it is now (C2)
+    error = None if followup is None else followup.error
+    unchecked = error is not None
+    note = "" if followup is None else followup.note
+    if error is not None:
+        note = (
+            f"Couldn't check this head against your previous review ({error}); "
+            "it is checked again on the next sync"
+        )
     state, reason = stored.state, stored.state_reason
     if stored.fetch_error is not None:
         state, reason = "fetch_failed", f"couldn't load: {stored.fetch_error}"
@@ -449,7 +464,7 @@ def queue_row(
         fetch_error_at=stored.fetch_error_at,
         suggested=suggested,
         nothing_to_walk=latest is not None and latest.nothing_to_walk,
-        followup_kind=None if followup is None else followup.kind,
-        followup_note="" if followup is None else followup.note,
+        followup_kind=None if followup is None or unchecked else followup.kind,
+        followup_note=note,
         differing_paths=() if followup is None else tuple(followup.differing_paths),
     )
