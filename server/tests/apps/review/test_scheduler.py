@@ -448,6 +448,8 @@ async def test_prune_keeps_queued_and_in_review_heads_and_bound_trees(
     store.finish_round(posted, clock.now, None, verdict="approve")
     store.mark_round_done(posted)
     store.start_round(PrRef("acme/gone", 9), "7" * 40, BASE, "deep", clock.now)
+    # R55: an unfinished round keeps its head whatever the queue says (PR 2 is dismissed).
+    store.start_round(PrRef("acme/web", 2), "8" * 40, BASE, "quick", clock.now)
     workspace = FakeWorkspace(tmp_path, ("acme/web", "acme/gone"))
     sessions = ReviewSessionRegistry()
     sessions.bind("job-1", tmp_path / "acme" / "web" / "trees" / bound_sha)
@@ -457,8 +459,8 @@ async def test_prune_keeps_queued_and_in_review_heads_and_bound_trees(
 
     assert removed == 3
     assert workspace.kept == {
-        "acme/web": {HEAD, BASE, HEAD_C, latest, running, bound_sha},
-        "acme/gone": set(),
+        "acme/web": {HEAD, BASE, HEAD_C, latest, running, bound_sha, "8" * 40},
+        "acme/gone": {"7" * 40, BASE},
     }
 
 

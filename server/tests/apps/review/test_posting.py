@@ -987,3 +987,56 @@ async def test_a_failed_findings_job_still_seeds_what_there_is(env: Env) -> None
     env.store.put_artifact(round_id, "jobs", {"findings": {"state": "failed", "error": "x"}})
     drafts = await env.service.drafts(round_id)
     assert not drafts.findings_pending and len(drafts.drafts) == 1
+
+
+# --- R54: approving against the evidence needs confirming --------------------------------------
+
+
+async def test_approving_an_unfinished_round_needs_confirmation(env: Env) -> None:
+    round_id = _running_round(env)
+    await env.service.save_drafts(round_id, "Looks fine.", [])
+    env.store.put_artifact(
+        round_id,
+        "evidence",
+        {"ci": "pending", "correctness": "missing", "correctness_coverage": None},
+    )
+    preview = await env.service.preview(round_id, "APPROVE")
+    assert preview.warnings == ("approve_against_evidence",)
+    assert "APPROVE" in preview.allowed_events  # the author still decides
+    assert any("hasn't finished" in note for note in preview.notes)
+    assert any("coverage read: unknown" in note for note in preview.notes)
+    with pytest.raises(NeedsConfirmation) as refused:
+        await env.service.post(round_id, "APPROVE", (), key="k1", digest=preview.digest)
+    assert refused.value.warnings == ("approve_against_evidence",)
+    assert env.github.posted == []
+    assert (await env.service.preview(round_id, "COMMENT")).warnings == ()
+
+
+async def test_approving_against_a_closer_look_verdict_needs_confirmation(env: Env) -> None:
+    env.store.set_verdict(env.round_id, "needs_closer_look")
+    env.store.put_artifact(
+        env.round_id, "verdict", {"verdict": "needs_closer_look", "reasons": ["CI is failing"]}
+    )
+    env.store.put_artifact(
+        env.round_id,
+        "evidence",
+        {"ci": "failing", "correctness": "missing", "correctness_coverage": {"pct": 40.0}},
+    )
+    preview = await env.service.preview(env.round_id, "APPROVE")
+    assert preview.warnings == ("approve_against_evidence",)
+    why = " ".join(preview.notes)
+    assert "needs_closer_look" in why and "CI is failing" in why
+    assert "CI: failing" in why and "correctness: missing" in why and "40.0%" in why
+    with pytest.raises(NeedsConfirmation):
+        await env.post("APPROVE")
+    assert env.github.posted == []
+    # Confirmed, it posts, once.
+    assert await env.post("APPROVE", ["approve_against_evidence"]) == URL
+    assert await env.post("APPROVE", ["approve_against_evidence"]) == URL
+    assert len(env.github.posted) == 1 and env.github.posted[0]["event"] == "APPROVE"
+
+
+async def test_approving_an_approve_verdict_needs_no_extra_confirmation(env: Env) -> None:
+    preview = await env.service.preview(env.round_id, "APPROVE")
+    assert "approve_against_evidence" not in preview.warnings
+    assert await env.post("APPROVE") == URL

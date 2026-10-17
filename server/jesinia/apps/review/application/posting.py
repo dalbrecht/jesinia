@@ -388,6 +388,9 @@ class PostingService:
         if needs_body(event, review):
             what = event.lower().replace("_", " ")
             notes.append(f"GitHub needs a summary or an inline comment to post {what}")
+        against = self._against_evidence(rnd)
+        if event == "APPROVE" and against is not None:
+            notes.append(against)
         notes.append(MARKER_NOTE)
         return PostPreview(
             round_id=round_id,
@@ -395,11 +398,42 @@ class PostingService:
             event=event,
             body=review.body,
             comments=review.comments,
-            warnings=review_warnings(event, review, own_pr=own_pr, newer_head=newer_head),
+            warnings=review_warnings(
+                event,
+                review,
+                own_pr=own_pr,
+                newer_head=newer_head,
+                against_evidence=against is not None,
+            ),
             allowed_events=("COMMENT",) if own_pr else REVIEW_EVENTS,
             digest=review_digest(round_id, rnd.head_sha, event, review),
             notes=tuple(notes),
         )
+
+    def _against_evidence(self, rnd: RoundRecord) -> str | None:
+        """Why approving goes against Jesinia's evidence (R54), or ``None`` when the round
+        finished with an approve verdict: the verdict and its reasons (or that the review
+        hasn't finished), then the CI, correctness and coverage evidence."""
+        if rnd.finished_at is not None and rnd.error is None and rnd.verdict == "approve":
+            return None
+        if rnd.finished_at is None or rnd.error is not None or rnd.verdict is None:
+            why = "the review hasn't finished, so there is no verdict to approve on"
+        else:
+            why = f"Jesinia's verdict is {rnd.verdict}"
+        found = self._store.artifact(rnd.id, "verdict")
+        reasons = found.get("reasons") if isinstance(found, Mapping) else None
+        if isinstance(reasons, list) and reasons:
+            why += " (" + "; ".join(map(str, reasons)) + ")"
+        evidence = self._store.artifact(rnd.id, "evidence")
+        if isinstance(evidence, Mapping):
+            coverage = evidence.get("correctness_coverage")
+            pct = coverage.get("pct") if isinstance(coverage, Mapping) else None
+            read = "unknown" if pct is None else f"{pct}%"
+            why += (
+                f". Evidence: CI: {evidence.get('ci')}; correctness: "
+                f"{evidence.get('correctness')}; coverage read: {read}"
+            )
+        return f"Approving goes against the evidence: {why}. Confirm to approve anyway."
 
     async def _newer_head(self, rnd: RoundRecord, live: PullRequest) -> bool:
         """Whether the PR has commits after the round's head.

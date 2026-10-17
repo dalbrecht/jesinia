@@ -1693,7 +1693,7 @@ export interface components {
              * Confirm
              * @description Every warning the preview showed
              */
-            confirm?: ("blocking_comment" | "newer_head" | "own_pr_comment_only")[];
+            confirm?: ("blocking_comment" | "approve_against_evidence" | "newer_head" | "own_pr_comment_only")[];
             /**
              * Digest
              * @description The digest of the preview being confirmed
@@ -1810,7 +1810,7 @@ export interface components {
             /** Comments */
             comments: components["schemas"]["CommentOut"][];
             /** Warnings */
-            warnings: ("blocking_comment" | "newer_head" | "own_pr_comment_only")[];
+            warnings: ("blocking_comment" | "approve_against_evidence" | "newer_head" | "own_pr_comment_only")[];
             /** Allowed Events */
             allowed_events: ("APPROVE" | "REQUEST_CHANGES" | "COMMENT")[];
             /** Digest */
@@ -1989,7 +1989,7 @@ export interface components {
              * Warnings
              * @description For NeedsConfirmation: every warning to confirm
              */
-            warnings?: ("blocking_comment" | "newer_head" | "own_pr_comment_only")[] | null;
+            warnings?: ("blocking_comment" | "approve_against_evidence" | "newer_head" | "own_pr_comment_only")[] | null;
             /**
              * Review Url
              * @description For EarlierReviewPosted: the review GitHub already has

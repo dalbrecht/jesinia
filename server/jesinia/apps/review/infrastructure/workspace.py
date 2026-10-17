@@ -243,13 +243,20 @@ class GitWorkspace:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
         return check_sha(out.decode().strip())
 
-    async def worktree(self, repo: str, sha: str) -> Path:
+    async def worktree(
+        self, repo: str, sha: str, *, bind: Callable[[Path], None] | None = None
+    ) -> Path:
+        """The detached checkout of ``sha``, made if it isn't there. ``bind`` is called with
+        it before the repo lock is released (R55): the prune takes the same lock, so a tree
+        a job binds this way is never removed between being made and being bound."""
         mirror = self._mirror(repo)
         trees = self._inside(mirror.parent / "trees")
         path = trees / check_sha(sha)
         async with self._lock(repo):
             if path.is_dir() and not path.is_symlink():
                 if await self._head_of(path) == sha:
+                    if bind is not None:
+                        bind(path)
                     return path
             await _remove(path)  # a damaged checkout or a stray link: rebuild it
             # Clears registrations whose directories are gone, which would block the add.
@@ -267,6 +274,8 @@ class GitWorkspace:
                 with contextlib.suppress(WorkspaceError):  # keep the original failure
                     await self._git(_bare(mirror), "worktree", "prune")
                 raise
+            if bind is not None:
+                bind(path)
             return path
 
     async def diff(self, repo: str, base_sha: str, head_sha: str) -> str:

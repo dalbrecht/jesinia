@@ -50,7 +50,9 @@ class Workspace(Protocol):
     async def default_branch_head(self, repo: str) -> str:
         """The default branch's tip as last fetched (fetched now if never)."""
 
-    async def worktree(self, repo: str, sha: str) -> Path:
+    async def worktree(
+        self, repo: str, sha: str, *, bind: Callable[[Path], None] | None = None
+    ) -> Path:
         """A detached checkout of ``sha``; calling again returns the same path."""
 
     async def diff(self, repo: str, base_sha: str, head_sha: str) -> str:
@@ -257,8 +259,9 @@ class QueueStore(Protocol):
     def put_pr_files(self, ref: PrRef, head_sha: str, files: Sequence[PrFile]) -> None: ...
 
     def keep_shas(self) -> set[tuple[str, str]]:
-        """(repo, sha) of the head and base of every queued PR, of rounds still running, and
-        of each queued PR's latest finished round unless it is done."""
+        """(repo, sha) of the head and base of every queued PR, of every round still running
+        (whatever the queue says: R55), and of each queued PR's latest finished round
+        unless it is done."""
 
 
 class PipelineStore(QueueStore, Protocol):

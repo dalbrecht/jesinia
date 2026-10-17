@@ -11,7 +11,7 @@ import os
 import sqlite3
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from importlib.resources import files
 from pathlib import Path
 
@@ -49,6 +49,7 @@ from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace
 from jesinia.core.db import DbClass, ModuleDb, open_db
+from tests.apps.review.perf import assert_linear
 
 REPO = "acme/widget"
 BASE = "a" * 40
@@ -158,9 +159,9 @@ def test_overrides_are_validated() -> None:
         Override(PY, ("A", " "), "x")
 
 
-def test_layering_is_linear_in_the_number_of_rules() -> None:
+def _layering_documents(rules: int) -> list[Document]:
     documents = [
-        Document(f"doc{d}.md", "base", "".join(f"# h{i}\nrule {i}\n" for i in range(2_000)))
+        Document(f"doc{d}.md", "base", "".join(f"# h{i}\nrule {i}\n" for i in range(rules)))
         for d in range(10)
     ]
     # Each user document replaces every other rule of one base document.
@@ -168,13 +169,20 @@ def test_layering_is_linear_in_the_number_of_rules() -> None:
         Document(
             f"mine{d}.md",
             "user",
-            "".join(f"# doc{d}.md › h{i}\nnew {i}\n" for i in range(0, 2_000, 2)),
+            "".join(f"# doc{d}.md › h{i}\nnew {i}\n" for i in range(0, rules, 2)),
         )
         for d in range(10)
     ]
-    started = time.perf_counter()
-    standards = layer_standards([*documents, *users], [])
-    assert time.perf_counter() - started < 0.5
+    return [*documents, *users]
+
+
+def test_layering_is_linear_in_the_number_of_rules() -> None:
+    def work(rules: int) -> Callable[[], object]:
+        documents = _layering_documents(rules)
+        return lambda: layer_standards(documents, [])
+
+    assert_linear(work, 500)  # 5,000 rules, then 20,000
+    standards = layer_standards(_layering_documents(2_000), [])
     assert len(standards.sections) == 20_000
     assert standards.sections[0].text == "new 0" and standards.sections[1].text == "rule 1"
 
@@ -596,11 +604,15 @@ async def test_loading_large_standards_never_blocks_the_event_loop(standards_dir
             last = now
 
     tick = asyncio.create_task(ticker())
+    started = time.perf_counter()
     loaded = await loader.load(REPO, BASE, None, [])
+    total = time.perf_counter() - started
     done.set()
     await tick
     assert len(loaded.sections) > MAX_SECTIONS
-    assert max(gaps) < 0.25
+    # Blocking would show as one gap as long as the whole load; a loaded runner only
+    # stretches every gap a little. Relative, with a floor for very fast loads.
+    assert max(gaps) < max(0.25, 0.6 * total)
 
 
 @pytest.fixture

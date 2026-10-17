@@ -787,9 +787,11 @@ class SqliteReviewStore:
         rows = self._conn.execute(
             "SELECT repo, head_sha, base_sha FROM prs WHERE dismissed = 0 "
             "UNION ALL "
+            "SELECT r.repo, r.head_sha, r.base_sha FROM rounds r WHERE r.finished_at IS NULL "
+            "UNION ALL "
             "SELECT r.repo, r.head_sha, r.base_sha FROM rounds r "
             "JOIN prs p ON p.repo = r.repo AND p.number = r.number "
-            "WHERE p.dismissed = 0 AND (r.finished_at IS NULL OR (r.done = 0 AND r.id IN ("
-            "SELECT MAX(id) FROM rounds WHERE finished_at IS NOT NULL GROUP BY repo, number)))"
+            "WHERE p.dismissed = 0 AND r.done = 0 AND r.id IN ("
+            "SELECT MAX(id) FROM rounds WHERE finished_at IS NOT NULL GROUP BY repo, number)"
         )
         return {(repo, sha) for repo, head, base in rows for sha in (head, base) if sha}

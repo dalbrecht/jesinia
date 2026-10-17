@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from jesinia.apps.review.application.ports import KeepProvider, Workspace
+from jesinia.apps.review.application.repo_tools import RepoTools
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.domain.coverage import coverage, parse_unified_diff
 from jesinia.apps.review.domain.workspace import (
@@ -959,3 +960,46 @@ async def test_real_git_diffs_parse_for_coverage(tmp_path: Path, fixture: Fixtur
         ("blob.bin", "binary"),
         ("uv.lock", "lockfile"),
     }
+
+
+async def test_a_fresh_tree_is_bound_before_a_prune_can_remove_it(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R55: a job's tree is bound under the repo lock it was created in. A prune that comes
+    in meanwhile (the PR was dismissed, so only the binding keeps the tree) sees it bound,
+    and the job's repo tools still read it."""
+    ws = await fetched(tmp_path, fixture)
+    sessions = ReviewSessionRegistry()
+    real_git = ws._git
+    moving, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_git(location: tuple[str, ...], *args: str, **kwargs: Any) -> str:
+        out = await real_git(location, *args, **kwargs)
+        if args[:2] == ("worktree", "move"):
+            moving.set()
+            await release.wait()
+        return out
+
+    monkeypatch.setattr(ws, "_git", slow_git)
+
+    async def keep(repo: str) -> set[str]:  # the dismissed PR keeps nothing itself
+        bound = (ws.tree_key(tree) for tree in sessions.bound_trees())
+        return {key[1] for key in bound if key is not None}
+
+    creating = asyncio.create_task(
+        ws.worktree(REPO, fixture.head, bind=lambda path: sessions.bind("job", path))
+    )
+    await moving.wait()
+    pruning = asyncio.create_task(ws.prune(keep))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    release.set()
+    tree = await creating
+
+    assert await pruning == 0 and tree.is_dir()
+    assert sessions.worktree_for("job") == tree
+    tools = RepoTools(sessions.worktree_for, ws, sessions.allowance)
+    assert (await tools.read("job", "a.txt", 1, 2))["end"] == 2
+    # An existing tree is bound under the lock too.
+    assert await ws.worktree(REPO, fixture.head, bind=lambda p: sessions.bind("job2", p)) == tree
+    assert sessions.worktree_for("job2") == tree

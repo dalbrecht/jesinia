@@ -31,9 +31,12 @@ from jesinia.services.github.domain.pr import (
 PostingState = Literal["started", "uncertain", "posted", "not_posted", "failed"]
 # Attempts whose outcome isn't known yet: they block new posts until reconciled.
 UNSETTLED: Final[frozenset[str]] = frozenset({"started", "uncertain"})
-PostWarning = Literal["blocking_comment", "newer_head", "own_pr_comment_only"]
+PostWarning = Literal[
+    "blocking_comment", "approve_against_evidence", "newer_head", "own_pr_comment_only"
+]
 POST_WARNINGS: Final[tuple[PostWarning, ...]] = (
     "blocking_comment",
+    "approve_against_evidence",
     "newer_head",
     "own_pr_comment_only",
 )
@@ -363,12 +366,21 @@ def has_blocking(body: str, comments: Sequence[DraftComment]) -> bool:
 
 
 def review_warnings(
-    event: ReviewEvent, review: Review, *, own_pr: bool, newer_head: bool
+    event: ReviewEvent,
+    review: Review,
+    *,
+    own_pr: bool,
+    newer_head: bool,
+    against_evidence: bool = False,
 ) -> tuple[PostWarning, ...]:
-    """The warnings the confirmation shows, in a fixed order."""
+    """The warnings the confirmation shows, in a fixed order. ``against_evidence``: the
+    round is unfinished or Jesinia's verdict isn't approve, so approving needs the author's
+    explicit confirmation (R54: Jesinia recommends, the author decides)."""
     warnings: list[PostWarning] = []
     if event == "APPROVE" and has_blocking(review.body, review.comments):
         warnings.append("blocking_comment")
+    if event == "APPROVE" and against_evidence:
+        warnings.append("approve_against_evidence")
     if newer_head:
         warnings.append("newer_head")
     if own_pr and event != "COMMENT":

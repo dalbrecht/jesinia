@@ -7454,6 +7454,7 @@
               "type": "string",
               "enum": [
                 "blocking_comment",
+                "approve_against_evidence",
                 "newer_head",
                 "own_pr_comment_only"
               ]
@@ -7778,6 +7779,7 @@
               "type": "string",
               "enum": [
                 "blocking_comment",
+                "approve_against_evidence",
                 "newer_head",
                 "own_pr_comment_only"
               ]
@@ -8299,6 +8301,7 @@
                   "type": "string",
                   "enum": [
                     "blocking_comment",
+                    "approve_against_evidence",
                     "newer_head",
                     "own_pr_comment_only"
                   ]

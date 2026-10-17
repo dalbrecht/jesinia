@@ -186,7 +186,9 @@ class JobSessions(Protocol):
 class JobWorkspace(Protocol):
     """The part of the repo workspace a job uses."""
 
-    async def worktree(self, repo: str, sha: str) -> Path: ...
+    async def worktree(
+        self, repo: str, sha: str, *, bind: Callable[[Path], None] | None = None
+    ) -> Path: ...
 
     async def default_branch_head(self, repo: str) -> str: ...
 
@@ -436,10 +438,12 @@ class JobRunner:
         except (ValueError, OSError) as exc:  # an unknown runner; the pack can't be written
             raise JobFailed(job, exc) from exc
         try:
-            # Resolved and bound back to back, so no prune can drop the tree in between.
+            # Bound inside the workspace's repo lock, so no prune can drop the tree between
+            # its checkout and the binding (R55).
             try:
-                tree = await self._workspace.worktree(repo, pr.head_sha)
-                await self._registry.attach(session.id, tree)
+                await self._workspace.worktree(
+                    repo, pr.head_sha, bind=lambda tree: self._registry.bind(session.id, tree)
+                )
             except WorkspaceError as exc:
                 raise JobFailed(job, exc) from exc
             output = await self._ask(job, session.id, schema, _request(job, depth, schema))

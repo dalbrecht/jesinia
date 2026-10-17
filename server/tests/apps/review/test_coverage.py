@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import tracemalloc
+from collections.abc import Callable
 from dataclasses import replace
 
 import pytest
@@ -33,6 +34,7 @@ from jesinia.apps.review.domain.coverage import (
     verified_ranges,
 )
 from jesinia.apps.review.domain.workspace import DiffTooLargeError
+from tests.apps.review.perf import CEILING, assert_linear
 
 APP = """\
 diff --git a/src/app.py b/src/app.py
@@ -404,7 +406,7 @@ def test_a_diff_over_the_changed_line_cap_is_refused_quickly() -> None:
     with pytest.raises(DiffTooLargeError, match=f"over {MAX_CHANGED_LINES} changed lines") as e:
         parse_unified_diff(text)
     assert e.value.limit == MAX_CHANGED_LINES
-    assert time.perf_counter() - started < 2.0
+    assert time.perf_counter() - started < CEILING  # refused, never parsed for minutes
     many = "".join(f"diff --git a/f{i} b/f{i}\nold mode 100644\nnew mode 100755\n"
                    for i in range(MAX_FILES + 1))  # fmt: skip
     with pytest.raises(DiffTooLargeError, match=f"over {MAX_FILES} files"):
@@ -413,18 +415,23 @@ def test_a_diff_over_the_changed_line_cap_is_refused_quickly() -> None:
 
 def test_coverage_of_a_huge_diff_is_fast_and_bounded() -> None:
     """150k changed lines in 3,000 hunks, read with the schema's 2,000 ranges: coverage is
-    interval maths, not per-line sets."""
+    interval maths, not per-line sets (linear in the diff, within a generous ceiling)."""
+
+    def work(hunks: int) -> Callable[[], object]:
+        diff = parse_unified_diff(_added("big.py", hunks * 50, hunks=hunks))
+        ranges = [LineRange("big.py", i * 80 + 1, i * 80 + 40) for i in range(2_000)]
+        walked = [walk(*(("big.py", h) for h in range(0, hunks, 2)))]
+        return lambda: (checked_coverage(diff, ranges), coverage(diff, walked, []))
+
+    assert_linear(work, 750)  # 37,500 changed lines, then 150,000
     text = _added("big.py", 150_000, hunks=3_000)
     tracemalloc.start()
     diff = parse_unified_diff(text)
     ranges = [LineRange("big.py", i * 80 + 1, i * 80 + 40) for i in range(2_000)]
-    started = time.perf_counter()
     read = checked_coverage(diff, ranges)
     walked = coverage(diff, [walk(*(("big.py", h) for h in range(0, 3_000, 2)))], [])
-    elapsed = time.perf_counter() - started
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
-    assert elapsed < 1.0
     assert peak < 64 * 1024 * 1024  # the 1 MB diff text plus compact hunks
     assert read.lines_total == 150_000 and 0 < read.lines_covered < 150_000
     assert walked.lines_covered == 75_000 and walked.pct == 50.0

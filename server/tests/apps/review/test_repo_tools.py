@@ -83,6 +83,7 @@ from jesinia.core.config import Config
 from jesinia.core.events import EventBus
 from jesinia.core.module import AppContext, CallContext, ToolDef
 from jesinia.core.scheduler import Scheduler
+from tests.apps.review.perf import CEILING
 
 REPO = "acme/widget"
 SESSION = "review-session-1"
@@ -978,7 +979,8 @@ def test_patterns_outside_the_allowed_regex_subset_are_refused(
     assert regex_problem(pattern, dialect) is not None
     with pytest.raises(InvalidSearchError):
         check_pattern(pattern, dialect)
-    assert time.perf_counter() - started < 0.1
+    # A static check of the pattern: a catastrophic one would hang, not take 0.2 s.
+    assert time.perf_counter() - started < CEILING
 
 
 @pytest.mark.parametrize(

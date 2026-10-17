@@ -18,7 +18,7 @@ It uses the `github` service (`services/github/`) for pull request data and for 
   - `GET|PUT /prs/…/drafts`, `POST /prs/…/post/preview`, `POST /prs/…/post` and `POST /prs/…/done`.
   - `GET|PUT /settings`.
 - **Posting** (`application/posting.py`) is the only GitHub write.
-  - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `newer_head`, `own_pr_comment_only`) and a digest.
+  - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `approve_against_evidence`, `newer_head`, `own_pr_comment_only`) and a digest. Approving an unfinished round, or one whose verdict isn't approve, needs `approve_against_evidence` confirmed: Jesinia recommends, the author decides.
   - A post must carry that digest and confirm every warning. It goes out as one atomic review on the round's head. Drafts GitHub can't anchor go in the body.
   - Each attempt is recorded before GitHub is called, and its body ends with an invisible marker (`<!-- jesinia-posting:<id> -->`).
   - A lost response, a timeout or a 5xx leaves the attempt `uncertain`. Until it is reconciled, nothing else is posted for that round. The next post first looks for a submitted review whose body ends with that marker and adopts it.

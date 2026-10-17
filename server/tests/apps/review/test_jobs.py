@@ -214,20 +214,26 @@ class FakeWorkspace:
         self.default_error: WorkspaceError | None = None
         self.sessions_dir: Path | None = None
         self.sessions_at_worktree: list[int] = []
+        self.bound_under_lock = False
 
     async def default_branch_head(self, repo: str) -> str:
         if self.default_error is not None:
             raise self.default_error
         return DEFAULT
 
-    async def worktree(self, repo: str, sha: str) -> Path:
+    async def worktree(
+        self, repo: str, sha: str, *, bind: Callable[[Path], None] | None = None
+    ) -> Path:
         self.worktrees.append((repo, sha))
+        self.bound_under_lock = bind is not None
         if self.sessions_dir is not None and self.sessions_dir.exists():
             self.sessions_at_worktree.append(len(list(self.sessions_dir.iterdir())))
         if self.worktree_error is not None:
             raise self.worktree_error
         path = self.root / repo / "trees" / sha
         path.mkdir(parents=True, exist_ok=True)
+        if bind is not None:
+            bind(path)
         return path
 
     async def commit_messages(
@@ -626,6 +632,7 @@ async def test_job_sessions_get_only_the_repo_tools(env: Env) -> None:
     # Bound to the worktree of the round's (repo, head), resolved by the workspace...
     assert env.workspace.worktrees == [(REPO, HEAD)]
     assert seen["tree"] == env.workspace.root / REPO / "trees" / HEAD
+    assert env.workspace.bound_under_lock  # R55: bound inside the workspace's repo lock
     # ...and unbound and closed once the job is done.
     assert env.registry.bound_trees() == []
     assert not request.workdir.exists()
