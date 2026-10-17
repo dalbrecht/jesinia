@@ -45,7 +45,10 @@ def test_becoming_incomplete_sends_an_issue_back_and_nothing_else_does() -> None
     assert not is_inbox(backlog, created_at=T0, added_at=T0, complete=False)
     assert not is_inbox(backlog, created_at=T0, added_at=T0, complete=True)
     inboxed = PreviousTriage(complete=False, inbox=True)
-    assert is_inbox(inboxed, created_at=T0, added_at=T0, complete=True)
+    assert is_inbox(inboxed, created_at=T0, added_at=T0, complete=False)
+    # Complete means triaged: the flag clears, so a schema change can't bring it back.
+    assert not is_inbox(inboxed, created_at=T0, added_at=T0, complete=True)
+    assert not is_inbox(None, created_at=T0 + timedelta(seconds=1), added_at=T0, complete=True)
 
 
 def test_inbox_view_hides_complete_issues_and_backlog_holds_the_rest() -> None:

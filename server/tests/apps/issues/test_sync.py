@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from jesinia.apps.issues.application.ports import StoredIssue
 from jesinia.apps.issues.application.sync import (
     DETAIL_PAGE_CAP,
     EPIC_BACKFILL_PER_SYNC,
@@ -27,6 +28,7 @@ from jesinia.apps.issues.domain.triage import (
     RepoNotWatchedError,
     SyncCursor,
     ViewName,
+    triage,
 )
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.module import ISSUES_DB
@@ -113,6 +115,7 @@ class FakeIssues:
         # Called before each list_issues answer: raise to fail the call, mutate to race it.
         self.before_list: Callable[[int], None] | None = None
         self.gate: asyncio.Event | None = None
+        self.gate_call: int | None = None  # gate only this list call (1-based); None: all
         self.file_error: Exception | None = None
 
     def put(self, *issues: Issue) -> None:
@@ -126,7 +129,8 @@ class FakeIssues:
         self, repo: str, since: datetime | None, page_token: str | None
     ) -> Page[Issue]:
         self.calls.append(("list_issues", (repo, since, page_token)))
-        if self.gate is not None:
+        call = self.call_names().count("list_issues")
+        if self.gate is not None and self.gate_call in (None, call):
             await self.gate.wait()
         if self.before_list is not None:
             self.before_list(len([c for c in self.calls if c[0] == "list_issues"]))
@@ -252,7 +256,8 @@ async def test_first_sync_puts_existing_issues_in_backlog_without_jobs(
     assert inbox_log.calls == []
     # Paginated, and the list payload only: no per-issue call, even for the epic.
     names = github.call_names()
-    assert names.count("list_issues") >= 3
+    assert names.count("list_issues") == 3
+    assert len(names) == 6  # plus labels, milestones and labels.yml
     assert set(names) == {"list_issues", "labels", "milestones", "file"}
     view = await service.list("backlog", IssueFilters())
     assert view.synced_at == clock.now and not view.syncing and view.sync_error is None
@@ -767,3 +772,135 @@ async def test_cursor_is_kept_for_the_next_incremental_sync(
     github.calls.clear()
     await SyncService(github, store, clock).sync(REPO)
     assert [a for n, a in github.calls if n == "list_issues"] == [(REPO, created, None)]
+
+
+# Fix round 1: boundary edits, Inbox clearing, recompute races --------------------------
+
+
+async def test_same_second_reedit_is_picked_up_on_the_next_sync(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    edited_at = clock.now + timedelta(seconds=30)
+    await watched(service, clock)
+    github.put(issue(1, labels=("priority: high",), sub_issue_count=1, updated=edited_at))
+    github.put(issue(2, labels=INCOMPLETE, updated=edited_at))
+    await service.sync(REPO)
+    await service.sync(REPO)  # a later sync: the backfill fetches the epic's children once
+    github.calls.clear()
+
+    # Unchanged boundary issues: no write and no sub-issue fetch.
+    await service.sync(REPO)
+    assert "sub_issues" not in github.call_names()
+
+    # Issue 2 is edited again within the same second as the high-water mark.
+    github.put(issue(2, labels=COMPLETE, updated=edited_at))
+    await service.sync(REPO)
+    stored = store.issue(REPO, 2)
+    assert stored is not None and stored.labels == COMPLETE
+    assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == []
+
+
+async def test_completed_inbox_issue_is_not_resurfaced_by_a_schema_change(
+    service: SyncService, github: FakeIssues, clock: FakeClock, inbox_log: InboxLog
+) -> None:
+    await watched(service, clock)
+    github.put(issue(1, created=clock.now))
+    await service.sync(REPO)
+    assert await numbers(service, "inbox") == [1]
+
+    clock.now += timedelta(minutes=5)
+    github.put(
+        issue(1, labels=COMPLETE, created=clock.now - timedelta(minutes=5), updated=clock.now)
+    )
+    await service.sync(REPO)
+    assert await numbers(service, "inbox") == []
+
+    # labels.yml no longer knows agent-ready: issue 1 is incomplete, but only the convention
+    # changed. It shows under the incomplete filter, not in the Inbox.
+    github.files[(REPO, LABELS_YML)] = "readiness:\n  - blocked\n"
+    await service.sync(REPO)
+    assert await numbers(service, "inbox") == []
+    assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == [1]
+    assert inbox_log.calls == [(REPO, [1])]
+
+
+async def test_recompute_cannot_set_the_inbox_flag(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    await watched(service, clock)
+    github.put(issue(1, labels=COMPLETE, created=clock.now))  # complete on arrival
+    await service.sync(REPO)
+    store.set_schema(REPO, "settings", replace(DEFAULT_SCHEMA, readiness=()))
+    await service.recompute(REPO)
+    assert await numbers(service, "inbox") == []
+    assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == [1]
+
+
+async def test_recompute_during_a_sync_ends_with_the_new_schema(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    aliased = ("design needed", "priority: low", "bug", "area:web")
+    github.put(*(issue(n, labels=aliased) for n in range(1, 151)))
+    await watched(service, clock)
+    # Hold the second page: the first is saved with the old schema, the rest come after.
+    github.gate, github.gate_call = asyncio.Event(), 2
+    running = asyncio.create_task(service.sync(REPO))
+    while github.call_names().count("list_issues") < 2:
+        await asyncio.sleep(0)
+
+    overlay = replace(
+        DEFAULT_SCHEMA, readiness=(*DEFAULT_SCHEMA.readiness, Canonical("design needed"))
+    )
+    store.set_schema(REPO, "settings", overlay)
+    recomputing = asyncio.create_task(service.recompute(REPO))
+    await asyncio.sleep(0)
+    github.gate.set()
+    await asyncio.gather(running, recomputing)
+
+    assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == []
+    await service.sync(REPO)
+    assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == []
+
+
+async def test_an_older_version_never_overwrites_a_newer_row(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    await watched(service, clock)
+    newer = issue(1, labels=COMPLETE, updated=clock.now)
+    older = issue(1, labels=INCOMPLETE, updated=clock.now - timedelta(hours=1))
+    triaged = triage(COMPLETE, 0, DEFAULT_SCHEMA)
+    store.save_page(REPO, [StoredIssue(newer, triaged, False)], {}, SyncCursor(), clock.now)
+    stale = triage(INCOMPLETE, 0, DEFAULT_SCHEMA)
+    store.save_page(REPO, [StoredIssue(older, stale, True)], {}, SyncCursor(), clock.now)
+    stored = store.issue(REPO, 1)
+    assert stored is not None and stored.labels == COMPLETE
+    assert await numbers(service, "inbox") == []
+
+
+async def test_reopened_inbox_issue_fires_the_inbox_hook_again(
+    service: SyncService, github: FakeIssues, clock: FakeClock, inbox_log: InboxLog
+) -> None:
+    await watched(service, clock)
+    created = clock.now
+    github.put(issue(1, created=created))
+    await service.sync(REPO)
+    for state in ("closed", "open"):
+        clock.now += timedelta(minutes=5)
+        github.put(issue(1, created=created, updated=clock.now, state=state))
+        await service.sync(REPO)
+    assert inbox_log.calls == [(REPO, [1]), (REPO, [1])]
+
+
+async def test_sync_all_skips_a_repo_unwatched_mid_run(
+    github: FakeIssues, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    service = SyncService(github, store, clock)
+    await watched(service, clock, OTHER)
+    await watched(service, clock)
+
+    def unwatch_web(_: int) -> None:
+        store.unwatch(REPO)
+
+    github.before_list = unwatch_web
+    await service.sync_all()  # acme/api runs first and unwatches acme/web
+    assert {args[0] for name, args in github.calls if name == "list_issues"} == {OTHER}

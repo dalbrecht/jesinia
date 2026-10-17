@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
 
-from jesinia.apps.issues.application.sync import SyncService
+from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.domain.triage import IssueFilters
 from jesinia.apps.issues.module import IDEMPOTENCY_PRUNE_JOB, ISSUES_DB, SYNC_JOB, IssuesModule
 from jesinia.core.config import Config
@@ -16,7 +16,7 @@ from jesinia.core.db import DbClass, open_db
 from jesinia.core.events import EventBus
 from jesinia.core.idempotency import SqliteIdempotencyStore
 from jesinia.core.module import AppContext
-from jesinia.core.scheduler import Scheduler
+from jesinia.core.scheduler import Job, Scheduler
 from jesinia.registry import DATABASES, modules
 from jesinia.services.github.application.service import GitHubService
 
@@ -97,5 +97,28 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     await ctx.scheduler.run_now(SYNC_JOB)
     state = await module.sync.list("inbox", IssueFilters())
     assert state.rows == [] and state.sync_error is not None
+    await module.stop()
+    await github.aclose()
+
+
+class _RecordingScheduler(Scheduler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.registered: dict[str, tuple[timedelta, bool]] = {}
+
+    def every(self, name: str, interval: timedelta, job: Job, *, at_start: bool = False) -> None:
+        self.registered[name] = (interval, at_start)
+        super().every(name, interval, job, at_start=at_start)
+
+
+async def test_sync_job_runs_every_five_minutes_and_at_start(cfg: Config) -> None:
+    assert SYNC_INTERVAL == timedelta(minutes=5)
+    scheduler = _RecordingScheduler()
+    ctx = AppContext(cfg, EventBus(), scheduler)
+    github = GitHubService(_no_token, _NoCache())
+    ctx.services["github"] = github
+    module = IssuesModule()
+    await module.start(ctx)
+    assert scheduler.registered[SYNC_JOB] == (timedelta(minutes=5), True)
     await module.stop()
     await github.aclose()

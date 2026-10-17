@@ -158,8 +158,11 @@ class SyncService:
         """Sync every watched repo in turn (the ``issues.sync`` job); a rate limit stops the
         run, since every repo shares the token's limit."""
         for repo in self._store.watched_repos():
-            if not await self._sync(repo):
-                return
+            try:
+                if not await self._sync(repo):
+                    return
+            except RepoNotWatchedError:
+                continue  # unwatched while an earlier repo synced
 
     async def sync(self, repo: str) -> None:
         """Sync one watched repo now. Failures are recorded, never raised; a sync of this
@@ -211,7 +214,13 @@ class SyncService:
         done = False
         while not done:
             page = await self._github.list_issues(repo, cursor.since, cursor.page_token)
-            fresh = [i for i in page.items if not cursor.covers(i.updated_at, i.id)]
+            # A covered issue comes back at the inclusive ``since``: re-take it only if it
+            # changed (an edit within the high-water second), else skip the write and fetches.
+            fresh = [
+                i
+                for i in page.items
+                if not (cursor.covers(i.updated_at, i.id) and self._store.is_unchanged(repo, i))
+            ]
             links = {} if is_first else await self._children(repo, fresh)
             stored, entered = self._triaged(state, schema, fresh)
             cursor, done = cursor.after_page(
@@ -252,7 +261,10 @@ class SyncService:
                 complete=result.complete,
             )
             stored.append(StoredIssue(issue, result, inbox))
-            was_shown = before is not None and before.inbox and not before.complete
+            # A reopened Inbox issue counts as new, so its suggestions are asked for again.
+            was_shown = (
+                before is not None and before.inbox and not before.complete and before.is_open
+            )
             if inbox and not result.complete and not was_shown and issue.state == "open":
                 entered.append(issue.number)
         return stored, entered
@@ -290,15 +302,19 @@ class SyncService:
 
     async def recompute(self, repo: str) -> None:
         """Re-triage every cached issue of ``repo`` against its stored schema (IR18): call it
-        after the schema or its overlay changes. The Inbox flag is left alone: the convention
-        changed, not the issue, so this never floods the Inbox.
+        after the schema or its overlay changes. It can clear the Inbox flag (an issue now
+        complete) but never set it: the convention changed, not the issue, so this never floods
+        the Inbox (IR30). It waits for a running sync of the repo, so pages that sync saves with
+        the old schema can't overwrite it.
 
         Raises:
             InvalidRepoError: ``repo`` is not ``owner/name``.
             RepoNotWatchedError: the author hasn't added ``repo``.
         """
         state = self._watched(repo)
-        self._retriage(state.repo, state.schema)
+        async with self._locks.setdefault(state.repo, asyncio.Lock()):
+            current = self._watched(repo)  # the schema stored by the time the lock is ours
+            self._retriage(current.repo, current.schema)
 
     def _retriage(self, repo: str, schema: LabelSchema) -> None:
         self._store.update_triage(

@@ -225,6 +225,7 @@ ON CONFLICT (repo, number) DO UPDATE SET
     updated_at = excluded.updated_at,
     sub_issue_count = excluded.sub_issue_count,
     inbox = excluded.inbox
+WHERE excluded.updated_at >= issues.updated_at
 """
 
 
@@ -339,15 +340,24 @@ class SqliteIssuesStore:
     # Issues -----------------------------------------------------------------------------
 
     def previous_triage(self, repo: str, numbers: Sequence[int]) -> dict[int, PreviousTriage]:
-        found: dict[int, PreviousTriage] = {}
-        for number in numbers:
-            row = self._conn.execute(
-                "SELECT complete, inbox FROM issues WHERE repo = ? AND number = ?",
-                (repo, number),
-            ).fetchone()
-            if row is not None:
-                found[number] = PreviousTriage(complete=bool(row[0]), inbox=bool(row[1]))
-        return found
+        if not numbers:
+            return {}
+        marks = ", ".join("?" for _ in numbers)
+        rows = self._conn.execute(
+            "SELECT number, complete, inbox, state FROM issues "
+            f"WHERE repo = ? AND number IN ({marks})",
+            (repo, *numbers),
+        )
+        return {
+            number: PreviousTriage(bool(complete), bool(inbox), is_open=state == "open")
+            for number, complete, inbox, state in rows
+        }
+
+    def is_unchanged(self, repo: str, issue: Issue) -> bool:
+        row = self._conn.execute(
+            "SELECT json FROM issues WHERE repo = ? AND number = ?", (repo, issue.number)
+        ).fetchone()
+        return row is not None and row[0] == _issue_json(issue)
 
     def save_page(
         self,
@@ -397,14 +407,15 @@ class SqliteIssuesStore:
     def update_triage(self, repo: str, triaged: Sequence[tuple[int, Triage]]) -> None:
         with transaction(self._conn):
             self._conn.executemany(
-                "UPDATE issues SET complete = ?, missing_json = ?, triage_json = ?, is_epic = ? "
-                "WHERE repo = ? AND number = ?",
+                "UPDATE issues SET complete = ?, missing_json = ?, triage_json = ?, is_epic = ?, "
+                "inbox = CASE WHEN ? THEN 0 ELSE inbox END WHERE repo = ? AND number = ?",
                 [
                     (
                         int(result.complete),
                         json.dumps(result.missing),
                         json.dumps(asdict(result)),
                         int(result.is_epic),
+                        int(result.complete),
                         repo,
                         number,
                     )

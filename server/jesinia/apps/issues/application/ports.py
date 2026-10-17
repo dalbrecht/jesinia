@@ -101,6 +101,9 @@ class IssuesStore(Protocol):
 
     def previous_triage(self, repo: str, numbers: Sequence[int]) -> dict[int, PreviousTriage]: ...
 
+    def is_unchanged(self, repo: str, issue: Issue) -> bool:
+        """Whether the cache already holds exactly this version of ``issue``."""
+
     def save_page(
         self,
         repo: str,
@@ -110,7 +113,8 @@ class IssuesStore(Protocol):
         now: datetime,
     ) -> None:
         """Write one page of issues, the children fetched for its epics and the cursor after
-        it, in one transaction: an interrupted sync resumes from the last page written."""
+        it, in one transaction: an interrupted sync resumes from the last page written. A row
+        is never replaced by an older ``updated_at``."""
 
     def record_sync(self, repo: str, synced_at: datetime | None, error: str | None) -> None:
         """A finished sync (``synced_at``) or a failed one (``error``; the last good
@@ -119,7 +123,8 @@ class IssuesStore(Protocol):
     def issues(self, repo: str) -> list[Issue]: ...
 
     def update_triage(self, repo: str, triaged: Sequence[tuple[int, Triage]]) -> None:
-        """Store recomputed triage; the Inbox flag is left alone."""
+        """Store recomputed triage; the Inbox flag is cleared for issues now complete and
+        never set."""
 
     def epics_without_links(self, repo: str, limit: int) -> list[int]: ...
 

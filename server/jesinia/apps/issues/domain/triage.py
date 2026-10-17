@@ -4,14 +4,17 @@
 Pure: no I/O.
 
 - **Inbox:** an issue opened after its repo was added, plus any issue whose ``complete`` flips
-  from true to false. Comments and body edits don't change labels, so they never send an issue
-  back. The Inbox *view* is ``inbox AND NOT complete`` (ruling IR9): an Inbox issue that becomes
-  complete, on GitHub or by an approval, is triaged and shows in the Backlog.
+  from true to false on GitHub. Comments and body edits don't change labels, so they never send
+  an issue back. The flag means "untriaged since it arrived or regressed": it is cleared as soon
+  as the issue is complete (on GitHub or by an approval), so a later schema change can't bring
+  old issues back (ruling IR30). The Inbox *view* is ``inbox AND NOT complete`` (IR9).
 - **Backlog:** every other open issue. A newly added repo's existing issues land here.
 - **Sync cursor:** GitHub lists issues by page number. Paging forward while issues move (an
   edit sends one to the end of an ``updated``-ascending list) shifts every later page and skips
   an issue, so the cursor restarts at page 1 with ``since`` = the high-water ``updated_at``
-  whenever a page moved it forward, and skips the issues it already took at that exact time.
+  whenever a page moved it forward. ``since`` is inclusive, so the issues at that exact time come
+  back; sync skips one only when its content is unchanged, so an edit within the same second as
+  the mark is still taken.
 """
 
 from __future__ import annotations
@@ -89,6 +92,7 @@ class PreviousTriage:
 
     complete: bool
     inbox: bool
+    is_open: bool = True
 
 
 def is_inbox(
@@ -96,13 +100,15 @@ def is_inbox(
 ) -> bool:
     """The issue's Inbox flag after a sync.
 
-    A first sighting is in the Inbox only when opened after the repo was added. After that the
-    flag only turns on when ``complete`` flips from true to false; it is never cleared here
-    (the view hides complete issues instead).
+    A complete issue is triaged, so never in the Inbox. A first sighting is in the Inbox only
+    when opened after the repo was added; after that an incomplete issue stays there, or enters
+    it when it was complete before.
     """
+    if complete:
+        return False
     if previous is None:
         return created_at > added_at
-    return previous.inbox or (previous.complete and not complete)
+    return previous.inbox or previous.complete
 
 
 def in_view(view: ViewName, *, inbox: bool, complete: bool) -> bool:
@@ -162,7 +168,9 @@ class SyncCursor:
     seen_ids: frozenset[int] = field(default_factory=frozenset)
 
     def covers(self, updated_at: datetime, issue_id: int) -> bool:
-        """Whether this version of an issue was already taken."""
+        """Whether an issue at this ``updated_at`` was already taken. At exactly the mark a
+        second edit can share the time, so the caller re-takes a covered issue whose content
+        changed."""
         if self.high_water is None:
             return False
         if updated_at == self.high_water:
