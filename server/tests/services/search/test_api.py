@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import asyncio
-import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
@@ -59,17 +58,20 @@ async def test_startup_reindex_does_not_block_healthz(
     kb_cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     original = SearchService._index_page
+    release = asyncio.Event()
 
-    async def slow(self: SearchService, id):  # type: ignore[no-untyped-def]
-        await asyncio.sleep(0.2)
+    async def held(self: SearchService, id):  # type: ignore[no-untyped-def]
+        # The reindex cannot finish until the test releases it, so healthz answering at all
+        # (and saying "indexing") proves it does not wait for the reindex; no clock involved.
+        await release.wait()
         await original(self, id)
 
-    monkeypatch.setattr(SearchService, "_index_page", slow)
+    monkeypatch.setattr(SearchService, "_index_page", held)
     async with lifespan_client(create_app(kb_cfg, [KbModule(), SearchModule()])) as c:
-        start = time.perf_counter()
-        body = (await c.get("/healthz")).json()
-        assert time.perf_counter() - start < 0.2
+        body = (await asyncio.wait_for(c.get("/healthz"), timeout=10)).json()
         assert body["modules"]["search"] == {"ok": True, "detail": "indexing"}
+    # Never released: leaving the app cancels the held reindex, which must shut down cleanly.
+    assert not release.is_set()
 
 
 async def test_requires_kb_first(cfg: Config) -> None:
