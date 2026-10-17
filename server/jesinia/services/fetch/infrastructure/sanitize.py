@@ -23,11 +23,11 @@ ATTRIBUTES = {
 }
 URL_ATTRIBUTES = frozenset({"href", "src"})
 # Page structure article extraction reads to tell the article from navigation and
-# boilerplate (tags and class/id only: nothing that can carry a URL or script).
+# boilerplate (tags and class/id/aria-label only: nothing that can carry a URL or script).
 STRUCTURE_TAGS = frozenset(
     {"article", "main", "section", "div", "span", "nav", "header", "footer", "aside"}
 )
-STRUCTURE_ATTRIBUTES = frozenset({"class", "id"})
+STRUCTURE_ATTRIBUTES = frozenset({"class", "id", "aria-label"})
 # Dropped with their text, not just unwrapped: their content is never prose.
 _DROPPED_WITH_CONTENT = {"script", "style", "title", "noscript", "template"}
 

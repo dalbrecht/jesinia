@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hello Python 3.15</title>
+  <meta property="og:title" content="Hello Python 3.15">
+</head>
+<body>
+  <div id="wrapper">
+    <div id="primary">
+      <div class="entry entryPage">
+        <h2>Hello Python 3.15</h2>
+        <p>Python 3.15 is out, and the new unpacking syntax in comprehensions is the feature I
+          expect to reach for most often in everyday code that flattens nested lists.</p>
+        <h4 id="unpacking-in-comprehensions">Unpacking in comprehensions</h4>
+        <p>Here is an illustration lifted from the documentation, with the results shown as
+          comments under each expression so you can see what each one produces:</p>
+<pre><span class="pl-s1">lists</span> <span class="pl-c1">=</span> [[<span class="pl-c1">1</span>, <span class="pl-c1">2</span>], [<span class="pl-c1">3</span>, <span class="pl-c1">4</span>]]
+[<span class="pl-c1">*</span><span class="pl-c1">L</span> <span class="pl-k">for</span> <span class="pl-c1">L</span> <span class="pl-k">in</span> <span class="pl-s1">lists</span>]
+<span class="pl-c"># [1, 2, 3, 4]</span>
+
+<span class="pl-c"># equivalent to [x for L in lists for x in L]</span>
+    <span class="pl-s1">indented</span> <span class="pl-c1">=</span>  <span class="pl-c1">True</span></pre>
+        <p>And the same idea from the shell, installing the new version with uv first:</p>
+<pre><span class="pl-c"># install it</span>
+uv python install 3.15
+
+<span class="pl-c"># then run it</span>
+uv run --python 3.15 python</pre>
+        <p>Both examples run unchanged on the release candidate, which is a good sign for the
+          final release and for the libraries that will need to adopt the new syntax.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
