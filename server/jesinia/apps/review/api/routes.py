@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from jesinia.apps.review.api.schemas import (
     REPO_MAX,
+    DoneIn,
     DraftsIn,
     DraftsOut,
     LoadIn,
@@ -390,12 +391,18 @@ def build_router(host: ReviewHost) -> APIRouter:
 
     @r.post(f"{pr_path}/done", response_model=RoundOut)
     async def done(
-        owner: Owner, repo: Name, number: Number, idem: IdempotentCall = keyed
+        owner: Owner,
+        repo: Name,
+        number: Number,
+        body: DoneIn | None = None,
+        idem: IdempotentCall = keyed,
     ) -> Response:
-        """Mark the latest round done without posting."""
+        """Mark the latest round done without posting (the round shown, when the body names
+        it: a newer one answers 409 RoundChanged)."""
+        shown = None if body is None else body.round_id
 
         async def run() -> RoundOut:
-            return RoundOut.of(host.reviews.done(_ref(owner, repo, number)))
+            return RoundOut.of(host.reviews.done(_ref(owner, repo, number), shown))
 
         return await idem.run(lambda: _respond(run))
 

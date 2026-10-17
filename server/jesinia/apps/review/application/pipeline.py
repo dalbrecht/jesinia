@@ -461,6 +461,11 @@ class Pipeline:
             owned = True
         if depth is not None:
             self._store.set_depth(ref, head, round_id, depth)
+            # A round prepared at the old depth is cached while it runs: the jobs this switch
+            # adds must see the new one (Codex round 2 on PR #58).
+            cached = self._prepared.get(round_id)
+            if cached is not None and cached.round.depth != depth:
+                self._prepared[round_id] = replace(cached, round=replace(cached.round, depth=depth))
         done = self._store.artifact_kinds(round_id)
         wanted = (*TRIAGE_JOBS, *ON_OPEN_JOBS[depth or pr.depth])
         missing = tuple(kind for kind in wanted if kind.value not in done)

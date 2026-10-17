@@ -248,6 +248,14 @@ def _json(artifacts: Mapping[str, object]) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], dict(artifacts))
 
 
+class DoneIn(BaseModel):
+    """Optional: the round the author was shown (the PWA always sends it)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_id: int | None = None
+
+
 class OpenIn(BaseModel):
     """What the author asks of opening (both optional): their ``depth`` in place of
     Jesinia's proposal, or ``walk_everything`` to walk the rest of the change too."""
@@ -351,6 +359,11 @@ class DraftsOut(BaseModel):
         description="the correctness pass or the findings job is still running; their "
         "drafts are added (next to the author's) when both have finished",
     )
+    seeds_dropped: int = Field(
+        default=0,
+        description="Finding drafts this save couldn't keep: a review takes at most "
+        f"{DRAFTS_MAX} drafts, and the author's come first",
+    )
 
     @classmethod
     def of(cls, drafts: DraftSet) -> DraftsOut:
@@ -361,6 +374,7 @@ class DraftsOut(BaseModel):
             drafts=[DraftBody.of(d, where) for d, where in zip(drafts.drafts, placed, strict=True)],
             files_pending=drafts.files_pending,
             findings_pending=drafts.findings_pending,
+            seeds_dropped=drafts.seeds_dropped,
         )
 
 

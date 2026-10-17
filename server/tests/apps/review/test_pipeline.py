@@ -1482,3 +1482,22 @@ async def test_review_anyway_is_kept_across_a_restart_and_not_for_a_new_head(env
     env.add(newer, ci="failing")
     assert not env.store.gates_overridden(ref, NEW_HEAD)
     assert (await restarted.open(ref)).state == "ci_failing"
+
+
+async def test_a_depth_switch_while_the_round_runs_reaches_the_new_jobs(env: Env) -> None:
+    """Codex round 2 on PR #58: the round prepared at quick is cached while it runs; a switch
+    to deep must give the deep-only jobs a deep Round, not the cached quick one."""
+    ref = env.add()
+    env.jobs.hold = asyncio.Event()
+    await env.pipeline.open(ref)  # quick: prepared and running, held
+    for _ in range(50):
+        if env.jobs.ran:
+            break
+        await asyncio.sleep(0)
+    deep = await env.pipeline.open(ref, depth="deep")
+    assert set(deep.jobs) >= {JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ}
+    env.jobs.hold.set()
+    await env.pipeline.drain()
+    by_kind = dict(zip(env.jobs.ran, env.jobs.rounds, strict=True))
+    for kind in (JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ):
+        assert by_kind[kind].depth == "deep", kind

@@ -1265,7 +1265,8 @@ export interface paths {
         put?: never;
         /**
          * Done
-         * @description Mark the latest round done without posting.
+         * @description Mark the latest round done without posting (the round shown, when the body names
+         *     it: a newer one answers 409 RoundChanged).
          */
         post: operations["done_api_review_prs__owner___repo___number__done_post"];
         delete?: never;
@@ -1366,6 +1367,14 @@ export interface components {
             views: components["schemas"]["ViewCountsOut"];
         };
         /**
+         * DoneIn
+         * @description Optional: the round the author was shown (the PWA always sends it).
+         */
+        DoneIn: {
+            /** Round Id */
+            round_id?: number | null;
+        };
+        /**
          * DraftBody
          * @description A draft review comment: inline (``line``, ``side`` and, for a range, ``start_line``
          *     and ``start_side``) or ``outside_diff`` (posted in the review body).
@@ -1438,6 +1447,12 @@ export interface components {
              * @default false
              */
             findings_pending: boolean;
+            /**
+             * Seeds Dropped
+             * @description Finding drafts this save couldn't keep: a review takes at most 500 drafts, and the author's come first
+             * @default 0
+             */
+            seeds_dropped: number;
         };
         /** EngageIn */
         EngageIn: {
@@ -6868,7 +6883,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DoneIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

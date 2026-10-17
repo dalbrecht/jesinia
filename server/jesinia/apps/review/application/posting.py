@@ -204,6 +204,8 @@ class DraftSet:
     drafts: tuple[Draft, ...]
     in_body: tuple[bool, ...] | None = None
     findings_pending: bool = False
+    # Finding drafts a save couldn't keep under DRAFTS_MAX (the author's come first).
+    seeds_dropped: int = 0
 
     @property
     def files_pending(self) -> bool:
@@ -302,9 +304,13 @@ class PostingService:
         # them; findings still running are added next to it when they arrive.
         settled, seeded = self._seed_claim(rnd)
         # Drafts this call just seeded were never seen by the client (PR 3 final I2): the
-        # author's list replaces what they had, and the new ones are kept after it.
-        self._store.save_drafts(round_id, summary, [*drafts, *seeded])
-        return self._draft_set(rnd, pending=not settled)
+        # author's list replaces what they had, and the new ones are kept after it, as many
+        # as fit under DRAFTS_MAX; the rest are counted so the UI can say so.
+        kept = seeded[: max(0, DRAFTS_MAX - len(drafts))]
+        self._store.save_drafts(round_id, summary, [*drafts, *kept])
+        return replace(
+            self._draft_set(rnd, pending=not settled), seeds_dropped=len(seeded) - len(kept)
+        )
 
     def _draft_set(self, rnd: RoundRecord, *, pending: bool) -> DraftSet:
         """The drafts from the store, each placed against the cached file list (never

@@ -235,6 +235,7 @@ export function drafts(over: Partial<Drafts> = {}): Drafts {
     ],
     files_pending: false,
     findings_pending: false,
+    seeds_dropped: 0,
     ...over,
   };
 }

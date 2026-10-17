@@ -366,6 +366,11 @@ export function DraftsEditor({ drafts }: { drafts: DraftsState }) {
           Findings are still running: their drafts are added next to yours when they finish.
         </p>
       ) : null}
+      {set?.seeds_dropped ? (
+        <p className={s.muted} role="status">
+          {`${set.seeds_dropped} finding ${set.seeds_dropped === 1 ? "draft" : "drafts"} didn't fit: a review takes at most 500 drafts, and yours come first.`}
+        </p>
+      ) : null}
       {set?.files_pending ? (
         <p className={s.muted}>
           GitHub's file list for this head isn't cached yet, so where each draft posts (inline or in the review body) is

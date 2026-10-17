@@ -831,3 +831,15 @@ async def test_saves_previews_and_posts_are_bound_to_the_round_shown(env: Env) -
     post = {"event": "COMMENT", "confirm": [], "digest": "d", "round_id": old}
     refused = await env.client.post(f"{PR}/post", json=post, headers=keyed())
     assert refused.status_code == 409 and refused.json()["error"] == "RoundChanged"
+
+
+async def test_done_is_bound_to_the_round_shown(env: Env) -> None:
+    """Codex round 2 on PR #58: Done names its round; a newer one refuses it (409)."""
+    old = env.round()
+    new = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
+    stale = await env.client.post(f"{PR}/done", json={"round_id": old}, headers=keyed())
+    assert stale.status_code == 409 and stale.json()["error"] == "RoundChanged"
+    shown = env.store.round(new)
+    assert shown is not None and not shown.done
+    current = await env.client.post(f"{PR}/done", json={"round_id": new}, headers=keyed())
+    assert current.status_code == 200 and current.json()["done"] is True

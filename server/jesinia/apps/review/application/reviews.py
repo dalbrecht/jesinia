@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Protocol
 
-from jesinia.apps.review.domain.posting import Draft, NoReviewRound
+from jesinia.apps.review.domain.posting import Draft, NoReviewRound, RoundChanged
 from jesinia.apps.review.domain.queue import (
     InvalidSettingError,
     PreReviewMode,
@@ -163,15 +163,22 @@ class ReviewReads:
                     findings.append({**item, "source": source})
         return FindingsView(found.id, tuple(findings), tuple(self._store.drafts(found.id)))
 
-    def done(self, ref: PrRef) -> RoundRecord:
+    def done(self, ref: PrRef, round_id: int | None = None) -> RoundRecord:
         """Mark the PR's latest round done (the author finished it without posting).
+        ``round_id``: the round the author was shown; a newer one refuses it (never moved).
 
         Raises:
             NoReviewRound: the PR has no round.
+            RoundChanged: ``round_id`` isn't the latest round.
         """
         found = self._store.latest_round(ref)
         if found is None:
             raise NoReviewRound(f"{ref} has no review round to finish")
+        if round_id is not None and round_id != found.id:
+            raise RoundChanged(
+                f"a new review round ({found.id}) started since round {round_id} was shown; "
+                "it wasn't marked done"
+            )
         self._store.mark_round_done(found.id)
         return replace(found, done=True)
 

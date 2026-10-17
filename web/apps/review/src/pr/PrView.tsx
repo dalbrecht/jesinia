@@ -16,6 +16,7 @@ import {
   markDone,
   openPr,
   retryPr,
+  ReviewRequestError,
   reviewAnyway,
   safeHttpUrl,
   type OpenRequest,
@@ -198,13 +199,14 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
 
   // Opening the tab starts what the round lacks (spec §2); it never loads the PR again (M4).
   // It waits for the PR's first cached view (Codex P2): a deep link to a PR that isn't cached
-  // is loaded by the workspace first, and opening it before that would only fail. Once per
-  // tab lifetime (R60).
-  const isCached = view !== null;
-  const opened = useRef(false);
+  // is loaded by the workspace first, and opening it before that would only fail.
+  // Once per head per tab (R60 as amended): a refresh that shows a new head opens it once,
+  // and re-renders or refreshes on the same head open nothing.
+  const cachedHead = view !== null && view.pr.repo === repo && view.pr.number === number ? view.pr.head_sha : null;
+  const openedHead = useRef<string | null>(null);
   useEffect(() => {
-    if (!isCached || opened.current) return;
-    opened.current = true;
+    if (cachedHead === null || openedHead.current === cachedHead) return;
+    openedHead.current = cachedHead;
     open("open").then(
       (r) => {
         setNotice(noticeOf(r));
@@ -218,7 +220,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
           retryOpen: true,
         }),
     );
-  }, [open, isCached]);
+  }, [open, cachedHead]);
 
   const shown = view && view.pr.repo === repo && view.pr.number === number ? view : null;
   const artifacts = useMemo(() => (shown ? readArtifacts(shown) : null), [shown]);
@@ -386,12 +388,17 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     );
   };
   const done = () => {
-    keyed(`done:${repo}#${number}`, (key) => markDone(client, repo, number, key)).then(
+    keyed(`done:${repo}#${number}`, (key) => markDone(client, repo, number, key, round?.id ?? null)).then(
       () => {
         toast.show({ tone: "success", message: `${refOf(pr)} is done; nothing was posted.` });
         reread();
       },
-      (e: unknown) => fail("mark it done", e),
+      (e: unknown) => {
+        if (e instanceof ReviewRequestError && e.code === "RoundChanged") {
+          toast.show({ tone: "danger", message: "A new review round started: it wasn't marked done." });
+          reread();
+        } else fail("mark it done", e);
+      },
     );
   };
 

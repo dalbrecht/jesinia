@@ -1062,3 +1062,22 @@ async def test_approving_an_approve_verdict_needs_no_extra_confirmation(env: Env
     preview = await env.service.preview(env.round_id, "APPROVE")
     assert "approve_against_evidence" not in preview.warnings
     assert await env.post("APPROVE") == URL
+
+
+async def test_seeds_that_would_pass_the_draft_limit_are_capped_and_counted(env: Env) -> None:
+    """Codex round 2 on PR #58: the author's drafts come first; seeds fill only what is left
+    of DRAFTS_MAX, the rest are counted, and the next save is accepted."""
+    from jesinia.apps.review.domain.posting import DRAFTS_MAX
+
+    round_id = _running_round(env)
+    assert (await env.service.drafts(round_id)).findings_pending
+    env.store.put_artifact(round_id, "correctness", {"findings": []})
+    many = [finding(2, 3, f"Finding {i}.") for i in range(400)]
+    env.store.put_artifact(round_id, "findings", {"findings": many})
+    mine = [Draft(path="src/app.py", body=f"Mine {i}.", line=4, side="RIGHT") for i in range(150)]
+    saved = await env.service.save_drafts(round_id, "Notes.", mine)
+    assert len(saved.drafts) == DRAFTS_MAX
+    assert [d.body for d in saved.drafts[:150]] == [f"Mine {i}." for i in range(150)]
+    assert saved.seeds_dropped == 400 - (DRAFTS_MAX - 150)
+    again = await env.service.save_drafts(round_id, "Notes.", list(saved.drafts))
+    assert len(again.drafts) == DRAFTS_MAX and again.seeds_dropped == 0

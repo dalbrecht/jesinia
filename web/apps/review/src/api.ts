@@ -387,10 +387,18 @@ export async function postReview(
 }
 
 /** Finish the latest round without posting. */
-export async function markDone(client: JesiniaClient, repo: string, number: number, key: string): Promise<Round> {
+/** Finish the round shown (`roundId`) without posting; a newer round refuses it. */
+export async function markDone(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  roundId: number | null = null,
+): Promise<Round> {
   return unwrap(
     await client.POST("/api/review/prs/{owner}/{repo}/{number}/done", {
       params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { round_id: roundId },
     }),
   );
 }
