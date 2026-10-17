@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections import defaultdict
+import weakref
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -25,6 +25,7 @@ from jesinia.apps.rss.application.ports import (
     PostStore,
 )
 from jesinia.apps.rss.application.posts import PostService
+from jesinia.apps.rss.domain.feed import host_of, redact_urls
 from jesinia.apps.rss.domain.kept import (
     ARCHIVE_MAX_ATTEMPTS,
     ARCHIVE_MAX_BYTES,
@@ -54,6 +55,9 @@ from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.domain.page import Page, PageId
 
 log = logging.getLogger(__name__)
+# Archives running at once (each may fetch up to 20 images): a burst of Keeps or a restart
+# with many left running must not hold them all in memory together.
+ARCHIVE_CONCURRENCY = 3
 
 # Characters that would turn a plain-text snippet into Markdown syntax.
 _MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>!])")
@@ -87,9 +91,17 @@ class KeepService:
         self._images = images
         self._folder = folder
         self._now = now
-        # One Keep or archive write per source at a time, so they don't race each other.
-        self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # One Keep or archive write per source at a time, so they don't race each other. A
+        # lock lives only while someone holds or waits for it.
+        self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         self._archives: dict[str, asyncio.Task[None]] = {}
+        self._archive_slots = asyncio.Semaphore(ARCHIVE_CONCURRENCY)
+
+    def _lock(self, source: str) -> asyncio.Lock:
+        lock = self._locks.get(source)
+        if lock is None:
+            lock = self._locks[source] = asyncio.Lock()
+        return lock
 
     # -- keep ----------------------------------------------------------------------
     async def keep(
@@ -107,7 +119,7 @@ class KeepService:
         names = await self.tags.ensure(tags) if tags else []
         at = self._now()
         ai_block = takeaway_block(takeaway, at) if takeaway is not None else None
-        async with self._locks[post.url]:
+        async with self._lock(post.url):
             existing = self._kb.index.by_source(post.url)
             prior = self._store.page_archive_state(existing) if existing is not None else None
             # A page archived before (or kept elsewhere) keeps its article: later edits to
@@ -156,7 +168,11 @@ class KeepService:
                 page = f"<html><body>{post.content_html}</body></html>"
                 converted = await self._converter.convert(page.encode(), post.url)
             except FetchError as exc:  # Keep never fails because extraction did
-                log.warning("converting the feed content of post %d failed: %s", post.id, exc)
+                log.warning(
+                    "converting the feed content of post %d failed: %s",
+                    post.id,
+                    redact_urls(str(exc)),
+                )
         text = converted.markdown if converted else _MARKDOWN_SPECIAL.sub(r"\\\1", post.snippet)
         return feed_article(text)
 
@@ -183,9 +199,19 @@ class KeepService:
         running = self._archives.get(page_id)
         if running is not None and not running.done():
             return
-        self._archives[page_id] = asyncio.create_task(
-            self.archive(PageId(page_id), post_id), name=f"rss-archive:{page_id}"
+        task = asyncio.create_task(
+            self._archive_in_turn(PageId(page_id), post_id), name=f"rss-archive:{page_id}"
         )
+        self._archives[page_id] = task
+        task.add_done_callback(lambda done: self._forget(page_id, done))
+
+    def _forget(self, page_id: str, task: asyncio.Task[None]) -> None:
+        if self._archives.get(page_id) is task:
+            del self._archives[page_id]
+
+    async def _archive_in_turn(self, page_id: PageId, post_id: int) -> None:
+        async with self._archive_slots:
+            await self.archive(page_id, post_id)
 
     def retry(self, post_id: int) -> PostView:
         """Archive the post's page again after a failure (``POST /posts/{id}/archive``).
@@ -228,9 +254,10 @@ class KeepService:
 
     async def stop(self) -> None:
         """Cancel running archives; they stay ``archiving`` and resume at the next start."""
-        for task in self._archives.values():
+        running = list(self._archives.values())
+        for task in running:
             task.cancel()
-        await asyncio.gather(*self._archives.values(), return_exceptions=True)
+        await asyncio.gather(*running, return_exceptions=True)
         self._archives.clear()
 
     async def archive(self, page_id: PageId, post_id: int) -> None:
@@ -241,7 +268,9 @@ class KeepService:
         # Isolation boundary: whatever stops the archive (fetch, extraction, the KB) is
         # recorded on the post with its cause, for the reader's Retry.
         except Exception as exc:
-            log.warning("archiving page %s (post %d) failed: %s", page_id, post_id, _cause(exc))
+            log.warning(
+                "archiving page %s (post %d) failed: %s", page_id, post_id, redact_urls(_cause(exc))
+            )
             self._store.set_archive_state(page_id, "failed", _cause(exc))
             return
         self._store.set_archive_state(page_id, "done", None)
@@ -257,7 +286,7 @@ class KeepService:
             local = {url: link_to(path, folder) for url, path in saved.items()}
             return replace_article(page.body, rewrite_images(markdown, local))
 
-        async with self._locks[post.url]:
+        async with self._lock(post.url):
             await self._rewrite(page_id, archived)
 
     async def _save_images(self, page_id: PageId, markdown: str) -> dict[str, PurePosixPath]:
@@ -276,7 +305,10 @@ class KeepService:
             else:
                 attempts += 1
                 try:
-                    result = await self._images.get(url, max_bytes=ARCHIVE_MAX_BYTES - used)
+                    # Not cached: archived images live in the KB, not in fetch.sqlite too.
+                    result = await self._images.get(
+                        url, max_bytes=ARCHIVE_MAX_BYTES - used, cache=False
+                    )
                     used += len(result.body)
                     name = asset_name(result.body) if result.status == 200 else None
                     if name is None:
@@ -293,5 +325,10 @@ class KeepService:
                 # transport error) is skipped; the archive goes on.
                 except Exception as exc:
                     skipped = _cause(exc)
-            log.info("archive of page %s skipped image %s: %s", page_id, url, skipped)
+            log.info(
+                "archive of page %s skipped an image from %s: %s",
+                page_id,
+                host_of(url),
+                redact_urls(skipped),
+            )
         return saved

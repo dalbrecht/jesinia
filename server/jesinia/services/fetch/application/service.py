@@ -114,7 +114,9 @@ class FetchService:
                 await asyncio.sleep(wait)
             last[0] = time.monotonic()
 
-    async def get(self, url: str, *, max_bytes: int = 5_000_000) -> FetchResult:
+    async def get(self, url: str, *, max_bytes: int = 5_000_000, cache: bool = True) -> FetchResult:
+        """GET ``url`` through the guards. ``cache=False`` neither revalidates against nor
+        stores in the conditional-request cache (for bodies the caller keeps elsewhere)."""
         async with httpx.AsyncClient(
             timeout=TIMEOUT,
             transport=self._transport,
@@ -125,7 +127,7 @@ class FetchService:
             for _ in range(MAX_REDIRECTS + 1):
                 host = await self.check(url)
                 await self._pace(host)
-                cached = self._cache.get(url)
+                cached = self._cache.get(url) if cache else None
                 headers: dict[str, str] = {}
                 if cached is not None and cached.etag:
                     headers["If-None-Match"] = cached.etag
@@ -143,7 +145,7 @@ class FetchService:
                     content_type = resp.headers.get("content-type", "")
                     etag = resp.headers.get("etag")
                     modified = resp.headers.get("last-modified")
-                    if resp.status_code == 200 and (etag or modified):
+                    if cache and resp.status_code == 200 and (etag or modified):
                         self._cache.put(url, CachedFetch(etag, modified, 200, content_type, body))
                     return FetchResult(url, resp.status_code, content_type, body, False)
         raise FetchBlocked(f"too many redirects (more than {MAX_REDIRECTS})")

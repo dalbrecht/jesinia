@@ -173,7 +173,9 @@ class RssModule:
         # Single process and nothing served yet: any pending key was left by a crash.
         if cleared := self._idempotency.clear_pending():
             log.info("cleared %d rss idempotency keys left pending by an unclean stop", cleared)
-        ctx.scheduler.every(IDEMPOTENCY_PRUNE_JOB, timedelta(days=1), self.prune_idempotency_keys)
+        ctx.scheduler.every(
+            IDEMPOTENCY_PRUNE_JOB, timedelta(days=1), self.prune_idempotency_keys, at_start=True
+        )
         store, reader = SqliteFeedStore(self._conn), FeedparserReader()
         self._svc = FeedService(store, fetch, reader)
         self._poller = Poller(store, fetch, reader, lambda: datetime.now(UTC))
@@ -181,7 +183,7 @@ class RssModule:
         posts_store = SqlitePostStore(self._conn)
         self._posts = PostService(posts_store, fetch, retention)
         ctx.scheduler.every(POLL_JOB, POLL_TICK, self.poll_due)
-        ctx.scheduler.every(POSTS_PRUNE_JOB, timedelta(days=1), self.prune_posts)
+        ctx.scheduler.every(POSTS_PRUNE_JOB, timedelta(days=1), self.prune_posts, at_start=True)
         kb, tags = ctx.services.get("kb"), ctx.services.get("tags")
         if isinstance(kb, KbService) and isinstance(tags, TagService):
             self._keeper = KeepService(
@@ -203,6 +205,8 @@ class RssModule:
         self._poller = None
         self._idempotency = None
         if self._conn is not None:
+            # Keeps the query planner's statistics current (cheap; SQLite's advice).
+            self._conn.execute("PRAGMA optimize")
             self._conn.close()
             self._conn = None
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from jesinia.apps.rss.application.ports import NewFeed, PollState
 from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedItem, feed_warning
@@ -57,6 +57,9 @@ class SqliteFeedStore:
     def _transaction(self) -> AbstractContextManager[None]:
         return _transaction(self._conn)
 
+    def atomic(self) -> AbstractContextManager[None]:
+        return _transaction(self._conn)
+
     def _one_feed(self, where: str, value: object) -> Feed | None:
         row = self._conn.execute(
             f"SELECT {_FEED_COLUMNS} FROM feeds WHERE {where} = ?", (value,)
@@ -72,11 +75,6 @@ class SqliteFeedStore:
     def feeds(self) -> list[Feed]:
         rows = self._conn.execute(f"SELECT {_FEED_COLUMNS} FROM feeds ORDER BY id").fetchall()
         return [_feed(row) for row in rows]
-
-    def refresh_pruned(self, feed_id: int, now: datetime) -> None:
-        self._conn.execute(
-            "UPDATE pruned_posts SET seen_at = ? WHERE feed_id = ?", (utc_text(now), feed_id)
-        )
 
     def set_poll_state(self, feed_id: int, state: PollState) -> None:
         self._conn.execute(
@@ -142,6 +140,10 @@ class SqliteFeedStore:
             for item in items
         ]
         with self._transaction():
+            # The feed was read in full now: tombstones age relative to this (``prune``).
+            self._conn.execute(
+                "UPDATE feeds SET last_parsed_at = ? WHERE id = ?", (utc_text(now), feed_id)
+            )
             # A pruned item the feed still offers stays pruned, and its tombstone stays fresh.
             self._conn.executemany(
                 "UPDATE pruned_posts SET seen_at = ? WHERE feed_id = ? AND guid = ?", guids
@@ -357,8 +359,13 @@ class SqlitePostStore:
     def prune(self, cutoff: datetime, now: datetime) -> int:
         old = "FROM posts WHERE kept_page_id IS NULL AND COALESCE(published_at, first_seen_at) < ?"
         with self._transaction():
+            # Forgotten once the feed was read in full without offering it for the TTL: an
+            # item it still lists keeps a fresh tombstone at every full read.
             self._conn.execute(
-                "DELETE FROM pruned_posts WHERE seen_at < ?", (utc_text(now - TOMBSTONE_TTL),)
+                "DELETE FROM pruned_posts WHERE julianday(seen_at) < "
+                "(SELECT julianday(f.last_parsed_at) - ? FROM feeds f "
+                "WHERE f.id = pruned_posts.feed_id)",
+                (TOMBSTONE_TTL / timedelta(days=1),),
             )
             self._conn.execute(
                 f"INSERT INTO pruned_posts (feed_id, guid, seen_at) SELECT feed_id, guid, ? {old} "

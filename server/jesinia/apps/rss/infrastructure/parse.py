@@ -17,7 +17,7 @@ from urllib.parse import urljoin, urlparse
 import feedparser
 import nh3
 
-from jesinia.apps.rss.domain.feed import FeedParseError, ParsedFeed, ParsedItem
+from jesinia.apps.rss.domain.feed import FeedParseError, ParsedFeed, ParsedItem, has_credentials
 from jesinia.services.fetch.api.content import sanitize_html
 
 MAX_ITEMS = 500
@@ -67,6 +67,12 @@ def _safe_url(candidate: str | None, base: str) -> str | None:
     except ValueError:
         return None
     return resolved if parts.scheme in ("http", "https") and has_host else None
+
+
+def _public_url(candidate: str | None, base: str) -> str | None:
+    """``_safe_url`` without credentials: item and site URLs end up in kept pages (git)."""
+    url = _safe_url(candidate, base)
+    return url if url is not None and not has_credentials(url) else None
 
 
 def _plain_text(html: str) -> str:
@@ -165,7 +171,7 @@ def _sort_key(entry: _RawEntry) -> datetime:
 
 
 def _build_item(raw: _RawEntry, feed_url: str, is_hacker_news: bool) -> ParsedItem:
-    url = _safe_url(raw.link, feed_url) or feed_url
+    url = _public_url(raw.link, feed_url) or feed_url
     title = raw.title or ""
     sanitised = sanitize_html(raw.content_html, url) if raw.content_html else None
     return ParsedItem(
@@ -176,7 +182,7 @@ def _build_item(raw: _RawEntry, feed_url: str, is_hacker_news: bool) -> ParsedIt
         published_at=raw.published_at,
         snippet=_snippet(raw.summary_html or raw.content_html),
         content_html=sanitised,
-        discussion_url=_safe_url(raw.comments_url, feed_url) if is_hacker_news else None,
+        discussion_url=_public_url(raw.comments_url, feed_url) if is_hacker_news else None,
         is_summary=raw.content_html is None,
     )
 
@@ -196,7 +202,7 @@ def parse_feed(body: bytes, url: str) -> ParsedFeed:
     newest = sorted(raw.entries, key=_sort_key, reverse=True)[:MAX_ITEMS]
     return ParsedFeed(
         title=raw.title or url,
-        site_url=_safe_url(raw.site_url, url) or url,
+        site_url=_public_url(raw.site_url, url) or url,
         items=[_build_item(entry, url, is_hacker_news) for entry in newest],
         warning=raw.warning,
     )

@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import contextmanager
@@ -14,6 +16,7 @@ import pytest
 import respx
 from fastapi import APIRouter, HTTPException
 
+from jesinia.apps.rss.application import feeds as feeds_module
 from jesinia.apps.rss.application.ports import NewFeed
 from jesinia.apps.rss.domain.feed import (
     FeedNotFound,
@@ -23,6 +26,9 @@ from jesinia.apps.rss.domain.feed import (
     InvalidFolderName,
     ParsedItem,
     feed_warning,
+    has_credentials,
+    host_of,
+    redact_urls,
     validate_feed_url,
     validate_folder_name,
 )
@@ -148,6 +154,19 @@ def test_feed_urls_must_be_absolute_http() -> None:
     for bad in ("ftp://example.com/x", "javascript:alert(1)", "https://", "/feed", "http://[::1"):
         with pytest.raises(InvalidFeedUrl):
             validate_feed_url(bad)
+    for secret in ("https://me:pw@example.com/feed", "https://token@example.com/feed"):
+        with pytest.raises(InvalidFeedUrl, match="credentials in URL are not supported"):
+            validate_feed_url(secret)
+
+
+def test_log_helpers_keep_only_hosts() -> None:
+    assert host_of("https://u:p@feeds.example:8443/a?b") == "feeds.example"
+    assert host_of("not a url") == "?" and host_of("http://[::1") == "?"
+    text = "fetch https://u:p@a.example/x?k=1 failed (see http://b.example) at HTTPS://C.example"
+    assert redact_urls(text) == (
+        "fetch https://a.example/… failed (see http://b.example/…) at HTTPS://C.example/…"
+    )
+    assert has_credentials("https://u@a.example/") and not has_credentials("https://a.example/@x")
 
 
 def test_folder_names_are_trimmed_and_bounded() -> None:
@@ -483,3 +502,82 @@ async def test_module_polls_due_feeds_on_its_schedule(env: Env, mock: respx.Mock
     await stopped.poll_due()  # a tick before start (or after stop) does nothing
     with pytest.raises(HTTPException):
         _ = stopped.poller
+
+
+async def test_feed_urls_with_credentials_are_refused(env: Env, mock: respx.MockRouter) -> None:
+    route = mock.get(url__regex=r".*").mock(return_value=httpx.Response(500))
+    refused = await _add(env, "https://me:s3cret@private.example/feed")
+    detail = _error(refused, 400, "InvalidFeedUrl")
+    assert detail == "credentials in URL are not supported" and "s3cret" not in refused.text
+    opml = render_opml([OpmlFeed("https://me:s3cret@private.example/feed", "Paid", None)])
+    imported = (await env.client.post(f"{API}/opml", json={"opml": opml})).json()
+    assert imported["added"] == 0
+    assert [f["cause"] for f in imported["failed"]] == ["credentials in URL are not supported"]
+    assert (await env.client.get(f"{API}/feeds")).json() == [] and route.call_count == 0
+
+
+async def test_a_site_advertising_a_feed_with_credentials_is_refused(
+    env: Env, mock: respx.MockRouter
+) -> None:
+    page = b'<html><head><link rel="alternate" type="application/rss+xml" href="https://u:p@example.com/feed.xml"></head></html>'
+    _serve(mock, "https://example.com/", page, "text/html")
+    refused = await _add(env, "https://example.com/")
+    assert _error(refused, 400, "InvalidFeedUrl") == "credentials in URL are not supported"
+
+
+async def test_opml_import_is_all_or_nothing_and_parses_off_the_loop(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    threads: list[int] = []
+    real_parse = parse_opml
+
+    def recording(xml: str) -> list[OpmlFeed]:
+        threads.append(threading.get_ident())
+        return real_parse(xml)
+
+    monkeypatch.setattr(feeds_module, "parse_opml", recording)
+    opml = render_opml([OpmlFeed(f"https://f{n}.example/rss", f"F{n}", "Tech") for n in range(3)])
+    store = env.module.service._store  # the module's own store
+    real_insert = store.insert_feed
+    inserted: list[str] = []
+
+    def failing(feed: NewFeed):  # type: ignore[no-untyped-def]
+        if len(inserted) == 2:
+            raise sqlite3.OperationalError("disk I/O error")
+        inserted.append(feed.url)
+        return real_insert(feed)
+
+    monkeypatch.setattr(store, "insert_feed", failing)
+    with pytest.raises(sqlite3.OperationalError):
+        await env.client.post(f"{API}/opml", json={"opml": opml})
+    assert threads and threading.get_ident() not in threads
+    monkeypatch.undo()
+    assert (await env.client.get(f"{API}/feeds")).json() == []  # the first two rolled back
+    assert (await env.client.post(f"{API}/opml", json={"opml": opml})).json()["added"] == 3
+
+
+async def test_a_fresh_start_prunes_expired_posts_and_keys(cfg: Config) -> None:
+    conn = open_db(cfg.data_dir, RSS_DB)
+    store = SqliteFeedStore(conn)
+    long_ago = datetime.now(UTC) - timedelta(days=60)
+    feed = store.insert_feed(NewFeed(FEED_URL, "F", None, None, 1800, long_ago, None, None))
+    old = ParsedItem("old", "https://e.example/1", "Old", None, long_ago, "", None, None, True)
+    store.add_posts(feed.id, [old], long_ago)
+    conn.execute(
+        "INSERT INTO idempotency (key, route, status, body, created_at) "
+        "VALUES ('k', 'POST /api/rss/feeds', 204, NULL, ?)",
+        (long_ago.isoformat(),),
+    )
+    module = RssModule()
+    app = create_app(cfg, [StubFetchModule(), module], static_root=None)
+    async with running(app):
+        for _ in range(200):
+            counts = conn.execute(
+                "SELECT (SELECT COUNT(*) FROM posts), (SELECT COUNT(*) FROM idempotency)"
+            ).fetchone()
+            if counts == (0, 0):
+                break
+            await asyncio.sleep(0.01)
+    # Without waiting a day of uptime: the daily jobs also run once at start.
+    assert counts == (0, 0)
+    conn.close()

@@ -296,7 +296,11 @@ def test_prune_forgets_tombstones_of_items_the_feed_no_longer_offers(world: Worl
     world.feeds.add_posts(feed, [_item("gone", None)], NOW + timedelta(days=100))
     world.service.prune(NOW + timedelta(days=200))
     assert world.conn.execute("SELECT COUNT(*) FROM pruned_posts").fetchone()[0] == 1
-    # No longer offered for longer than the tombstone lifetime: forgotten.
+    # Not re-read since: the feed may still list it, so it is kept however long it waits.
+    world.service.prune(NOW + timedelta(days=400))
+    assert world.conn.execute("SELECT COUNT(*) FROM pruned_posts").fetchone()[0] == 1
+    # Re-read without it, more than the tombstone lifetime after it was last offered.
+    world.feeds.add_posts(feed, [], NOW + timedelta(days=300))
     world.service.prune(NOW + timedelta(days=400))
     assert world.conn.execute("SELECT COUNT(*) FROM pruned_posts").fetchone()[0] == 0
 
@@ -591,7 +595,9 @@ async def test_mcp_tools_are_read_only(env: Env) -> None:
     hits = await search.handler(search.input_model.model_validate({"q": "instructions"}), call)
     assert isinstance(hits, list) and len(hits) == 1
     hit = hits[0]
-    assert hit["id"] == ids["a2"] and hit["url"] == "https://example.com/a2"
+    assert hit["id"] == ids["a2"]
+    # The feed-supplied URL reaches the agent only inside the fence (its source).
+    assert "url" not in hit
     # Feed text reaches the agent fenced as untrusted data, never as bare fields.
     assert "title" not in hit and "snippet" not in hit
     assert hit["content"].startswith('<untrusted-data source="https://example.com/a2">')

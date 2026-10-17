@@ -19,12 +19,15 @@ Job = Callable[[], Awaitable[None]]
 class _Entry:
     interval: timedelta
     job: Job
+    at_start: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     task: asyncio.Task[None] | None = None
 
 
 class Scheduler:
-    """Runs each named job every ``interval`` (first run after one interval).
+    """Runs each named job every ``interval`` (first run after one interval, or once right
+    after start too with ``at_start``: a daily job would otherwise wait for a day of uptime
+    that restarts and a sleeping Mac rarely allow).
 
     A job never overlaps itself: ``run_now`` and the periodic run share a lock. Job
     exceptions are logged and the schedule continues.
@@ -33,12 +36,12 @@ class Scheduler:
     def __init__(self) -> None:
         self._jobs: dict[str, _Entry] = {}
 
-    def every(self, name: str, interval: timedelta, job: Job) -> None:
+    def every(self, name: str, interval: timedelta, job: Job, *, at_start: bool = False) -> None:
         if name in self._jobs:
             raise ValueError(f"job {name!r} already scheduled")
         if interval <= timedelta(0):
             raise ValueError(f"job {name!r}: interval must be positive, got {interval}")
-        self._jobs[name] = _Entry(interval, job)
+        self._jobs[name] = _Entry(interval, job, at_start)
 
     async def _run(self, name: str, entry: _Entry) -> None:
         async with entry.lock:
@@ -48,6 +51,8 @@ class Scheduler:
                 log.exception("scheduled job %s failed", name)
 
     async def _loop(self, name: str, entry: _Entry) -> None:
+        if entry.at_start:
+            await self._run(name, entry)
         while True:
             await asyncio.sleep(entry.interval.total_seconds())
             await self._run(name, entry)

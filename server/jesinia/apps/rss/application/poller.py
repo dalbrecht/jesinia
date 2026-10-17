@@ -18,7 +18,13 @@ from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 from jesinia.apps.rss.application.ports import FeedFetcher, FeedReader, FeedStore, PollState
-from jesinia.apps.rss.domain.feed import Feed, failure_delay_s, next_interval_s
+from jesinia.apps.rss.domain.feed import (
+    Feed,
+    failure_delay_s,
+    host_of,
+    next_interval_s,
+    redact_urls,
+)
 from jesinia.services.fetch.application.service import FetchResult
 
 log = logging.getLogger(__name__)
@@ -88,8 +94,8 @@ class Poller:
                 log.error(
                     "rss poll of feed %d (%s) could not be recorded: %s",
                     feed.id,
-                    feed.url,
-                    result,
+                    host_of(feed.url),
+                    redact_urls(str(result)),
                     exc_info=result,
                 )
                 errors.append(result)
@@ -118,15 +124,21 @@ class Poller:
             # fetch caches any 200 with validators, readable or not: a cached body counts
             # as "unchanged" only after a poll that read it fine. Otherwise it is parsed
             # again, so an unreadable feed keeps failing (and reaches its warning).
+            # Tombstones are left alone: the last full read refreshed the ones it offered.
             if result.from_cache and feed.fail_count == 0 and feed.last_ok_at is not None:
-                self._store.refresh_pruned(feed.id, self._clock())
                 return self._succeeded(feed, 0, feed.last_error)  # a recovered parse's warning
-            parsed = self._reader.parse(result.body, result.url)
+            # feedparser and the sanitiser take up to seconds on a big feed: off the loop.
+            parsed = await asyncio.to_thread(self._reader.parse, result.body, result.url)
             new_items = self._store.add_posts(feed.id, parsed.items, self._clock())
         # Isolation boundary: whatever one feed raises (fetch, parse or a store error for
         # that feed) is recorded on that feed with its cause, and the round goes on.
         except Exception as exc:
-            log.warning("rss poll of feed %d (%s) failed: %s", feed.id, feed.url, _cause(exc))
+            log.warning(
+                "rss poll of feed %d (%s) failed: %s",
+                feed.id,
+                host_of(feed.url),
+                redact_urls(_cause(exc)),
+            )
             return self._failed(feed, _cause(exc))
         return self._succeeded(feed, new_items, parsed.warning)
 

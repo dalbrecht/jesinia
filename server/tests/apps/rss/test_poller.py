@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
+import threading
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -13,6 +15,7 @@ import httpx
 import pytest
 import respx
 
+from jesinia.apps.rss.application.feeds import FeedService
 from jesinia.apps.rss.application.poller import Poller, PollSummary
 from jesinia.apps.rss.application.ports import FeedFetcher, NewFeed, PollState
 from jesinia.apps.rss.domain.feed import (
@@ -25,11 +28,12 @@ from jesinia.apps.rss.domain.feed import (
     next_interval_s,
 )
 from jesinia.apps.rss.infrastructure.parse import MAX_ITEMS, FeedparserReader
-from jesinia.apps.rss.infrastructure.store import SqliteFeedStore
+from jesinia.apps.rss.infrastructure.store import SqliteFeedStore, SqlitePostStore
 from jesinia.apps.rss.module import RSS_DB
 from jesinia.core.db import open_db
 from jesinia.services.fetch.application.ports import CachedFetch
 from jesinia.services.fetch.application.service import (
+    FetchError,
     FetchResult,
     FetchService,
 )
@@ -450,16 +454,111 @@ async def test_an_unchanged_feed_keeps_its_pruned_items_pruned(
     clock = Clock()
     url = "https://example.com/feed.xml"
     feed = _subscribe(store, url)
+    old_seen = (START - timedelta(days=170)).isoformat()
     conn.execute(
         "INSERT INTO pruned_posts (feed_id, guid, seen_at) VALUES (?, 'old', ?)",
-        (feed.id, (START - timedelta(days=170)).isoformat()),
+        (feed.id, old_seen),
     )
     fetcher = FakeFetcher({url: _ok(url, _rss("1"))})
     poller = _poller(store, fetcher, clock)
     await poller.poll_due()
-    # A 304 means the feed may still offer the pruned item: its tombstone stays fresh.
+    # A cached (unchanged) feed is not read again, so no tombstone is touched: only a full
+    # read refreshes the ones it still offers ("old" is not in it).
     clock.now = _feed(store, feed.id).next_poll_at
     fetcher.responses[url] = _ok(url, b"unchanged, never parsed", from_cache=True)
     await poller.poll_due()
     seen = conn.execute("SELECT seen_at FROM pruned_posts WHERE feed_id = ?", (feed.id,))
-    assert [row[0] for row in seen] == [clock.now.isoformat()]
+    assert [row[0] for row in seen] == [old_seen]
+
+
+def _tombstones(conn: sqlite3.Connection) -> list[str]:
+    return [str(r[0]) for r in conn.execute("SELECT guid FROM pruned_posts ORDER BY guid")]
+
+
+async def test_an_unchanged_feed_keeps_the_tombstones_of_items_it_still_lists(
+    store: SqliteFeedStore, conn: sqlite3.Connection
+) -> None:
+    clock = Clock()
+    url = "https://example.com/feed.xml"
+    feed = _subscribe(store, url)
+    fetcher = FakeFetcher({url: _ok(url, _rss("listed"))})
+    poller = _poller(store, fetcher, clock)
+    await poller.poll_due()
+    posts = SqlitePostStore(conn)
+    clock.now = START + timedelta(days=40)
+    assert posts.prune(clock.now - timedelta(days=30), clock.now) == 1
+    # The feed answers "unchanged" for a year: it still lists the item, so the tombstone
+    # must outlive the TTL, or the item would come back as new at the next full read.
+    fetcher.responses[url] = _ok(url, b"unchanged, never parsed", from_cache=True)
+    for day in range(41, 400, 30):
+        clock.now = START + timedelta(days=day)
+        await poller.poll_all()
+        posts.prune(clock.now - timedelta(days=30), clock.now)
+    assert _tombstones(conn) == ["listed"]
+    fetcher.responses[url] = _ok(url, _rss("listed"))
+    await poller.poll_all()
+    assert _guids(conn, feed.id) == []  # still pruned
+
+
+async def test_items_dropped_from_a_feed_expire_once_it_is_reread_180_days_later(
+    store: SqliteFeedStore, conn: sqlite3.Connection
+) -> None:
+    clock = Clock()
+    url = "https://example.com/feed.xml"
+    _subscribe(store, url)
+    fetcher = FakeFetcher({url: _ok(url, _rss("dropped", "kept-listed"))})
+    poller = _poller(store, fetcher, clock)
+    await poller.poll_due()
+    posts = SqlitePostStore(conn)
+    clock.now = START + timedelta(days=40)
+    assert posts.prune(clock.now - timedelta(days=30), clock.now) == 2
+    fetcher.responses[url] = _ok(url, _rss("kept-listed"))  # "dropped" leaves the feed
+    clock.now = START + timedelta(days=100)
+    await poller.poll_all()
+    posts.prune(clock.now - timedelta(days=30), clock.now)
+    assert _tombstones(conn) == ["dropped", "kept-listed"]  # not yet 180 days
+    clock.now = START + timedelta(days=40 + 181)
+    await poller.poll_all()
+    posts.prune(clock.now - timedelta(days=30), clock.now)
+    assert _tombstones(conn) == ["kept-listed"]
+
+
+class ThreadRecordingReader(FeedparserReader):
+    def __init__(self) -> None:
+        self.threads: list[int] = []
+
+    def parse(self, body: bytes, url: str):  # type: ignore[no-untyped-def]
+        self.threads.append(threading.get_ident())
+        return super().parse(body, url)
+
+
+async def test_parsing_runs_off_the_event_loop(store: SqliteFeedStore) -> None:
+    url = "https://example.com/feed.xml"
+    _subscribe(store, url)
+    reader = ThreadRecordingReader()
+    poller = Poller(store, FakeFetcher({url: _ok(url, _rss("1"))}), reader, Clock())
+    await poller.poll_due()
+    assert reader.threads and threading.get_ident() not in reader.threads
+
+    added = ThreadRecordingReader()
+    service = FeedService(
+        store, FakeFetcher({"https://b.example/feed": _ok("https://b.example/feed", _rss("2"))}),
+        added, Clock(),
+    )  # fmt: skip
+    await service.add("https://b.example/feed", None)
+    assert added.threads and threading.get_ident() not in added.threads
+
+
+async def test_poll_logs_name_the_host_never_the_path_or_credentials(
+    store: SqliteFeedStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    url = "https://feeds.example/private/token-abc123/feed.xml?key=s3cret"
+    _subscribe(store, url)
+    failing = FetchError(f"could not fetch {url}: HTTP 500 at {url}#frag")
+    poller = _poller(store, FakeFetcher({url: failing}), Clock())
+    with caplog.at_level(logging.DEBUG):
+        await poller.poll_due()
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "feeds.example" in logged
+    for secret in ("token-abc123", "s3cret", "/private", "feed.xml"):
+        assert secret not in logged, logged

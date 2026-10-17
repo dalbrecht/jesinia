@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -75,13 +76,17 @@ class FeedService:
             raise FeedUnavailable(f"{url} answered HTTP {result.status}")
         return result
 
+    async def _parse(self, result: FetchResult) -> ParsedFeed:
+        # feedparser and the sanitiser take up to seconds on a big feed: off the event loop.
+        return await asyncio.to_thread(self._reader.parse, result.body, result.url)
+
     async def _load(self, url: str) -> tuple[str, ParsedFeed]:
         """The feed URL to subscribe to and its parsed content, discovering it on a page."""
         result = await self._fetch(url)
         parse_error: FeedParseError | None = None
         if not _is_html(result):
             try:
-                return url, self._reader.parse(result.body, result.url)
+                return url, await self._parse(result)
             except FeedParseError as exc:
                 parse_error = exc  # maybe a mislabelled page: look for a feed link next
         found = self._reader.discover(result.body, result.url)
@@ -92,15 +97,16 @@ class FeedService:
                 ) from parse_error
             try:
                 # Feeds are often mislabelled text/html: with no feed link, read it as one.
-                return url, self._reader.parse(result.body, result.url)
+                return url, await self._parse(result)
             except FeedParseError as exc:
                 raise FeedUnavailable(
                     f"no feed found at {url}: the page links to none and is not a feed ({exc})"
                 ) from exc
+        found = validate_feed_url(found)  # e.g. a link with credentials in it
         self._refuse_existing(found)
         linked = await self._fetch(found)
         try:
-            return found, self._reader.parse(linked.body, linked.url)
+            return found, await self._parse(linked)
         except FeedParseError as exc:
             raise FeedUnavailable(f"{found} is not a readable feed: {exc}") from exc
 
@@ -163,17 +169,23 @@ class FeedService:
             raise FolderExists(f"a folder named {other.name} already exists")
         return self._store.rename_folder(folder_id, new_name)
 
-    def import_opml(self, xml: str) -> ImportResult:
-        """Subscribe to every new feed in an OPML document, keeping one folder level.
+    async def import_opml(self, xml: str) -> ImportResult:
+        """Subscribe to every new feed in an OPML document, keeping one folder level, all
+        or nothing.
 
         Nothing is fetched here: imported feeds are due at once, so the poller reads them
         (and reports a failing one on the feed) without holding up the upload. Raises
         ``InvalidOpml``; a feed whose URL cannot be used is listed in ``failed``.
         """
+        entries = await asyncio.to_thread(parse_opml, xml)  # up to 5 MB of XML
+        with self._store.atomic():
+            return self._import(entries)
+
+    def _import(self, entries: builtins.list[OpmlFeed]) -> ImportResult:
         added, existing = 0, 0
         failed: builtins.list[ImportFailure] = []
         now = self._now()
-        for entry in parse_opml(xml):
+        for entry in entries:
             try:
                 url = validate_feed_url(entry.url)
             except InvalidFeedUrl as exc:

@@ -204,6 +204,8 @@ def _rss_with_link(link: str, comments: str = "") -> bytes:
         ("/relative/path", "https://e.com/relative/path"),
         ("//cdn.example.org/x", "https://cdn.example.org/x"),
         ("http://", "https://e.com/feed"),
+        # Never copied into a kept page's front matter (and so into git).
+        ("https://me:pw@a.example/x", "https://e.com/feed"),
     ],
 )
 def test_item_and_site_urls_are_normalised_to_http_urls(link: str, expected: str) -> None:
@@ -219,6 +221,7 @@ def test_item_and_site_urls_are_normalised_to_http_urls(link: str, expected: str
         ("data:text/html,hi", None),
         ("/item?id=1", "https://news.ycombinator.com/item?id=1"),
         ("//news.ycombinator.com/item?id=2", "https://news.ycombinator.com/item?id=2"),
+        ("https://u:p@news.ycombinator.com/item?id=3", None),
     ],
 )
 def test_discussion_url_is_normalised_or_dropped(comments: str, expected: str | None) -> None:

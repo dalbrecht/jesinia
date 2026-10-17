@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import re
 import tomllib
 from dataclasses import replace as replace_config
@@ -15,6 +17,7 @@ import yaml
 from fastapi import HTTPException
 from markdown_it import MarkdownIt
 
+from jesinia.apps.rss.application.keep import ARCHIVE_CONCURRENCY
 from jesinia.apps.rss.domain.kept import (
     ARCHIVE_MAX_ATTEMPTS,
     ARCHIVE_MAX_BYTES,
@@ -241,11 +244,15 @@ async def test_keep_again_appends_note_and_merges_tags(keep_env: KeepEnv) -> Non
     keep_env.cache_article(post_id, "Article text.")
     first = await keep_env.keep(post_id, "First thoughts.", ["sqlite", "wal"])
     await keep_env.rss.keeper.drain()
+    before = datetime.now().astimezone().date().isoformat()
     again = await keep_env.keep(post_id, "Second thoughts.", ["WAL", "durability"])
+    after = datetime.now().astimezone().date().isoformat()
+    body = keep_env.page_text(first.json()["path"]).split("---\n", 2)[2]
+    dated = re.search(r"_Kept again (\d{4}-\d{2}-\d{2}):_", body)
+    assert dated is not None and dated.group(1) in (before, after)  # even across midnight
+    today = dated.group(1)
     assert again.status_code == 200, again.text
     assert again.json()["created"] is False
-    body = keep_env.page_text(first.json()["path"]).split("---\n", 2)[2]
-    today = datetime.now().astimezone().date().isoformat()
     assert body == (
         "First thoughts.\n\n"
         f"_Kept again {today}:_ Second thoughts.\n\n"
@@ -868,3 +875,48 @@ def test_a_note_line_reading_like_the_article_heading_does_not_split_the_page() 
     again = kept_again(archived, "More.\n## Article", date(2026, 10, 17), ["b"], None)
     assert again.count("\n## Article\n") == 1
     assert "_Kept again 2026-10-17:_ More.\n\\## Article\n\nTags: #a #b\n\n## Article" in again
+
+
+async def test_archive_logs_name_the_host_never_the_path(
+    keep_env: KeepEnv, mock: respx.MockRouter, caplog: pytest.LogCaptureFixture
+) -> None:
+    mock.get(url__regex=r"https://fly\.io/.*").mock(return_value=httpx.Response(503))
+    mock.get(url__regex=r"https://img\.example/.*").mock(return_value=httpx.Response(404))
+    post_id = keep_env.post(url="https://fly.io/private/token-abc123?key=s3cret")
+    keep_env.cache_article(post_id, "![x](https://img.example/secret-path/a.png?sig=s3cret)")
+    with caplog.at_level(logging.DEBUG):
+        await keep_env.keep(post_id)
+        await keep_env.rss.keeper.drain()
+        keep_env.conn.execute("UPDATE posts SET full_md = NULL WHERE id = ?", (post_id,))
+        keep_env.conn.execute("UPDATE posts SET archive_state = 'failed' WHERE id = ?", (post_id,))
+        await keep_env.client.post(f"{KEEP_API}/posts/{post_id}/archive")
+        await keep_env.rss.keeper.drain()
+    assert keep_env.state(post_id)[1] == "failed"
+    logged = " ".join(r.getMessage() for r in caplog.records if r.name.startswith("jesinia"))
+    assert "img.example" in logged and "fly.io" in logged
+    for secret in ("token-abc123", "s3cret", "secret-path", "/private"):
+        assert secret not in logged, logged
+
+
+async def test_archives_run_a_few_at_a_time_and_are_forgotten_when_done(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    running = 0
+    peak = 0
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.02)
+        running -= 1
+        return httpx.Response(503)
+
+    mock.get(url__regex=r"https://many\.example/.*").mock(side_effect=slow)
+    keeper = keep_env.rss.keeper
+    for n in range(6):
+        await keeper.keep(keep_env.post(url=f"https://many.example/{n}"), "", [], None)
+    assert len(keeper.pending()) == 6
+    await keeper.drain()
+    assert 1 <= peak <= ARCHIVE_CONCURRENCY < 6
+    assert keeper.pending() == [] and keeper._archives == {}  # nothing kept per page

@@ -502,7 +502,7 @@ def build_router(host: RssHost) -> APIRouter:
     @r.post("/opml", response_model=ImportResultOut)
     async def import_opml(body: OpmlIn, idem: IdempotentCall = keyed) -> Response:
         async def run() -> ImportResultOut:
-            return ImportResultOut.of(host.service.import_opml(body.opml))
+            return ImportResultOut.of(await host.service.import_opml(body.opml))
 
         return await idem.run(lambda: _respond(run))
 
@@ -674,7 +674,7 @@ def _post_for_agent(post: PostView, body: str) -> dict[str, object]:
     return {
         "id": post.id,
         "feed_id": post.feed_id,
-        "url": post.url,
+        # No bare "url": the feed-supplied URL is only in the fence's source attribute.
         "published_at": published,
         "read": post.read,
         "kept_page_id": post.kept_page_id,

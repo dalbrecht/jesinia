@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -52,8 +53,9 @@ class ArticleConverter(Protocol):
 class ImageFetcher(Protocol):
     """The ``fetch`` service's guarded GET (SSRF checks on every hop), size-capped."""
 
-    async def get(self, url: str, *, max_bytes: int) -> FetchResult:
-        """Fetch ``url``; raises ``FetchError`` when it is blocked or over ``max_bytes``."""
+    async def get(self, url: str, *, max_bytes: int, cache: bool) -> FetchResult:
+        """Fetch ``url`` (``cache=False``: no revalidation, nothing stored); raises
+        ``FetchError`` when it is blocked or over ``max_bytes``."""
         ...
 
 
@@ -83,17 +85,16 @@ class PollState:
 class FeedStore(Protocol):
     """Feeds, folders and posts in ``rss.sqlite``."""
 
+    def atomic(self) -> AbstractContextManager[None]:
+        """A transaction: the calls inside it all happen, or none do."""
+        ...
+
     def feed(self, feed_id: int) -> Feed | None: ...
 
     def feed_by_url(self, url: str) -> Feed | None: ...
 
     def feeds(self) -> list[Feed]:
         """Every subscribed feed with its polling state."""
-        ...
-
-    def refresh_pruned(self, feed_id: int, now: datetime) -> None:
-        """Keep the feed's tombstones fresh after a poll that found it unchanged: an
-        unchanged feed may still offer the pruned items."""
         ...
 
     def set_poll_state(self, feed_id: int, state: PollState) -> None:

@@ -293,3 +293,17 @@ async def test_compressed_body_is_bounded_after_decoding(fetch: FetchService) ->
     )
     with pytest.raises(FetchBlocked, match="encoding"):
         await fetch.get("https://pub.example/br")
+
+
+@respx.mock
+async def test_get_without_the_cache_neither_revalidates_nor_stores(
+    fetch: FetchService,
+) -> None:
+    route = respx.get("https://pub.example/img").mock(
+        return_value=Response(200, content=b"img", headers={"ETag": "v1"})
+    )
+    await fetch.get("https://pub.example/img", cache=False)
+    await fetch.get("https://pub.example/img", cache=False)
+    assert "If-None-Match" not in route.calls[1].request.headers
+    cached = await fetch.get("https://pub.example/img")  # nothing was stored to answer from
+    assert not cached.from_cache and route.call_count == 3

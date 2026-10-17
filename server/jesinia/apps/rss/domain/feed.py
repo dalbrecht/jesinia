@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -16,6 +17,8 @@ MAX_INTERVAL_S = 12 * 60 * 60
 # Past this many failures the backoff is at its cap; it also keeps 2**n small.
 _BACKOFF_DOUBLINGS = 10
 FOLDER_NAME_MAX = 100
+CREDENTIALS_REFUSED = "credentials in URL are not supported"
+_URL = re.compile(r"(?P<scheme>https?)://(?P<netloc>[^/\s?#'\"<>()]*)[^\s'\"<>()]*", re.IGNORECASE)
 
 
 class RssError(Exception):
@@ -66,7 +69,34 @@ def validate_feed_url(raw: str) -> str:
         raise InvalidFeedUrl("only http(s) feed URLs are supported")
     if not has_host:
         raise InvalidFeedUrl(f"the URL has no host: {url}")
+    if has_credentials(url):
+        # They would be stored, logged, exported and copied into kept pages (and git).
+        raise InvalidFeedUrl(CREDENTIALS_REFUSED)
     return url
+
+
+def has_credentials(url: str) -> bool:
+    """Whether ``url`` carries a user name or password before its host."""
+    return "@" in urlsplit(url).netloc
+
+
+def host_of(url: str) -> str:
+    """The host of ``url`` alone, for logs (never its path, query or credentials)."""
+    try:
+        return urlsplit(url).hostname or "?"
+    except ValueError:
+        return "?"
+
+
+def redact_urls(text: str) -> str:
+    """``text`` with every URL cut down to its scheme and host, for logs: paths and query
+    strings can carry tokens, and userinfo carries passwords."""
+    return _URL.sub(_url_host, text)
+
+
+def _url_host(match: re.Match[str]) -> str:
+    host = match.group("netloc").rpartition("@")[2]
+    return f"{match.group('scheme')}://{host}/…"
 
 
 def validate_folder_name(raw: str) -> str:
