@@ -3,10 +3,11 @@ import type { JesiniaClient } from "@jesinia/client";
 import { Banner, Button } from "@jesinia/design";
 import { AppShell, lineDiff, useClient, type ServerStatus } from "@jesinia/shell";
 import { useCallback, useEffect, useState } from "react";
-import { pageFromPath, search } from "./api";
+import { pageFromPath, search, type Page } from "./api";
 import { Chat } from "./Chat";
 import { Editor } from "./Editor";
 import s from "./notes.module.css";
+import { isViewShortcut, loadView, pageKind, ReadView, saveView, viewShortcutLabel, type ViewMode } from "./read";
 import { Sidebar } from "./Sidebar";
 import { usePage } from "./usePage";
 
@@ -36,6 +37,32 @@ function Workspace({ status }: { status: ServerStatus }) {
   useEffect(() => {
     if (doc.state !== "conflict") setComparing(false);
   }, [doc.state]);
+  // Read or Edit: the choice made for this page, else the one remembered for its kind.
+  const [chosen, setChosen] = useState<{ id: string; mode: ViewMode } | null>(null);
+  const page = doc.page;
+  const view: ViewMode =
+    page === null ? "edit" : chosen?.id === page.id ? chosen.mode : loadView(pageKind(page.jesinia));
+  const { flush } = doc;
+  const choose = useCallback(
+    (target: Page, mode: ViewMode) => {
+      // Read shows the current text, unsaved edits included; they are saved now as well.
+      if (mode === "read") void flush();
+      saveView(pageKind(target.jesinia), mode);
+      setChosen({ id: target.id, mode });
+    },
+    [flush],
+  );
+  useEffect(() => {
+    if (page === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!isViewShortcut(e)) return;
+      e.preventDefault();
+      choose(page, view === "read" ? "edit" : "read");
+    };
+    // Capture: the editor must not take ⌘E/Ctrl+E for itself.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [choose, view, page]);
   const findPages = useCallback(
     async (q: string) => (await search(client, q)).map((h) => ({ id: h.key, title: h.title })),
     [client],
@@ -45,16 +72,32 @@ function Workspace({ status }: { status: ServerStatus }) {
     <div className={s.layout}>
       <Sidebar current={id} open={open} refreshKey={treeKey} />
       <section className={s.main} aria-label="Page">
-        {doc.page ? (
+        {page ? (
           <>
             <header className={s.pageHead}>
-              <h1 className={s.title}>{doc.page.title}</h1>
-              <span className={s.muted} data-testid="save-state">
-                {STATE_LABEL[doc.state]}
-              </span>
+              <h1 className={s.title}>{page.title}</h1>
+              <div className={s.headTools}>
+                <span className={s.muted} data-testid="save-state">
+                  {STATE_LABEL[doc.state]}
+                </span>
+                <div role="group" aria-label="View" className={s.viewToggle}>
+                  {(["read", "edit"] as const).map((mode) => (
+                    <Button
+                      key={mode}
+                      size="sm"
+                      variant={view === mode ? "secondary" : "ghost"}
+                      aria-pressed={view === mode}
+                      title={`${mode === "read" ? "Read" : "Edit"} (${viewShortcutLabel()})`}
+                      onClick={() => choose(page, mode)}
+                    >
+                      {mode === "read" ? "Read" : "Edit"}
+                    </Button>
+                  ))}
+                </div>
+              </div>
             </header>
             <p className={s.properties}>
-              <span className={s.mono}>{doc.page.path}</span> · <span className={s.mono}>id: {doc.page.id}</span>
+              <span className={s.mono}>{page.path}</span> · <span className={s.mono}>id: {page.id}</span>
             </p>
             {doc.state === "conflict" ? (
               <>
@@ -78,15 +121,19 @@ function Workspace({ status }: { status: ServerStatus }) {
             ) : null}
             {doc.error ? <p className={s.error}>{doc.error}</p> : null}
             <div className={s.editor}>
-              <Editor
-                key={doc.page.id}
-                value={doc.text}
-                revision={doc.revision}
-                label={`Edit ${doc.page.title}`}
-                onChange={doc.edit}
-                onBlur={() => void doc.flush()}
-                findPages={findPages}
-              />
+              {view === "read" ? (
+                <ReadView markdown={doc.text} page={page} onOpenPage={open} />
+              ) : (
+                <Editor
+                  key={page.id}
+                  value={doc.text}
+                  revision={doc.revision}
+                  label={`Edit ${page.title}`}
+                  onChange={doc.edit}
+                  onBlur={() => void doc.flush()}
+                  findPages={findPages}
+                />
+              )}
             </div>
           </>
         ) : doc.missing ? (
@@ -102,9 +149,9 @@ function Workspace({ status }: { status: ServerStatus }) {
           </div>
         )}
       </section>
-      {doc.page ? (
+      {page ? (
         <Chat
-          page={{ id: doc.page.id, title: doc.page.title }}
+          page={{ id: page.id, title: page.title }}
           runners={status.runners}
           onSaved={() => setTreeKey((k) => k + 1)}
         />

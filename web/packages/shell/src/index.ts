@@ -17,12 +17,17 @@ export { registerServiceWorker } from "./pwa";
 export {
   httpOnly,
   IMG_PROPS,
+  isKbAssetUrl,
   LINK_PROPS,
   MAX_LINK_CHARS,
+  PAGE_LINK_SCHEME,
   renderMarkdown,
   resolveHttpUrl,
   SafeMarkdown,
   safeHttpUrl,
+  type MdNode,
+  type PageLinks,
+  type SafeMarkdownProps,
 } from "./safe-markdown";
 export { TagPicker, type TagPickerHandle, type TagPickerProps } from "./TagPicker";
 export { useServerStatus, type ServerStatus } from "./status";

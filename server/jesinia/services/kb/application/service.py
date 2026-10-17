@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 import unicodedata
 from collections import defaultdict
 from collections.abc import Mapping
@@ -16,6 +15,7 @@ from typing import Literal
 
 from jesinia.core.events import Event, EventBus
 from jesinia.services.kb.application.errors import (
+    AssetNotFound,
     InvalidAssetName,
     KbError,
     KbUnavailable,
@@ -23,8 +23,10 @@ from jesinia.services.kb.application.errors import (
     PathOutsideKb,
     ReservedPath,
     StaleWrite,
+    UnsupportedAssetType,
 )
 from jesinia.services.kb.application.ports import Conflict, PageFiles, PageIndex
+from jesinia.services.kb.domain.assets import image_media_type, is_asset_file_name, is_page_id
 from jesinia.services.kb.domain.frontmatter import (
     page_from,
     parse_document,
@@ -90,10 +92,16 @@ def sha256(data: bytes) -> str:
 NEW_ID_PLACEHOLDER = "new page id"
 NO_KB_PATH = "no KB path is configured"
 ASSETS_FOLDER = "_assets"
-# One plain file name: no folders, no leading dot, no spaces or shell-special characters.
-_ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9]+)?")
 # What an asset folder's .gitignore holds when its files must stay on this machine.
 LOCAL_ONLY_GITIGNORE = b"*\n"
+
+
+@dataclass(frozen=True)
+class Asset:
+    """A page asset's bytes and the image type they were sniffed as."""
+
+    data: bytes
+    media_type: str
 
 
 class KbService:
@@ -338,7 +346,7 @@ class KbService:
         fs = self._fs()
         if self._index.get(id) is None:
             raise PageNotFound(id)
-        if not _ASSET_NAME.fullmatch(name):
+        if not is_asset_file_name(name):
             raise InvalidAssetName(f"{name!r} is not a plain asset file name")
         folder = PurePosixPath(ASSETS_FOLDER, id)
         if local_only:
@@ -351,6 +359,33 @@ class KbService:
         # Up to megabytes with an fsync: keep it off the event loop.
         await asyncio.to_thread(fs.write_atomic, str(path), data)
         return path
+
+    async def read_asset(self, page_id: str, name: str) -> Asset:
+        """The image stored at ``_assets/<page_id>/<name>``, typed by its bytes.
+
+        Raises ``InvalidAssetName`` (``page_id`` is not a page id, or ``name`` is not one
+        plain file name), ``PathOutsideKb`` (a symlink on the way), ``AssetNotFound``,
+        ``UnsupportedAssetType`` (not PNG, JPEG, GIF, WebP or AVIF) or ``KbUnavailable``.
+        """
+        fs = self._fs()
+        if not is_page_id(page_id):
+            raise InvalidAssetName(f"{page_id!r} is not a page id")
+        if not is_asset_file_name(name):
+            raise InvalidAssetName(f"{name!r} is not a plain asset file name")
+        disk = f"{ASSETS_FOLDER}/{page_id}/{name}"
+        # Resolved, the file must sit directly in this page's folder: never another page's
+        # (a linked folder), never anywhere else.
+        folder = fs.root.resolve() / ASSETS_FOLDER / page_id
+        if fs.contain(PurePosixPath(disk)).parent != folder:
+            raise PathOutsideKb(f"{disk} is not in {ASSETS_FOLDER}/{page_id}/")
+        try:
+            data = await asyncio.to_thread(fs.read_regular, disk)
+        except FileNotFoundError as exc:
+            raise AssetNotFound(disk) from exc
+        media_type = image_media_type(data)
+        if media_type is None:
+            raise UnsupportedAssetType(f"{disk} is not a PNG, JPEG, GIF, WebP or AVIF image")
+        return Asset(data, media_type)
 
     async def update_body(self, id: PageId, body: str, *, expected_rev: str) -> PageWithRev:
         """Replace only the body; the raw front-matter block stays byte-identical."""

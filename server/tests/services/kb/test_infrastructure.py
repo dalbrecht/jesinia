@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import os
+import threading
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -203,3 +204,67 @@ def test_volume_without_hard_links(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     fs.write_atomic("c.md", b"c", create=True)
     with pytest.raises(FileExistsError):
         fs.rename("c.md", "b.md")
+
+
+def test_read_regular_refuses_a_link_planted_after_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fs = LocalFiles(tmp_path)
+    (tmp_path / "real.png").write_bytes(b"x")
+    os.symlink(tmp_path / "real.png", tmp_path / "link.png")
+    assert fs.read_regular("real.png") == b"x"
+    # The race: the link appears between the walk and the open; O_NOFOLLOW still refuses it.
+    monkeypatch.setattr(fs, "_refuse_links", lambda disk: None)
+    with pytest.raises(PathOutsideKb):
+        fs.read_regular("link.png")
+    with pytest.raises(FileNotFoundError):
+        fs.read_regular("missing/x.png")
+
+
+def _read_soon(fs: LocalFiles, disk: str, seconds: float = 5.0) -> bytes | BaseException:
+    """``fs.read_regular(disk)`` in a daemon thread: its result or error, failing the test if
+    the read blocks (a FIFO must not hang the server)."""
+    outcome: list[bytes | BaseException] = []
+
+    def run() -> None:
+        try:
+            outcome.append(fs.read_regular(disk))
+        except BaseException as exc:  # noqa: BLE001 - handed back to the test as the outcome
+            outcome.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    assert outcome, f"read_regular({disk!r}) blocked"
+    return outcome[0]
+
+
+@pytest.mark.parametrize("linked", ["_assets", f"_assets/{A}"])
+def test_read_regular_never_follows_a_linked_folder_swapped_in_after_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str
+) -> None:
+    root = tmp_path / "kb"
+    outside = tmp_path / "outside"
+    (outside / A).mkdir(parents=True)
+    (outside / A / "x.png").write_bytes(b"secret")
+    (root / "_assets" / A).mkdir(parents=True)
+    fs = LocalFiles(root)
+    # The race: the folder becomes a link after every check, just before the open.
+    monkeypatch.setattr(fs, "_refuse_links", lambda disk: None)
+    monkeypatch.setattr(fs, "contain", lambda rel: root / rel)
+    (root / "_assets" / A).rmdir()
+    if linked == "_assets":
+        (root / "_assets").rmdir()
+        (root / "_assets").symlink_to(outside)
+    else:
+        (root / "_assets" / A).symlink_to(outside / A)
+    outcome = _read_soon(fs, f"_assets/{A}/x.png")
+    # Refused, never read: ELOOP (a link) on most systems, ENOTDIR on some.
+    assert isinstance(outcome, PathOutsideKb | FileNotFoundError), outcome
+
+
+def test_read_regular_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
+    (tmp_path / "_assets" / A).mkdir(parents=True)
+    os.mkfifo(tmp_path / "_assets" / A / "x.png")
+    outcome = _read_soon(LocalFiles(tmp_path), f"_assets/{A}/x.png")
+    assert isinstance(outcome, FileNotFoundError), outcome

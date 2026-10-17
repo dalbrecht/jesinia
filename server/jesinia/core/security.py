@@ -42,6 +42,22 @@ def _headers_for(path: str) -> list[tuple[bytes, bytes]]:
     return _RSS_HEADERS if is_rss_page else _HEADERS
 
 
+def _enforce(
+    headers: list[tuple[bytes, bytes]], policy: list[tuple[bytes, bytes]]
+) -> list[tuple[bytes, bytes]]:
+    """``headers`` with the security ``policy`` applied: the policy's value always wins. A
+    response's own copy of a policy header (an asset's ``nosniff``) is kept only when it is
+    the same value, so it is sent once; any other value (a weaker CSP, say) is dropped."""
+    wanted = {name: value for name, value in policy}
+    kept = [
+        (name, value)
+        for name, value in headers
+        if name.lower() not in wanted or value == wanted[name.lower()]
+    ]
+    present = {(name.lower(), value) for name, value in kept}
+    return [*kept, *(h for h in policy if h not in present)]
+
+
 class LocalOriginGuard:
     def __init__(self, app: ASGIApp, port: int) -> None:
         self.app = app
@@ -80,7 +96,7 @@ class LocalOriginGuard:
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message["headers"] = [*message.get("headers", []), *extra]
+                message["headers"] = _enforce(list(message.get("headers", [])), extra)
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

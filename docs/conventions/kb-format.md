@@ -70,6 +70,9 @@ jesinia:
   `Sources/x.md`, `../_assets/<page-id>/<file>`). A folder whose files stay on this Mac
   (archived RSS images) holds a `.gitignore` of `*`, so KB sync never commits them. Asset
   file names are derived (a content hash plus an extension), never taken from a URL.
+  The server serves them, signed in, at `/api/kb/assets/<page-id>/<file>`: raster images
+  only (PNG, JPEG, GIF, WebP, AVIF, sniffed from the bytes; SVG is refused), never through
+  a symlink. Notes' Read view shows them from there.
 - **AI provenance.** Text an agent wrote is wrapped in Markdown (HTML) comments,
   exactly:
 

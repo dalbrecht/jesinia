@@ -1,9 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Ruling R17: Markdown from feeds and agents reaches the page only through react-markdown with
 // raw HTML skipped and http(s)-only URLs. Moved from the RSS app with the shared chat.
-import { render } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import { httpOnly, renderMarkdown, resolveHttpUrl, SafeMarkdown, safeHttpUrl } from "../index";
+import { fireEvent, render } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import {
+  httpOnly,
+  isKbAssetUrl,
+  PAGE_LINK_SCHEME,
+  renderMarkdown,
+  resolveHttpUrl,
+  SafeMarkdown,
+  safeHttpUrl,
+  type MdNode,
+} from "../index";
 
 /** Nothing in the tree can execute: no handlers, no script-ish elements, no script URLs. */
 function expectInert(root: Element) {
@@ -127,5 +136,88 @@ describe("SafeMarkdown", () => {
     expect(container.querySelector("strong")).toHaveTextContent("bold");
     expect(container.querySelector("a[href]")).toBeNull();
     expectInert(container);
+  });
+
+  it("renderMarkdown never loads a local asset either (agent output, R24)", () => {
+    const { container } = render(<div>{renderMarkdown(`![x](${ASSET})`)}</div>);
+    expect(container.querySelector("img")).toBeNull();
+  });
+});
+
+const ID = "0199e000-0000-7000-8000-000000000001";
+const ASSET = `/api/kb/assets/${ID}/a1b2.png`;
+
+describe("SafeMarkdown with local images (KB pages)", () => {
+  it("knows a KB asset URL when it sees one, and nothing else", () => {
+    expect(isKbAssetUrl(ASSET)).toBe(true);
+    for (const bad of [
+      `/api/kb/assets/${ID}/../x.png`,
+      `/api/kb/assets/${ID}/.gitignore`,
+      `/api/kb/assets/${ID}/a/b.png`,
+      `/api/kb/assets/not-an-id/a.png`,
+      `https://evil.example${ASSET}`,
+      `//evil.example${ASSET}`,
+      `${ASSET}?x=1`,
+      `/api/kb/pages/${ID}`,
+    ]) {
+      expect(isKbAssetUrl(bad), bad).toBe(false);
+    }
+  });
+
+  it("loads KB assets only; a remote image is its alt text and host", () => {
+    const { container } = render(
+      <SafeMarkdown
+        images="local"
+        markdown={`![local](${ASSET}) ![remote](https://cdn.example/r.png) ![other](/api/kb/pages/${ID}) ![js](javascript:x)`}
+      />,
+    );
+    const imgs = container.querySelectorAll("img");
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0]?.getAttribute("src")).toBe(ASSET);
+    expect(imgs[0]?.getAttribute("alt")).toBe("local");
+    expect(imgs[0]?.getAttribute("loading")).toBe("lazy");
+    expect(container).toHaveTextContent("remote (cdn.example)");
+    expect(container).toHaveTextContent("other");
+    expectInert(container);
+  });
+
+  it("links in a KB page open in a new tab; a local asset path is no link", () => {
+    const { container } = render(
+      <SafeMarkdown images="local" markdown={`[site](https://a.example/x) [asset](${ASSET})`} />,
+    );
+    const links = container.querySelectorAll("a");
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute("target")).toBe("_blank");
+  });
+
+  it("page links open in the app, only with a page-link handler and a page id", () => {
+    const open = vi.fn();
+    const markdown = `[Topic](${PAGE_LINK_SCHEME}${ID}) [Bad](${PAGE_LINK_SCHEME}../x)`;
+    const { container, rerender } = render(
+      <SafeMarkdown markdown={markdown} pageLinks={{ href: (id) => `/notes/page/${id}`, open }} />,
+    );
+    const links = container.querySelectorAll("a");
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute("href")).toBe(`/notes/page/${ID}`);
+    expect(links[0]?.getAttribute("target")).toBeNull();
+    fireEvent.click(links[0] as Element);
+    expect(open).toHaveBeenCalledWith(ID);
+    // A modified click is the browser's (a new tab or window).
+    fireEvent.click(links[0] as Element, { metaKey: true });
+    fireEvent.click(links[0] as Element, { button: 1 });
+    expect(open).toHaveBeenCalledTimes(1);
+    rerender(<SafeMarkdown markdown={markdown} />);
+    expect(container.querySelector("a")).toBeNull();
+    expect(container).toHaveTextContent("Topic");
+  });
+
+  it("an app transform edits the Markdown tree before it renders", () => {
+    const transform = (tree: MdNode) => {
+      const para = tree.children?.[0];
+      if (para?.children) para.children = [{ type: "text", value: "changed", data: { hName: "mark" } }];
+    };
+    const { container } = render(<SafeMarkdown markdown="original" transform={transform} />);
+    expect(container.querySelector("mark")).toHaveTextContent("changed");
+    expect(container).not.toHaveTextContent("original");
   });
 });

@@ -312,3 +312,18 @@ async def test_write_asset_refuses_unsafe_names(kb: KbService, name: str) -> Non
 async def test_write_asset_needs_an_indexed_page(kb: KbService) -> None:
     with pytest.raises(PageNotFound):
         await kb.write_asset(PageId("../../etc"), "a.png", b"x")
+
+
+async def test_read_asset_is_pinned_to_the_page_folder_in_the_url(kb: KbService) -> None:
+    root = kb.root
+    assert root is not None
+    page_a = "0199e000-0000-7000-8000-00000000000a"
+    page_b = "0199e000-0000-7000-8000-00000000000b"
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    (root / "_assets" / page_b).mkdir(parents=True)
+    (root / "_assets" / page_b / "x.png").write_bytes(png)
+    assert (await kb.read_asset(page_b, "x.png")).data == png
+    # Page A's folder is a link to B's: A's URL must not reach B's files.
+    (root / "_assets" / page_a).symlink_to(root / "_assets" / page_b)
+    with pytest.raises(PathOutsideKb, match="not in"):
+        await kb.read_asset(page_a, "x.png")
