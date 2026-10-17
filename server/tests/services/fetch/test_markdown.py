@@ -32,11 +32,69 @@ def test_should_dedent_an_indented_line_right_after_a_heading() -> None:
     assert "code_block" not in _token_types(fixed)
 
 
-def test_should_dedent_prose_right_after_a_closing_fence() -> None:
-    broken = "```\ndef f():\n    return 1\n```\n        Next time I will know.\n"
-    fixed = normalize_markdown(broken)
-    assert fixed == "```\ndef f():\n    return 1\n```\nNext time I will know.\n"
-    assert _token_types(fixed) == ["fence", "paragraph_open", "inline", "paragraph_close"]
+def test_should_dedent_only_a_lone_link_line_after_a_heading() -> None:
+    angle = "[a b](<https://example.org/a b>)"
+    assert normalize_markdown(f"## H\n    {angle}\n") == f"## H\n{angle}\n"
+    nested = "[see [this] \\] one](https://example.org/a_(b))"
+    assert normalize_markdown(f"## H\n    {nested}") == f"## H\n{nested}"
+    untouched = [
+        "### Usage\n    make install\n    make test\n",  # real indented code
+        f"### Usage\n    {LINK}\n    make test",  # a link opening a longer code block
+        "### Usage\n    plain prose, not a link",
+        "### Usage\n    [a](https://example.org/x) and more",
+        "### Usage\n    [a](https://example.org/x)(y)",
+        "### Usage\n    [a](https://example.org/x y)",
+        "### Usage\n    [a](<https://example.org/x> y)",
+        "### Usage\n    [a]https://example.org/x",
+        "### Usage\n    [unclosed",
+        "### Usage\n    \\[a](https://example.org/x)",
+    ]
+    for markdown in untouched:
+        assert normalize_markdown(markdown) == markdown, markdown
+
+
+def test_should_leave_an_indented_line_after_a_closing_fence() -> None:
+    markdown = "```\ndef f():\n    return 1\n```\n        [a](https://example.org/x)\n"
+    assert normalize_markdown(markdown) == markdown
+
+
+def test_should_drop_an_empty_heading_before_a_block_it_cannot_join() -> None:
+    blocks = [
+        "- first\n- second",
+        "* first",
+        "+ first",
+        "-",
+        "1. first",
+        "12) first",
+        "> a quote",
+        "    indented code\n    more code",
+        "| a | b |",
+        "<div>html</div>",
+        "---",
+        "* * *",
+        "___",
+        "===",
+        "~~~\ncode\n~~~",
+    ]
+    for block in blocks:
+        assert normalize_markdown(f"Intro.\n\n###\n{block}") == f"Intro.\n\n{block}", block
+
+
+def test_should_join_an_empty_heading_with_text_that_only_looks_like_a_block() -> None:
+    for text in ("-dash prose", "1.5 litres", "2026 was a year", "*emphasis* first", "--x"):
+        assert normalize_markdown(f"###\n{text}") == f"### {text}", text
+
+
+def test_should_respect_commonmark_fence_indentation() -> None:
+    # A line indented four spaces is code, not a fence: it neither opens nor closes one.
+    inside = "```\n    ```\n### \nnot a heading\n```\n"
+    assert normalize_markdown(inside) == inside
+    assert normalize_markdown("   ```\n### \n   ```\n") == "   ```\n### \n   ```\n"
+    assert normalize_markdown("    ```\n### \nreal heading") == "    ```\n### real heading"
+    # A closer has nothing after it; a backtick opener's info string has no backtick.
+    trailing = "```\n``` not a closer\n### \nstill code\n```"
+    assert normalize_markdown(trailing) == trailing
+    assert normalize_markdown("``` a`b\n### \ntext") == "``` a`b\n### text"
 
 
 def test_should_leave_fenced_code_untouched() -> None:

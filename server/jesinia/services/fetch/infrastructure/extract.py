@@ -21,12 +21,16 @@ from jesinia.services.fetch.infrastructure.sanitize import sanitize_page
 HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 CLUTTER_TAGS = ("nav", "aside", "footer")
 CLUTTER_ATTRIBUTES = ("class", "id", "aria-label")
-# A name part that marks site furniture; it must start a word, so "canvas" is not "nav".
-CLUTTER_NAME = re.compile(
-    r"(?<![a-z0-9])(related|recent|sidebar|comments?|share|subscribe|newsletter|footer|nav"
-    r"|breadcrumb)",
-    re.IGNORECASE,
-)
+# Words in a class, id or aria-label that mark site furniture. A word must match exactly, so
+# "commentary", "shared-content" and "navy" are kept.
+CLUTTER_WORDS = frozenset(
+    {
+        "related", "recent", "sidebar", "comment", "comments", "share", "sharing", "subscribe",
+        "newsletter", "footer", "nav", "breadcrumb", "breadcrumbs",
+    }
+)  # fmt: skip
+_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_WORD_SEPARATOR = re.compile(r"[-_\s]+")
 # An element holding more than this share of the page's text is the article, whatever its
 # class says (``<article class="post recent">``), and is never dropped as clutter.
 ARTICLE_TEXT_SHARE = 0.5
@@ -37,10 +41,19 @@ def _text_length(element: lxml.html.HtmlElement) -> int:
     return sum(len(part) for part in str(element.text_content()).split())
 
 
+def _words(name: str | None) -> set[str]:
+    """The lower-case words of a class, id or label: split on ``-``, ``_``, whitespace and
+    camelCase boundaries (``recentArticles`` is "recent" and "articles")."""
+    spaced = _CAMEL_CASE_BOUNDARY.sub(" ", name or "")
+    return {word.lower() for word in _WORD_SEPARATOR.split(spaced) if word}
+
+
 def _is_clutter(element: lxml.html.HtmlElement) -> bool:
     if element.tag in CLUTTER_TAGS:
         return True
-    return any(CLUTTER_NAME.search(element.get(name) or "") for name in CLUTTER_ATTRIBUTES)
+    return any(
+        not CLUTTER_WORDS.isdisjoint(_words(element.get(name))) for name in CLUTTER_ATTRIBUTES
+    )
 
 
 def _drop_clutter(tree: lxml.html.HtmlElement) -> None:
@@ -77,6 +90,14 @@ def _flatten_headings(tree: lxml.html.HtmlElement) -> None:
             heading.text = heading.text.rstrip()
 
 
+def _trim_block_tails(tree: lxml.html.HtmlElement) -> None:
+    """Source indentation after a ``<pre>`` is dropped: the extractor copies a code block's
+    whitespace-only tail verbatim, which indents the next paragraph into a code block."""
+    for block in tree.iter("pre"):
+        if block.tail is not None and not block.tail.strip():
+            block.tail = "\n"
+
+
 def _clean_tree(raw: lxml.html.HtmlElement, url: str) -> lxml.html.HtmlElement:
     """The page, sanitised, as a tree; a link or image that lost its URL is reduced to its
     text (a bare ``<a>`` would become a ``[text]`` reference a renderer could resolve)."""
@@ -90,6 +111,7 @@ def _clean_tree(raw: lxml.html.HtmlElement, url: str) -> lxml.html.HtmlElement:
             image.drop_tree()
     _drop_clutter(tree)
     _flatten_headings(tree)
+    _trim_block_tails(tree)
     return tree
 
 

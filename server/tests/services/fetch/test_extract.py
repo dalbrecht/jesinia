@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+import trafilatura
 from fastapi import APIRouter
 from httpx import Response
 from markdown_it import MarkdownIt
@@ -17,7 +18,7 @@ from jesinia.core.config import Config
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.fetch.application.ports import Article, CachedFetch
 from jesinia.services.fetch.application.service import FetchError, FetchService
-from jesinia.services.fetch.infrastructure.extract import TrafilaturaExtractor
+from jesinia.services.fetch.infrastructure.extract import TrafilaturaExtractor, _clean_tree
 from jesinia.services.fetch.module import FetchModule
 from tests.conftest import lifespan_client
 
@@ -430,3 +431,54 @@ def test_extract_flattens_headings_with_inline_children_and_drops_empty_ones() -
     tokens = MarkdownIt("commonmark").parse(article.markdown)
     headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == "heading_open"]
     assert headings == ["Tools", "`git log` for history"], article.markdown
+
+
+CLUTTER_NAMES = {
+    "post-comments": True,
+    "share-buttons": True,
+    "site-nav": True,
+    "recentArticles": True,
+    "commentary": False,
+    "shared-content": False,
+    "navy": False,
+    "canvas": False,
+}
+
+
+def _clutter_page(attribute: str, name: str) -> bytes:
+    return (
+        f"<html><body><article><h1>Words</h1>{_FILLER}"
+        f'<div {attribute}="{name}"><p>Marker sentence for the {name} block.</p></div>'
+        f"{_FILLER}</article></body></html>"
+    ).encode()
+
+
+@pytest.mark.parametrize(("name", "is_clutter"), CLUTTER_NAMES.items(), ids=CLUTTER_NAMES.keys())
+def test_clean_tree_matches_clutter_names_as_whole_words(name: str, is_clutter: bool) -> None:
+    for attribute in ("class", "id", "aria-label"):
+        raw = trafilatura.load_html(_clutter_page(attribute, name))
+        kept = (
+            f"Marker sentence for the {name} block." in _clean_tree(raw, ARTICLE_URL).text_content()
+        )
+        assert kept is not is_clutter, attribute
+
+
+@pytest.mark.parametrize(("name", "is_clutter"), CLUTTER_NAMES.items(), ids=CLUTTER_NAMES.keys())
+def test_extract_keeps_or_drops_labelled_blocks_by_whole_words(name: str, is_clutter: bool) -> None:
+    # aria-label only: trafilatura applies its own substring rules to class and id.
+    article = TrafilaturaExtractor().extract(_clutter_page("aria-label", name), ARTICLE_URL)
+    assert article is not None
+    kept = f"Marker sentence for the {name} block." in article.markdown
+    assert kept is not is_clutter, article.markdown
+
+
+def test_extract_keeps_markdown_shown_inside_a_code_block() -> None:
+    sample = "```\n    ```\n### \nnot a heading\n```"
+    page = (
+        f"<html><body><article><h1>Fences</h1>{_FILLER}"
+        f"<pre><code>{html.escape(sample)}\n</code></pre>{_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    tokens = MarkdownIt("commonmark").parse(article.markdown)
+    assert [t.content for t in tokens if t.type == "fence"] == [sample + "\n"], article.markdown
