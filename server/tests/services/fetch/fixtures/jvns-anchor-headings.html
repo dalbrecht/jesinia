@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Replacing the old battery on rechargeable bike lights</title>
+  <meta property="og:title" content="Replacing the old battery on rechargeable bike lights">
+</head>
+<body>
+  <header id="site-header">
+    <nav class="site-nav">
+      <a href="/">Julia Evans</a>
+      <a href="/categories">Categories</a>
+      <a href="/about">About</a>
+      <a href="/feed.xml">RSS</a>
+    </nav>
+  </header>
+  <div class="container">
+    <article class="post">
+      <h1 class="post-title">Replacing the old battery on rechargeable bike lights</h1>
+      <div class="post-meta">Published September 27, 2026</div>
+      <div class="post-content">
+        <p>My bike lights stopped holding a charge this summer. They were still bright, the
+          plastic was fine, and throwing them away felt silly, so I decided to try replacing
+          the battery inside instead of buying a whole new pair of lights.</p>
+        <p>Here is what I learned doing it, in the order I did it, including the parts that
+          went wrong and what I would do differently next time.</p>
+        <h3 id="step-1-cut-it-open"><a href="#step-1-cut-it-open">
+      step 1: cut it open
+    </a></h3>
+        <p>The case is glued shut, so I ran a craft knife slowly around the seam until the two
+          halves came apart. It took about ten minutes and some patience.</p>
+        <img src="/images/bike-light-open.jpg" alt="the bike light cut open">
+        <h3 id="step-2-find-the-battery-model">
+          <a href="#step-2-find-the-battery-model">step 2:
+            find the   battery model</a>
+        </h3>
+        <p>The cell is a small lithium polymer pouch with its model number printed on the
+          side. I wrote it down and checked the voltage with a multimeter:</p>
+        <pre><code>$ multimeter --dc
+3.71 V
+</code></pre>
+        <p>That matched the label, which meant the cell itself was the thing that had worn
+          out rather than the charging circuit around it.</p>
+        <h2 id="what-i-learned"><a class="anchor" href="https://jvns.ca/blog/2026/09/27/replacing-the-old-battery-on-rechargeable-bike-lights/#what-i-learned">what I learned</a></h2>
+        <p>Batteries are often the only part that wears out. Ordering a replacement cell and
+          soldering two wires took far less time than I expected.</p>
+        <pre>
+    def solder(wire_a, wire_b):
+        return join(wire_a, wire_b)
+</pre>
+        <p>Next time I will buy lights with a removable battery so none of this is needed.</p>
+      </div>
+    </article>
+  </div>
+  <footer class="site-footer">
+    <p>Subscribe to the newsletter for new posts every week.</p>
+  </footer>
+</body>
+</html>
