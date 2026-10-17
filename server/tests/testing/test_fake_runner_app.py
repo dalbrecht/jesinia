@@ -136,3 +136,11 @@ async def test_loopback_fetch_allows_only_loopback_beyond_public(
     assert fake_runner_app.allow_loopback("93.184.216.34")
     assert not fake_runner_app.allow_loopback("192.168.1.1")
     assert not fake_runner_app.allow_loopback("not an address")
+
+
+async def test_the_e2e_app_never_reads_a_real_github_token() -> None:
+    # The e2e server must never sync the developer's own GitHub account: it runs signed out
+    # of GitHub, so the review app shows its auth-missing state deterministically.
+    module = fake_runner_app.signed_out_github_module()
+    assert module.name == "github"
+    assert await fake_runner_app.no_github_token() is None

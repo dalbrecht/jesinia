@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Shapes and calls the Review PWA uses (`/api/review`, spec §2), and the pure rules the queue
+// renders with. Every PR-derived string here is the PR author's text: it is only ever rendered
+// as text.
+import { errorText, withIdempotency, type components, type JesiniaClient } from "@jesinia/client";
+
+export { safeHttpUrl } from "@jesinia/shell";
+
+export type QueueRow = components["schemas"]["QueueRowOut"];
+export type Queue = components["schemas"]["QueueOut"];
+export type PrView = components["schemas"]["PrOut"];
+export type OpenResult = components["schemas"]["OpenOut"];
+
+/** The queue's sections (design pass pattern 2), in tab order. */
+export type SectionId = "ready" | "waiting" | "loaded" | "approved";
+const SECTION_INFO: Record<SectionId, { label: string; intro: string }> = {
+  ready: {
+    label: "Ready for you",
+    intro: "Pre-reviewed with CI passing. Quick ones first; each opens in its own tab.",
+  },
+  waiting: {
+    label: "Waiting",
+    intro: "CI or an automated reviewer hasn't finished, or the pre-review hasn't run yet.",
+  },
+  loaded: { label: "Loaded", intro: "PRs you loaded: they jump the queue until closed or dismissed." },
+  approved: { label: "Still approved", intro: "Rebased since you approved, unchanged, CI green." },
+};
+const SECTION_ORDER: SectionId[] = ["ready", "waiting", "loaded", "approved"];
+export const SECTIONS: { id: SectionId; label: string; intro: string }[] = SECTION_ORDER.map((id) => ({
+  id,
+  ...SECTION_INFO[id],
+}));
+export const sectionInfo = (id: SectionId) => SECTION_INFO[id];
+
+/**
+ * Which section a row belongs to. A row whose fetch failed is never ready (its cached state may
+ * be out of date), and a suggested repo's PR is never filed as if it were queued for pre-review.
+ */
+export function sectionOf(row: QueueRow): SectionId {
+  if (row.loaded) return "loaded";
+  if (row.fetch_error !== null || row.prereview_state === "fetch_failed" || row.suggested) return "waiting";
+  if (row.kind === "rebase") return "approved";
+  if (row.prereview_state === "ready") return "ready";
+  // "On open only": nothing runs until the PR is opened, so once CI passes it is ready to open.
+  if (row.prereview_state === "not_started" && row.ci_state === "passing") return "ready";
+  return "waiting";
+}
+
+export function groupRows(rows: QueueRow[]): Record<SectionId, QueueRow[]> {
+  const out: Record<SectionId, QueueRow[]> = { ready: [], waiting: [], loaded: [], approved: [] };
+  for (const r of rows) out[sectionOf(r)].push(r);
+  return out;
+}
+
+/** A PR's route in the app. */
+export function prPath(repo: string, number: number): string {
+  return `/review/${repo}/${number}`;
+}
+
+const NUMBER = "([1-9][0-9]{0,8})";
+const NAME = "([A-Za-z0-9_.-]+)";
+const ROUTE = new RegExp(`^/review/${NAME}/${NAME}/${NUMBER}/?$`);
+
+/** The PR a `/review/<owner>/<repo>/<n>` path names, or null for any other path. */
+export function routeOf(pathname: string): { repo: string; number: number } | null {
+  const m = ROUTE.exec(pathname);
+  if (!m) return null;
+  return { repo: `${m[1]}/${m[2]}`.toLowerCase(), number: Number(m[3]) };
+}
+
+const PASTED = [
+  new RegExp(`^https://github\\.com/${NAME}/${NAME}/pull/${NUMBER}(?:[/?#].*)?$`),
+  new RegExp(`^${NAME}/${NAME}#${NUMBER}$`),
+  new RegExp(`^/review/${NAME}/${NAME}/${NUMBER}/?$`),
+];
+
+/** `owner/repo#n` for text that names a PR (a URL, shorthand or route), else null (for ⌘K). */
+export function prRefFromText(text: string): string | null {
+  const t = text.trim();
+  for (const pattern of PASTED) {
+    const m = pattern.exec(t);
+    if (m) return `${m[1]}/${m[2]}#${m[3]}`;
+  }
+  return null;
+}
+
+/** The walkthrough's coverage: "Nothing to walk" when the diff changes no line (M3), never 100%. */
+export function coverageText(row: QueueRow): string | null {
+  if (row.nothing_to_walk) return "Nothing to walk";
+  if (row.coverage_pct === null) return null;
+  return `walk ${Math.round(row.coverage_pct)}%`;
+}
+
+/** A cause with its backticked commands split out, to show them as code (never as markup). */
+export function splitCode(text: string): { code: boolean; text: string }[] {
+  return text
+    .split("`")
+    .map((part, i) => ({ code: i % 2 === 1, text: part }))
+    .filter((p) => p.text !== "");
+}
+
+/** The sync failed because GitHub has no usable token (spec §10: show the exact command). */
+export function isAuthMissing(syncError: string | null): boolean {
+  return syncError !== null && /gh auth login/.test(syncError);
+}
+
+const DAY = 86_400;
+
+export function ageOf(createdAt: string, now: Date = new Date()): string {
+  const secs = Math.round((now.getTime() - new Date(createdAt).getTime()) / 1000);
+  if (Number.isNaN(secs)) return "";
+  if (secs < 60) return "just opened";
+  if (secs < 3600) return `${Math.floor(secs / 60)} min old`;
+  if (secs < DAY) return `${Math.floor(secs / 3600)} h old`;
+  const days = Math.floor(secs / DAY);
+  return `${days} ${days === 1 ? "day" : "days"} old`;
+}
+
+/** A failed review request, carrying the server's cause (`detail`) as its message. */
+export class ReviewRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ReviewRequestError";
+  }
+
+  /** The server couldn't say whether the action happened (or asks to retry): same key again. */
+  get isTransient(): boolean {
+    return this.status >= 500;
+  }
+}
+
+/** The next step when Jesinia never answered (§9: the cause, then the fix). */
+export const UNREACHABLE = "Check that Jesinia is running, then try again.";
+
+function asSentence(text: string): string {
+  const t = text.trim();
+  return /[.!?]$/.test(t) ? t : `${t}.`;
+}
+
+export function errorCause(e: unknown): string {
+  if (e instanceof ReviewRequestError) return asSentence(e.message);
+  const raw = e instanceof Error ? e.message : String(e);
+  return `Jesinia didn't answer (${raw}). ${UNREACHABLE}`;
+}
+
+/**
+ * One idempotency key per user action. While an action's outcome is unknown (no answer, a 5xx)
+ * a retry of it reuses its key, so the server acts at most once; once answered, the next try
+ * is a new action with a new key.
+ */
+export class ActionKeys {
+  private readonly keys = new Map<string, string>();
+
+  keyFor(action: string): string {
+    let key = this.keys.get(action);
+    if (key === undefined) {
+      key = crypto.randomUUID();
+      this.keys.set(action, key);
+    }
+    return key;
+  }
+
+  /** Record how the action ended: `error` undefined for success. */
+  settle(action: string, error?: unknown): void {
+    const unknownOutcome = error !== undefined && (!(error instanceof ReviewRequestError) || error.isTransient);
+    if (!unknownOutcome) this.keys.delete(action);
+  }
+}
+
+type Result<T> = { data?: T; error?: unknown; response: Response };
+
+function unwrap<T>(r: Result<T>): T {
+  if (!r.response.ok) {
+    throw new ReviewRequestError(errorText(r.error, `HTTP ${r.response.status}`), r.response.status);
+  }
+  return r.data as T;
+}
+
+function split(repo: string): { owner: string; repo: string } {
+  const [owner = "", name = ""] = repo.split("/");
+  return { owner, repo: name };
+}
+
+export async function getQueue(client: JesiniaClient): Promise<Queue> {
+  return unwrap(await client.GET("/api/review/queue"));
+}
+
+export async function getPr(client: JesiniaClient, repo: string, number: number): Promise<PrView> {
+  return unwrap(
+    await client.GET("/api/review/prs/{owner}/{repo}/{number}", { params: { path: { ...split(repo), number } } }),
+  );
+}
+
+/** Load a PR for review now, from a URL, `owner/repo#n` or a review route. */
+export async function loadPr(client: JesiniaClient, ref: string, key: string): Promise<QueueRow> {
+  return unwrap(await client.POST("/api/review/load", { params: { header: withIdempotency(key) }, body: { ref } }));
+}
+
+export async function dismissPr(client: JesiniaClient, repo: string, number: number, key: string): Promise<void> {
+  unwrap(
+    await client.POST("/api/review/queue/{owner}/{repo}/{number}/dismiss", {
+      params: { path: { ...split(repo), number }, header: withIdempotency(key) },
+    }),
+  );
+}
+
+/** Open without the CI and automated-review gates (failing CI still never approves). */
+export async function reviewAnyway(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+): Promise<OpenResult> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/review-anyway", {
+      params: { path: { ...split(repo), number }, header: withIdempotency(key) },
+    }),
+  );
+}
+
+/** Run again what failed. */
+export async function retryPr(client: JesiniaClient, repo: string, number: number, key: string): Promise<OpenResult> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/retry", {
+      params: { path: { ...split(repo), number }, header: withIdempotency(key) },
+    }),
+  );
+}
+
+/** Confirm a suggested repo (R29a): watched and pre-reviewed from now on. */
+export async function confirmRepo(client: JesiniaClient, repo: string, key: string): Promise<void> {
+  unwrap(
+    await client.POST("/api/review/repos/{owner}/{repo}/confirm", {
+      params: { path: split(repo), header: withIdempotency(key) },
+    }),
+  );
+}

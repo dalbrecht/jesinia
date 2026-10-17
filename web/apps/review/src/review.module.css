@@ -1,0 +1,538 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* The Review app (design pass `review-queue.html`): workspace tabs over the queue or a review. */
+.workspace {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 38px);
+  min-height: 0;
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.body[hidden] {
+  display: none;
+}
+.banners {
+  padding: var(--jx-space-2) var(--jx-space-3) 0;
+}
+
+/* Workspace tabs: the queue first, then one tab per opened review. */
+.wtabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px var(--jx-space-3) 0;
+  overflow-x: auto;
+  background: var(--jx-surface-sunken);
+  border-bottom: 1px solid var(--jx-border);
+}
+.wtabItem {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 260px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--jx-radius-md) var(--jx-radius-md) 0 0;
+}
+.wtabItem:has([aria-current="page"]) {
+  background: var(--jx-bg);
+  border-color: var(--jx-border);
+  margin-bottom: -1px;
+}
+.wtab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 6px 4px 6px 12px;
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+  text-decoration: none;
+  white-space: nowrap;
+  border-radius: var(--jx-radius-md) var(--jx-radius-md) 0 0;
+}
+.wtabs > .wtab {
+  padding-right: 12px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+}
+.wtabs > .wtab[aria-current="page"] {
+  background: var(--jx-bg);
+  border-color: var(--jx-border);
+  margin-bottom: -1px;
+}
+.wtab[aria-current="page"] {
+  color: var(--jx-fg);
+  font-weight: var(--jx-weight-semibold);
+}
+.wtab:focus-visible,
+.wtabClose:focus-visible,
+.repo:focus-visible,
+.titleButton:focus-visible,
+.stripItem:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: -2px;
+}
+.wtabLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wtabClose {
+  flex: none;
+  min-width: 24px;
+  min-height: 24px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: var(--jx-radius-sm);
+  background: transparent;
+  color: var(--jx-fg-subtle);
+  font: inherit;
+  font-size: var(--jx-text-xs);
+}
+.wtabClose:hover {
+  background: var(--jx-surface-hover);
+  color: var(--jx-fg);
+}
+/* The verdict dot; its name (and title) says the verdict in words. */
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--jx-border-strong);
+}
+.dot[data-tone="success"] {
+  background: var(--jx-success);
+  border-color: var(--jx-success);
+}
+.dot[data-tone="danger"] {
+  background: var(--jx-danger);
+  border-color: var(--jx-danger);
+}
+.dot[data-tone="warn"] {
+  background: var(--jx-warn);
+  border-color: var(--jx-warn);
+}
+
+/* The queue: repos on the left, the sections on the right. */
+.queue {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+@media (max-width: 1000px) {
+  .queue {
+    grid-template-columns: 190px minmax(0, 1fr);
+  }
+}
+.queueNarrow {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+.repoPane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-3);
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--jx-surface);
+  border-right: 1px solid var(--jx-border);
+}
+.repoList {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--jx-space-2) 0;
+}
+.paneTitle {
+  margin: 0;
+  padding: var(--jx-space-2) var(--jx-space-3) 4px;
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-xs);
+  font-weight: var(--jx-weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.repo {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+  width: 100%;
+  min-height: 28px;
+  padding: 4px var(--jx-space-3);
+  border: 0;
+  background: transparent;
+  color: var(--jx-fg);
+  font: inherit;
+  font-size: var(--jx-text-sm);
+  text-align: left;
+}
+.repo:hover {
+  background: var(--jx-surface-hover);
+}
+.repo[aria-current="true"] {
+  background: var(--jx-row-bg-selected);
+  font-weight: var(--jx-weight-semibold);
+}
+.repoName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.count {
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.suggested {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-1);
+  padding: 0 0 var(--jx-space-3);
+  border-top: 1px solid var(--jx-border);
+}
+.suggested .muted {
+  margin: 0;
+  padding: 0 var(--jx-space-3);
+}
+.suggestedRow {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+  padding: 2px var(--jx-space-3);
+  font-size: var(--jx-text-sm);
+}
+.repoSelect {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-2);
+  padding: var(--jx-space-2) var(--jx-space-3);
+  background: var(--jx-surface);
+  border-bottom: 1px solid var(--jx-border);
+}
+.repoSelect .suggested {
+  border-top: 0;
+  padding-bottom: 0;
+}
+.queueMain {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2) var(--jx-space-4);
+  padding: var(--jx-space-2) var(--jx-space-3);
+  background: var(--jx-surface);
+  border-bottom: 1px solid var(--jx-border);
+}
+.crumb {
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+  white-space: nowrap;
+}
+.crumb b {
+  color: var(--jx-fg);
+  font-weight: var(--jx-weight-medium);
+}
+.loadPr {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 240px;
+}
+.loadField {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A section: its intro bar, cards, and the summary strip of the others. */
+.sectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-3);
+  padding: var(--jx-space-3);
+}
+.intro {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-3);
+  padding: var(--jx-space-3) var(--jx-space-4);
+  border: 1px solid var(--jx-border);
+  border-radius: var(--jx-radius-md);
+  background: var(--jx-surface);
+  font-size: var(--jx-text-sm);
+}
+.intro b {
+  font-size: var(--jx-text-base);
+}
+.introActions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.collapse {
+  align-self: flex-start;
+}
+.cards {
+  display: grid;
+  gap: 8px;
+}
+.card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--jx-border);
+  border-radius: var(--jx-radius-md);
+  background: var(--jx-surface);
+}
+.cardTitle {
+  grid-column: 1;
+  margin: 0;
+  min-width: 0;
+  font-size: var(--jx-text-base);
+  font-weight: var(--jx-weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.titleButton {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--jx-fg);
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.titleButton:hover {
+  text-decoration: underline;
+}
+.ref {
+  color: var(--jx-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.meta {
+  grid-column: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+}
+.right {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: grid;
+  justify-items: end;
+  align-content: center;
+  gap: 4px;
+  text-align: right;
+}
+.pill,
+.pillDeep,
+.pillWarn {
+  padding: 0 7px;
+  border: 1px solid var(--jx-border);
+  border-radius: var(--jx-radius-full);
+  background: var(--jx-surface);
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-xs);
+  white-space: nowrap;
+}
+.pillDeep {
+  border-color: var(--jx-app);
+  color: var(--jx-app);
+}
+.pillWarn {
+  margin-left: 6px;
+  border-color: var(--jx-warn);
+  color: var(--jx-warn);
+  font-weight: var(--jx-weight-regular);
+}
+.ci[data-ci="passing"] {
+  color: var(--jx-success);
+}
+.ci[data-ci="failing"] {
+  color: var(--jx-danger);
+}
+.ci[data-ci="pending"] {
+  color: var(--jx-warn);
+}
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--jx-text-sm);
+  font-weight: var(--jx-weight-semibold);
+}
+.verdict[data-tone="success"] {
+  color: var(--jx-success);
+}
+.verdict[data-tone="danger"] {
+  color: var(--jx-danger);
+}
+.verdict[data-tone="warn"] {
+  color: var(--jx-warn);
+}
+.evidence {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 8px;
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-xs);
+}
+.coverage {
+  font-variant-numeric: tabular-nums;
+}
+.reason {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+  overflow-wrap: anywhere;
+}
+.cardActions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stripItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  height: 100%;
+  padding: 8px 10px;
+  border: 1px dashed var(--jx-border-strong);
+  border-radius: var(--jx-radius-md);
+  background: transparent;
+  color: var(--jx-fg-muted);
+  font: inherit;
+  font-size: var(--jx-text-sm);
+  text-align: left;
+}
+.stripItem:hover {
+  background: var(--jx-surface-hover);
+}
+.stripItem b {
+  color: var(--jx-fg);
+}
+.empty {
+  margin: 0;
+  padding: var(--jx-space-6) var(--jx-space-3);
+  color: var(--jx-fg-muted);
+  text-align: center;
+}
+.muted {
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+}
+.updated {
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-xs);
+  white-space: nowrap;
+}
+.problem {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-3);
+  margin: var(--jx-space-3);
+  padding: var(--jx-space-3);
+  border: 1px solid var(--jx-danger);
+  border-radius: var(--jx-radius-md);
+  background: var(--jx-danger-bg);
+  font-size: var(--jx-text-sm);
+}
+
+/* An opened review. */
+.opened {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-3);
+  height: 100%;
+  padding: var(--jx-space-4);
+  overflow-y: auto;
+}
+.openedHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-1);
+}
+.openedHead p {
+  margin: 0;
+}
+.openedTitle {
+  margin: 0;
+  font-size: var(--jx-text-xl);
+  overflow-wrap: anywhere;
+}
+.openedTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2);
+}
+
+/* Medium and narrow windows: a card stacks its state under the title, and titles wrap. */
+@media (max-width: 1100px) {
+  .card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cardTitle,
+  .titleButton {
+    white-space: normal;
+  }
+  .right {
+    grid-column: 1;
+    grid-row: auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-items: start;
+    gap: 4px 12px;
+    text-align: left;
+  }
+  .evidence {
+    justify-content: flex-start;
+  }
+}
+@media (max-width: 767px) {
+  .strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .opened {
+    padding: var(--jx-space-3);
+  }
+}

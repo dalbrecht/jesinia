@@ -233,6 +233,19 @@ def build_router(host: ReviewHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run, status.HTTP_204_NO_CONTENT))
 
+    @r.post(
+        "/repos/{owner}/{repo}/confirm",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_model=None,
+    )
+    async def confirm_repo(owner: Owner, repo: Name, idem: IdempotentCall = keyed) -> Response:
+        """Confirm a suggested repo (ruling R29a): it is watched and pre-reviewed from now on."""
+
+        async def run() -> None:
+            await host.queue.confirm_repo(f"{owner}/{repo}")
+
+        return await idem.run(lambda: _respond(run, status.HTTP_204_NO_CONTENT))
+
     @r.get(pr_path, response_model=PrOut)
     async def get_pr(owner: Owner, repo: Name, number: Number) -> Response:
         """The PR's latest round and its artifacts, from the cache only."""

@@ -7,8 +7,10 @@ On its first turn in a session the runner calls ``kb_write`` through the session
 endpoint, exactly as a real agent would (so the write gate makes it a pending write),
 then replies. Later turns only reply. A tag ask (a prompt starting ``TAGS:``) gets a
 fixed JSON tag list and never writes. The fetch service may also reach loopback
-addresses, so e2e can serve fixture feeds from a local port. It refuses to load outside a
-throwaway ``JESINIA_HOME``, so neither can ever activate in a real install.
+addresses, so e2e can serve fixture feeds from a local port. The github service has no
+token, so e2e never syncs a real account (Review shows its auth-missing state). It
+refuses to load outside a throwaway ``JESINIA_HOME``, so none of this can ever activate in
+a real install.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from jesinia.services.agents.domain.events import (
 )
 from jesinia.services.fetch.domain.address import is_public
 from jesinia.services.fetch.module import FetchModule
+from jesinia.services.github.module import GitHubModule
 
 DRAFT: dict[str, object] = {
     "title": "Agent draft",
@@ -136,6 +139,16 @@ def fixture_fetch_module() -> FetchModule:
     return FetchModule(allowed=allow_loopback)
 
 
+async def no_github_token() -> str | None:
+    """The e2e server's GitHub token source: never one (no ``gh``, no Keychain)."""
+    return None
+
+
+def signed_out_github_module() -> GitHubModule:
+    """The github service signed out, so e2e never syncs the developer's own account."""
+    return GitHubModule(token=no_github_token)
+
+
 def build_app() -> FastAPI:
     _require_throwaway_home()
     from jesinia.core.app import create_app
@@ -148,6 +161,7 @@ def build_app() -> FastAPI:
     replacements: dict[str, Callable[[], Module]] = {
         "agents": lambda: AgentsModule(runners={"fake": McpScriptRunner()}),
         "fetch": fixture_fetch_module,
+        "github": signed_out_github_module,
     }
     mods = [replacements[m.name]() if m.name in replacements else m for m in modules()]
     return create_app(load_config(config_path()), mods)

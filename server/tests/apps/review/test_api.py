@@ -173,6 +173,7 @@ READS = [("GET", f"{API}/queue"), ("GET", PR), ("GET", f"{PR}/drafts"), ("GET", 
 WRITES = [
     ("POST", f"{API}/load", {"ref": "acme/web#1"}),
     ("POST", f"{API}/queue/acme/web/1/dismiss", None),
+    ("POST", f"{API}/repos/acme/other/confirm", None),
     ("POST", f"{PR}/open", None),
     ("POST", f"{PR}/retry", None),
     ("POST", f"{PR}/review-anyway", None),
@@ -301,6 +302,17 @@ async def test_load_and_dismiss(env: Env) -> None:
     assert filtered == []
     gone = await env.client.post(f"{API}/queue/acme/web/7/dismiss", headers=keyed())
     assert gone.status_code == 404
+
+
+async def test_confirming_a_suggested_repo_watches_it(env: Env) -> None:
+    env.store.suggest_repos(["stranger/lib"])
+    assert (await env.client.get(f"{API}/queue")).json()["suggested_repos"] == ["stranger/lib"]
+    confirmed = await env.client.post(f"{API}/repos/stranger/lib/confirm", headers=keyed())
+    assert confirmed.status_code == 204
+    assert (await env.client.get(f"{API}/queue")).json()["suggested_repos"] == []
+    assert env.store.repo_configs()["stranger/lib"].watched is True
+    bad = await env.client.post(f"{API}/repos/str%20anger/lib/confirm", headers=keyed())
+    assert bad.status_code == 400 and bad.json()["error"] == "InvalidPrRefError"
 
 
 async def test_open_retry_and_review_anyway(env: Env) -> None:
