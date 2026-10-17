@@ -10,6 +10,7 @@ result is capped and says what its caps are. Searching and history go through gi
 from __future__ import annotations
 
 import asyncio
+import time
 import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -39,6 +40,7 @@ from jesinia.apps.review.domain.repo_access import (
     RegexDialect,
     RepoGitError,
     RepoPathNotFoundError,
+    RepoTimeBudget,
     UnsafePathError,
     check_glob,
     check_pattern,
@@ -264,6 +266,9 @@ class RepoTools:
             recorded per session (the registry's), so the correctness pass's claims can be
             checked against them. ``repo_git`` output isn't recorded: its line numbers
             belong to other commits.
+        budget: each session's git wall time (the registry's); once spent, the session's
+            git-backed calls are refused with ``RepoBudgetExhaustedError`` (R52).
+        monotonic: the clock the budget is measured with.
     """
 
     def __init__(
@@ -275,8 +280,12 @@ class RepoTools:
         git_slots: Callable[[str], asyncio.Semaphore] | None = None,
         tree_key: Callable[[Path], tuple[str, str] | None] | None = None,
         reads: ReadLog | None = None,
+        budget: RepoTimeBudget | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._sessions_to_worktree = sessions_to_worktree
+        self._budget = budget
+        self._monotonic = monotonic
         self._reads = reads
         self._git = git
         self._allowance = allowance
@@ -631,18 +640,31 @@ class RepoTools:
         timeout: float | None = None,
     ) -> CappedOutput:
         """Run git for ``session``, one process at a time per session: parallel tool calls
-        queue here instead of each taking cores."""
+        queue here instead of each taking cores. Its wall time is charged to the session's
+        budget; a call that starts with budget left runs to the end.
+
+        Raises:
+            RepoBudgetExhaustedError: the session's git time is spent.
+            RepoGitError: git failed.
+        """
         try:
             async with self._git_slots(session):
-                return await self._git.read_in_tree(
-                    root,
-                    args,
-                    output_limit=output_limit,
-                    glob_pathspecs=glob_pathspecs,
-                    accept_exit_codes=accept_exit_codes,
-                    without_worktree=without_worktree,
-                    timeout=timeout,
-                )
+                if self._budget is not None:
+                    self._budget.check(session)
+                started = self._monotonic()
+                try:
+                    return await self._git.read_in_tree(
+                        root,
+                        args,
+                        output_limit=output_limit,
+                        glob_pathspecs=glob_pathspecs,
+                        accept_exit_codes=accept_exit_codes,
+                        without_worktree=without_worktree,
+                        timeout=timeout,
+                    )
+                finally:
+                    if self._budget is not None:
+                        self._budget.charge(session, self._monotonic() - started)
         except WorkspaceError as exc:
             detail = exc.stderr.strip() if isinstance(exc, GitCommandError) else str(exc)
             raise RepoGitError(f"git {args[0]} failed: {detail}") from exc

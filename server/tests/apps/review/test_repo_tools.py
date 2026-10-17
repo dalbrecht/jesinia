@@ -46,6 +46,7 @@ from jesinia.apps.review.domain.repo_access import (
     READ_LINES_PER_CALL,
     READ_MAX_BYTES,
     REGEX_SUBSET,
+    REPO_GIT_SECONDS_PER_SESSION,
     AllowanceExhaustedError,
     AutoSkippedFileError,
     CappedOutput,
@@ -56,8 +57,10 @@ from jesinia.apps.review.domain.repo_access import (
     OutsidePrHistoryError,
     ReadLog,
     RegexDialect,
+    RepoBudgetExhaustedError,
     RepoGitError,
     RepoPathNotFoundError,
+    RepoTimeBudget,
     RepoToolError,
     UnsafeGitArgumentError,
     UnsafePathError,
@@ -70,7 +73,11 @@ from jesinia.apps.review.domain.repo_access import (
     regex_problem,
 )
 from jesinia.apps.review.domain.workspace import GitCommandError
-from jesinia.apps.review.infrastructure.workspace import EMPTY_TREE, GitWorkspace
+from jesinia.apps.review.infrastructure.workspace import (
+    EMPTY_TREE,
+    REPO_GIT_CONCURRENCY,
+    GitWorkspace,
+)
 from jesinia.apps.review.module import ReviewModule
 from jesinia.core.config import Config
 from jesinia.core.events import EventBus
@@ -1505,3 +1512,98 @@ async def test_a_grep_line_cut_short_is_not_counted_as_read(
     found = await tools.grep(SESSION, "needle", "long.txt")
     assert found["matches"] and found["matches"][0]["line_truncated"]
     assert registry.reads_of(SESSION) == []
+
+
+# --- PR 2 fix wave: global git cap and per-session time budget (R52) ------------------------
+
+
+async def test_no_more_than_four_gits_run_at_once_across_sessions(
+    tree: Tree, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R52: six sessions, each allowed one git, share a global cap of four processes."""
+    workspace = GitWorkspace(tree.workspace.root, lambda repo: "unused")
+    real = workspace._execute
+    running = peak = 0
+
+    async def counting(*args: Any, **kwargs: Any) -> Any:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        try:
+            await asyncio.sleep(0.02)  # widen the window in which overlap would show
+            return await real(*args, **kwargs)
+        finally:
+            running -= 1
+
+    monkeypatch.setattr(workspace, "_execute", counting)
+    await workspace.regex_dialect()  # probed (and cached) before the count matters
+    sessions = ReviewSessionRegistry()
+    names = [f"s{i}" for i in range(6)]
+    for name in names:
+        sessions.bind(name, tree.path)
+    tools = RepoTools(
+        sessions.worktree_for, workspace, sessions.allowance, git_slots=sessions.git_slot
+    )
+    running = peak = 0
+    await asyncio.gather(*(tools.grep(name, "needle") for name in names for _ in range(2)))
+    assert peak == REPO_GIT_CONCURRENCY == 4
+
+
+def test_the_repo_time_budget_is_per_session() -> None:
+    budget = RepoTimeBudget(10.0)
+    budget.open("a")
+    budget.check("a")
+    budget.charge("a", 6.0)
+    budget.charge("a", -3.0)  # a clock that went backwards costs nothing
+    assert budget.remaining("a") == 4.0 and budget.remaining("b") == 10.0
+    budget.charge("a", 4.0)
+    with pytest.raises(RepoBudgetExhaustedError, match="10 s"):
+        budget.check("a")
+    budget.check("b")  # another session is unaffected
+    budget.charge("never-opened", 50.0)  # an unbound session's late git leaves nothing
+    assert budget.remaining("never-opened") == 10.0
+    budget.drop("a")
+    assert budget.remaining("a") == 10.0
+    with pytest.raises(ValueError, match="positive"):
+        RepoTimeBudget(0)
+
+
+async def test_a_session_out_of_git_time_gets_a_typed_fenced_refusal(tree: Tree) -> None:
+    """R52: past 180 s of cumulative git wall time a session's searches and history reads
+    are refused with RepoBudgetExhaustedError (a tool error the agent sees, fenced);
+    repo_read still works, and a fresh binding starts a fresh budget."""
+    assert REPO_GIT_SECONDS_PER_SESSION == 180.0
+    sessions = ReviewSessionRegistry()
+    sessions.bind(SESSION, tree.path)
+    now = 0.0
+
+    def clock() -> float:
+        nonlocal now
+        now += 100.0  # read before and after each git call: each one "takes" 100 s
+        return now
+
+    class Host:
+        repo_tools = RepoTools(
+            sessions.worktree_for,
+            tree.workspace,
+            sessions.allowance,
+            git_slots=sessions.git_slot,
+            budget=sessions.budget,
+            monotonic=clock,
+        )
+
+    tools = Host.repo_tools
+    await tools.grep(SESSION, "needle")  # 100 s
+    await tools.grep(SESSION, "needle")  # 200 s: started with time left, so it runs
+    with pytest.raises(RepoBudgetExhaustedError, match="repo_read"):
+        await tools.grep(SESSION, "needle")
+    with pytest.raises(RepoBudgetExhaustedError):
+        await tools.git(SESSION, "log", ["--oneline"])
+    assert (await tools.read(SESSION, "src/app.py"))["end"] == 2
+    (grep,) = [t for t in build_tools(Host()) if t.name == "repo_grep"]
+    with pytest.raises(RepoBudgetExhaustedError) as raised:
+        await grep.handler(RepoGrepIn(pattern="needle"), CallContext(SESSION))
+    assert str(raised.value).startswith("<untrusted-data")
+    sessions.unbind(SESSION)
+    sessions.bind(SESSION, tree.path)
+    await tools.grep(SESSION, "needle")

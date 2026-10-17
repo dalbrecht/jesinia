@@ -19,6 +19,8 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from jesinia.apps.review.domain.errors import ReviewError
+
 READ_LINES_PER_CALL = 2000
 READ_MAX_BYTES = 256 * 1024
 FILE_LINES_PER_SESSION = 4000
@@ -32,6 +34,9 @@ GIT_MAX_BYTES = 64 * 1024
 GIT_MAX_LINES = 2000
 LS_MAX_ENTRIES = 1000
 LOG_MAX_COUNT = 1000
+# Seconds of git wall time (searches and history reads) one review session may use in all
+# (R52): each search is capped, but an injected agent could loop them for a whole job.
+REPO_GIT_SECONDS_PER_SESSION = 180.0
 
 _MAX_PATH_CHARS = 1024
 _MAX_GLOB_CHARS = 200
@@ -79,7 +84,7 @@ _ALLOWED_HELP = {
 }
 
 
-class RepoToolError(Exception):
+class RepoToolError(ReviewError):
     """Base for every refusal or failure of a repo tool; the message is shown to the agent."""
 
 
@@ -122,6 +127,11 @@ class OutsidePrHistoryError(UnsafeGitArgumentError):
 
 class InvalidSearchError(RepoToolError):
     """A ``repo_grep`` pattern or glob is refused before running."""
+
+
+class RepoBudgetExhaustedError(RepoToolError):
+    """The session has used its git time (``REPO_GIT_SECONDS_PER_SESSION``); searches and
+    history reads are refused for the rest of it."""
 
 
 class RepoGitError(RepoToolError):
@@ -208,6 +218,49 @@ class FileLineAllowance:
     def drop(self, session_id: str) -> None:
         """Forget a session (it ended or was unbound)."""
         self._used.pop(session_id, None)
+
+
+class RepoTimeBudget:
+    """How much git wall time each review session has used, against one budget each.
+
+    A session's spending is tracked from ``open`` (its binding) until ``drop``; time charged
+    to a session that isn't open (a call still running after its unbind) is not kept.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        if seconds <= 0:
+            raise ValueError(f"a repo time budget must be positive, got {seconds}")
+        self.seconds = seconds
+        self._spent: dict[str, float] = {}
+
+    def open(self, session_id: str) -> None:
+        """Start tracking ``session_id`` (kept if it is already open)."""
+        self._spent.setdefault(session_id, 0.0)
+
+    def remaining(self, session_id: str) -> float:
+        return self.seconds - self._spent.get(session_id, 0.0)
+
+    def check(self, session_id: str) -> None:
+        """Refuse a new git call once the session's budget is spent.
+
+        Raises:
+            RepoBudgetExhaustedError: nothing of the budget is left.
+        """
+        if self.remaining(session_id) <= 0:
+            raise RepoBudgetExhaustedError(
+                f"this review session has used its {self.seconds:g} s of repo_grep and "
+                "repo_git time; repo_read and repo_ls still work, so work from what you "
+                "have read"
+            )
+
+    def charge(self, session_id: str, seconds: float) -> None:
+        """Add a finished call's wall time to an open session."""
+        if session_id in self._spent:
+            self._spent[session_id] += max(0.0, seconds)
+
+    def drop(self, session_id: str) -> None:
+        """Forget a session (it ended or was unbound)."""
+        self._spent.pop(session_id, None)
 
 
 class ReadLog:

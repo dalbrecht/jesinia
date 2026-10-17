@@ -9,9 +9,11 @@ from pathlib import Path
 
 from jesinia.apps.review.domain.repo_access import (
     FILE_LINES_PER_SESSION,
+    REPO_GIT_SECONDS_PER_SESSION,
     FileLineAllowance,
     NoReviewSessionError,
     ReadLog,
+    RepoTimeBudget,
 )
 
 
@@ -19,8 +21,8 @@ class ReviewSessionRegistry:
     """Binds review agent sessions to the worktree their repo tools may read.
 
     Review jobs bind a session when they start it and unbind it when it ends; the repo tools
-    refuse any session that is not bound. Each session's per-file read allowance lives here
-    too, so it is dropped with the binding.
+    refuse any session that is not bound. Each session's per-file read allowance and its git
+    time budget live here too, so they are dropped with the binding.
 
     What each session's tools actually read is recorded in ``reads`` for as long as it is
     bound, so a job can check its agent's claims against it before it unbinds.
@@ -35,6 +37,7 @@ class ReviewSessionRegistry:
         self._git_slots: dict[str, asyncio.Semaphore] = {}
         self._tree_lock: Callable[[Path], asyncio.Lock | None] | None = None
         self.allowance = FileLineAllowance(FILE_LINES_PER_SESSION)
+        self.budget = RepoTimeBudget(REPO_GIT_SECONDS_PER_SESSION)
         self.reads = ReadLog()
 
     def use_tree_locks(self, tree_lock: Callable[[Path], asyncio.Lock | None]) -> None:
@@ -66,14 +69,17 @@ class ReviewSessionRegistry:
         if self._trees.get(session_id, path) != path:
             self.allowance.drop(session_id)
             self.reads.drop(session_id)
+            self.budget.drop(session_id)
         self._trees[session_id] = path
+        self.budget.open(session_id)
         self._git_slots.setdefault(session_id, asyncio.Semaphore(1))
 
     def unbind(self, session_id: str) -> None:
-        """End ``session_id``'s access and forget its allowance, its read record and its git
-        slot; unknown ids are ignored."""
+        """End ``session_id``'s access and forget its allowance, its read record, its git
+        time and its git slot; unknown ids are ignored."""
         self._trees.pop(session_id, None)
         self._git_slots.pop(session_id, None)
+        self.budget.drop(session_id)
         self.allowance.drop(session_id)
         self.reads.drop(session_id)
 

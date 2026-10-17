@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from jesinia.apps.review.domain.errors import ReviewError
+
 # GitHub owners: alphanumerics and single hyphens, no leading hyphen, at most 39 chars.
 _OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
 _NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
@@ -19,7 +21,7 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 _REF = re.compile(r"refs(/[A-Za-z0-9][A-Za-z0-9._-]*)+")
 
 
-class WorkspaceError(Exception):
+class WorkspaceError(ReviewError):
     """Base for every repo workspace failure."""
 
 

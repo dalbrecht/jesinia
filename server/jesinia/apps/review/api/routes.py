@@ -39,6 +39,8 @@ from jesinia.apps.review.application.pipeline import OpenResult, Pipeline
 from jesinia.apps.review.application.posting import PostingFailed, PostingService
 from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.reviews import ReviewReads
+from jesinia.apps.review.domain.errors import ReviewError
+from jesinia.apps.review.domain.gates import GateInputError
 from jesinia.apps.review.domain.posting import (
     CommentOnlyOnOwnPr,
     EarlierReviewPosted,
@@ -120,10 +122,12 @@ _STATUS: dict[type[Exception], int] = {
     QueueDomainError: status.HTTP_400_BAD_REQUEST,
     PostingDomainError: status.HTTP_400_BAD_REQUEST,
     PullRequestDomainError: status.HTTP_400_BAD_REQUEST,
+    GateInputError: status.HTTP_400_BAD_REQUEST,
+    # The app's own failure (a workspace or job error, say): still typed, structured JSON.
+    ReviewError: status.HTTP_500_INTERNAL_SERVER_ERROR,
 }
 _TYPED = (
-    QueueDomainError,
-    PostingDomainError,
+    ReviewError,
     GitHubError,
     PullRequestDomainError,
 )

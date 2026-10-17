@@ -188,6 +188,7 @@ class ReviewModule:
             git_slots=self.sessions.git_slot,
             tree_key=self._workspace.tree_key,
             reads=self.sessions.reads,
+            budget=self.sessions.budget,
         )
         self.sessions.use_tree_locks(self._workspace.tree_lock)
         store = SqliteReviewStore(self._conn)
@@ -239,6 +240,7 @@ class ReviewModule:
                     store=store,
                     bus=ctx.bus,
                     clock=_utc_now,
+                    slots=self._scheduler,
                 )
 
     async def stop(self) -> None:

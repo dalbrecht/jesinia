@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Literal
 
+from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.services.github.domain.pr import (
     DraftComment,
     InvalidDraftCommentError,
@@ -63,7 +64,7 @@ _SEVERITY_TITLES: Final = {"critical": "Critical", "important": "Important", "mi
 _GROUPS: Final = frozenset({"correctness", "design", "style"})
 
 
-class PostingDomainError(Exception):
+class PostingDomainError(ReviewError):
     """Base for drafts and posts Jesinia refuses."""
 
 

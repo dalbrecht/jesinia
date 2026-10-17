@@ -681,3 +681,25 @@ async def test_drafts_say_where_each_one_posts_once_files_are_cached(env: Env) -
     assert shown["files_pending"] is False
     assert [d["in_body"] for d in shown["drafts"]] == [False, True]
     assert [d["outside_diff"] for d in shown["drafts"]] == [False, False]
+
+
+def test_every_typed_review_error_is_structured_json() -> None:
+    """M1: every typed error derives from ReviewError, so none reaches FastAPI as a bare
+    500: a bad gate input is the request's fault, an internal one is a structured 500."""
+    from jesinia.apps.review.api.routes import _TYPED, _error
+    from jesinia.apps.review.domain.errors import ReviewError
+    from jesinia.apps.review.domain.gates import GateInputError
+    from jesinia.apps.review.domain.posting import PostingDomainError
+    from jesinia.apps.review.domain.queue import QueueDomainError
+    from jesinia.apps.review.domain.repo_access import RepoToolError
+    from jesinia.apps.review.domain.standards import StandardsError
+    from jesinia.apps.review.domain.workspace import WorkspaceError
+
+    for root in (QueueDomainError, PostingDomainError, StandardsError, WorkspaceError,
+                 RepoToolError, GateInputError):  # fmt: skip
+        assert issubclass(root, ReviewError)
+    assert issubclass(GateInputError, _TYPED) and issubclass(WorkspaceError, _TYPED)
+    bad = _error(GateInputError("lines must not be negative"))
+    assert bad.status_code == 400 and b"GateInputError" in bad.body
+    internal = _error(WorkspaceError("the mirror is locked"))
+    assert internal.status_code == 500 and b"WorkspaceError" in internal.body

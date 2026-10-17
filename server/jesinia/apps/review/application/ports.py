@@ -227,8 +227,17 @@ class QueueStore(Protocol):
         verdict: str | None = None,
         *,
         interrupted: bool = False,
+        counted: bool = True,
     ) -> None:
-        """``interrupted``: a stop cut the round short; it isn't the PR's failure."""
+        """``interrupted``: a stop cut the round short; it isn't the PR's failure.
+        ``counted``: the cut counts toward the head's interruption limit."""
+
+    def resume_round(self, round_id: int) -> bool:
+        """Reopen an interrupted round, keeping its artifacts and drafts (R51); ``False``
+        when it isn't one."""
+
+    def latest_round_on_head(self, ref: PrRef, head_sha: str) -> tuple[int, RoundStatus] | None:
+        """The newest round on a head, with its status."""
 
     def mark_round_done(self, round_id: int) -> None: ...
 
@@ -263,10 +272,6 @@ class PipelineStore(QueueStore, Protocol):
 
     def artifact_kinds(self, round_id: int) -> set[str]:
         """The kinds of artifact a round has."""
-
-    def latest_round_on_head(self, ref: PrRef, head_sha: str) -> tuple[int, RoundStatus] | None:
-        """The newest round on ``(ref, head_sha)`` and its status (``interruptions`` is not
-        counted here)."""
 
     def set_depth(self, ref: PrRef, head_sha: str, round_id: int, depth: Depth) -> None: ...
 

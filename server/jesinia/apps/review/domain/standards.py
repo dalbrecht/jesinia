@@ -24,6 +24,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from jesinia.apps.review.domain.errors import ReviewError
+
 Layer = Literal["base", "repo", "user"]
 LAYERS: tuple[Layer, ...] = ("base", "repo", "user")
 RULE_SEPARATOR = " › "
@@ -49,7 +51,7 @@ _LANGUAGE_ALIASES: Mapping[str, tuple[str, ...]] = {
 }
 
 
-class StandardsError(Exception):
+class StandardsError(ReviewError):
     """Base for standards that can't be loaded or applied."""
 
 

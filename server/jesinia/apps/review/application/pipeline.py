@@ -34,13 +34,19 @@ from datetime import datetime
 from typing import Final, Literal, Protocol
 
 from jesinia.apps.review.application.errors import (
+    GitHubBusyError,
     HeadMovedOnError,
     JobFailed,
+    RoundInterruptedError,
     RoundPreparationError,
 )
 from jesinia.apps.review.application.jobs import CORRECTNESS_READS
 from jesinia.apps.review.application.ports import PipelineStore
-from jesinia.apps.review.application.scheduler import PreReviewRequest, gate_for
+from jesinia.apps.review.application.scheduler import (
+    PreReviewRequest,
+    gate_for,
+    resume_or_start_round,
+)
 from jesinia.apps.review.domain.coverage import (
     Coverage,
     DiffParseError,
@@ -68,7 +74,11 @@ from jesinia.apps.review.domain.queue import (
 from jesinia.apps.review.domain.workspace import DiffTooLargeError, WorkspaceError
 from jesinia.core.events import Event, EventBus
 from jesinia.services.github.application.prs import GitHubPayloadError
-from jesinia.services.github.application.service import GitHubError
+from jesinia.services.github.application.service import (
+    GitHubError,
+    GitHubRateLimitedError,
+    GitHubRequestError,
+)
 from jesinia.services.github.domain.pr import (
     CheckState,
     PrCommit,
@@ -109,6 +119,21 @@ ON_OPEN_JOBS: Final[Mapping[Depth, tuple[JobKind, ...]]] = {
     ),
 }
 _GITHUB_ERRORS = (GitHubError, GitHubPayloadError, PullRequestDomainError)
+
+
+def _transient(exc: BaseException) -> bool:
+    """A GitHub failure that says nothing about the PR: a rate limit, a 5xx, a timeout or a
+    dropped connection (no status)."""
+    if isinstance(exc, GitHubRateLimitedError):
+        return True
+    return isinstance(exc, GitHubRequestError) and (exc.status is None or exc.status >= 500)
+
+
+def _github_failure(message: str, exc: Exception) -> RoundPreparationError:
+    if _transient(exc):
+        return GitHubBusyError(f"{message}; it is retried later", exc)
+    return RoundPreparationError(message, exc)
+
 
 Clock = Callable[[], datetime]
 # The author's knowledge of a repo, from the knowledge model (plan Task 14). Trusted
@@ -170,6 +195,17 @@ class PipelineJobs(Protocol):
     async def run(self, job: JobKind, round: Round) -> dict[str, object]: ...
 
     async def correctness_depth(self, round: Round) -> Depth: ...
+
+
+class RoundSlots(Protocol):
+    """The scheduler's slots, which opened rounds share with pre-reviews (R52)."""
+
+    async def run_open[T](self, work: Callable[[], Awaitable[T]]) -> T: ...
+
+
+class _Unlimited:
+    async def run_open[T](self, work: Callable[[], Awaitable[T]]) -> T:
+        return await work()
 
 
 @dataclass(frozen=True)
@@ -246,6 +282,8 @@ class Pipeline:
         bus: where ``review.progress`` events go.
         clock: the current UTC time.
         knowledge: the author's familiarity with a repo, from the knowledge model.
+        slots: the scheduler, whose round slots opens wait for; without it opens run at
+            once.
     """
 
     def __init__(
@@ -259,7 +297,9 @@ class Pipeline:
         bus: EventBus,
         clock: Clock,
         knowledge: KnowledgeSource = _nothing_known,
+        slots: RoundSlots | None = None,
     ) -> None:
+        self._slots: RoundSlots = _Unlimited() if slots is None else slots
         self._github = github
         self._files = files
         self._workspace = workspace
@@ -359,8 +399,8 @@ class Pipeline:
         reusable = latest is not None and (not latest[1].finished or latest[1].error is None)
         if latest is not None and reusable:
             round_id, owned = latest[0], False
-        else:
-            round_id = self._store.start_round(ref, head, pr.base_sha, pr.depth, self._clock())
+        else:  # an interrupted round is resumed (R51); a failed one is replaced
+            round_id = resume_or_start_round(self._store, stored, self._clock())
             owned = True
         done = self._store.artifact_kinds(round_id)
         wanted = (*TRIAGE_JOBS, *ON_OPEN_JOBS[pr.depth])
@@ -386,16 +426,26 @@ class Pipeline:
         self, ref: PrRef, head: str, round_id: int, kinds: tuple[JobKind, ...], owned: bool
     ) -> None:
         verdict: str | None = None
-        try:
+
+        async def review() -> str | None:
             await self._progress(ref, round_id, head, "started")
             prepared = await self._prepare_or_report(ref, head, round_id)
-            verdict = await self._run(prepared, kinds)
+            return await self._run(prepared, kinds)
+
+        try:
+            verdict = await self._slots.run_open(review)
         except asyncio.CancelledError:
             if owned:
                 cause = "Jesinia stopped during this review"
                 self._store.finish_round(round_id, self._clock(), cause, interrupted=True)
                 self._store.set_state(ref, head, "queued", "interrupted by a stop")
             raise
+        except RoundInterruptedError as exc:  # as the scheduler does (M13): not a failure
+            if owned:
+                self._store.finish_round(
+                    round_id, self._clock(), str(exc), interrupted=True, counted=False
+                )
+                self._store.set_state(ref, head, "queued", str(exc))
         except Exception as exc:  # the round must end, with its cause, whatever went wrong
             log.warning("review of %s failed: %s", ref, exc, exc_info=exc)
             if owned:
@@ -466,7 +516,7 @@ class Pipeline:
                 )
             pull, commits = await self._github.commits_of(pull)
         except _GITHUB_ERRORS as exc:
-            raise RoundPreparationError(f"couldn't read {ref} from GitHub", exc) from exc
+            raise _github_failure(f"couldn't read {ref} from GitHub", exc) from exc
         files_truncated = await self._files_truncated(ref, pull, warnings)
         pull = replace(pull, files_truncated=files_truncated)
         try:
@@ -488,6 +538,8 @@ class Pipeline:
         try:
             ci: CheckState | None = await self._github.checks(repo, head)
         except _GITHUB_ERRORS as exc:
+            if _transient(exc):  # missing CI would decide the verdict: wait for GitHub
+                raise _github_failure(f"couldn't read CI on {ref}", exc) from exc
             ci = None
             warnings.append(f"CI on this head couldn't be read, so it counts as missing: {exc}")
         depth = propose_depth(pull.additions + pull.deletions, pull.changed_files, None)

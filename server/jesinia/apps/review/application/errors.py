@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.jobs import JobKind, ReviewJobError
 
 
-class InvalidAgentOutput(ValueError):
+class InvalidAgentOutput(ReviewError, ValueError):
     """An agent's reply isn't one bounded JSON object valid against its job's schema (too
     long, too deep, an absurd number, bad JSON, or a schema violation). The message says
     what is wrong in Jesinia's own words, never echoing the reply, since it is sent back to
@@ -33,6 +34,16 @@ class RoundPreparationError(ReviewJobError):
         self.cause = cause
 
 
-class HeadMovedOnError(RoundPreparationError):
+class RoundInterruptedError(RoundPreparationError):
+    """The round couldn't go on for a reason that isn't the PR's failure; it is marked
+    interrupted (not counted toward the head's limit) and runs again on a later tick."""
+
+
+class HeadMovedOnError(RoundInterruptedError):
     """The PR's head is no longer the one this round was started for; the new head gets a
     round of its own once it settles."""
+
+
+class GitHubBusyError(RoundInterruptedError):
+    """GitHub was briefly unavailable (rate limited, a 5xx, a timeout) while the round was
+    prepared (M2); ``cause`` is GitHub's error. The round is retried later, never failed."""

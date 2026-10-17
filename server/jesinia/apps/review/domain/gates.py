@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
+from jesinia.apps.review.domain.errors import ReviewError
+
 CiState = Literal["pending", "passing", "failing", "none"]
 GateState = Literal[
     "fetch_failed", "waiting_ci", "ci_failing", "waiting_auto_review", "debouncing", "ready"
@@ -30,7 +32,7 @@ LOW_FAMILIARITY = 0.4
 _CI_STATES: frozenset[str] = frozenset({"pending", "passing", "failing", "none"})
 
 
-class GateInputError(ValueError):
+class GateInputError(ReviewError, ValueError):
     """A gate or depth input that cannot describe a real PR."""
 
 

@@ -331,6 +331,8 @@ async def test_a_pre_review_cut_short_by_a_stop_runs_again(
 
     assert (await states(queue)) == {1: "ready"}
     assert [r.head_sha for r in runner.started] == [HEAD, HEAD]
+    # R51: the interrupted round is resumed, never replaced.
+    assert runner.started[0].round_id == runner.started[1].round_id
 
 
 async def test_a_crash_mid_review_is_retried_until_three_interruptions(
@@ -581,3 +583,48 @@ async def test_only_loaded_prs_of_a_suggested_repo_are_pre_reviewed(
     assert runner.numbers == [2]
     (row,) = [r for r in (await queue.list(QueueFilter())).rows if r.number == 1]
     assert row.prereview_state == "not_started" and "suggested" in row.prereview_reason
+
+
+async def test_opens_share_the_slots_and_cancelled_waiters_give_them_back(
+    store: SqliteReviewStore, clock: FakeClock
+) -> None:
+    """R52: ``run_open`` holds one of the scheduler's slots; a waiter cancelled before or
+    just after it was granted a slot never keeps one."""
+    scheduler = Scheduler(store, clock, concurrency=1)
+    gate = asyncio.Event()
+    holder = asyncio.create_task(scheduler.run_open(gate.wait))
+    await asyncio.sleep(0)
+
+    async def done() -> str:
+        return "ran"
+
+    # Cancelled while waiting: it leaves the line.
+    left = asyncio.create_task(scheduler.run_open(done))
+    await asyncio.sleep(0)
+    left.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await left
+
+    # Cancelled while waiting, and the slot freed before its cancellation is handled.
+    skipped = asyncio.create_task(scheduler.run_open(done))
+    await asyncio.sleep(0)
+    gate.set()
+    skipped.cancel()
+    await holder
+    with pytest.raises(asyncio.CancelledError):
+        await skipped
+
+    # Granted the slot, then cancelled before it could use it.
+    gate.clear()
+    holder = asyncio.create_task(scheduler.run_open(gate.wait))
+    await asyncio.sleep(0)
+    granted = asyncio.create_task(scheduler.run_open(done))
+    await asyncio.sleep(0)
+    gate.set()
+    await asyncio.sleep(0)  # the holder finishes and hands its slot over
+    granted.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await granted
+    await holder
+
+    assert await asyncio.wait_for(scheduler.run_open(done), timeout=1) == "ran"

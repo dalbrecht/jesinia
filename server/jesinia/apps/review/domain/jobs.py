@@ -16,6 +16,7 @@ from enum import StrEnum
 from typing import Literal
 
 from jesinia.apps.review.domain.coverage import Coverage, HunkIndex
+from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import Depth
 from jesinia.apps.review.domain.workspace import canonical_repo
 from jesinia.services.github.domain.pr import CheckState, PrCommit, PullRequest
@@ -61,7 +62,7 @@ AGENT_LOGINS = frozenset(
 )
 
 
-class ReviewJobError(Exception):
+class ReviewJobError(ReviewError):
     """Base for a review agent job, or the round it belongs to, that could not produce its
     result."""
 

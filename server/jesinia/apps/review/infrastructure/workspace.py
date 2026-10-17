@@ -129,6 +129,9 @@ _KEEP_PREFIX = "refs/jesinia/keep/"
 _DEFAULT_BRANCH_REF = "refs/jesinia/default-branch"
 _FILE_HEADER = re.compile(rb"^(?=diff --git )", re.MULTILINE)
 _TEMPORARY_PREFIX = ".tmp-"
+# git processes the repo tools may run at once across every review session (R52); each
+# session also runs one at a time.
+REPO_GIT_CONCURRENCY = 4
 
 
 def github_remote_url(repo: str) -> str:
@@ -147,6 +150,8 @@ class GitWorkspace:
         fetch_timeout: seconds a ``fetch`` may run.
         diff_limit: bytes of diff output ``diff`` and ``patch_ids`` read before they stop
             git and raise ``DiffTooLargeError``.
+        repo_git_concurrency: the repo tools' git processes (``read_in_tree``) running at
+            once, across every review session.
     """
 
     def __init__(
@@ -157,6 +162,7 @@ class GitWorkspace:
         command_timeout: float = 60.0,
         fetch_timeout: float = 300.0,
         diff_limit: int = DIFF_LIMIT,
+        repo_git_concurrency: int = REPO_GIT_CONCURRENCY,
     ) -> None:
         self.root = root
         self._diff_limit = diff_limit
@@ -165,6 +171,7 @@ class GitWorkspace:
         self._fetch_timeout = fetch_timeout
         self._locks: dict[str, asyncio.Lock] = {}
         self._regex_dialect: RegexDialect | None = None
+        self._tree_reads = asyncio.Semaphore(repo_git_concurrency)
 
     async def ensure_mirror(self, repo: str) -> None:
         mirror = self._mirror(repo)
@@ -379,7 +386,8 @@ class GitWorkspace:
         without_worktree: bool = False,
         timeout: float | None = None,
     ) -> CappedOutput:
-        """``TreeGit`` for the repo tools: read-only git inside a worktree under the root."""
+        """``TreeGit`` for the repo tools: read-only git inside a worktree under the root,
+        at most ``repo_git_concurrency`` at once (the rest wait their turn)."""
         inside = self._inside(tree)
         # blame reads the worktree's .mailmap unconditionally (log.mailmap doesn't reach
         # it), so it runs on the tree's mirror instead, where there is no worktree and the
@@ -392,13 +400,14 @@ class GitWorkspace:
         env = {"GIT_CONFIG_NOSYSTEM": "1"}  # local reads need no credential helper
         if glob_pathspecs:
             env["GIT_LITERAL_PATHSPECS"] = "0"
-        argv, out, err, code, truncated = await self._execute(
-            (*location, *_TREE_READ_OPTIONS),
-            args,
-            extra_env=env,
-            output_limit=output_limit,
-            timeout=timeout,
-        )
+        async with self._tree_reads:
+            argv, out, err, code, truncated = await self._execute(
+                (*location, *_TREE_READ_OPTIONS),
+                args,
+                extra_env=env,
+                output_limit=output_limit,
+                timeout=timeout,
+            )
         if not truncated and code not in accept_exit_codes:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
         return CappedOutput(out, truncated, 0 if truncated else code)

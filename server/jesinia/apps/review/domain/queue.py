@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
+from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import CiState, Depth, GateState, propose_depth
 from jesinia.apps.review.domain.workspace import InvalidRepoError, canonical_repo
 from jesinia.services.github.domain.pr import PullRequest, ReviewSummary
@@ -36,7 +37,7 @@ _SHORTHAND = re.compile(rf"{_REPO_PART}#{_NUMBER}")
 _ROUTE = re.compile(rf"(?:https?://[^/\s]+)?/?review/{_REPO_PART}/{_NUMBER}{_TAIL}")
 
 
-class QueueDomainError(Exception):
+class QueueDomainError(ReviewError):
     """Base for invalid queue values and refused queue actions."""
 
 

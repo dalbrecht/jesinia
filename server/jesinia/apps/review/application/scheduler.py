@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from jesinia.apps.review.application.errors import HeadMovedOnError
+from jesinia.apps.review.application.errors import RoundInterruptedError
 from jesinia.apps.review.application.ports import PrunableWorkspace, QueueStore
+from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import (
     DEFAULT_GATES,
     Depth,
@@ -68,7 +70,7 @@ def gate_for(
     return gate(state, now, _LOADED_GATES if immediate else DEFAULT_GATES)
 
 
-class SchedulerConfigError(ValueError):
+class SchedulerConfigError(ReviewError, ValueError):
     """The scheduler was configured with impossible values."""
 
 
@@ -117,6 +119,9 @@ class Scheduler:
         self._concurrency = concurrency
         self._pending: dict[PrRef, tuple[StoredPr, PreReviewMode]] = {}
         self._running: dict[PrRef, asyncio.Task[None]] = {}
+        # Rounds the author opened share the slots (R52), ahead of queued pre-reviews.
+        self._open_waiters: deque[asyncio.Future[None]] = deque()
+        self._opens_running = 0
 
     @property
     def runs_pre_reviews(self) -> bool:
@@ -179,10 +184,44 @@ class Scheduler:
             return config.prereview
         return default_mode
 
+    async def run_open[T](self, work: Callable[[], Awaitable[T]]) -> T:
+        """Run an opened PR's round in one of the scheduler's slots (R52): at most
+        ``concurrency`` rounds run at once, pre-reviews and opens together. An open waits
+        for a free slot and goes before any queued pre-review."""
+        if self._open_waiters or self._busy() >= self._concurrency:
+            waiter = asyncio.get_running_loop().create_future()
+            self._open_waiters.append(waiter)
+            try:
+                await waiter
+            except asyncio.CancelledError:
+                if waiter.done() and not waiter.cancelled():  # granted as it was cancelled
+                    self._release_open()
+                elif waiter in self._open_waiters:
+                    self._open_waiters.remove(waiter)
+                raise
+        else:
+            self._opens_running += 1
+        try:
+            return await work()
+        finally:
+            self._release_open()
+
+    def _release_open(self) -> None:
+        self._opens_running -= 1
+        self._dispatch()
+
+    def _busy(self) -> int:
+        return len(self._running) + self._opens_running
+
     def _dispatch(self) -> None:
+        while self._open_waiters and self._busy() < self._concurrency:
+            waiter = self._open_waiters.popleft()
+            if not waiter.done():  # a cancelled waiter wants no slot
+                self._opens_running += 1
+                waiter.set_result(None)
         if self._run is None:
             return
-        while self._pending and len(self._running) < self._concurrency:
+        while self._pending and self._busy() < self._concurrency:
             stored, mode = min(self._pending.values(), key=lambda entry: queue_order(entry[0]))
             del self._pending[stored.pr.ref]
             if self._still_queued(stored):
@@ -203,9 +242,7 @@ class Scheduler:
 
     def _start(self, stored: StoredPr, mode: PreReviewMode, run: PreReviewRunner) -> None:
         pr = stored.pr
-        round_id = self._store.start_round(
-            pr.ref, pr.head_sha, pr.base_sha, pr.depth, self._clock()
-        )
+        round_id = resume_or_start_round(self._store, stored, self._clock())
         request = PreReviewRequest(
             round_id=round_id,
             ref=pr.ref,
@@ -228,9 +265,11 @@ class Scheduler:
             self._store.finish_round(request.round_id, self._clock(), _STOPPED, interrupted=True)
             self._store.set_state(ref, head, "queued", "interrupted by a stop; it runs again")
             raise
-        except HeadMovedOnError as exc:
-            # A routine push: not the PR's failure. The new head gets its own round.
-            self._store.finish_round(request.round_id, self._clock(), str(exc), interrupted=True)
+        except RoundInterruptedError as exc:
+            # A routine push or a GitHub hiccup: not the PR's failure, and not counted.
+            self._store.finish_round(
+                request.round_id, self._clock(), str(exc), interrupted=True, counted=False
+            )
             self._store.set_state(ref, head, "queued", str(exc))
         except Exception as exc:  # one PR's failure must not stop the queue; its cause is kept
             cause = str(exc) or type(exc).__name__
@@ -261,6 +300,16 @@ class Scheduler:
 def _retryable(status: RoundStatus) -> bool:
     """A round a stop cut short leaves its head to be queued again, a few times."""
     return status.interrupted and status.interruptions < MAX_INTERRUPTIONS
+
+
+def resume_or_start_round(store: QueueStore, stored: StoredPr, now: datetime) -> int:
+    """The round to run on ``stored``'s head: the interrupted one, resumed with its finished
+    jobs and drafts (R51), or a new one."""
+    pr = stored.pr
+    latest = store.latest_round_on_head(pr.ref, pr.head_sha)
+    if latest is not None and _retryable(latest[1]) and store.resume_round(latest[0]):
+        return latest[0]
+    return store.start_round(pr.ref, pr.head_sha, pr.base_sha, pr.depth, now)
 
 
 def _outcome(status: RoundStatus) -> tuple[PreReviewState, str]:

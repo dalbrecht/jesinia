@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from jesinia.apps.review.application.errors import (
+    GitHubBusyError,
     HeadMovedOnError,
     JobFailed,
     RoundPreparationError,
@@ -35,6 +36,7 @@ from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.scheduler import PreReviewRequest, Scheduler
 from jesinia.apps.review.domain.gates import Depth
 from jesinia.apps.review.domain.jobs import JobKind, Round
+from jesinia.apps.review.domain.posting import Draft
 from jesinia.apps.review.domain.queue import (
     PreReviewMode,
     PrHeadMovedError,
@@ -53,7 +55,10 @@ from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.module import REVIEW_DB
 from jesinia.core.db import open_db
 from jesinia.core.events import Event, EventBus
-from jesinia.services.github.application.service import GitHubRequestError
+from jesinia.services.github.application.service import (
+    GitHubRateLimitedError,
+    GitHubRequestError,
+)
 from jesinia.services.github.domain.pr import (
     Check,
     CheckState,
@@ -211,12 +216,27 @@ class FakeJobs:
     hold: asyncio.Event | None = None
     # What the correctness session's tools read (Jesinia's record); its claim by default.
     reads: dict[str, object] | None = None
+    # Jobs that never finish (until cancelled): a stop or crash lands while they run.
+    stuck: set[JobKind] = field(default_factory=set)
+
+    in_flight: int = 0
+    peak: int = 0
 
     async def run(self, job: JobKind, round: Round) -> dict[str, object]:
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            return await self._run(job, round)
+        finally:
+            self.in_flight -= 1
+
+    async def _run(self, job: JobKind, round: Round) -> dict[str, object]:
         self.ran.append(job)
         self.rounds.append(round)
         if self.hold is not None:
             await self.hold.wait()
+        if job in self.stuck:
+            await asyncio.Event().wait()
         if job in self.failing:
             raise JobFailed(job, self.failing[job])
         output = self.outputs.get(job, {"ok": True})
@@ -304,6 +324,12 @@ def env(conn: sqlite3.Connection) -> Env:
         events.append(event.payload)
 
     bus.subscribe(PROGRESS_TOPIC, record)
+
+    async def run(request: PreReviewRequest) -> None:
+        await pipeline.prereview(request)
+
+    # Opens share the scheduler's slots (R52), as in the module.
+    scheduler = Scheduler(store, clock, run=run)
     pipeline = Pipeline(
         github=github,
         files=files,
@@ -312,8 +338,8 @@ def env(conn: sqlite3.Connection) -> Env:
         store=store,
         bus=bus,
         clock=clock,
+        slots=scheduler,
     )
-    scheduler = Scheduler(store, clock, run=pipeline.prereview)
     return Env(store, clock, github, files, workspace, jobs, events, pipeline, scheduler)
 
 
@@ -728,7 +754,7 @@ async def test_preparation_failures_keep_their_cause(env: Env, where: str) -> No
 
 
 async def test_unreadable_ci_is_a_warning_and_never_approves(env: Env) -> None:
-    env.github.checks_error = GitHubRequestError(502, "Bad Gateway")
+    env.github.checks_error = GitHubRequestError(404, "Not Found")
     ref = env.add()
     await prereview(env)
     round_id, _ = latest(env, ref)
@@ -787,12 +813,12 @@ async def test_stop_cancels_an_open_and_marks_its_round_interrupted(env: Env) ->
 async def test_a_failed_open_finishes_its_round_with_the_cause(env: Env) -> None:
     env.store.set_prereview_default("on_open")
     ref = env.add()
-    env.github.error = GitHubRequestError(503, "GitHub is down")
+    env.github.error = GitHubRequestError(404, "Not Found")
     result = await env.pipeline.open(ref)
     await env.pipeline.drain()
     status = env.store.latest_round_on_head(ref, HEAD)
     assert status is not None and status[0] == result.round_id
-    assert status[1].error is not None and "GitHub is down" in status[1].error
+    assert status[1].error is not None and "Not Found" in status[1].error
     stored = env.store.pr(ref)
     assert stored is not None and stored.state == "failed"
     # A failed round is retried by opening again: a new round.
@@ -859,8 +885,9 @@ async def test_a_second_open_while_the_first_runs_says_running(env: Env) -> None
 
 
 async def test_job_state_survives_a_restart(env: Env) -> None:
-    """R30: what a round finished is kept in review.sqlite; after a restart, a job that was
-    running (no output stored) runs again and a finished one doesn't."""
+    """R30/R51: what a round finished is kept in review.sqlite; after a restart the round is
+    resumed, not replaced: a job that was running (no output stored) runs again and a
+    finished one doesn't."""
     ref = env.add()
     round_id = env.store.start_round(ref, HEAD, BASE, "quick", env.clock())
     env.store.put_artifact(round_id, "findings", {"findings": []})
@@ -870,8 +897,7 @@ async def test_job_state_survives_a_restart(env: Env) -> None:
         {"findings": {"state": "done", "error": None},
          "correctness": {"state": "running", "error": None}},
     )  # fmt: skip
-    env.store.interrupt_unfinished_rounds(env.clock(), "restart")
-    env.store.finish_round(round_id, env.clock(), None)  # as if it had finished cleanly
+    env.store.interrupt_unfinished_rounds(env.clock(), "restart")  # what recovery does
     restarted = Pipeline(
         github=env.github, files=env.files, workspace=env.workspace, jobs=env.jobs,
         store=env.store, bus=EventBus(), clock=env.clock,
@@ -881,6 +907,205 @@ async def test_job_state_survives_a_restart(env: Env) -> None:
     assert JobKind.FINDINGS not in result.jobs and JobKind.CORRECTNESS in result.jobs
     await restarted.drain()
     assert JobKind.FINDINGS not in env.jobs.ran
+    found = env.store.latest_round_on_head(ref, HEAD)
+    assert found is not None and found[0] == round_id
+    assert found[1].finished and found[1].error is None
+
+
+async def test_a_restart_resumes_the_round_and_runs_only_its_unfinished_jobs(
+    env: Env, tmp_path: Path
+) -> None:
+    """R51, a real stop and restart: two jobs finish, the third is cut short, the author edits
+    a draft; a new scheduler and pipeline on the same database resume that round, run only
+    what didn't finish, and keep the drafts."""
+    env.store.set_prereview_default("everything")
+    ref = env.add()
+    env.jobs.stuck = {JobKind.RECOMMENDATION}
+    await env.scheduler.tick()
+    for _ in range(200):
+        if JobKind.RECOMMENDATION in env.jobs.ran:
+            break
+        await asyncio.sleep(0)
+    assert env.jobs.ran == [JobKind.CORRECTNESS, JobKind.FINDINGS, JobKind.RECOMMENDATION]
+    round_id, _ = latest(env, ref)
+    edited = Draft(path="src/app.py", body="Rename this.", line=2, side="RIGHT")
+    env.store.save_drafts(round_id, "Close; one rename.", [edited])
+    await env.pipeline.stop()
+    await env.scheduler.stop()
+
+    restarted_conn = open_db(tmp_path, REVIEW_DB)  # a new module instance, the same file
+    try:
+        store = SqliteReviewStore(restarted_conn)
+        jobs = FakeJobs(store)
+        pipeline = Pipeline(
+            github=env.github, files=env.files, workspace=env.workspace, jobs=jobs,
+            store=store, bus=EventBus(), clock=env.clock,
+        )  # fmt: skip
+        scheduler = Scheduler(store, env.clock, run=pipeline.prereview)
+        scheduler.recover()
+        await scheduler.tick()
+        await scheduler.drain()
+
+        assert jobs.ran == [JobKind.RECOMMENDATION, JobKind.OVERVIEW, JobKind.WALKTHROUGH]
+        found = store.latest_round_on_head(ref, HEAD)
+        assert found is not None and found[0] == round_id
+        assert found[1].finished and found[1].error is None
+        latest_round = store.latest_round(ref)
+        assert latest_round is not None and latest_round.id == round_id
+        (draft,) = store.drafts(round_id)
+        assert draft.body == "Rename this." and store.review_summary(round_id) == (
+            "Close; one rename."
+        )
+        stored = store.pr(ref)
+        assert stored is not None and stored.state == "ready"
+    finally:
+        restarted_conn.close()
+
+
+async def test_a_round_interrupted_three_times_fails_with_its_cause(env: Env) -> None:
+    """R51: each interruption of the one resumed round counts; the third fails it, keeping
+    the error, and nothing runs again."""
+    ref = env.add()
+    env.jobs.stuck = {JobKind.CORRECTNESS}
+    for _ in range(3):
+        scheduler = Scheduler(env.store, env.clock, run=env.pipeline.prereview)
+        scheduler.recover()
+        await scheduler.tick()
+        for _ in range(200):
+            if env.jobs.ran:
+                break
+            await asyncio.sleep(0)
+        env.jobs.ran.clear()
+        await scheduler.stop()
+    scheduler = Scheduler(env.store, env.clock, run=env.pipeline.prereview)
+    await scheduler.tick()
+    await scheduler.drain()
+    assert env.jobs.ran == []
+    rounds = env.store.rounds_for_heads()
+    assert rounds[(ref, HEAD)].interruptions == 3
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.state == "failed"
+    assert "interrupted 3 times" in stored.state_reason and "stopped" in stored.state_reason
+    assert len({round.id for round in env.jobs.rounds}) == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        GitHubRequestError(502, "Bad Gateway"),
+        GitHubRequestError(None, "ReadTimeout"),
+        GitHubRateLimitedError(403, "API rate limit exceeded", None),
+    ],
+)
+@pytest.mark.parametrize("where", ["pull", "commits", "checks"])
+async def test_a_transient_github_failure_interrupts_the_round_and_it_resumes(
+    env: Env, error: GitHubRequestError, where: str
+) -> None:
+    """M2: a 5xx, a timeout or a rate limit while a round reads GitHub is not the PR's
+    failure: the round is interrupted (uncounted) and resumed on a later tick."""
+    ref = env.add()
+    if where == "pull":
+        env.github.error = error
+    elif where == "commits":
+        env.github.commits_error = error
+    else:
+        env.github.checks_error = error
+    rounds = set()
+    for _ in range(4):  # more than MAX_INTERRUPTIONS: transient failures never fail it
+        await prereview(env)
+        found = env.store.latest_round_on_head(ref, HEAD)
+        assert found is not None and found[1].interrupted and found[1].interruptions == 0
+        rounds.add(found[0])
+        stored = env.store.pr(ref)
+        assert stored is not None and stored.state == "queued"
+    (first,) = rounds  # one round, resumed each time
+    env.github.error = env.github.commits_error = env.github.checks_error = None
+    await prereview(env)
+    assert latest(env, ref) == (first, None)
+
+
+async def test_a_transient_failure_during_an_open_interrupts_its_round(env: Env) -> None:
+    """M2/M13: an open's round ends like the scheduler's: interrupted, not failed."""
+    env.store.set_prereview_default("on_open")
+    ref = env.add()
+    env.github.error = GitHubRequestError(503, "Service Unavailable")
+    opened = await env.pipeline.open(ref)
+    await env.pipeline.drain()
+    found = env.store.latest_round_on_head(ref, HEAD)
+    assert found is not None and found[0] == opened.round_id
+    assert found[1].interrupted and found[1].interruptions == 0
+    assert found[1].error is not None and "retried later" in found[1].error
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.state == "queued"
+    # The direct runner raises the typed error, with GitHub's as its cause.
+    with pytest.raises(GitHubBusyError) as raised:
+        await env.pipeline.prereview(env.request(ref, "triage", loaded=True))
+    assert raised.value.cause is env.github.error
+
+
+async def test_a_head_move_during_an_open_interrupts_its_round(env: Env) -> None:
+    """M13: matches the scheduler, which treats a head move as an interruption."""
+    env.store.set_prereview_default("on_open")
+    ref = env.add()
+    env.github.heads = [NEW_HEAD]
+    opened = await env.pipeline.open(ref)
+    await env.pipeline.drain()
+    found = env.store.latest_round_on_head(ref, HEAD)
+    assert found is not None and found[0] == opened.round_id
+    assert found[1].interrupted and found[1].error is not None and "moved on" in found[1].error
+
+
+async def test_opens_go_through_the_schedulers_two_slots(env: Env) -> None:
+    """R52: an open is a round like a pre-review: with both slots taken it waits, and it
+    goes first once one frees; never more than two rounds run at once."""
+    env.store.upsert_repo(RepoConfig("acme/api", watched=True, prereview="on_open"))
+    first, second = env.add(), env.add(replace(env.github.pr, number=2))
+    opened_ref = env.add(replace(env.github.pr, repo="acme/api", number=3))
+    env.jobs.hold = asyncio.Event()
+    await env.scheduler.tick()
+    for _ in range(200):
+        if len(env.jobs.rounds) == 2:
+            break
+        await asyncio.sleep(0)
+    opened = await env.pipeline.open(opened_ref)
+    assert opened.state == "started"
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert opened.round_id not in {round.id for round in env.jobs.rounds}  # it waits
+    env.jobs.hold.set()
+    await env.pipeline.drain()
+    await env.scheduler.drain()
+    assert env.jobs.peak == 2
+    assert opened.round_id in {round.id for round in env.jobs.rounds}
+    for ref in (first, second):
+        assert latest(env, ref)[1] is None
+    found = env.store.latest_round_on_head(opened_ref, HEAD)
+    assert found is not None and found[1].finished and found[1].error is None
+
+
+async def test_an_open_stopped_while_it_waits_for_a_slot_gives_it_back(env: Env) -> None:
+    env.store.set_prereview_default("on_open")
+    refs = [env.add(replace(env.github.pr, number=n)) for n in (1, 2, 3)]
+    env.jobs.hold = asyncio.Event()
+    running = [await env.pipeline.open(ref) for ref in refs[:2]]
+    for _ in range(200):
+        if len(env.jobs.rounds) == 2:
+            break
+        await asyncio.sleep(0)
+    waiting = await env.pipeline.open(refs[2])
+    for _ in range(20):
+        await asyncio.sleep(0)
+    await env.pipeline.stop()  # cancels all three, one of them still waiting
+    for result in (*running, waiting):
+        found = env.store.latest_round_on_head(refs[(*running, waiting).index(result)], HEAD)
+        assert found is not None and found[1].interrupted
+    # Every slot came back: a new open runs at once.
+    env.jobs.hold.set()
+    again = await env.pipeline.open(refs[0])
+    await env.pipeline.drain()
+    found = env.store.latest_round_on_head(refs[0], HEAD)
+    assert again.round_id == running[0].round_id
+    assert found is not None and found[1].finished and found[1].error is None
 
 
 # --- fix round 1: the hunk index (R42) and minors -----------------------------------------------

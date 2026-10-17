@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Final, Literal
 
+from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.skip import auto_skip_reason
 from jesinia.apps.review.domain.workspace import DiffTooLargeError
 
@@ -75,7 +76,7 @@ _ESCAPES: Final = {
 }
 
 
-class CoverageError(ValueError):
+class CoverageError(ReviewError, ValueError):
     """Base for coverage inputs Jesinia can't work with."""
 
 

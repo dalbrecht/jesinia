@@ -511,20 +511,35 @@ class SqliteReviewStore:
         verdict: str | None = None,
         *,
         interrupted: bool = False,
+        counted: bool = True,
     ) -> None:
+        """End a round. ``interrupted``: cut short, to be resumed; ``counted``: the cut
+        counts toward the head's limit (a stop or crash does, a head move or a transient
+        GitHub failure doesn't)."""
+        counts = int(interrupted and counted)
         self._conn.execute(
             "UPDATE rounds SET finished_at = ?, error = ?, verdict = COALESCE(?, verdict), "
-            "interrupted = ? WHERE id = ?",
-            (_time(finished_at), error, verdict, int(interrupted), round_id),
+            "interrupted = ?, interruptions = interruptions + ? WHERE id = ?",
+            (_time(finished_at), error, verdict, int(interrupted), counts, round_id),
         )
+
+    def resume_round(self, round_id: int) -> bool:
+        """Reopen an interrupted round (R51): its artifacts, jobs and drafts stay, its
+        interruptions keep counting. ``False`` when it isn't an interrupted round."""
+        cursor = self._conn.execute(
+            "UPDATE rounds SET finished_at = NULL, error = NULL, interrupted = 0 "
+            "WHERE id = ? AND interrupted = 1",
+            (round_id,),
+        )
+        return cursor.rowcount == 1
 
     def mark_round_done(self, round_id: int) -> None:
         self._conn.execute("UPDATE rounds SET done = 1 WHERE id = ?", (round_id,))
 
     def interrupt_unfinished_rounds(self, at: datetime, cause: str) -> int:
         cursor = self._conn.execute(
-            "UPDATE rounds SET finished_at = ?, error = ?, interrupted = 1 "
-            "WHERE finished_at IS NULL",
+            "UPDATE rounds SET finished_at = ?, error = ?, interrupted = 1, "
+            "interruptions = interruptions + 1 WHERE finished_at IS NULL",
             (_time(at), cause),
         )
         return cursor.rowcount
@@ -533,7 +548,7 @@ class SqliteReviewStore:
         rows = self._conn.execute(
             "SELECT r.repo, r.number, r.head_sha, r.finished_at IS NOT NULL, r.error, "
             "r.interrupted, c.interruptions FROM rounds r JOIN ("
-            "SELECT MAX(id) AS id, SUM(interrupted) AS interruptions FROM rounds "
+            "SELECT MAX(id) AS id, SUM(interruptions) AS interruptions FROM rounds "
             "GROUP BY repo, number, head_sha) c ON c.id = r.id"
         )
         return {
@@ -564,16 +579,19 @@ class SqliteReviewStore:
         }
 
     def latest_round_on_head(self, ref: PrRef, head_sha: str) -> tuple[int, RoundStatus] | None:
-        """The newest round on ``(ref, head_sha)`` with its status, or ``None``."""
+        """The newest round on ``(ref, head_sha)`` with its status (interruptions counted
+        over every round on the head), or ``None``."""
         row = self._conn.execute(
-            "SELECT id, finished_at IS NOT NULL, error, interrupted FROM rounds "
+            "SELECT id, finished_at IS NOT NULL, error, interrupted, ("
+            "SELECT SUM(interruptions) FROM rounds "
+            "WHERE repo = ? AND number = ? AND head_sha = ?) FROM rounds "
             "WHERE repo = ? AND number = ? AND head_sha = ? ORDER BY id DESC LIMIT 1",
-            (ref.repo, ref.number, head_sha),
+            (ref.repo, ref.number, head_sha) * 2,
         ).fetchone()
         if row is None:
             return None
-        round_id, finished, error, interrupted = row
-        return round_id, RoundStatus(bool(finished), error, bool(interrupted))
+        round_id, finished, error, interrupted, interruptions = row
+        return round_id, RoundStatus(bool(finished), error, bool(interrupted), interruptions)
 
     def set_depth(self, ref: PrRef, head_sha: str, round_id: int, depth: Depth) -> None:
         """Record the depth a round runs at, on the round and (while the PR is still at
