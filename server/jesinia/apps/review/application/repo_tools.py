@@ -10,6 +10,7 @@ result is capped and says what its caps are. Searching and history go through gi
 from __future__ import annotations
 
 import asyncio
+import time
 import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -35,9 +36,11 @@ from jesinia.apps.review.domain.repo_access import (
     NoReviewSessionError,
     NotACommitError,
     OutsidePrHistoryError,
+    ReadLog,
     RegexDialect,
     RepoGitError,
     RepoPathNotFoundError,
+    RepoTimeBudget,
     UnsafePathError,
     check_glob,
     check_pattern,
@@ -149,7 +152,8 @@ def _logical_lines(handle: BinaryIO) -> Iterator[bytes]:
 
 def _read_lines(path: Path, first: int, count: int) -> tuple[list[str], bool, bool]:
     """Lines ``first``.. (at most ``count``) of ``path``, whether more follow, and whether
-    the byte cap stopped the read. A single line longer than the cap is cut to it."""
+    the byte cap stopped the read. A single line longer than the cap is cut to it (then it
+    is the only line returned, and the byte cap is reported)."""
     lines: list[str] = []
     size = 0
     with path.open("rb") as handle:
@@ -257,6 +261,15 @@ class RepoTools:
         sessions_to_worktree: the worktree bound to a review session, or ``None``.
         git: read-only git inside a worktree.
         allowance: per-session, per-file line allowance shared by every tool.
+        tree_key: the canonical ``(repo, sha)`` of a worktree path (the workspace's), so
+            results can name what they were read from.
+        reads: where the lines ``repo_read`` and ``repo_grep`` return from the head are
+            recorded per session (the registry's), so the correctness pass's claims can be
+            checked against them. ``repo_git`` output isn't recorded: its line numbers
+            belong to other commits.
+        budget: each session's git wall time (the registry's); once spent, the session's
+            git-backed calls are refused with ``RepoBudgetExhaustedError`` (R52).
+        monotonic: the clock the budget is measured with.
     """
 
     def __init__(
@@ -266,10 +279,18 @@ class RepoTools:
         allowance: FileLineAllowance,
         *,
         git_slots: Callable[[str], asyncio.Semaphore] | None = None,
+        tree_key: Callable[[Path], tuple[str, str] | None] | None = None,
+        reads: ReadLog | None = None,
+        budget: RepoTimeBudget | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._sessions_to_worktree = sessions_to_worktree
+        self._budget = budget
+        self._monotonic = monotonic
+        self._reads = reads
         self._git = git
         self._allowance = allowance
+        self._tree_key = tree_key
         own_slots: dict[str, asyncio.Semaphore] = {}
         self._git_slots = git_slots or (
             lambda session: own_slots.setdefault(session, asyncio.Semaphore(1))
@@ -314,6 +335,10 @@ class RepoTools:
             )
         finally:
             self._allowance.refund(session, key, granted - len(lines))
+        # A line cut at the byte cap (always alone) wasn't read whole: not credited (M7).
+        whole = 0 if byte_capped and len(lines) == 1 and not lines[0].endswith("\n") else len(lines)
+        if self._reads is not None and whole:
+            self._reads.record(session, rel, first, first + whole - 1)
         truncated = has_more and len(lines) < last - first + 1
         remaining = self._allowance.remaining(session, key)
         cap = (
@@ -401,6 +426,9 @@ class RepoTools:
                 withheld += 1
                 continue
             size += entry_size
+            if self._reads is not None and len(text) <= GREP_MAX_LINE_CHARS:
+                # A line shown cut short wasn't read: only whole lines count (M7).
+                self._reads.record(session, rel, line, line)
             matches.append(
                 {
                     "path": rel,
@@ -513,6 +541,17 @@ class RepoTools:
             )
         return {"cmd": cmd, "output": "".join(lines), "truncated": truncated, "cap": cap}
 
+    def origin(self, session_id: str | None) -> str:
+        """``<repo>@<sha>`` of the worktree ``session_id`` reads (``unknown@<tree name>``
+        when the workspace can't name it), for labelling results as untrusted data.
+
+        Raises:
+            NoReviewSessionError: the session isn't bound to a worktree.
+        """
+        _, root = self._session(session_id)
+        key = None if self._tree_key is None else self._tree_key(root)
+        return f"unknown@{root.name}" if key is None else f"{key[0]}@{key[1]}"
+
     def _session(self, session_id: str | None) -> tuple[str, Path]:
         if session_id is None:
             raise NoReviewSessionError(
@@ -604,18 +643,31 @@ class RepoTools:
         timeout: float | None = None,
     ) -> CappedOutput:
         """Run git for ``session``, one process at a time per session: parallel tool calls
-        queue here instead of each taking cores."""
+        queue here instead of each taking cores. Its wall time is charged to the session's
+        budget; a call that starts with budget left runs to the end.
+
+        Raises:
+            RepoBudgetExhaustedError: the session's git time is spent.
+            RepoGitError: git failed.
+        """
         try:
             async with self._git_slots(session):
-                return await self._git.read_in_tree(
-                    root,
-                    args,
-                    output_limit=output_limit,
-                    glob_pathspecs=glob_pathspecs,
-                    accept_exit_codes=accept_exit_codes,
-                    without_worktree=without_worktree,
-                    timeout=timeout,
-                )
+                if self._budget is not None:
+                    self._budget.check(session)
+                started = self._monotonic()
+                try:
+                    return await self._git.read_in_tree(
+                        root,
+                        args,
+                        output_limit=output_limit,
+                        glob_pathspecs=glob_pathspecs,
+                        accept_exit_codes=accept_exit_codes,
+                        without_worktree=without_worktree,
+                        timeout=timeout,
+                    )
+                finally:
+                    if self._budget is not None:
+                        self._budget.charge(session, self._monotonic() - started)
         except WorkspaceError as exc:
             detail = exc.stderr.strip() if isinstance(exc, GitCommandError) else str(exc)
             raise RepoGitError(f"git {args[0]} failed: {detail}") from exc

@@ -8,7 +8,27 @@ This is the first part of it (PR 1). It adds:
 - **The repo tools:** four read-only MCP tools (`repo_read`, `repo_grep`, `repo_ls`, `repo_git`). Review agents read PR code only through these. See `application/repo_tools.py` and `api/tools.py`.
 - **The auto-skip rules:** which files a review leaves out (lockfiles, generated, vendored and binary files). See `domain/skip.py`.
 
-It uses the `github` service (`services/github/`) for pull request data and for posting reviews. The queue, the walkthrough and the web app come in later PRs.
+It uses the `github` service (`services/github/`) for pull request data and for posting reviews. PR 2 adds the queue, the pre-review pipeline, the REST API and posting (below). The web app comes in a later PR.
+
+## API
+
+- **REST, under `/api/review`:** owner-only, like every module route. Every write takes an `Idempotency-Key` header.
+  - `GET /queue` and `GET /prs/<owner>/<repo>/<n>` read `review.sqlite` only and never wait for GitHub. A running or failed sync is reported in the response (`syncing`, `sync_error`).
+  - `POST /load`, `POST /queue/…/dismiss`, and `POST /prs/…/open`, `/retry` and `/review-anyway`.
+  - `GET|PUT /prs/…/drafts`, `POST /prs/…/post/preview`, `POST /prs/…/post` and `POST /prs/…/done`.
+  - `GET|PUT /settings`.
+- **Posting** (`application/posting.py`) is the only GitHub write.
+  - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `approve_against_evidence`, `newer_head`, `own_pr_comment_only`) and a digest. Approving an unfinished round, or one whose verdict isn't approve, needs `approve_against_evidence` confirmed: Jesinia recommends, the author decides.
+  - A post must carry that digest and confirm every warning. It goes out as one atomic review on the round's head. Drafts GitHub can't anchor go in the body.
+  - Each attempt is recorded before GitHub is called, and its body ends with an invisible marker (`<!-- jesinia-posting:<id> -->`).
+  - A lost response, a timeout or a 5xx leaves the attempt `uncertain`. Until it is reconciled, nothing else is posted for that round. The next post first looks for a submitted review whose body ends with that marker and adopts it.
+    - If the adopted review isn't the one being posted (another digest or event), the post is refused with `EarlierReviewPosted` (409, with the URL).
+    - Within 3 minutes of the attempt, a missing review means "retry later" (`PostingStillUncertain`, 409 with `retry_after`). After that, the attempt is marked `not_posted` and the post goes on.
+  - Drafts and summaries may not contain the marker's name in any spelling (`InvalidDraftContent`, 422), so a review posted by hand is never adopted.
+  - `GET …/drafts` reads the cache only: `files_pending` says where drafts post isn't known yet.
+  - Bodies and tokens are never logged.
+- **MCP, read-only:** `review_queue`, `review_get` and `review_findings`. They read the cache only. Every PR-derived text comes back inside `<untrusted-data>` fences.
+- **Correctness evidence:** the correctness pass's claimed `checked` ranges count only where its repo tools actually returned those lines (`ReadLog`). The evidence shows the claimed coverage beside the verified one.
 
 ## Setup
 
@@ -27,7 +47,7 @@ All under Jesinia's data directory (`~/Library/Application Support/jesinia/`):
 |---|---|---|
 | `review/repos/<owner>/<name>/mirror.git` | A bare mirror of the repo | rebuilt by fetching |
 | `review/repos/<owner>/<name>/trees/<sha>` | A checkout of one reviewed head | rebuilt on demand |
-| `review.sqlite` | Review history (filled from Task 4 on) | history: included in `jesinia backup` |
+| `review.sqlite` | The queue, rounds, artifacts, drafts and postings | history: included in `jesinia backup` |
 
 - **Kept commits:** commits fetched by SHA get a `refs/jesinia/keep/<sha>` ref, so `git gc` never drops them.
 - **Pruning:** `GitWorkspace.prune(keep)` removes worktrees and keep refs that are no longer needed. Nothing schedules it yet; a later task will.

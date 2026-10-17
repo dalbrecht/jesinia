@@ -14,8 +14,12 @@ from typing import Any
 
 import pytest
 
-from jesinia.apps.review.application.ports import Workspace
+from jesinia.apps.review.application.ports import KeepProvider, Workspace
+from jesinia.apps.review.application.repo_tools import RepoTools
+from jesinia.apps.review.application.sessions import ReviewSessionRegistry
+from jesinia.apps.review.domain.coverage import coverage, parse_unified_diff
 from jesinia.apps.review.domain.workspace import (
+    DiffTooLargeError,
     GitCommandError,
     GitOutputError,
     GitTimeoutError,
@@ -126,6 +130,16 @@ def fixture(tmp_path: Path) -> Fixture:
     return Fixture(remote, base, head, rebased_base, rebased_head, conflict_base, conflict_head)
 
 
+def keeping(*pairs: tuple[str, str]) -> KeepProvider:
+    """A keep provider for ``prune`` from fixed ``(repo, sha)`` pairs."""
+    wanted = {(canonical_repo(repo), sha) for repo, sha in pairs}
+
+    async def keep(repo: str) -> set[str]:
+        return {sha for name, sha in wanted if name == repo}
+
+    return keep
+
+
 def make_workspace(tmp_path: Path, fixture: Fixture) -> GitWorkspace:
     return GitWorkspace(tmp_path / "data" / "review" / "repos", lambda repo: str(fixture.remote))
 
@@ -194,15 +208,15 @@ async def test_prune_removes_unkept_worktrees(tmp_path: Path, fixture: Fixture) 
     dropped = await ws.worktree(REPO, fixture.rebased_head)
     also_dropped = await ws.worktree(REPO, fixture.conflict_head)
 
-    assert await ws.prune({(REPO, fixture.head)}) == 2
+    assert await ws.prune(keeping((REPO, fixture.head))) == 2
     assert kept.is_dir() and not dropped.exists() and not also_dropped.exists()
     listed = git(kept, "worktree", "list", "--porcelain")
     assert str(dropped) not in listed and str(kept) in listed
-    assert await ws.prune({(REPO, fixture.head)}) == 0
+    assert await ws.prune(keeping((REPO, fixture.head))) == 0
 
 
 async def test_prune_with_nothing_on_disk_is_a_no_op(tmp_path: Path, fixture: Fixture) -> None:
-    assert await make_workspace(tmp_path, fixture).prune(set()) == 0
+    assert await make_workspace(tmp_path, fixture).prune(keeping()) == 0
 
 
 async def test_prune_skips_entries_it_did_not_create(tmp_path: Path, fixture: Fixture) -> None:
@@ -212,7 +226,7 @@ async def test_prune_skips_entries_it_did_not_create(tmp_path: Path, fixture: Fi
     (root / "acme" / "stray-file").write_text("x")
     (root / "acme" / "widget" / "trees" / "not-a-sha").mkdir(parents=True)
     (root / ".hidden" / "x" / "trees" / ("a" * 40)).mkdir(parents=True)
-    assert await ws.prune(set()) == 0
+    assert await ws.prune(keeping()) == 0
     assert (root / "acme" / "widget" / "trees" / "not-a-sha").is_dir()
     assert (root / ".hidden" / "x" / "trees" / ("a" * 40)).is_dir()
 
@@ -233,7 +247,7 @@ async def test_never_pushes(
     await ws.diff(REPO, fixture.base, fixture.head)
     await ws.merge_base(REPO, fixture.base, fixture.head)
     await ws.patch_ids(REPO, fixture.base, fixture.head)
-    await ws.prune(set())
+    await ws.prune(keeping())
 
     assert recorded, "the workspace ran no git commands"
     assert all(argv[0] == "git" for argv in recorded)
@@ -302,7 +316,7 @@ async def test_repo_names_are_case_insensitive(tmp_path: Path, fixture: Fixture)
     kept = await ws.worktree(REPO, fixture.head)
     assert await ws.worktree("Acme/Widget", fixture.head) == kept
     assert ws._lock("Acme/Widget") is ws._lock(REPO)
-    assert await ws.prune({("Acme/Widget", fixture.head)}) == 0
+    assert await ws.prune(keeping(("Acme/Widget", fixture.head))) == 0
     assert kept.is_dir()
 
 
@@ -450,7 +464,7 @@ async def test_prune_never_follows_symlinks(tmp_path: Path, fixture: Fixture) ->
     (ws.root / "evil").symlink_to(outside, target_is_directory=True)
     (trees / f".tmp-{fixture.conflict_head}-stale").mkdir()
 
-    assert await ws.prune({(REPO, fixture.head)}) == 1
+    assert await ws.prune(keeping((REPO, fixture.head))) == 1
     assert not link.is_symlink() and kept.is_dir() and (kept / "c.txt").exists()
     assert (outside / "x" / "trees" / fixture.head).is_dir()
     assert not (trees / f".tmp-{fixture.conflict_head}-stale").exists()
@@ -505,8 +519,6 @@ async def test_inputs_are_validated_before_git_runs(tmp_path: Path, fixture: Fix
         await ws.diff(REPO, "--output=/tmp/x", "a" * 40)
     with pytest.raises(InvalidRefError):
         await ws.fetch(REPO, ["--upload-pack=touch /tmp/pwned"])
-    with pytest.raises(InvalidRepoError):
-        await ws.prune({("not a repo", "a" * 40)})
     assert not (tmp_path / "data").exists()
 
 
@@ -780,7 +792,7 @@ async def test_prune_drops_keep_refs_outside_the_keep_set(tmp_path: Path, fixtur
     await ws.fetch(REPO, [fixture.base, fixture.head, fixture.conflict_head])
     mirror = ws.root.resolve() / "acme" / "widget" / "mirror.git"
     assert not (mirror.parent / "trees").exists()  # a repo with no worktrees yet
-    assert await ws.prune({(REPO, fixture.head)}) == 0
+    assert await ws.prune(keeping((REPO, fixture.head))) == 0
     assert _keep_refs(mirror) == {f"refs/jesinia/keep/{fixture.head}"}
 
 
@@ -800,3 +812,194 @@ async def test_kill_never_waits_on_unread_output() -> None:
     await proc.stdout.readexactly(65537)
     await asyncio.wait_for(workspace_module._kill(proc), timeout=5)
     assert proc.returncode is not None
+
+
+async def test_prune_skips_a_broken_mirror_and_prunes_the_other_repos(
+    tmp_path: Path, fixture: Fixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    await ws.worktree(REPO, fixture.head)
+    stale = await ws.worktree(REPO, fixture.rebased_head)
+    # A crash in ensure_mirror can leave a mirror directory git never initialised; it sorts
+    # before acme/widget, so a prune that stopped at it would never reach the real repo.
+    (ws.root / "aaa" / "broken" / "mirror.git").mkdir(parents=True)
+
+    assert await ws.prune(keeping((REPO, fixture.head))) == 1
+
+    assert not stale.exists()
+    assert "aaa/broken" in caplog.text
+
+
+async def test_tree_key_names_the_repo_and_sha_of_a_worktree(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    tree = await ws.worktree(REPO, fixture.head)
+    assert ws.tree_key(tree) == (REPO, fixture.head)
+    assert ws.tree_key(ws.root / "acme" / "widget" / "trees" / fixture.head) == (
+        REPO,
+        fixture.head,
+    )
+    assert ws.tree_key(tree / "c.txt") is None
+    assert ws.tree_key(ws.root / "acme" / "widget" / "trees" / "not-a-sha") is None
+    assert ws.tree_key(ws.root / "acme" / "widget" / "other" / fixture.head) is None
+    assert ws.tree_key(ws.root / "-x" / "widget" / "trees" / fixture.head) is None
+    assert ws.tree_key(tmp_path / "elsewhere" / "trees" / fixture.head) is None
+
+
+async def test_a_tree_created_or_bound_during_a_prune_survives(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    (ws.root / "aaa" / "first" / "trees").mkdir(parents=True)  # pruned before acme/widget
+    unkept = await ws.worktree(REPO, fixture.rebased_head)  # bound while the prune runs
+    sessions = ReviewSessionRegistry()
+    sessions.use_tree_locks(ws.tree_lock)
+    started: set[str] = set()  # rounds started while the prune runs
+    paused, resume = asyncio.Event(), asyncio.Event()
+
+    async def keep(repo: str) -> set[str]:
+        if repo == "aaa/first":
+            paused.set()
+            await resume.wait()
+            return set()
+        bound = (ws.tree_key(tree) for tree in sessions.bound_trees())
+        return started | {key[1] for key in bound if key is not None}
+
+    pruning = asyncio.create_task(ws.prune(keep))
+    await paused.wait()
+    started.add(fixture.head)
+    created = await ws.worktree(REPO, fixture.head)
+    await sessions.attach("agent", unkept)
+    resume.set()
+
+    assert await pruning == 0
+    assert created.is_dir() and unkept.is_dir()
+
+
+async def test_binding_a_tree_waits_for_its_repos_lock(tmp_path: Path, fixture: Fixture) -> None:
+    ws = await fetched(tmp_path, fixture)
+    tree = await ws.worktree(REPO, fixture.head)
+    sessions = ReviewSessionRegistry()
+    sessions.use_tree_locks(ws.tree_lock)
+    lock = ws.tree_lock(tree)
+    assert lock is not None and ws.tree_lock(tmp_path / "elsewhere") is None
+
+    async with lock:
+        binding = asyncio.create_task(sessions.attach("s", tree))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert sessions.worktree_for("s") is None
+    await binding
+
+    assert sessions.worktree_for("s") == tree
+    await sessions.attach("t", tmp_path / "elsewhere")  # not a workspace tree: no lock
+    assert sessions.worktree_for("t") == tmp_path / "elsewhere"
+
+
+async def test_attach_without_tree_locks_just_binds(tmp_path: Path) -> None:
+    sessions = ReviewSessionRegistry()
+    await sessions.attach("s", tmp_path)
+    assert sessions.worktree_for("s") == tmp_path
+
+
+async def test_prune_ignores_keep_entries_that_are_not_full_shas(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    await ws.worktree(REPO, fixture.head)
+
+    async def keep(repo: str) -> set[str]:
+        return {fixture.head, "HEAD", ""}
+
+    assert await ws.prune(keep) == 0
+
+
+# --- the diff cap (PR 1 final review M8) and real diffs through the coverage parser -------------
+
+
+async def test_a_diff_over_the_cap_is_a_typed_error_not_a_huge_buffer(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = GitWorkspace(
+        tmp_path / "data" / "review" / "repos", lambda repo: str(fixture.remote), diff_limit=40
+    )
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/main", "refs/heads/feature"])
+    with pytest.raises(DiffTooLargeError, match="over 40 bytes") as raised:
+        await ws.diff(REPO, fixture.base, fixture.head)
+    assert isinstance(raised.value, WorkspaceError) and raised.value.limit == 40
+    with pytest.raises(DiffTooLargeError):
+        await ws.patch_ids(REPO, fixture.base, fixture.head)
+    assert workspace_module.DIFF_LIMIT == 32 * 1024 * 1024
+
+
+async def test_real_git_diffs_parse_for_coverage(tmp_path: Path, fixture: Fixture) -> None:
+    work = tmp_path / "parse-work"
+    subprocess.run(["git", "clone", "-q", str(fixture.remote), str(work)], check=True)
+    git(work, "checkout", "-q", "-b", "parse", fixture.base)
+    git(work, "mv", "a.txt", "renamed a.txt")
+    git(work, "rm", "-q", "b.txt")
+    (work / "blob.bin").write_bytes(bytes(range(256)))
+    (work / "café.py").write_text("x = 1\n")
+    (work / "uv.lock").write_text("lock\n")
+    head = commit_all(work, "parse")
+    git(work, "push", "-q", "origin", "parse")
+    ws = make_workspace(tmp_path, fixture)
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/parse"])
+    diff = parse_unified_diff(await ws.diff(REPO, fixture.base, head))
+    by_path = {f.path: f for f in diff.files}
+    assert by_path["renamed a.txt"].status == "renamed" and by_path["renamed a.txt"].hunks == ()
+    assert by_path["b.txt"].status == "deleted" and by_path["b.txt"].changed_lines == 1
+    assert by_path["blob.bin"].is_binary
+    assert by_path["café.py"].status == "added" and by_path["café.py"].changed_lines == 1
+    result = coverage(diff, [], [])
+    assert {(skip.path, skip.reason) for skip in result.not_walked} >= {
+        ("renamed a.txt", "rename_only"),
+        ("blob.bin", "binary"),
+        ("uv.lock", "lockfile"),
+    }
+
+
+async def test_a_fresh_tree_is_bound_before_a_prune_can_remove_it(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R55: a job's tree is bound under the repo lock it was created in. A prune that comes
+    in meanwhile (the PR was dismissed, so only the binding keeps the tree) sees it bound,
+    and the job's repo tools still read it."""
+    ws = await fetched(tmp_path, fixture)
+    sessions = ReviewSessionRegistry()
+    real_git = ws._git
+    moving, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_git(location: tuple[str, ...], *args: str, **kwargs: Any) -> str:
+        out = await real_git(location, *args, **kwargs)
+        if args[:2] == ("worktree", "move"):
+            moving.set()
+            await release.wait()
+        return out
+
+    monkeypatch.setattr(ws, "_git", slow_git)
+
+    async def keep(repo: str) -> set[str]:  # the dismissed PR keeps nothing itself
+        bound = (ws.tree_key(tree) for tree in sessions.bound_trees())
+        return {key[1] for key in bound if key is not None}
+
+    creating = asyncio.create_task(
+        ws.worktree(REPO, fixture.head, bind=lambda path: sessions.bind("job", path))
+    )
+    await moving.wait()
+    pruning = asyncio.create_task(ws.prune(keep))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    release.set()
+    tree = await creating
+
+    assert await pruning == 0 and tree.is_dir()
+    assert sessions.worktree_for("job") == tree
+    tools = RepoTools(sessions.worktree_for, ws, sessions.allowance)
+    assert (await tools.read("job", "a.txt", 1, 2))["end"] == 2
+    # An existing tree is bound under the lock too.
+    assert await ws.worktree(REPO, fixture.head, bind=lambda p: sessions.bind("job2", p)) == tree
+    assert sessions.worktree_for("job2") == tree

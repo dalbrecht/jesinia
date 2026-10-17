@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "$id": "https://jesinia.local/review/schemas/walkthrough.json",
+  "title": "walkthrough",
+  "description": "A narrative walk through the diff, one step per meaningful hunk group, plus every file or hunk left out and why.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "steps",
+    "skipped"
+  ],
+  "properties": {
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/step"
+      },
+      "maxItems": 200
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/skip"
+      },
+      "maxItems": 5000
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "body",
+        "hunks"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "hunks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hunk"
+          },
+          "minItems": 1,
+          "maxItems": 50
+        }
+      }
+    },
+    "hunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "hunk"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "hunk": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "skip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "hunk",
+        "reason"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "hunk": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
+        "reason": {
+          "enum": [
+            "generated",
+            "lockfile",
+            "vendored",
+            "rename_only",
+            "format_only",
+            "judged_mechanical"
+          ]
+        }
+      }
+    }
+  }
+}

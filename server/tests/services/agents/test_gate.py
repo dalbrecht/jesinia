@@ -32,3 +32,20 @@ async def test_read_only_sessions_are_denied_every_write(tmp_path: Path) -> None
     assert svc.store.pending_in_state("pending") == []  # nothing for the user to approve
     allowed = await gate.check(TOOLS["kb_read"], In(), Principal("session", reader.id))
     assert allowed.kind == "allow"
+
+
+async def test_sessions_limited_to_named_tools_are_denied_every_other_tool(
+    tmp_path: Path,
+) -> None:
+    svc = make(tmp_path, FakeRunner([]))
+    gate = SessionWriteGate(svc)
+    limited = await svc.create(SUBJ, "fake", pack(), read_only=True, allowed_tools={"kb_read"})
+    reader = Principal("session", limited.id)
+    assert (await gate.check(TOOLS["kb_read"], In(), reader)).kind == "allow"
+    denied = await gate.check(TOOLS["kb_bad"], In(), reader)
+    assert denied.kind == "deny" and "not allowed" in (denied.reason or "")
+    # Reads outside the list are refused too, not only writes.
+    other_read = TOOLS["kb_read"].__class__("kb_other", "r", In, TOOLS["kb_read"].handler, False)
+    assert (await gate.check(other_read, In(), reader)).kind == "deny"
+    # The owner is never limited.
+    assert (await gate.check(other_read, In(), Principal("user"))).kind == "allow"

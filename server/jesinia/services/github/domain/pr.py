@@ -94,6 +94,10 @@ class ReviewSummary:
     commit_sha: str | None
     submitted_at: datetime | None
     comment_count: int
+    # The review's own text and its page, so a review whose posting response was lost can be
+    # recognised and adopted instead of posted twice.
+    body: str = ""
+    url: str | None = None
 
 
 @dataclass(frozen=True)

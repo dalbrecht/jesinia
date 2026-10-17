@@ -372,3 +372,28 @@ async def test_sessions_from_before_read_only_stay_writable_through_approval(
     gate = SessionWriteGate(svc)
     decision = await gate.check(TOOLS["kb_write"], In(), Principal("session", "s1"))
     assert decision.kind == "pending"
+
+
+async def test_sessions_can_be_limited_to_named_tools(tmp_path: Path) -> None:
+    fake = FakeRunner([TextDelta("ok"), TurnDone("f", None)])
+    svc = make(tmp_path, fake)
+    s = await svc.create(SUBJ, "fake", pack(), read_only=True, allowed_tools={"kb_read", "gone"})
+    assert s.allowed_tools == frozenset({"kb_read", "gone"})
+    await svc.send(s.id, "hi")
+    await svc.wait_idle(s.id)
+    assert fake.requests[-1].allowed_tools == ["kb_read"]  # offered: allowed and existing
+    # The limit is stored: a restarted server keeps enforcing it.
+    assert make(tmp_path, fake).get(s.id).allowed_tools == frozenset({"kb_read", "gone"})
+    assert (await svc.create(SUBJ, "fake", pack())).allowed_tools is None
+
+
+async def test_preauthorized_tools_must_be_allowed(tmp_path: Path) -> None:
+    svc = make(tmp_path, FakeRunner([]))
+    with pytest.raises(ValueError, match="not allowed"):
+        await svc.create(
+            SUBJ, "fake", pack(), preauthorized_tools={"kb_write"}, allowed_tools=set()
+        )
+    ok = await svc.create(
+        SUBJ, "fake", pack(), preauthorized_tools={"kb_write"}, allowed_tools={"kb_write"}
+    )
+    assert ok.preauthorized == frozenset({"kb_write"})

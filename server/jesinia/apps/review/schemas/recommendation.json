@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "$id": "https://jesinia.local/review/schemas/recommendation.json",
+  "title": "recommendation",
+  "description": "The agent's suggested verdict and why. Advisory: Jesinia's evidence rule decides.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "reasoning"
+  ],
+  "properties": {
+    "verdict": {
+      "enum": [
+        "approve",
+        "request_changes",
+        "needs_closer_look"
+      ]
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    }
+  }
+}

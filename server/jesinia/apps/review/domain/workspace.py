@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from jesinia.apps.review.domain.errors import ReviewError
+
 # GitHub owners: alphanumerics and single hyphens, no leading hyphen, at most 39 chars.
 _OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
 _NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
@@ -19,7 +21,7 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 _REF = re.compile(r"refs(/[A-Za-z0-9][A-Za-z0-9._-]*)+")
 
 
-class WorkspaceError(Exception):
+class WorkspaceError(ReviewError):
     """Base for every repo workspace failure."""
 
 
@@ -39,6 +41,15 @@ class WorkspacePathError(WorkspaceError):
     """A workspace path resolved outside the workspace root (e.g. through a symlink)."""
 
 
+class InvalidTreePathError(WorkspaceError):
+    """A path inside a commit that is absolute, climbs out with ``..``, or looks like an
+    option."""
+
+
+class MirrorFileTooLargeError(WorkspaceError):
+    """A file at a commit is larger than the caller allows; it was not read."""
+
+
 class GitCommandError(WorkspaceError):
     """A git command exited non-zero; ``stderr`` keeps git's own explanation."""
 
@@ -47,6 +58,16 @@ class GitCommandError(WorkspaceError):
         self.argv = argv
         self.code = code
         self.stderr = stderr
+
+
+class DiffTooLargeError(WorkspaceError):
+    """A diff larger than Jesinia reads: over the workspace's byte cap (git was stopped
+    rather than buffered), or over the coverage parser's changed-line or file cap. Callers
+    state the cap; coverage marks the diff incomplete."""
+
+    def __init__(self, message: str, limit: int) -> None:
+        super().__init__(message)
+        self.limit = limit
 
 
 class GitOutputError(WorkspaceError):
@@ -109,3 +130,16 @@ def check_ref(ref: str) -> str:
     if _SHA.fullmatch(ref) or (_REF.fullmatch(ref) and ".." not in ref):
         return ref
     raise InvalidRefError(f"not a full ref or commit SHA: {ref!r}")
+
+
+def check_tree_path(path: str) -> str:
+    """Return ``path`` if it names a file inside a commit's tree: relative, no empty, ``.``
+    or ``..`` parts, and not starting with ``-``.
+
+    Raises:
+        InvalidTreePathError: anything else.
+    """
+    parts = path.split("/")
+    if not path or path.startswith("-") or any(part in {"", ".", ".."} for part in parts):
+        raise InvalidTreePathError(f"not a path inside a commit: {path!r}")
+    return path

@@ -17,6 +17,7 @@ from datetime import datetime
 from jesinia.services.github.application.service import (
     API,
     GitHubError,
+    GitHubRateLimitedError,
     GitHubRequestError,
     GitHubService,
     github_error_message,
@@ -345,13 +346,27 @@ class PrClient:
         self, hit: _SearchHit, viewer: str, limit: asyncio.Semaphore
     ) -> PullRequest:
         """The full PR, or, if that one fetch fails, the search hit carrying the cause, so
-        one inaccessible PR never empties the inbox."""
+        one inaccessible PR never empties the inbox. A rate limit is not one PR's problem:
+        it is raised, so the caller backs off instead of caching a page of empty rows."""
         (repo, number), item = hit
         try:
             async with limit:
                 return await self._pull(repo, number, viewer)
+        except GitHubRateLimitedError:
+            raise
         except (GitHubRequestError, GitHubPayloadError) as exc:
             return _pull_request_from_search(repo, item, str(exc))
+
+    async def viewer_orgs(self) -> list[str]:
+        """Logins of the orgs the viewer belongs to, lowercase (every page)."""
+        return [_text(org, "login").lower() for org in await self._get_pages("/user/orgs")]
+
+    async def inbox_repos(self) -> list[str]:
+        """Every repo, across GitHub, with an open PR whose review is requested of the viewer
+        or that the viewer wrote; lowercase ``owner/name``, sorted. Seeds the watched repos."""
+        qualifiers = (f"{_REQUESTED} archived:false", "author:@me archived:false")
+        found = await asyncio.gather(*(self._search(q, []) for q in qualifiers))
+        return sorted({repo.lower() for hits in found for (repo, _), _ in hits})
 
     async def list_review_inbox(self, repos: list[str]) -> list[PullRequest]:
         """Open PRs in ``repos`` whose review is requested of the viewer (directly or via a
@@ -476,6 +491,8 @@ class PrClient:
                     commit_sha=_optional_text(review, "commit_id"),
                     submitted_at=_optional_time(review, "submitted_at"),
                     comment_count=counts.get(_number(review, "id"), 0),
+                    body=_optional_text(review, "body") or "",
+                    url=_optional_text(review, "html_url"),
                 )
             )
         return summaries

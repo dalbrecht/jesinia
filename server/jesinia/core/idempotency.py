@@ -5,7 +5,9 @@ A write route takes an ``IdempotentCall`` dependency (built by ``idempotent``) a
 work through ``IdempotentCall.run``. The first request with a ``(key, route)`` pair reserves
 it, runs, and stores the response status and JSON body; a repeat gets that stored response
 back without acting again. A request that arrives while the first is still running gets 409.
-Server errors (5xx) and handler exceptions release the reservation so the client can retry.
+Server errors (5xx), transient answers (any response with a ``Retry-After`` header: "not
+yet", never a final outcome) and handler exceptions release the reservation so the client
+can retry with the same key.
 
 Core owns no database: each module that uses this adds the ``idempotency`` table to its own
 migrations and hands ``idempotent`` a store over its own connection::
@@ -145,8 +147,14 @@ class IdempotentCall:
         self._route = route
         self._now = now
 
+    @property
+    def key(self) -> str | None:
+        """The request's key (``None`` when missing; ``run`` refuses such a request)."""
+        return self._key
+
     async def run(self, work: Callable[[], Awaitable[Response]]) -> Response:
-        """The stored response for a repeated key, else ``work()``'s (stored unless 5xx).
+        """The stored response for a repeated key, else ``work()``'s (stored unless it is a
+        5xx or carries ``Retry-After``).
 
         A missing or malformed key is 400; a key whose first request is still running is
         409. If ``work`` raises, the reservation is released and the exception propagates.
@@ -175,7 +183,8 @@ class IdempotentCall:
         except BaseException:
             self._store.release(key, self._route)
             raise
-        if response.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+        transient = "retry-after" in response.headers
+        if transient or response.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
             self._store.release(key, self._route)
         else:
             body = bytes(response.body).decode("utf-8") or None

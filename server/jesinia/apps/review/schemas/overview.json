@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "$id": "https://jesinia.local/review/schemas/overview.json",
+  "title": "overview",
+  "description": "Why the PR exists and what it is for, in business terms.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "purpose",
+    "sources"
+  ],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "maxItems": 50
+    }
+  }
+}

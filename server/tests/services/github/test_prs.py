@@ -19,6 +19,7 @@ from jesinia.services.github.application.prs import (
     PrClient,
 )
 from jesinia.services.github.application.service import (
+    GitHubRateLimitedError,
     GitHubRequestError,
     GitHubService,
     GitHubUnavailable,
@@ -206,6 +207,10 @@ async def test_reviews_carry_state_commit_and_comment_counts(prs: PrClient) -> N
     ]
     assert reviews[0].submitted_at == datetime(2026, 10, 15, 10, 10, tzinfo=UTC)
     assert reviews[2].submitted_at is None
+    # Posting adopts a review whose response was lost by its body and URL.
+    assert reviews[0].body == "Looks fine"
+    assert reviews[0].url == "https://github.com/acme/api/pull/7#pullrequestreview-101"
+    assert reviews[1].body == ""
 
 
 @pytest.mark.parametrize(
@@ -741,3 +746,58 @@ async def test_file_lists_capped_by_github_are_flagged(
     assert len(files) == fetched
     assert flagged.files_truncated is truncated
     assert ("file list truncated" in caplog.text) is truncated
+
+
+@respx.mock
+async def test_inbox_reraises_a_rate_limit_instead_of_degrading_the_pr(prs: PrClient) -> None:
+    _mock_search("review-requested:@me", "search_review_requested")
+    _mock_search("author:@me", "search_authored")
+    _mock_search("reviewed-by:@me", "search_reviewed")
+    _mock_pulls()
+    respx.get(f"{API}/repos/acme/web/pulls/8").mock(
+        return_value=Response(
+            429, headers={"retry-after": "60"}, json={"message": "secondary rate limit"}
+        )
+    )
+
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        await prs.list_review_inbox(["acme/api", "acme/web"])
+    assert caught.value.reset_at is not None
+
+
+def _items(name: str) -> list[dict[str, object]]:
+    data = fixture(name)
+    assert isinstance(data, dict) and isinstance(data["items"], list)
+    return [item for item in data["items"] if isinstance(item, dict)]
+
+
+@respx.mock
+async def test_inbox_repos_finds_requested_and_authored_prs_anywhere(prs: PrClient) -> None:
+    requested = respx.get(
+        f"{API}/search/issues",
+        params__contains={"q": "is:pr is:open review-requested:@me archived:false"},
+    ).mock(return_value=Response(200, json=fixture("search_review_requested")))
+    shouty = {**_items("search_reviewed")[0], "repository_url": f"{API}/repos/ACME/Api"}
+    authored = respx.get(
+        f"{API}/search/issues", params__contains={"q": "is:pr is:open author:@me archived:false"}
+    ).mock(
+        return_value=Response(
+            200, json={"total_count": 2, "items": [*_items("search_authored"), shouty]}
+        )
+    )
+
+    assert await prs.inbox_repos() == ["acme/api", "acme/web"]
+    assert requested.called and authored.called
+
+
+@respx.mock
+async def test_viewer_orgs_follow_pages_and_lowercase(prs: PrClient) -> None:
+    first = [{"login": f"Org{i}"} for i in range(100)]
+    route = respx.get(f"{API}/user/orgs").mock(
+        side_effect=[Response(200, json=first), Response(200, json=[{"login": "Acme"}])]
+    )
+
+    orgs = await prs.viewer_orgs()
+
+    assert len(orgs) == 101 and orgs[0] == "org0" and orgs[-1] == "acme"
+    assert [c.request.url.params["page"] for c in route.calls] == ["1", "2"]

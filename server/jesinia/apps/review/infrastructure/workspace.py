@@ -34,21 +34,25 @@ from asyncio import create_subprocess_exec as spawn
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from jesinia.apps.review.application.ports import KeepProvider
 from jesinia.apps.review.domain.repo_access import CappedOutput, RegexDialect
 from jesinia.apps.review.domain.workspace import (
+    DiffTooLargeError,
     GitCommandError,
     GitOutputError,
     GitTimeoutError,
     GitUnavailableError,
+    MirrorFileTooLargeError,
     WorkspaceError,
     WorkspacePathError,
     canonical_repo,
     check_ref,
     check_sha,
+    check_tree_path,
     parse_repo,
 )
 
-__all__ = ["EMPTY_TREE", "GitWorkspace", "github_remote_url"]
+__all__ = ["DIFF_LIMIT", "EMPTY_TREE", "GitWorkspace", "github_remote_url"]
 
 log = logging.getLogger(__name__)
 
@@ -116,9 +120,18 @@ _DIFF_OPTIONS = (
     "--diff-algorithm=myers",
     "--indent-heuristic",
 )
+# Bytes of diff output read before git is stopped: room for a 5,000-line PR with a 2 MB
+# lockfile many times over, and a bound on what one huge binary or generated file can cost.
+DIFF_LIMIT = 32 * 1024 * 1024
 _KEEP_PREFIX = "refs/jesinia/keep/"
+# The remote's default branch (its HEAD) as last fetched: where the repo's review standards
+# are read from (R39). Outside the keep prefix, so a prune never drops it.
+_DEFAULT_BRANCH_REF = "refs/jesinia/default-branch"
 _FILE_HEADER = re.compile(rb"^(?=diff --git )", re.MULTILINE)
 _TEMPORARY_PREFIX = ".tmp-"
+# git processes the repo tools may run at once across every review session (R52); each
+# session also runs one at a time.
+REPO_GIT_CONCURRENCY = 4
 
 
 def github_remote_url(repo: str) -> str:
@@ -135,6 +148,10 @@ class GitWorkspace:
             (``github_remote_url`` in production, a local path in tests).
         command_timeout: seconds any git command but ``fetch`` may run.
         fetch_timeout: seconds a ``fetch`` may run.
+        diff_limit: bytes of diff output ``diff`` and ``patch_ids`` read before they stop
+            git and raise ``DiffTooLargeError``.
+        repo_git_concurrency: the repo tools' git processes (``read_in_tree``) running at
+            once, across every review session.
     """
 
     def __init__(
@@ -144,13 +161,17 @@ class GitWorkspace:
         *,
         command_timeout: float = 60.0,
         fetch_timeout: float = 300.0,
+        diff_limit: int = DIFF_LIMIT,
+        repo_git_concurrency: int = REPO_GIT_CONCURRENCY,
     ) -> None:
         self.root = root
+        self._diff_limit = diff_limit
         self._remote_url = remote_url
         self._command_timeout = command_timeout
         self._fetch_timeout = fetch_timeout
         self._locks: dict[str, asyncio.Lock] = {}
         self._regex_dialect: RegexDialect | None = None
+        self._tree_reads = asyncio.Semaphore(repo_git_concurrency)
 
     async def ensure_mirror(self, repo: str) -> None:
         mirror = self._mirror(repo)
@@ -179,13 +200,63 @@ class GitWorkspace:
                 timeout=self._fetch_timeout,
             )
 
-    async def worktree(self, repo: str, sha: str) -> Path:
+    async def fetch_default_branch(self, repo: str) -> str:
+        """Fetch the remote's default branch (whatever its HEAD names) into the mirror under
+        its own ref, and return its tip.
+
+        Raises:
+            GitCommandError, GitTimeoutError: e.g. the remote can't be reached.
+        """
+        mirror = self._mirror(repo)
+        async with self._lock(repo):
+            await self._git(
+                _bare(mirror),
+                *("fetch", "-q", "--no-tags", "--no-recurse-submodules", "origin"),
+                f"+HEAD:{_DEFAULT_BRANCH_REF}",
+                timeout=self._fetch_timeout,
+            )
+        tip = await self._git(
+            _bare(mirror),
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{_DEFAULT_BRANCH_REF}^{{commit}}",
+        )
+        return check_sha(tip.strip())
+
+    async def default_branch_head(self, repo: str) -> str:
+        """The default branch's tip as last fetched; fetched now if it never was.
+
+        Raises:
+            GitCommandError, GitTimeoutError: as ``fetch_default_branch``.
+        """
+        tip = await self._commit_of(self._mirror(repo), _DEFAULT_BRANCH_REF)
+        return tip if tip is not None else await self.fetch_default_branch(repo)
+
+    async def _commit_of(self, mirror: Path, ref: str) -> str | None:
+        argv, out, err, code, _ = await self._execute(
+            _bare(mirror), ("rev-parse", "--verify", "-q", "--end-of-options", f"{ref}^{{commit}}")
+        )
+        if code == 1:
+            return None  # no such ref
+        if code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return check_sha(out.decode().strip())
+
+    async def worktree(
+        self, repo: str, sha: str, *, bind: Callable[[Path], None] | None = None
+    ) -> Path:
+        """The detached checkout of ``sha``, made if it isn't there. ``bind`` is called with
+        it before the repo lock is released (R55): the prune takes the same lock, so a tree
+        a job binds this way is never removed between being made and being bound."""
         mirror = self._mirror(repo)
         trees = self._inside(mirror.parent / "trees")
         path = trees / check_sha(sha)
         async with self._lock(repo):
             if path.is_dir() and not path.is_symlink():
                 if await self._head_of(path) == sha:
+                    if bind is not None:
+                        bind(path)
                     return path
             await _remove(path)  # a damaged checkout or a stray link: rebuild it
             # Clears registrations whose directories are gone, which would block the add.
@@ -203,16 +274,25 @@ class GitWorkspace:
                 with contextlib.suppress(WorkspaceError):  # keep the original failure
                     await self._git(_bare(mirror), "worktree", "prune")
                 raise
+            if bind is not None:
+                bind(path)
             return path
 
     async def diff(self, repo: str, base_sha: str, head_sha: str) -> str:
-        return await self._git(
+        """The unified diff ``base_sha..head_sha``.
+
+        Raises:
+            DiffTooLargeError: it is over the workspace's ``diff_limit`` bytes.
+        """
+        out = await self._run(
             _bare(self._mirror(repo)),
             "diff",
             *_DIFF_OPTIONS,
             check_sha(base_sha),
             check_sha(head_sha),
+            output_limit=self._diff_limit,
         )
+        return out.decode(errors="replace")
 
     async def merge_base(self, repo: str, a: str, b: str) -> str:
         out = await self._git(_bare(self._mirror(repo)), "merge-base", check_sha(a), check_sha(b))
@@ -224,13 +304,19 @@ class GitWorkspace:
         Conservative by design: context lines are hashed, so a base change within three
         lines of a hunk, or to a renamed file's old content, changes the ID. Callers see
         that as "content differs" and re-review, never as a missed change.
+
+        Raises:
+            DiffTooLargeError: the (binary) patch is over the workspace's ``diff_limit``.
         """
         mirror = _bare(self._mirror(repo))
         base, head = check_sha(base_sha), check_sha(head_sha)
         options = (*_DIFF_OPTIONS, "--binary")  # binary edits hash by content
-        names = await self._run(mirror, "diff", *options, "--name-only", "-z", base, head)
+        cap = self._diff_limit
+        names = await self._run(
+            mirror, "diff", *options, "--name-only", "-z", base, head, output_limit=cap
+        )
         paths = [os.fsdecode(name) for name in names.split(b"\0") if name]
-        patch = await self._run(mirror, "diff", *options, base, head)
+        patch = await self._run(mirror, "diff", *options, base, head, output_limit=cap)
         chunks = [chunk for chunk in _FILE_HEADER.split(patch) if chunk]
         if len(paths) != len(chunks):
             raise GitOutputError(
@@ -249,6 +335,55 @@ class GitWorkspace:
             raise GitOutputError(f"git patch-id gave no patch id for {', '.join(missing)}")
         return {path: by_index[index] for index, path in enumerate(paths, start=1)}
 
+    async def show_file(self, repo: str, sha: str, path: str, *, limit: int) -> bytes | None:
+        """``MirrorFiles``: the content of the regular file at ``path`` in commit ``sha``,
+        read from git's objects in the mirror (never a checkout), or ``None`` when there is
+        no such file. A symlink or a submodule there is ``None`` too: its target is never
+        followed, so a commit can't point the read anywhere else.
+
+        Raises:
+            InvalidShaError, InvalidTreePathError: before git runs.
+            MirrorFileTooLargeError: the file is over ``limit`` bytes (it is not read).
+            GitCommandError: e.g. ``sha`` isn't in the mirror.
+        """
+        mirror = _bare(self._mirror(repo))
+        commit, rel = check_sha(sha), check_tree_path(path)
+        # -l adds the blob size; -z keeps the name unquoted. With GIT_LITERAL_PATHSPECS the
+        # path matches only itself, and ls-tree never descends through a symlinked folder.
+        listing = await self._run(mirror, "ls-tree", "-l", "-z", "--full-tree", commit, "--", rel)
+        entry, _, name = listing.rstrip(b"\0").partition(b"\t")
+        if not entry or os.fsdecode(name) != rel:
+            return None
+        mode, kind, object_id, size = entry.split()
+        if kind != b"blob" or mode not in (b"100644", b"100755"):
+            return None
+        if int(size) > limit:
+            raise MirrorFileTooLargeError(
+                f"{rel} at {commit} is {int(size)} bytes, over the {limit}-byte limit"
+            )
+        return await self._run(mirror, "cat-file", "blob", object_id.decode())
+
+    async def commit_messages(
+        self, repo: str, base_sha: str, head_sha: str, *, limit: int
+    ) -> CappedOutput:
+        """The full messages of the commits in ``base_sha..head_sha``, newest first, each
+        followed by a NUL, from the mirror; cut (and flagged) past ``limit`` bytes.
+
+        Raises:
+            InvalidShaError, GitCommandError, GitTimeoutError.
+        """
+        mirror = _bare(self._mirror(repo))
+        base, head = check_sha(base_sha), check_sha(head_sha)
+        argv, out, err, code, truncated = await self._execute(
+            (*mirror, *_TREE_READ_OPTIONS),
+            ("log", "--no-color", "--format=%B%x00", "--end-of-options", f"{base}..{head}"),
+            extra_env={"GIT_CONFIG_NOSYSTEM": "1"},  # local reads need no credential helper
+            output_limit=limit,
+        )
+        if not truncated and code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return CappedOutput(out, truncated, 0 if truncated else code)
+
     async def read_in_tree(
         self,
         tree: Path,
@@ -260,7 +395,8 @@ class GitWorkspace:
         without_worktree: bool = False,
         timeout: float | None = None,
     ) -> CappedOutput:
-        """``TreeGit`` for the repo tools: read-only git inside a worktree under the root."""
+        """``TreeGit`` for the repo tools: read-only git inside a worktree under the root,
+        at most ``repo_git_concurrency`` at once (the rest wait their turn)."""
         inside = self._inside(tree)
         # blame reads the worktree's .mailmap unconditionally (log.mailmap doesn't reach
         # it), so it runs on the tree's mirror instead, where there is no worktree and the
@@ -273,13 +409,14 @@ class GitWorkspace:
         env = {"GIT_CONFIG_NOSYSTEM": "1"}  # local reads need no credential helper
         if glob_pathspecs:
             env["GIT_LITERAL_PATHSPECS"] = "0"
-        argv, out, err, code, truncated = await self._execute(
-            (*location, *_TREE_READ_OPTIONS),
-            args,
-            extra_env=env,
-            output_limit=output_limit,
-            timeout=timeout,
-        )
+        async with self._tree_reads:
+            argv, out, err, code, truncated = await self._execute(
+                (*location, *_TREE_READ_OPTIONS),
+                args,
+                extra_env=env,
+                output_limit=output_limit,
+                timeout=timeout,
+            )
         if not truncated and code not in accept_exit_codes:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
         return CappedOutput(out, truncated, 0 if truncated else code)
@@ -310,10 +447,10 @@ class GitWorkspace:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
         return code == 0
 
-    async def prune(self, keep: set[tuple[str, str]]) -> int:
-        """Remove worktrees and keep refs whose ``(repo, sha)`` isn't in ``keep``; return
-        how many worktrees went."""
-        kept = {(canonical_repo(repo), check_sha(sha)) for repo, sha in keep}
+    async def prune(self, keep: KeepProvider) -> int:
+        """Remove worktrees and keep refs whose SHA ``keep(repo)`` doesn't name; return how
+        many worktrees went. Each repo's keep set is asked for inside that repo's lock, the
+        one ``worktree`` takes, so a tree created or bound meanwhile is never removed."""
         removed = 0
         repos = {
             p.parent for p in (*self.root.glob("*/*/trees"), *self.root.glob("*/*/mirror.git"))
@@ -329,16 +466,43 @@ class GitWorkspace:
             except WorkspacePathError as exc:
                 log.warning("review.prune skipped %s: %s", trees, exc)
                 continue
-            async with self._lock(repo):
-                for tree in sorted(trees.iterdir()) if trees.is_dir() else []:
-                    if tree.name.startswith(_TEMPORARY_PREFIX):
-                        await _remove(tree)  # left behind by a crash mid-checkout
-                    elif _is_valid(check_sha, tree.name) and (repo, tree.name) not in kept:
-                        await _remove(tree)
-                        removed += 1
-                await self._git(_bare(mirror), "worktree", "prune")
-                await self._drop_keep_refs(mirror, {sha for name, sha in kept if name == repo})
+            try:
+                removed += await self._prune_repo(repo, mirror, trees, keep)
+            except WorkspaceError as exc:
+                # A mirror git never initialised (a crash in ensure_mirror) must not stop
+                # the prune of every repo after it.
+                log.warning("review.prune skipped %s: %s", repo, exc)
         return removed
+
+    async def _prune_repo(self, repo: str, mirror: Path, trees: Path, keep: KeepProvider) -> int:
+        removed = 0
+        async with self._lock(repo):
+            kept = {sha for sha in await keep(repo) if _is_valid(check_sha, sha)}
+            for tree in sorted(trees.iterdir()) if trees.is_dir() else []:
+                if tree.name.startswith(_TEMPORARY_PREFIX):
+                    await _remove(tree)  # left behind by a crash mid-checkout
+                elif _is_valid(check_sha, tree.name) and tree.name not in kept:
+                    await _remove(tree)
+                    removed += 1
+            await self._git(_bare(mirror), "worktree", "prune")
+            await self._drop_keep_refs(mirror, kept)
+        return removed
+
+    def tree_lock(self, path: Path) -> asyncio.Lock | None:
+        key = self.tree_key(path)
+        return None if key is None else self._lock(key[0])
+
+    def tree_key(self, path: Path) -> tuple[str, str] | None:
+        try:
+            parts = path.resolve().relative_to(self.root.resolve()).parts
+        except ValueError:
+            return None
+        if len(parts) != 4 or parts[2] != "trees" or not _is_valid(check_sha, parts[3]):
+            return None
+        repo = f"{parts[0]}/{parts[1]}"
+        if not _is_valid(parse_repo, repo):
+            return None
+        return canonical_repo(repo), parts[3]
 
     async def _drop_keep_refs(self, mirror: Path, kept: set[str]) -> None:
         listed = await self._git(_bare(mirror), "for-each-ref", "--format=%(refname)", _KEEP_PREFIX)
@@ -385,9 +549,18 @@ class GitWorkspace:
         *args: str,
         stdin: bytes | None = None,
         timeout: float | None = None,
+        output_limit: int | None = None,
     ) -> bytes:
-        """Run git at ``location`` (``--git-dir`` for the mirror, ``-C`` for a worktree)."""
-        argv, out, err, code, _ = await self._execute(location, args, stdin=stdin, timeout=timeout)
+        """Run git at ``location`` (``--git-dir`` for the mirror, ``-C`` for a worktree).
+        With ``output_limit``, only diffs are run: past it git is stopped and
+        ``DiffTooLargeError`` raised."""
+        argv, out, err, code, truncated = await self._execute(
+            location, args, stdin=stdin, timeout=timeout, output_limit=output_limit
+        )
+        if truncated:
+            limit = output_limit or 0
+            span = "..".join(arg[:12] for arg in argv[-2:])
+            raise DiffTooLargeError(f"the diff {span} is over {limit} bytes", limit)
         if code:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
         return out

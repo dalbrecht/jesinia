@@ -26,7 +26,9 @@ from fastapi.responses import StreamingResponse
 from jesinia.core.auth import is_authorized, require_owner
 from jesinia.core.events import Event, EventBus
 
-STREAMED_TOPICS = frozenset({"kbsync.status", "kb.page_changed", "rss.post_changed"})
+STREAMED_TOPICS = frozenset(
+    {"kbsync.status", "kb.page_changed", "rss.post_changed", "review.progress"}
+)
 BUFFER = 500
 KEEPALIVE_SECONDS = 15.0
 
