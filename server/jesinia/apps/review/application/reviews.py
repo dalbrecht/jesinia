@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Protocol
 
-from jesinia.apps.review.domain.posting import Draft, NoReviewRound
+from jesinia.apps.review.domain.posting import Draft, NoReviewRound, RoundChanged
 from jesinia.apps.review.domain.queue import (
     InvalidSettingError,
     PreReviewMode,
@@ -28,6 +28,7 @@ from jesinia.apps.review.domain.queue import (
     nothing_to_walk_from_json,
     queue_row,
 )
+from jesinia.services.github.domain.pr import PrFile
 
 # A runner name names an agent CLI the agents service knows; nothing path-like.
 _RUNNER = re.compile(r"[a-z][a-z0-9_-]{0,63}")
@@ -49,6 +50,8 @@ class ReviewReadStore(Protocol):
 
     def artifacts(self, round_id: int) -> dict[str, object]: ...
 
+    def pr_files(self, ref: PrRef, head_sha: str) -> list[PrFile] | None: ...
+
     def drafts(self, round_id: int) -> list[Draft]: ...
 
     def mark_round_done(self, round_id: int) -> None: ...
@@ -69,12 +72,15 @@ class ReviewReadStore(Protocol):
 @dataclass(frozen=True)
 class PrView:
     """An opened PR as cached: its queue row, its latest round (``None`` before any) with
-    every artifact, and the queue's sync state."""
+    every artifact, the queue's sync state, and GitHub's cached files (with their patches)
+    for the round's head: ``None`` before any round or while that head's list isn't cached,
+    never another head's."""
 
     row: QueueRow
     round: RoundRecord | None
     artifacts: Mapping[str, object]
     sync: SyncStatus
+    files: Sequence[PrFile] | None = None
 
     @property
     def stale(self) -> bool:
@@ -134,7 +140,8 @@ class ReviewReads:
         row = queue_row(stored, latest, self._store.viewer(), suggested)
         found = self._store.latest_round(ref)
         artifacts = {} if found is None else self._store.artifacts(found.id)
-        return PrView(row, found, artifacts, self._status())
+        files = None if found is None else self._store.pr_files(ref, found.head_sha)
+        return PrView(row, found, artifacts, self._status(), files)
 
     def findings(self, ref: PrRef) -> FindingsView:
         """The latest round's findings and drafts (both empty before any round).
@@ -156,15 +163,22 @@ class ReviewReads:
                     findings.append({**item, "source": source})
         return FindingsView(found.id, tuple(findings), tuple(self._store.drafts(found.id)))
 
-    def done(self, ref: PrRef) -> RoundRecord:
+    def done(self, ref: PrRef, round_id: int | None = None) -> RoundRecord:
         """Mark the PR's latest round done (the author finished it without posting).
+        ``round_id``: the round the author was shown; a newer one refuses it (never moved).
 
         Raises:
             NoReviewRound: the PR has no round.
+            RoundChanged: ``round_id`` isn't the latest round.
         """
         found = self._store.latest_round(ref)
         if found is None:
             raise NoReviewRound(f"{ref} has no review round to finish")
+        if round_id is not None and round_id != found.id:
+            raise RoundChanged(
+                f"a new review round ({found.id}) started since round {round_id} was shown; "
+                "it wasn't marked done"
+            )
         self._store.mark_round_done(found.id)
         return replace(found, done=True)
 

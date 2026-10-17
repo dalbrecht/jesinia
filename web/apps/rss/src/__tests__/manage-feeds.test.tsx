@@ -31,6 +31,15 @@ const dialog = () => screen.getByRole("dialog", { name: "Feeds" });
 const toast = async (text: string | RegExp) =>
   (await screen.findAllByText(text)).find((el) => el.closest("[data-toast]") !== null);
 
+/**
+ * Enters text the way a paste does: one input event. Typing per keystroke re-renders the whole
+ * app each time, and on a loaded CI runner long strings took tests past the 5 s timeout.
+ */
+async function enter(field: HTMLElement, text: string): Promise<void> {
+  await userEvent.click(field);
+  await userEvent.paste(text);
+}
+
 /** The dialog once the feeds have loaded: its rows exist only then (never query before). */
 async function openManage() {
   await userEvent.click(await screen.findByRole("button", { name: "+ Add feed" }));
@@ -51,8 +60,13 @@ describe("Add feed", () => {
     });
     const manage = await openManage();
     expect(manage.getByLabelText("Feed or site URL")).toHaveFocus();
-    await userEvent.type(manage.getByLabelText("Feed or site URL"), " https://example.com ");
-    await userEvent.type(manage.getByLabelText("Folder (optional)"), "Reading");
+    // Pasted, not typed: each typed character re-renders the whole app, and on a loaded CI
+    // runner 28 of them took this test past the 5 s timeout. A paste is one input event with
+    // the same text (the spaces still test the trim).
+    await userEvent.click(manage.getByLabelText("Feed or site URL"));
+    await userEvent.paste(" https://example.com ");
+    await userEvent.click(manage.getByLabelText("Folder (optional)"));
+    await userEvent.paste("Reading");
     await userEvent.click(manage.getByRole("button", { name: "Add feed" }));
     await waitFor(() => expect(sent(calls, "POST", "/api/rss/feeds")).toHaveLength(1));
     const req = sent(calls, "POST", "/api/rss/feeds")[0];
@@ -74,7 +88,8 @@ describe("Add feed", () => {
     const manage = await openManage();
     const add = manage.getByRole("button", { name: "Add feed" });
     expect(add).toBeDisabled(); // nothing typed yet
-    await userEvent.type(manage.getByLabelText("Feed or site URL"), "https://plain.example/{Enter}");
+    await enter(manage.getByLabelText("Feed or site URL"), "https://plain.example/");
+    await userEvent.keyboard("{Enter}");
     expect(
       await manage.findByText(
         "Couldn't add the feed: no feed found at https://plain.example/: the page links to none.",
@@ -326,7 +341,7 @@ describe("Focus stays in the dialog (I-2) and inline edits own their keys (M-1, 
     setup();
     const manage = await openManage();
     const field = manage.getByLabelText("Feed or site URL");
-    await userEvent.type(field, "https://example.com");
+    await enter(field, "https://example.com");
     const scrim = dialog().parentElement as HTMLElement;
     fireEvent.mouseDown(field);
     fireEvent.click(scrim);

@@ -5808,6 +5808,133 @@
         }
       }
     },
+    "/api/review/repos/{owner}/{repo}/confirm": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Confirm Repo",
+        "description": "Confirm a suggested repo (ruling R29a): it is watched and pre-reviewed from now on.",
+        "operationId": "confirm_repo_api_review_repos__owner___repo__confirm_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
     "/api/review/prs/{owner}/{repo}/{number}": {
       "get": {
         "tags": [
@@ -5941,7 +6068,7 @@
           "review"
         ],
         "summary": "Open Pr",
-        "description": "Open the PR: start what its round lacks (202), or say why not (gates).",
+        "description": "Open the PR: start what its round lacks (202), or say why not (gates). The body\nmay choose the depth, or ask to walk everything.",
         "operationId": "open_pr_api_review_prs__owner___repo___number__open_post",
         "parameters": [
           {
@@ -5996,6 +6123,23 @@
             "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OpenIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -6978,7 +7122,7 @@
           "review"
         ],
         "summary": "Done",
-        "description": "Mark the latest round done without posting.",
+        "description": "Mark the latest round done without posting (the round shown, when the body names\nit: a newer one answers 409 RoundChanged).",
         "operationId": "done_api_review_prs__owner___repo___number__done_post",
         "parameters": [
           {
@@ -7033,6 +7177,23 @@
             "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DoneIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -7501,6 +7662,25 @@
         ],
         "title": "CountsOut"
       },
+      "DoneIn": {
+        "properties": {
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DoneIn",
+        "description": "Optional: the round the author was shown (the PWA always sends it)."
+      },
       "DraftBody": {
         "properties": {
           "id": {
@@ -7639,6 +7819,18 @@
             "type": "array",
             "maxItems": 500,
             "title": "Drafts"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id",
+            "description": "The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)"
           }
         },
         "type": "object",
@@ -7671,6 +7863,12 @@
             "title": "Findings Pending",
             "description": "the correctness pass or the findings job is still running; their drafts are added (next to the author's) when both have finished",
             "default": false
+          },
+          "seeds_dropped": {
+            "type": "integer",
+            "title": "Seeds Dropped",
+            "description": "Finding drafts this save couldn't keep: a review takes at most 500 drafts, and the author's come first",
+            "default": 0
           }
         },
         "type": "object",
@@ -9267,6 +9465,34 @@
         ],
         "title": "MoveOut"
       },
+      "OpenIn": {
+        "properties": {
+          "depth": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "quick",
+                  "deep"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
+          },
+          "walk_everything": {
+            "type": "boolean",
+            "title": "Walk Everything",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "OpenIn",
+        "description": "What the author asks of opening (both optional): their ``depth`` in place of\nJesinia's proposal, or ``walk_everything`` to walk the rest of the change too."
+      },
       "OpenOut": {
         "properties": {
           "state": {
@@ -9509,6 +9735,18 @@
             "minLength": 1,
             "title": "Digest",
             "description": "The digest of the preview being confirmed"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id",
+            "description": "The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)"
           }
         },
         "type": "object",
@@ -9717,6 +9955,59 @@
         ],
         "title": "PostedOut"
       },
+      "PrFileOut": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "additions": {
+            "type": "integer",
+            "title": "Additions"
+          },
+          "deletions": {
+            "type": "integer",
+            "title": "Deletions"
+          },
+          "patch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patch"
+          },
+          "previous_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "patch",
+          "previous_path"
+        ],
+        "title": "PrFileOut",
+        "description": "A changed file as GitHub lists it; ``patch`` (the file's unified diff hunks, PR\ncontent) is null when GitHub doesn't show it (binary, or too large)."
+      },
       "PrOut": {
         "properties": {
           "pr": {
@@ -9751,6 +10042,21 @@
           },
           "sync": {
             "$ref": "#/components/schemas/SyncOut"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PrFileOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files",
+            "description": "GitHub's cached files of the round's head, for the walkthrough's diff; null before any round or while that head's list isn't cached"
           }
         },
         "type": "object",
@@ -9760,7 +10066,8 @@
           "artifacts",
           "stale",
           "nothing_to_walk",
-          "sync"
+          "sync",
+          "files"
         ],
         "title": "PrOut",
         "description": "An opened PR from the cache: its row, its latest round and every artifact of it."
@@ -9775,6 +10082,18 @@
               "COMMENT"
             ],
             "title": "Event"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id",
+            "description": "The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)"
           }
         },
         "type": "object",
@@ -9848,6 +10167,11 @@
             },
             "type": "array",
             "title": "Notes"
+          },
+          "pr_head_sha": {
+            "type": "string",
+            "title": "Pr Head Sha",
+            "description": "The PR's head on GitHub now (newer_head names it)"
           }
         },
         "type": "object",
@@ -9860,7 +10184,8 @@
           "warnings",
           "allowed_events",
           "digest",
-          "notes"
+          "notes",
+          "pr_head_sha"
         ],
         "title": "PreviewOut",
         "description": "Exactly what posting ``event`` sends; pass ``digest`` back to post it."
@@ -10382,6 +10707,30 @@
             ],
             "title": "Event",
             "description": "For EarlierReviewPosted: that review's event"
+          },
+          "draft_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Index",
+            "description": "For InvalidDraftContent: the refused draft (0-based)"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field",
+            "description": "For InvalidDraftContent: 'summary' or 'draft'"
           },
           "retry_after": {
             "anyOf": [

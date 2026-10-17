@@ -98,6 +98,8 @@ class Round:
     # index lists its hunks in Jesinia's numbering, for the agents to cite.
     merge_base: str = ""
     hunk_index: HunkIndex | None = None
+    # The author asked to walk everything (spec §3.1): the walkthrough leaves nothing out.
+    walk_everything: bool = False
 
     @property
     def repo(self) -> str:

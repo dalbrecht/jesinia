@@ -278,4 +278,16 @@ class PipelineStore(QueueStore, Protocol):
 
     def set_depth(self, ref: PrRef, head_sha: str, round_id: int, depth: Depth) -> None: ...
 
+    def choose_depth(self, ref: PrRef, head_sha: str, depth: Depth) -> None:
+        """Record the author's depth for a head (R57)."""
+
+    def chosen_depth(self, ref: PrRef, head_sha: str) -> Depth | None:
+        """The author's depth for a head, or ``None`` for Jesinia's proposal."""
+
+    def override_gates(self, ref: PrRef, head_sha: str) -> None:
+        """Record the author's Review anyway for a head (R66)."""
+
+    def gates_overridden(self, ref: PrRef, head_sha: str) -> bool:
+        """Whether the author chose Review anyway for this head."""
+
     def set_verdict(self, round_id: int, verdict: str) -> None: ...

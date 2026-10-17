@@ -1259,6 +1259,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/repos/{owner}/{repo}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Repo
+         * @description Confirm a suggested repo (ruling R29a): it is watched and pre-reviewed from now on.
+         */
+        post: operations["confirm_repo_api_review_repos__owner___repo__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/prs/{owner}/{repo}/{number}": {
         parameters: {
             query?: never;
@@ -1290,7 +1310,8 @@ export interface paths {
         put?: never;
         /**
          * Open Pr
-         * @description Open the PR: start what its round lacks (202), or say why not (gates).
+         * @description Open the PR: start what its round lacks (202), or say why not (gates). The body
+         *     may choose the depth, or ask to walk everything.
          */
         post: operations["open_pr_api_review_prs__owner___repo___number__open_post"];
         delete?: never;
@@ -1415,7 +1436,8 @@ export interface paths {
         put?: never;
         /**
          * Done
-         * @description Mark the latest round done without posting.
+         * @description Mark the latest round done without posting (the round shown, when the body names
+         *     it: a newer one answers 409 RoundChanged).
          */
         post: operations["done_api_review_prs__owner___repo___number__done_post"];
         delete?: never;
@@ -1516,6 +1538,14 @@ export interface components {
             views: components["schemas"]["ViewCountsOut"];
         };
         /**
+         * DoneIn
+         * @description Optional: the round the author was shown (the PWA always sends it).
+         */
+        DoneIn: {
+            /** Round Id */
+            round_id?: number | null;
+        };
+        /**
          * DraftBody
          * @description A draft review comment: inline (``line``, ``side`` and, for a range, ``start_line``
          *     and ``start_side``) or ``outside_diff`` (posted in the review body).
@@ -1563,6 +1593,11 @@ export interface components {
             summary: string;
             /** Drafts */
             drafts?: components["schemas"]["DraftBody"][];
+            /**
+             * Round Id
+             * @description The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)
+             */
+            round_id?: number | null;
         };
         /** DraftsOut */
         DraftsOut: {
@@ -1583,6 +1618,12 @@ export interface components {
              * @default false
              */
             findings_pending: boolean;
+            /**
+             * Seeds Dropped
+             * @description Finding drafts this save couldn't keep: a review takes at most 500 drafts, and the author's come first
+             * @default 0
+             */
+            seeds_dropped: number;
         };
         /** EngageIn */
         EngageIn: {
@@ -2137,6 +2178,20 @@ export interface components {
             skipped: string[];
         };
         /**
+         * OpenIn
+         * @description What the author asks of opening (both optional): their ``depth`` in place of
+         *     Jesinia's proposal, or ``walk_everything`` to walk the rest of the change too.
+         */
+        OpenIn: {
+            /** Depth */
+            depth?: ("quick" | "deep") | null;
+            /**
+             * Walk Everything
+             * @default false
+             */
+            walk_everything: boolean;
+        };
+        /**
          * OpenOut
          * @description What opening did: ``started`` jobs (202), or the round's state, or the gate holding
          *     it (``ci_failing``…, with **Review anyway** offered).
@@ -2243,6 +2298,11 @@ export interface components {
              * @description The digest of the preview being confirmed
              */
             digest: string;
+            /**
+             * Round Id
+             * @description The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)
+             */
+            round_id?: number | null;
         };
         /** PostOut */
         PostOut: {
@@ -2305,6 +2365,25 @@ export interface components {
             review_url: string;
         };
         /**
+         * PrFileOut
+         * @description A changed file as GitHub lists it; ``patch`` (the file's unified diff hunks, PR
+         *     content) is null when GitHub doesn't show it (binary, or too large).
+         */
+        PrFileOut: {
+            /** Path */
+            path: string;
+            /** Status */
+            status: string;
+            /** Additions */
+            additions: number;
+            /** Deletions */
+            deletions: number;
+            /** Patch */
+            patch: string | null;
+            /** Previous Path */
+            previous_path: string | null;
+        };
+        /**
          * PrOut
          * @description An opened PR from the cache: its row, its latest round and every artifact of it.
          */
@@ -2326,6 +2405,11 @@ export interface components {
             /** Nothing To Walk */
             nothing_to_walk: boolean;
             sync: components["schemas"]["SyncOut"];
+            /**
+             * Files
+             * @description GitHub's cached files of the round's head, for the walkthrough's diff; null before any round or while that head's list isn't cached
+             */
+            files: components["schemas"]["PrFileOut"][] | null;
         };
         /** PreviewIn */
         PreviewIn: {
@@ -2334,6 +2418,11 @@ export interface components {
              * @enum {string}
              */
             event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+            /**
+             * Round Id
+             * @description The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)
+             */
+            round_id?: number | null;
         };
         /**
          * PreviewOut
@@ -2361,6 +2450,11 @@ export interface components {
             digest: string;
             /** Notes */
             notes: string[];
+            /**
+             * Pr Head Sha
+             * @description The PR's head on GitHub now (newer_head names it)
+             */
+            pr_head_sha: string;
         };
         /**
          * QueueOut
@@ -2544,6 +2638,16 @@ export interface components {
              * @description For EarlierReviewPosted: that review's event
              */
             event?: ("APPROVE" | "REQUEST_CHANGES" | "COMMENT") | null;
+            /**
+             * Draft Index
+             * @description For InvalidDraftContent: the refused draft (0-based)
+             */
+            draft_index?: number | null;
+            /**
+             * Field
+             * @description For InvalidDraftContent: 'summary' or 'draft'
+             */
+            field?: string | null;
             /**
              * Retry After
              * @description For PostingStillUncertain and PostingInProgress: seconds before retrying (also the Retry-After header)
@@ -7100,6 +7204,93 @@ export interface operations {
             };
         };
     };
+    confirm_repo_api_review_repos__owner___repo__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
     get_pr_api_review_prs__owner___repo___number__get: {
         parameters: {
             query?: never;
@@ -7201,7 +7392,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["OpenIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -7864,7 +8059,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DoneIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

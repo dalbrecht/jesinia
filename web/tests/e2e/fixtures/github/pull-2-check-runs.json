@@ -1,0 +1,18 @@
+{
+  "total_count": 1,
+  "check_runs": [
+    {
+      "id": 500,
+      "name": "unit",
+      "head_sha": "x",
+      "status": "in_progress",
+      "conclusion": null,
+      "html_url": "https://github.com/e2e-dev/greeter/runs/unit",
+      "started_at": "2026-10-16T10:00:00Z",
+      "completed_at": null,
+      "app": {
+        "slug": "github-actions"
+      }
+    }
+  ]
+}

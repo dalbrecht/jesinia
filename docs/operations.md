@@ -8,6 +8,8 @@ version, see the [README](../README.md#quickstart).
 - [Signing in](#signing-in)
 - [Everyday commands](#everyday-commands)
 - [Where things live](#where-things-live)
+- [RSS](#rss)
+- [Review](#review)
 - [Updating](#updating)
 - [Agent registration](#agent-registration)
 - [Uninstall](#uninstall)
@@ -22,7 +24,7 @@ version, see the [README](../README.md#quickstart).
 | git | the KB and Jesinia itself are git repositories | `xcode-select --install` |
 | [uv](https://docs.astral.sh/uv/) | Python 3.12+ and the server's dependencies | `brew install uv` |
 | Node 22+ with Corepack | builds the web apps (pnpm is pinned by the repo) | `brew install node`, then `corepack enable pnpm` |
-| `gh` (optional) | GitHub features (later apps) | `brew install gh && gh auth login` |
+| `gh` (needed for Review) | GitHub access for Review: Jesinia stores no credentials of its own and uses the token `gh` holds | `brew install gh && gh auth login` |
 | `claude` and/or `codex` (optional) | chat with an agent in Notes | install Claude Code or Codex and log in |
 
 `./setup` checks these and prints the exact command for anything missing.
@@ -106,12 +108,13 @@ a restart: `./setup` again, or
 | What | Where |
 |---|---|
 | Config (mode 600) | `~/Library/Application Support/jesinia/config.toml` |
-| Databases | `~/Library/Application Support/jesinia/*.sqlite`: `sessions` and `rss` (feeds, posts and read state) are history (backed up); the rest are rebuildable |
+| Databases | `~/Library/Application Support/jesinia/*.sqlite`: `sessions`, `rss` (feeds, posts and read state) and `review` (rounds, drafts, posted reviews) are history (backed up); the rest are rebuildable |
 | Agent session folders | `~/Library/Application Support/jesinia/sessions/<id>/` |
 | Server log (JSON lines, 10 MB × 5) | `~/Library/Logs/jesinia/server.log` |
 | launchd output | `~/Library/Logs/jesinia/launchd.{out,err}.log` |
 | Update log | `~/Library/Logs/jesinia/update.log` |
 | LaunchAgents | `~/Library/LaunchAgents/com.jesinia.server.plist`, `com.jesinia.updater.plist` |
+| Review's repo mirrors and checkouts | `~/Library/Application Support/jesinia/review/repos/<owner>/<name>/`; rebuilt by fetching |
 | Your KB | wherever `kb.path` points; Jesinia never moves it |
 
 Set `JESINIA_HOME` to relocate the config, data and logs, for example for a test
@@ -146,6 +149,43 @@ The RSS app (`/rss/`) reads your feeds; keeping a post writes it into the KB.
   links; **Open original** still works. Deleting the folder loses only the images.
 - **Agents** can find and read posts (`rss_search_posts`, `rss_get_post`) but never keep or
   mark them; see [agents](conventions/agents.md).
+
+## Review
+
+The Review app (`/review/`) is a queue of the pull requests that need you, a guided walkthrough
+of each one, and AI findings that are ready before you look.
+
+**Prerequisite: `gh auth login`.** Jesinia stores no GitHub credentials. It asks the `gh`
+CLI for its token (`gh auth token`; a Keychain item named `jesinia-github` also works),
+keeps it in memory for at most 5 minutes, and never writes or logs it. Git fetches use
+your own git credential helper (on macOS, the Keychain). Without a token the queue shows
+**GitHub auth missing** with the command to run; run `gh auth login`, and the next sync
+picks it up (no restart). `/healthz` reports the `github` module as "no token: run `gh auth login`".
+
+- **How it syncs:** every 2 minutes (and at startup) Jesinia refreshes the queue from GitHub
+  into `review.sqlite`; the app always reads that cache and never waits for GitHub. It
+  watches the repos you own or your orgs own that have a PR awaiting your review or written
+  by you. Someone else's repo is only *suggested* until you **Confirm** it; nothing is
+  fetched or pre-reviewed there before that. After a rate limit, Jesinia asks nothing until
+  GitHub says the limit resets. A failed sync keeps the cached queue and says why.
+- **Pre-reviews:** once CI passes and pushes have settled (10 minutes), Jesinia
+  runs the correctness pass, findings and recommendation in the background (the default,
+  *triage*; *everything* and *on open* are set through `PUT /api/review/settings` until
+  Review's settings page ships in a later release). Your agent (default Codex, or Claude Code)
+  reads the PR's checkout only through read-only repo tools. A PR you **Load** or open skips
+  the wait. **Review anyway** goes ahead past a failing CI.
+- **Checkouts:** each watched repo gets a bare mirror under `review/repos/` and one checkout
+  per reviewed head; unneeded ones are pruned daily. Jesinia never pushes.
+- **Posting:** nothing reaches GitHub until you choose **Comment**, **Request changes** or
+  **Approve**. The confirmation shows exactly what will be posted and every warning
+  (BLOCKING text, an Approve against Jesinia's verdict, newer commits). It is sent as one
+  review (`POST /repos/{owner}/{repo}/pulls/{n}/reviews`) with all inline comments, on the
+  head you reviewed. The body ends with an invisible marker, so a lost response or a retry
+  never posts twice: Jesinia looks for a review carrying the marker before it posts again.
+  Agents can read the queue and findings (`review_queue`, `review_get`, `review_findings`)
+  but have no way to post.
+- **Backup:** `review.sqlite` is history, so `jesinia backup` includes it; the mirrors and
+  checkouts are not (they are fetched again).
 
 ## Updating
 
@@ -257,6 +297,19 @@ Notes shows "No agent is available", or Settings → Agents says *Unavailable*:
 
 Then choose **Check again** in Settings. The server finds the CLIs through the `PATH` it
 was installed with, so if you installed an agent later, run `./setup` again.
+
+### Review says "GitHub auth missing"
+
+The Review queue shows a red **GitHub auth missing** banner, or `/healthz` reports
+the `github` module as having no token. Jesinia stores no GitHub credentials; sign in with the GitHub CLI:
+
+```bash
+brew install gh        # if `gh` is missing
+gh auth login
+```
+
+The next sync (within 2 minutes) picks the token up. If the server was installed before
+`gh` was, run `./setup` again so launchd's `PATH` finds it.
 
 ### The server isn't running
 
