@@ -60,6 +60,7 @@ from jesinia.apps.review.domain.posting import (
     PreviewOutdated,
     Review,
     ReviewedHeadGone,
+    check_body_length,
     check_review_text,
     commentable_lines,
     compose_review,
@@ -336,6 +337,7 @@ class PostingService:
 
         Raises:
             NoReviewRound: no such round.
+            ReviewBodyTooLong: the composed body would be over GitHub's limit.
             ReviewedHeadGone: the reviewed commit is no longer on the PR.
             GitHubError: GitHub couldn't be read.
         """
@@ -349,6 +351,7 @@ class PostingService:
         review = compose_review(
             self._store.review_summary(round_id), self._store.drafts(round_id), commentable
         )
+        check_body_length(review)
         if needs_body(event, review):
             what = event.lower().replace("_", " ")
             notes.append(f"GitHub needs a summary or an inline comment to post {what}")
@@ -399,6 +402,7 @@ class PostingService:
             CommentOnlyOnOwnPr: approving or requesting changes on the author's own PR.
             NeedsConfirmation: a warning isn't in ``confirm``.
             EmptyReview: GitHub needs a body for this event.
+            ReviewBodyTooLong: the composed body would be over GitHub's limit.
             EarlierReviewPosted: an earlier attempt turned out to be on GitHub and it isn't
                 this digest and event; nothing was sent.
             ReviewedHeadGone: the reviewed commit is no longer on the PR.

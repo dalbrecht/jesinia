@@ -53,6 +53,7 @@ from jesinia.apps.review.domain.posting import (
     PostingInProgress,
     PostingStillUncertain,
     PreviewOutdated,
+    ReviewBodyTooLong,
     ReviewedHeadGone,
 )
 from jesinia.apps.review.domain.queue import (
@@ -113,6 +114,7 @@ _STATUS: dict[type[Exception], int] = {
     PostingInProgress: status.HTTP_409_CONFLICT,
     PostingStillUncertain: status.HTTP_409_CONFLICT,
     InvalidDraftContent: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ReviewBodyTooLong: status.HTTP_422_UNPROCESSABLE_CONTENT,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,

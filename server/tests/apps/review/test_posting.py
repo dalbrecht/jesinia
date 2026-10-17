@@ -18,6 +18,8 @@ import pytest
 
 from jesinia.apps.review.application.posting import PostingFailed, PostingService
 from jesinia.apps.review.domain.posting import (
+    GITHUB_BODY_LIMIT,
+    MARKER_RESERVE,
     CommentOnlyOnOwnPr,
     Draft,
     EarlierReviewPosted,
@@ -29,10 +31,12 @@ from jesinia.apps.review.domain.posting import (
     PostingInProgress,
     PostingStillUncertain,
     PreviewOutdated,
+    ReviewBodyTooLong,
     ReviewedHeadGone,
     commentable_lines,
     compose_review,
     has_blocking,
+    marked_body,
     review_warnings,
     seed_drafts,
 )
@@ -895,3 +899,49 @@ async def test_one_unexpected_reconcile_error_does_not_stop_the_others(
     first, second = env.store.postings(env.round_id)[0], env.store.postings(other)[0]
     assert first.state == "started" and second.state == "not_posted"
     assert "the response was not JSON" in caplog.text
+
+
+# --- Codex round 1: the composed body against GitHub's limit -----------------------------------
+
+
+def _outside(path: str, body: str) -> Draft:
+    return Draft(path=path, body=body, outside_diff=True)
+
+
+async def test_a_composed_body_over_githubs_limit_is_refused_at_preview_and_post(
+    env: Env,
+) -> None:
+    """Outside-diff drafts, their labels and the summary go into one body: over GitHub's
+    65,536 characters (marker included) it is refused before anything is sent."""
+    await env.service.save_drafts(
+        env.round_id, "Review notes.", [_outside("d/" + "p" * 1022, "x" * 65_000)]
+    )
+    with pytest.raises(ReviewBodyTooLong) as refused:
+        await env.service.preview(env.round_id, "COMMENT")
+    assert refused.value.limit == GITHUB_BODY_LIMIT == 65_536
+    assert refused.value.length > GITHUB_BODY_LIMIT
+    assert f"{refused.value.length:,} characters" in str(refused.value)
+    assert "GitHub allows 65,536" in str(refused.value)
+    with pytest.raises(ReviewBodyTooLong):
+        await env.service.post(env.round_id, "COMMENT", (), key="k1", digest="any")
+    assert env.github.posted == [] and env.store.postings(env.round_id) == []
+
+
+async def test_a_body_exactly_at_the_limit_marker_included_is_posted(env: Env) -> None:
+    summary = "s" * 60_000
+    probe = compose_review(summary, [_outside("src/app.py", "x")], commentable_lines([]))
+    fill = GITHUB_BODY_LIMIT - MARKER_RESERVE - len(probe.body) + 1
+    exact = [_outside("src/app.py", "x" * fill)]
+    await env.service.save_drafts(env.round_id, summary, exact)
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    assert len(preview.body) + MARKER_RESERVE == GITHUB_BODY_LIMIT
+    assert await env.post("COMMENT") == URL
+    assert len(str(env.github.posted[0]["body"])) <= GITHUB_BODY_LIMIT
+    # One character more is refused.
+    await env.service.save_drafts(env.round_id, summary + "s", exact)
+    with pytest.raises(ReviewBodyTooLong):
+        await env.service.preview(env.round_id, "COMMENT")
+
+
+def test_the_marker_reserve_covers_the_largest_posting_id() -> None:
+    assert len(marked_body("body", 2**63 - 1)) - len("body") == MARKER_RESERVE

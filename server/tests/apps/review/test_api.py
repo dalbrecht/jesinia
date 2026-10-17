@@ -709,3 +709,12 @@ def test_the_openapi_document_lists_the_structured_500() -> None:
     from jesinia.apps.review.api.routes import _ERRORS
 
     assert 500 in _ERRORS
+
+
+def test_a_review_body_over_githubs_limit_is_a_422() -> None:
+    from jesinia.apps.review.api.routes import _error
+    from jesinia.apps.review.domain.posting import ReviewBodyTooLong
+
+    refused = _error(ReviewBodyTooLong(70_000, 65_536))
+    assert refused.status_code == 422 and b"ReviewBodyTooLong" in refused.body
+    assert b"70000 characters" in refused.body or b"70,000 characters" in refused.body

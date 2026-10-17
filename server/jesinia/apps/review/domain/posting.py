@@ -141,6 +141,19 @@ class EmptyReview(PostingDomainError):  # noqa: N818 - the error code clients se
     """GitHub needs a body to request changes or comment."""
 
 
+class ReviewBodyTooLong(PostingDomainError):  # noqa: N818 - the error code clients see
+    """The composed review body (summary, outside-diff drafts with their labels, and the
+    posting marker) is over GitHub's limit; GitHub would refuse the review."""
+
+    def __init__(self, length: int, limit: int) -> None:
+        super().__init__(
+            f"the review body is {length:,} characters; GitHub allows {limit:,}: shorten "
+            "the drafts or move some inline"
+        )
+        self.length = length
+        self.limit = limit
+
+
 def _check(condition: bool, message: str) -> None:
     if not condition:
         raise InvalidDraftError(message)
@@ -332,6 +345,18 @@ def compose_review(summary: str, drafts: Sequence[Draft], commentable: Commentab
     return Review("\n\n".join(parts), tuple(inline))
 
 
+def check_body_length(review: Review) -> None:
+    """Refuse a review whose body, once the posting marker is added, is over GitHub's limit.
+    Inline comments need no check: each is one draft, at most ``BODY_MAX`` characters.
+
+    Raises:
+        ReviewBodyTooLong: with the length as posted (the marker's largest size counted).
+    """
+    length = len(review.body) + MARKER_RESERVE
+    if length > GITHUB_BODY_LIMIT:
+        raise ReviewBodyTooLong(length, GITHUB_BODY_LIMIT)
+
+
 def has_blocking(body: str, comments: Sequence[DraftComment]) -> bool:
     """Whether the body or any comment says ``blocking``, in any case."""
     return any(_BLOCKING.search(text) for text in (body, *(c.body for c in comments)))
@@ -428,3 +453,10 @@ def seed_drafts(findings: Sequence[object]) -> list[Draft]:
     anchor it) is worked out from GitHub's file list each time, never stored."""
     drafts = [_finding_draft(item) for item in findings]
     return [draft for draft in drafts if draft is not None][:DRAFTS_MAX]
+
+
+# GitHub's limit on a review body, in characters.
+GITHUB_BODY_LIMIT: Final = 65_536
+# What ``marked_body`` adds at most: the separator and the marker of the largest posting id
+# (SQLite's), so a body checked at preview, before the id exists, still fits once posted.
+MARKER_RESERVE: Final = len(marked_body("x", 2**63 - 1)) - 1
