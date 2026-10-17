@@ -861,7 +861,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   `GIT_CONFIG_GLOBAL=/dev/null make test-e2e`. Expected: PASS.
 - [x] **Step 4: Commit** `feat(rss): feed management, e2e and docs`.
 - [x] **Step 5: Open PR 3** (`feat(rss): reader app`), then the Codex loop and merge.
-- [x] **Step 6: Acceptance on the author's Mac** (the auto-updated install):
+- [ ] **Step 6: Acceptance on the author's Mac** (the auto-updated install):
   1. import the author's OPML or add HN plus a few blogs;
   2. keep one post quickly and one through Engage;
   3. check both pages in Notes and the Pigeonpile Wiki;
