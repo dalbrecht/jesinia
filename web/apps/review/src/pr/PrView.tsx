@@ -204,6 +204,18 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   // and re-renders or refreshes on the same head open nothing.
   const cachedHead = view !== null && view.pr.repo === repo && view.pr.number === number ? view.pr.head_sha : null;
   const openedHead = useRef<string | null>(null);
+  // A new head or round on screen is a new review (Codex round 3): the depth override and the
+  // chat session belong to the old one. A fresh session uploads the new review's digest.
+  const shownReview = view === null ? null : `${view.pr.head_sha}@${view.round?.id ?? "none"}`;
+  const lastReview = useRef<string | null>(null);
+  useEffect(() => {
+    if (shownReview === null) return;
+    if (lastReview.current !== null && lastReview.current !== shownReview) {
+      setDepth(null);
+      setSession(null);
+    }
+    lastReview.current = shownReview;
+  }, [shownReview]);
   useEffect(() => {
     if (cachedHead === null || openedHead.current === cachedHead) return;
     openedHead.current = cachedHead;
@@ -490,7 +502,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       case "metrics":
         return artifacts.metrics ? <Metrics scores={artifacts.metrics} /> : pendingPage("Metrics");
       case "quiz":
-        return artifacts.quiz ? <Quiz questions={artifacts.quiz} /> : pendingPage("Quiz");
+        return artifacts.quiz ? <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} /> : pendingPage("Quiz");
       case "comments":
         return (
           <article className={s.page} aria-label="Your comments">
