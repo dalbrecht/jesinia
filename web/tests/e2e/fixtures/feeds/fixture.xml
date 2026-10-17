@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Fixture Feed</title>
+    <link>http://127.0.0.1:4876/</link>
+    <description>Three posts for the e2e tests, served from a loopback port by make e2e-server.</description>
+    <item>
+      <title>Fixture post three</title>
+      <link>http://127.0.0.1:4876/posts/three.html</link>
+      <guid isPermaLink="false">fixture-3</guid>
+      <pubDate>Wed, 14 Oct 2026 09:00:00 GMT</pubDate>
+      <description>&lt;p&gt;The third fixture post: gardens grow from small notes.&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title>Fixture post two</title>
+      <link>http://127.0.0.1:4876/posts/two.html</link>
+      <guid isPermaLink="false">fixture-2</guid>
+      <pubDate>Tue, 13 Oct 2026 09:00:00 GMT</pubDate>
+      <description>&lt;p&gt;The second fixture post: a commonplace book, kept by hand.&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title>Fixture post one</title>
+      <link>http://127.0.0.1:4876/posts/one.html</link>
+      <guid isPermaLink="false">fixture-1</guid>
+      <pubDate>Mon, 12 Oct 2026 09:00:00 GMT</pubDate>
+      <description>&lt;p&gt;The first fixture post: why indexes beat folders.&lt;/p&gt;</description>
+    </item>
+  </channel>
+</rss>

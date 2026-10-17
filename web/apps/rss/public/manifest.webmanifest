@@ -1,0 +1,17 @@
+{
+  "name": "Jesinia RSS",
+  "short_name": "RSS",
+  "id": "/rss/",
+  "start_url": "/rss/",
+  "scope": "/rss/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay"],
+  "theme_color": "#f6daab",
+  "background_color": "#f3f5f0",
+  "icons": [
+    { "src": "/rss/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/rss/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/rss/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/rss/icons/monochrome.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "monochrome" }
+  ]
+}

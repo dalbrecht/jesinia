@@ -48,6 +48,36 @@ async def test_security_headers(client: httpx.AsyncClient) -> None:
     assert r.headers["referrer-policy"] == "no-referrer"
 
 
+@pytest.mark.parametrize(
+    "path", ["/rss/", "/rss/index.html", "/rss", "/rss/sw.js", "/rss/assets/x.js"]
+)
+async def test_rss_pages_may_show_https_images(client: httpx.AsyncClient, path: str) -> None:
+    # Ruling R21: feed images are remote; https only, never http:, and only for the reader.
+    csp = (await client.get(path)).headers["content-security-policy"]
+    assert "img-src 'self' https:" in csp.split("; ")
+    assert "http:" not in csp.replace("https:", "")
+    assert "frame-ancestors 'none'" in csp
+
+
+@pytest.mark.parametrize("path", ["/notes/", "/healthz", "/rssfeed", "/api/rss/feeds"])
+async def test_other_pages_keep_the_strict_csp(client: httpx.AsyncClient, path: str) -> None:
+    csp = (await client.get(path)).headers["content-security-policy"]
+    assert csp == (
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-src 'self'; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'; base-uri 'none'"
+    )
+
+
+async def test_rejections_under_rss_keep_the_strict_csp(client: httpx.AsyncClient) -> None:
+    foreign = await client.get("/rss/", headers={"Host": "evil.example:5374"})
+    assert foreign.status_code == 421
+    assert "img-src" not in foreign.headers["content-security-policy"]
+    cross = await client.post("/rss/", headers={"Origin": "https://evil.example"})
+    assert cross.status_code == 403
+    assert "img-src" not in cross.headers["content-security-policy"]
+
+
 async def test_non_http_scopes_pass_through() -> None:
     from jesinia.core.security import LocalOriginGuard
 

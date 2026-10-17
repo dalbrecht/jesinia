@@ -2,19 +2,40 @@
 import { errorText } from "@jesinia/client";
 import { Badge, Button, Input, Panel, useToast } from "@jesinia/design";
 import { RUNNER_NAMES, useClient, type KbPathInfo, type ServerStatus, type SyncStatus } from "@jesinia/shell";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { clock, MODE_LABEL } from "./format";
+import { RssSection } from "./settings/Rss";
 import { TagsSection } from "./settings/Tags";
+import { unreachable } from "./settings/unreachable";
 import s from "./settings.module.css";
 
+/** The outline, in the design pass's order (Review joins when it ships). */
 const SECTIONS = [
   ["kb", "Knowledge base"],
   ["sync", "Git sync"],
-  ["tags", "Tags"],
   ["agents", "Agents"],
+  ["tags", "Tags"],
+  ["rss", "RSS"],
   ["conflicts", "Conflicts"],
   ["security", "Security"],
 ] as const;
+type SectionId = (typeof SECTIONS)[number][0];
+
+function sectionOf(hash: string): SectionId {
+  const wanted = hash.replace(/^#/, "");
+  return SECTIONS.find(([id]) => id === wanted)?.[0] ?? "kb";
+}
+
+/** The section the address names (`/settings/#rss`), so deep links open it; else the first. */
+function useSection(): SectionId {
+  const [section, setSection] = useState(() => sectionOf(window.location.hash));
+  useEffect(() => {
+    const onChange = () => setSection(sectionOf(window.location.hash));
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+  return section;
+}
 
 function KbSection({ status }: { status: ServerStatus }) {
   const client = useClient();
@@ -23,23 +44,34 @@ function KbSection({ status }: { status: ServerStatus }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** No answer while loading (a restart, say): the cause, with Try again. */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    void client.GET("/api/kb/path").then((r) => {
-      const data = r.data as KbPathInfo | undefined;
-      if (data) {
-        setInfo(data);
-        setValue(data.path ?? "");
-      }
-    });
-  }, [client]);
+    setLoadError(null);
+    client.GET("/api/kb/path").then(
+      (r) => {
+        const data = r.data as KbPathInfo | undefined;
+        if (data) {
+          setInfo(data);
+          setValue(data.path ?? "");
+        }
+      },
+      (e: unknown) => setLoadError(`Couldn't load the KB folder: ${unreachable(e)}`),
+    );
+  }, [client, attempt]);
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
-    const r = await client.PUT("/api/kb/path", { body: { path: value.trim() } });
+    const r = await client.PUT("/api/kb/path", { body: { path: value.trim() } }).catch((err: unknown) => {
+      setError(`Couldn't save the KB folder: ${unreachable(err)}`);
+      return null;
+    });
     setSaving(false);
+    if (r === null) return;
     if (r.error) {
       setError(errorText(r.error, "Couldn't use that folder."));
       return;
@@ -69,6 +101,14 @@ function KbSection({ status }: { status: ServerStatus }) {
             Save
           </Button>
         </div>
+        {loadError ? (
+          <div className={s.actions}>
+            <p className={s.muted}>{loadError}</p>
+            <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>
+              Try again
+            </Button>
+          </div>
+        ) : null}
       </form>
     </Panel>
   );
@@ -82,8 +122,12 @@ function SyncSection({ status }: { status: ServerStatus }) {
 
   const act = async (name: string, path: "/api/kbsync/run" | "/api/kbsync/resume" | "/api/kbsync/init") => {
     setBusy(name);
-    const r = await client.POST(path);
+    const r = await client.POST(path).catch((e: unknown) => {
+      toast.show({ tone: "danger", message: `Couldn't sync: ${unreachable(e)}` });
+      return null;
+    });
     setBusy(null);
+    if (r === null) return;
     if (!r.response.ok) {
       toast.show({ tone: "danger", message: errorText((r as { error?: unknown }).error) });
       return;
@@ -275,28 +319,50 @@ function SecuritySection() {
   );
 }
 
+/**
+ * The book layout (design pass, R27): an outline of sections on the left selects the one the
+ * view pane shows, with the pane's toolbar on top and the section's actions at its bottom.
+ */
 export function Settings({ status }: { status: ServerStatus }) {
+  const section = useSection();
+  const page = useRef<HTMLDivElement>(null);
+  const opened = useRef(section);
+  // Choosing another section moves focus to its title, so keyboard and screen-reader users land
+  // on what they chose (not on the first open: focus then stays where the browser put it).
+  useEffect(() => {
+    if (opened.current === section) return;
+    opened.current = section;
+    const title = page.current?.querySelector<HTMLElement>("h2");
+    title?.setAttribute("tabindex", "-1");
+    title?.focus();
+  }, [section]);
+  const pages: Record<SectionId, ReactNode> = {
+    kb: <KbSection status={status} />,
+    sync: <SyncSection status={status} />,
+    agents: <AgentsSection status={status} />,
+    tags: <TagsSection />,
+    rss: <RssSection />,
+    conflicts: <ConflictsSection status={status} />,
+    security: <SecuritySection />,
+  };
   return (
     <div className={s.layout}>
       <nav className={s.nav} aria-label="Settings sections">
         {SECTIONS.map(([id, label]) => (
-          <a key={id} href={`#${id}`}>
+          <a key={id} href={`#${id}`} aria-current={section === id ? "location" : undefined}>
             {label}
           </a>
         ))}
       </nav>
-      <div className={s.column}>
-        <div className={s.intro}>
-          <h1>Settings</h1>
+      <section className={s.pane} aria-labelledby="settings-title">
+        <header className={s.toolbar}>
+          <h1 id="settings-title">Settings</h1>
           <p>Changes apply to every Jesinia app.</p>
+        </header>
+        <div ref={page} className={s.column}>
+          {pages[section]}
         </div>
-        <KbSection status={status} />
-        <SyncSection status={status} />
-        <TagsSection />
-        <AgentsSection status={status} />
-        <ConflictsSection status={status} />
-        <SecuritySection />
-      </div>
+      </section>
     </div>
   );
 }

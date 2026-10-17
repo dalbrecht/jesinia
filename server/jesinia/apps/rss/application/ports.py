@@ -209,6 +209,12 @@ class PostStore(Protocol):
         else ``archiving``, else ``failed``; None when no post here knows the page."""
         ...
 
+    def archive_states_of_page(
+        self, page_id: str
+    ) -> list[tuple[int, ArchiveState | None, str | None]]:
+        """``(post id, archive state, error)`` for every post kept to the page."""
+        ...
+
     def set_archive_state(self, page_id: str, state: ArchiveState, error: str | None) -> None:
         """Set the archive state (and error) of every post kept to the page."""
         ...

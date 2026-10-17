@@ -17,7 +17,7 @@ from jesinia.apps.rss.domain.feed import (
     feed_warning,
     redact_urls,
 )
-from jesinia.apps.rss.domain.kept import ArchiveState
+from jesinia.apps.rss.domain.kept import ArchiveState, archive_state
 from jesinia.apps.rss.domain.post import TOMBSTONE_TTL, Counts, Cursor, PostView, View, utc_text
 
 _FEED_COLUMNS = (
@@ -473,6 +473,15 @@ class SqlitePostStore:
         ).fetchall()
         states = {row[0] for row in rows}
         return next((state for state in _ARCHIVE_PRECEDENCE if state in states), None)
+
+    def archive_states_of_page(
+        self, page_id: str
+    ) -> list[tuple[int, ArchiveState | None, str | None]]:
+        rows = self._conn.execute(
+            "SELECT id, archive_state, archive_error FROM posts WHERE kept_page_id = ? ORDER BY id",
+            (page_id,),
+        ).fetchall()
+        return [(int(row[0]), archive_state(row[1]), row[2]) for row in rows]
 
     def set_archive_state(self, page_id: str, state: ArchiveState, error: str | None) -> None:
         self._conn.execute(

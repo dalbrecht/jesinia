@@ -529,6 +529,17 @@ def build_router(host: RssHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run))
 
+    @r.post("/feeds/{feed_id}/refresh", response_model=FeedOut)
+    async def refresh_feed(feed_id: int, idem: IdempotentCall = keyed) -> Response:
+        """Poll one feed now (Retry on a failing feed): the feed as it stands afterwards, with
+        its ``warning`` if it still fails."""
+
+        async def run() -> FeedOut:
+            await host.poller.poll_feed(feed_id)
+            return FeedOut.of(host.service.view(feed_id))
+
+        return await idem.run(lambda: _respond(run))
+
     @r.get("/posts", response_model=PostPageOut)
     async def list_posts(
         view: View = "unread",

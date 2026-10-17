@@ -13,7 +13,7 @@ from jesinia.registry import modules
 REPO = Path(__file__).resolve().parents[3]
 SKILLS = REPO / "skills"
 TEXTS = sorted(p for p in SKILLS.rglob("*.md"))
-TOOL = re.compile(r"`((?:kb|search|agents|notes)_[a-z_]+)`")
+TOOL = re.compile(r"`((?:kb|search|agents|notes|tags|rss)_[a-z_]+)`")
 DOC = re.compile(r"`(docs/[\w./-]+\.md)`")
 
 
@@ -56,3 +56,15 @@ def test_plugin_manifests_agree() -> None:
 def test_codex_snippet_is_delimited() -> None:
     text = (SKILLS / "codex/AGENTS.snippet.md").read_text()
     assert text.startswith("<!-- jesinia:begin") and text.rstrip().endswith("<!-- jesinia:end -->")
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["claude-code/skills/jesinia-kb-conventions/SKILL.md", "codex/AGENTS.snippet.md"],
+)
+def test_agents_learn_the_read_only_rss_tools(path: str) -> None:
+    text = (SKILLS / path).read_text(encoding="utf-8")
+    assert "`rss_search_posts`" in text and "`rss_get_post`" in text
+    # Keeping a post is the user's action: no skill may point an agent at a keep tool.
+    assert not re.search(r"`rss_keep\w*`", text)
+    assert "untrusted" in text.split("rss_search_posts", 1)[1][:600]

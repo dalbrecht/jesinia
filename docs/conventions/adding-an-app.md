@@ -33,7 +33,8 @@ first.
    Use `@jesinia/design` components and tokens only, and register the app in
    `packages/shell/src/apps.ts`.
 8. **Tests.** Python at 95% per file (domain 100%), vitest for the app, and a Playwright
-   spec in `web/tests/e2e/` for the main flow.
+   spec in `web/tests/e2e/` for the main flow. Add the app to the `--filter` build list in
+   the Makefile's `e2e-server` target, or the e2e server won't serve it.
 9. **Skill.** Add a skill under `skills/claude-code/skills/` and update the Codex snippet
    if agents should know the app's tools. `server/tests/skills` checks that every tool
    name exists.

@@ -772,6 +772,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rss/feeds/{feed_id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Feed
+         * @description Poll one feed now (Retry on a failing feed): the feed as it stands afterwards, with
+         *     its ``warning`` if it still fails.
+         */
+        post: operations["refresh_feed_api_rss_feeds__feed_id__refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rss/posts": {
         parameters: {
             query?: never;
@@ -3856,6 +3877,85 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PollSummaryOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    refresh_feed_api_rss_feeds__feed_id__refresh_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                feed_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedOut"];
                 };
             };
             /** @description Bad Request */

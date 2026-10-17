@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { ClientProvider, fakeClient, TagPicker, type Routes } from "../index";
+import { ClientProvider, fakeClient, TagPicker, type Routes, type TagPickerHandle } from "../index";
 
 const NOT_FOUND = { exists: false, canonical: null, near: [], same_meaning: null };
 
@@ -231,5 +231,58 @@ describe("TagPicker", () => {
     rerender("A newer reply on the same page.");
     slow.release(Response.json({ normalised: "wal-mode", ...NOT_FOUND }));
     await waitFor(() => expect(changes).toHaveBeenLastCalledWith(["wal-mode"]));
+  });
+
+  it("suggestOnOpen asks once as it opens (Keep), never again on its own", async () => {
+    const env = fakeClient({ "POST /api/kb/tags/suggest": [{ tag: "sqlite", new: false }] });
+    const view = (text: string) => (
+      <ClientProvider client={env.client}>
+        <TagPicker text={text} value={[]} onChange={() => {}} suggestOnOpen />
+      </ClientProvider>
+    );
+    const { rerender } = render(view("Post about SQLite."));
+    expect(await screen.findByRole("button", { name: "#sqlite" })).toBeInTheDocument();
+    expect(await suggests(env.calls)[0]?.json()).toEqual({ text: "Post about SQLite.", limit: 5 });
+    rerender(view("Post about SQLite, with a note."));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(suggests(env.calls)).toHaveLength(1);
+  });
+
+  it("commitDraft adds the typed tag for a caller about to save, or stops on a near-match", async () => {
+    const env = fakeClient({
+      "GET /api/kb/tags/check": check({
+        "wal-mode": { normalised: "wal-mode", ...NOT_FOUND },
+        sqllite: { normalised: "sqllite", ...NOT_FOUND, near: ["sqlite"] },
+        sqlite3: { normalised: "sqlite3", exists: true, canonical: "sqlite", near: [], same_meaning: null },
+      }),
+    });
+    const picker = createRef<TagPickerHandle>();
+    function Host() {
+      const [tags, setTags] = useState<string[]>(["db"]);
+      return (
+        <ClientProvider client={env.client}>
+          <TagPicker ref={picker} text="x" value={tags} onChange={setTags} />
+        </ClientProvider>
+      );
+    }
+    render(<Host />);
+    const commit = async () => {
+      let out: string[] | null = null;
+      await act(async () => {
+        out = (await picker.current?.commitDraft()) ?? null;
+      });
+      return out;
+    };
+    expect(await commit()).toEqual(["db"]); // nothing typed: the tags as they are
+    const box = screen.getByRole("textbox", { name: "Add a tag" });
+    await userEvent.type(box, "wal-mode");
+    expect(await commit()).toEqual(["db", "wal-mode"]);
+    await userEvent.type(box, "sqlite3");
+    expect(await commit()).toEqual(["db", "wal-mode", "sqlite"]);
+    await userEvent.type(box, "sqllite");
+    expect(await commit()).toBeNull(); // the author decides on a near-match first
+    expect(screen.getByText("#sqllite looks like an existing tag. Use #sqlite?")).toBeInTheDocument();
+    await userEvent.type(box, "bad one");
+    expect(await commit()).toBeNull(); // and on an invalid tag
   });
 });

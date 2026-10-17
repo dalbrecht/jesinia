@@ -187,7 +187,15 @@ class RssModule:
         kb, tags = ctx.services.get("kb"), ctx.services.get("tags")
         if isinstance(kb, KbService) and isinstance(tags, TagService):
             self._keeper = KeepService(
-                kb, tags, self._posts, posts_store, store, fetch, fetch, self._source_folder
+                kb,
+                tags,
+                self._posts,
+                posts_store,
+                store,
+                fetch,
+                fetch,
+                self._source_folder,
+                publish=ctx.bus.publish,
             )
             if resumed := self._keeper.recover():
                 log.info("resumed %d rss archives left running by a stop", resumed)

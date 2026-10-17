@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { JesiniaClient } from "@jesinia/client";
 import { Banner, Button } from "@jesinia/design";
-import { AppShell, useClient, type ServerStatus } from "@jesinia/shell";
+import { AppShell, lineDiff, useClient, type ServerStatus } from "@jesinia/shell";
 import { useCallback, useEffect, useState } from "react";
 import { pageFromPath, search } from "./api";
-import { lineDiff } from "./events";
 import { Chat } from "./Chat";
 import { Editor } from "./Editor";
 import s from "./notes.module.css";

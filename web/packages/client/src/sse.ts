@@ -5,6 +5,11 @@ export type SubscribeOptions = {
   /** Event names to listen for (SSE `event:` field). Defaults to unnamed messages. */
   events?: string[];
   retryMs?: number;
+  /**
+   * Called each time the stream opens; `reconnected` is false the first time. Events from
+   * while it was down (or past the server's buffer) may be gone: refetch state here.
+   */
+  onOpen?: (reconnected: boolean) => void;
   /** For tests: the EventSource implementation. */
   EventSource?: typeof EventSource;
 };
@@ -20,6 +25,7 @@ export function subscribe<T>(url: string, onEvent: (e: SseEvent<T>) => void, opt
   let source: EventSource | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
+  let opens = 0;
 
   const handle = (msg: MessageEvent<string>) => {
     const id = Number(msg.lastEventId);
@@ -41,6 +47,10 @@ export function subscribe<T>(url: string, onEvent: (e: SseEvent<T>) => void, opt
     if (last > 0) u.searchParams.set("after", String(last));
     source = new Impl(u.toString(), { withCredentials: true });
     for (const name of opts.events ?? ["message"]) source.addEventListener(name, handle as EventListener);
+    source.onopen = () => {
+      opens += 1;
+      opts.onOpen?.(opens > 1);
+    };
     source.onerror = () => {
       source?.close();
       source = null;

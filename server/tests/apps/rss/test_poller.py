@@ -592,3 +592,62 @@ async def test_the_poller_ignores_deleted_feeds(
         store.add_posts(feed.id, list(FeedparserReader().parse(_rss("2"), url).items), START) == 0
     )
     assert _guids(conn, feed.id) == []
+
+
+class _Gate:
+    """A fetcher whose answer for one URL waits until released (a slow feed in a round)."""
+
+    def __init__(self, slow: str, body: bytes) -> None:
+        self.slow, self.body = slow, body
+        self.release = asyncio.Event()
+        self.calls: list[str] = []
+
+    async def get(self, url: str) -> FetchResult:
+        self.calls.append(url)
+        if url == self.slow:
+            await self.release.wait()
+        return _ok(url, self.body)
+
+
+async def test_a_feeds_retry_does_not_wait_behind_a_poll_round(store: SqliteFeedStore) -> None:
+    slow = _subscribe(store, "https://slow.example/feed")
+    quick = _subscribe(store, "https://quick.example/feed")
+    gate = _Gate(slow.url, _rss("a"))
+    poller = _poller(store, gate, Clock())
+    round_ = asyncio.ensure_future(poller.poll_all())
+    await asyncio.sleep(0.01)  # the round is now waiting on the slow feed
+    await asyncio.wait_for(poller.poll_feed(quick.id), 1)  # Retry answers at once
+    assert gate.calls.count(quick.url) >= 1
+    gate.release.set()
+    summary = await asyncio.wait_for(round_, 1)
+    assert summary.failed == 0
+
+
+async def test_a_round_and_a_retry_never_poll_one_feed_at_once(store: SqliteFeedStore) -> None:
+    feed = _subscribe(store, "https://slow.example/feed")
+    gate = _Gate(feed.url, _rss("a"))
+    poller = _poller(store, gate, Clock())
+    round_ = asyncio.ensure_future(poller.poll_all())
+    await asyncio.sleep(0.01)
+    retry = asyncio.ensure_future(poller.poll_feed(feed.id))
+    await asyncio.sleep(0.01)
+    assert gate.calls == [feed.url]  # the Retry waits for the round's poll of the same feed
+    gate.release.set()
+    await asyncio.wait_for(asyncio.gather(round_, retry), 1)
+    assert gate.calls == [feed.url, feed.url]
+
+
+async def test_a_retry_queued_behind_a_feed_that_is_then_unsubscribed_polls_nothing(
+    store: SqliteFeedStore,
+) -> None:
+    feed = _subscribe(store, "https://slow.example/feed")
+    gate = _Gate(feed.url, _rss("a"))
+    poller = _poller(store, gate, Clock())
+    round_ = asyncio.ensure_future(poller.poll_all())
+    await asyncio.sleep(0.01)
+    retry = asyncio.ensure_future(poller.poll_feed(feed.id))
+    await asyncio.sleep(0.01)
+    assert store.delete_feed(feed.id, START)
+    gate.release.set()
+    await asyncio.wait_for(asyncio.gather(round_, retry), 1)
+    assert gate.calls == [feed.url]  # the queued Retry found it gone and fetched nothing

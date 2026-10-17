@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@jesinia/client": "workspace:*",
-    "@jesinia/design": "workspace:*"
+    "@jesinia/design": "workspace:*",
+    "react-markdown": "10.1.0"
   },
   "peerDependencies": {
     "react": "^19.0.0",

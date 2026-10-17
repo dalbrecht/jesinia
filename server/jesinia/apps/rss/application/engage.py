@@ -24,6 +24,8 @@ from jesinia.services.agents.domain.session import Session, Subject
 SUBJECT_KIND = "rss"
 POST_FILE = "post.md"
 TAKEAWAY_TIMEOUT_S = 90.0
+# Marks the takeaway prompt's turn: chats show it as a note, never as the author's message.
+TAKEAWAY_PURPOSE = "takeaway"
 ENGAGE_ROLE = """\
 You are helping the user think about one post from their RSS feeds.
 
@@ -106,7 +108,9 @@ class EngageService:
         ``TakeawayUnavailable``."""
         self.session(session_id)
         try:
-            text = await self._sessions.ask(session_id, TAKEAWAY_PROMPT, timeout=self._timeout)
+            text = await self._sessions.ask(
+                session_id, TAKEAWAY_PROMPT, timeout=self._timeout, purpose=TAKEAWAY_PURPOSE
+            )
         except SessionBusy as exc:
             raise EngageBusy("the agent is still answering; try again when it is done") from exc
         except (TurnFailed, SessionClosed, TimeoutError) as exc:

@@ -148,6 +148,19 @@ async def test_ask_continues_an_existing_session(make) -> None:  # type: ignore[
     assert svc.get(session.id).status == "idle"
 
 
+async def test_ask_marks_its_turn_with_a_purpose(make) -> None:  # type: ignore[no-untyped-def]
+    runner = FakeRunner([TextDelta("ok"), TurnDone("agent-1", "m")])
+    svc: SessionService = make(runner)
+    session = await svc.create(SUBJ, "fake", _pack())
+    await svc.send(session.id, "mine")
+    await svc.wait_idle(session.id)
+    assert await svc.ask(session.id, "sum it up", purpose="takeaway") == "ok"
+    asked = [e.data for e in svc.store.events(session.id) if e.kind == "user_message"]
+    # The author's own message carries no purpose; the app's prompt is marked, so a chat can
+    # tell the two apart (never show it as the author's words).
+    assert asked == [{"text": "mine"}, {"text": "sum it up", "purpose": "takeaway"}]
+
+
 async def test_ask_unknown_session(make) -> None:  # type: ignore[no-untyped-def]
     svc: SessionService = make(FakeRunner([]))
     with pytest.raises(SessionNotFound):

@@ -38,6 +38,7 @@ from jesinia.apps.rss.domain.settings import InvalidSettings, validate_settings
 from jesinia.apps.rss.module import RssModule
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
+from jesinia.core.events import Event
 from jesinia.services.fetch.application.service import FetchError, FetchService
 from jesinia.services.kb.application.errors import StaleWrite
 from jesinia.services.kb.application.service import PageDraft
@@ -637,6 +638,61 @@ async def test_archive_failure_is_visible_and_retryable(
     assert "Keep it anyway." in text and FEED_FALLBACK_NOTE not in text
     assert "Most personal tools never outgrow a single file database" in text
     assert "](../_assets/" in text
+
+
+def _post_changes(env: KeepEnv) -> list[dict[str, object]]:
+    """Collects ``rss.post_changed`` payloads from the app's event bus."""
+    seen: list[dict[str, object]] = []
+
+    async def record(event: Event) -> None:
+        seen.append(dict(event.payload))
+
+    env.app.state.ctx.bus.subscribe("rss.post_changed", record)
+    return seen
+
+
+async def test_archive_state_changes_are_published(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    seen = _post_changes(keep_env)
+    route = mock.get("https://fly.io/blog/sqlite-wal").mock(return_value=httpx.Response(503))
+    post_id = keep_env.post()
+    kept = await keep_env.keep(post_id, "Keep it.")
+    assert kept.status_code == 201
+    await keep_env.rss.keeper.drain()
+    assert seen[0] == {"id": post_id, "archive_state": "archiving", "archive_error": None}
+    assert seen[-1]["id"] == post_id and seen[-1]["archive_state"] == "failed"
+    assert "503" in str(seen[-1]["archive_error"])
+
+    seen.clear()
+    route.mock(
+        return_value=httpx.Response(
+            200, content=ARTICLE_FIXTURE.read_bytes(), headers={"content-type": "text/html"}
+        )
+    )
+    mock.get(url__regex=r"https://(news|cdn)\.example(\.org)?/.*\.png").mock(
+        return_value=httpx.Response(200, content=PNG_MAGIC + b"img", headers={"content-type": PNG})
+    )
+    retry = await keep_env.client.post(f"{KEEP_API}/posts/{post_id}/archive")
+    assert retry.status_code == 202
+    await keep_env.rss.keeper.drain()
+    assert seen[0]["archive_state"] == "archiving"
+    assert seen[-1] == {"id": post_id, "archive_state": "done", "archive_error": None}
+
+
+async def test_every_post_of_a_kept_page_hears_its_archive_end(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    seen = _post_changes(keep_env)
+    mock.get("https://fly.io/blog/sqlite-wal").mock(return_value=httpx.Response(503))
+    first = keep_env.post()
+    second = keep_env.post(feed="https://other.example/feed.xml")
+    await keep_env.keep(first, "One.")
+    await keep_env.rss.keeper.drain()
+    await keep_env.keep(second, "Two.")  # same source: the failed archive runs again
+    await keep_env.rss.keeper.drain()
+    ends = {(p["id"], p["archive_state"]) for p in seen[-2:]}
+    assert ends == {(first, "failed"), (second, "failed")}
 
 
 async def test_archive_retries_once_against_a_page_edited_meanwhile(

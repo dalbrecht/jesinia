@@ -6,9 +6,16 @@ Python server on your Mac serves the apps as installable web apps at
 through their existing logins), and keeps your Markdown files on disk as the source of
 truth, committed and pushed with git.
 
-The first app is **Notes**: browse and search your KB, edit pages in place, talk a page
-through with an agent, and save what's worth keeping as a note with clear AI provenance.
-RSS, Review and Issues come next.
+The apps:
+
+- **Notes:** browse and search your KB, edit pages in place, talk a page through with an
+  agent, and save what's worth keeping as a note with clear AI provenance.
+- **RSS:** a three-pane, keyboard-driven feed reader. Keep a post to write it into the KB
+  with your note, tags and the archived article; Engage to talk it through with an agent
+  first. OPML import and export are in Settings → RSS.
+- **Settings:** the KB folder, git sync, agents, the tag catalog and RSS.
+
+Review and Issues come next.
 
 ## Quickstart
 
@@ -28,8 +35,8 @@ Setup:
 3. asks before connecting Claude Code and Codex;
 4. prints a one-time login link.
 
-Open the link, then use **Install** in Chrome or Edge to give Jesinia and Notes their
-own windows.
+Open the link, then use **Install** in Chrome or Edge to give Jesinia, Notes and RSS
+their own windows.
 
 - `--kb-path` is your Markdown folder (default `~/kb`). Existing files are indexed in
   place, never moved. If it is a git repository with a remote, Jesinia commits and pushes

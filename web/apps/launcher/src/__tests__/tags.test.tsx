@@ -28,6 +28,7 @@ function renderTags(over = {}) {
       ...over,
     }),
   );
+  window.history.replaceState(null, "", "/settings/#tags"); // R27: one section per view
   render(<App path="/settings/" client={client} />);
   return calls;
 }

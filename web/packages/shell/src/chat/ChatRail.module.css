@@ -1,0 +1,70 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--jx-border);
+  background: var(--jx-surface);
+}
+.chatHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jx-space-2);
+  padding: var(--jx-space-2) var(--jx-space-3);
+  border-bottom: 1px solid var(--jx-border);
+}
+.muted {
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+}
+.runnerPick {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+}
+.runnerPick select {
+  border: 1px solid var(--jx-border-strong);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-surface);
+  padding: 2px var(--jx-space-1);
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-1);
+}
+.banner {
+  margin: var(--jx-space-2) var(--jx-space-3);
+  padding: var(--jx-space-2);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-warn-bg);
+  font-size: var(--jx-text-sm);
+}
+.transcript {
+  flex: 1;
+  min-height: 0;
+}
+/* Agent Markdown: long URLs and code wrap inside the rail; blocks scroll on their own. */
+.transcript :where(p, li, a, code) {
+  overflow-wrap: anywhere;
+}
+.transcript pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jx-space-2);
+  padding: var(--jx-space-2) var(--jx-space-3);
+  border-top: 1px solid var(--jx-border);
+}
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--jx-space-2);
+  padding: var(--jx-space-2) var(--jx-space-3) var(--jx-space-3);
+  border-top: 1px solid var(--jx-border);
+}

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Reading b</title>
+    <link>http://127.0.0.1:4876/</link>
+    <description>A feed imported from OPML in the e2e tests.</description>
+    <item>
+      <title>Reading b, first post</title>
+      <link>http://127.0.0.1:4876/posts/one.html</link>
+      <guid isPermaLink="false">reading-b-1</guid>
+      <pubDate>Mon, 12 Oct 2026 10:00:00 GMT</pubDate>
+      <description>The first post in reading b.</description>
+    </item>
+    <item>
+      <title>Reading b, second post</title>
+      <link>http://127.0.0.1:4876/posts/two.html</link>
+      <guid isPermaLink="false">reading-b-2</guid>
+      <pubDate>Tue, 13 Oct 2026 10:00:00 GMT</pubDate>
+      <description>The second post in reading b.</description>
+    </item>
+  </channel>
+</rss>

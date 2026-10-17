@@ -14,7 +14,7 @@ import asyncio
 import logging
 import re
 import weakref
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
@@ -48,6 +48,7 @@ from jesinia.apps.rss.domain.kept import (
     takeaway_block,
 )
 from jesinia.apps.rss.domain.post import PostView
+from jesinia.core.events import Event
 from jesinia.services.fetch.application.service import FetchError, FetchTooLarge
 from jesinia.services.kb.application.errors import StaleWrite
 from jesinia.services.kb.application.service import KbService, PageDraft, PageWithRev
@@ -58,6 +59,8 @@ log = logging.getLogger(__name__)
 # Archives running at once (each may fetch up to 20 images): a burst of Keeps or a restart
 # with many left running must not hold them all in memory together.
 ARCHIVE_CONCURRENCY = 3
+# Published whenever a post's archive state changes, so the reader updates live (R22).
+POST_CHANGED = "rss.post_changed"
 
 # Characters that would turn a plain-text snippet into Markdown syntax.
 _MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>!])")
@@ -79,9 +82,11 @@ class KeepService:
         images: ImageFetcher,
         folder: Callable[[], str],
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        publish: Callable[[Event], Awaitable[None]] | None = None,
     ) -> None:
         """``folder`` gives the ``folders.source`` setting at each Keep, so a change in
-        Settings → RSS applies without a restart."""
+        Settings → RSS applies without a restart. ``publish`` (the event bus, which never
+        raises to the publisher) hears every archive state change as ``rss.post_changed``."""
         self.tags = tags
         self._kb = kb
         self._posts = posts
@@ -91,6 +96,7 @@ class KeepService:
         self._images = images
         self._folder = folder
         self._now = now
+        self._publish = publish
         # One Keep or archive write per source at a time, so they don't race each other. A
         # lock lives only while someone holds or waits for it.
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
@@ -145,6 +151,7 @@ class KeepService:
                 raise
             page_id = page.page.id
             self._store.set_kept(post_id, page_id, "archiving" if archive else "done")
+            await self._announce(page_id)
             if archive:
                 self._start_archive(page_id, post_id)
         return KeepResult(page_id, page.page.path, created=existing is None)
@@ -209,7 +216,18 @@ class KeepService:
         if self._archives.get(page_id) is task:
             del self._archives[page_id]
 
+    async def _announce(self, page_id: str) -> None:
+        """Tell listeners (the PWAs, through ``/api/events``) the archive state of every post
+        kept to the page."""
+        if self._publish is None:
+            return
+        for post_id, state, error in self._store.archive_states_of_page(page_id):
+            payload = {"id": post_id, "archive_state": state, "archive_error": error}
+            await self._publish(Event(POST_CHANGED, payload))
+
     async def _archive_in_turn(self, page_id: PageId, post_id: int) -> None:
+        # A retry or a resumed archive is "archiving" again: say so before it waits its turn.
+        await self._announce(page_id)
         async with self._archive_slots:
             await self.archive(page_id, post_id)
 
@@ -272,8 +290,10 @@ class KeepService:
                 "archiving page %s (post %d) failed: %s", page_id, post_id, redact_urls(_cause(exc))
             )
             self._store.set_archive_state(page_id, "failed", _cause(exc))
+            await self._announce(page_id)
             return
         self._store.set_archive_state(page_id, "done", None)
+        await self._announce(page_id)
 
     async def _archive(self, page_id: PageId, post_id: int) -> None:
         post = self._posts.get(post_id)

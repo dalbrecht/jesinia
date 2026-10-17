@@ -90,6 +90,13 @@ async def test_takeaway_is_returned_not_written(keep_env: KeepEnv) -> None:
     # One more turn in the engaged session itself, so it sums up that conversation.
     assert keep_env.runner.requests[-1].prompt == TAKEAWAY_PROMPT
     assert keep_env.runner.requests[-1].workdir.name == sid
+    # The prompt turn is marked, so the chat never shows it as the author's message.
+    prompts = [
+        e.data
+        for e in _sessions(keep_env).store.events(sid)
+        if e.kind == "user_message" and e.data.get("text") == TAKEAWAY_PROMPT
+    ]
+    assert prompts == [{"text": TAKEAWAY_PROMPT, "purpose": "takeaway"}]
     after = sorted(str(p.relative_to(keep_env.root)) for p in keep_env.root.rglob("*"))
     assert after == before
     assert keep_env.state(post_id) == (None, None, None)
