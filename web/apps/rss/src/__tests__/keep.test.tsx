@@ -302,6 +302,32 @@ describe("Keep popover", () => {
     expect(within(reader).getByRole("status")).toHaveTextContent("In KB");
   });
 
+  it("a mark-read answer never takes the archive back to an older state", async () => {
+    let answer: (r: Response) => void = () => {};
+    setup({
+      "PATCH /api/rss/posts/1": () => new Promise<Response>((resolve) => (answer = resolve)),
+    });
+    await openFirst();
+    press("n");
+    await keepNow();
+    const reader = () => screen.getByRole("region", { name: "Reader" });
+    expect(await within(reader()).findByText("Archiving…")).toBeInTheDocument();
+    press("m"); // mark unread: the answer is held back
+    const events = FakeSource.all.find((s) => s.url.includes("rss.post_changed"));
+    act(() =>
+      events?.listeners.get("rss.post_changed")?.(
+        new MessageEvent("rss.post_changed", {
+          data: JSON.stringify({ id: 1, archive_state: "done", archive_error: null }),
+          lastEventId: String(++seq),
+        }),
+      ),
+    );
+    // Sent before the archive finished, the answer still says "archiving".
+    const stale = post(1, { read: false, kept_page_id: "pg1", archive_state: "archiving" });
+    await act(async () => answer(Response.json(stale)));
+    expect(within(reader()).getByRole("status")).toHaveTextContent("In KB");
+  });
+
   it("says suggestions come from the catalog only when no agent is available", async () => {
     setup({ "GET /api/agents/runners": { codex: { available: false, version: null, detail: "x" } } });
     await openFirst();

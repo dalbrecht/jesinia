@@ -344,9 +344,11 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     readSeq.current.set(post.id, seq);
     const latest = () => readSeq.current.get(post.id) === seq;
     setReadFlags(new Map([[post.id, read]]));
+    // Like Keep and Retry: an answer never takes the post back to an older archive state.
+    const since = archiveEvents.current;
     setRead(client, post.id, read).then(
       (saved) => {
-        if (latest()) replace(saved);
+        if (latest()) replace(freshen(saved, since));
         loadCounts();
       },
       (e: unknown) => {
