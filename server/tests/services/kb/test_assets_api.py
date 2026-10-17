@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``GET /api/kb/assets/{page_id}/{file}``: a page's local images, and nothing else (R-REN2)."""
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -166,3 +167,11 @@ async def test_should_answer_503_without_a_kb(cfg: Config) -> None:
     async with lifespan_client(create_app(replace(cfg, kb_path=None), [KbModule()])) as c:
         r = await c.get(f"/api/kb/assets/{PAGE}/a1b2.png", headers=bearer(cfg.token))
     assert r.status_code == 503
+
+
+async def test_should_answer_404_for_a_fifo_promptly(
+    client: httpx.AsyncClient, kb_root: Path
+) -> None:
+    os.mkfifo(kb_root / "_assets" / PAGE / "pipe.png")
+    r = await asyncio.wait_for(client.get(f"/api/kb/assets/{PAGE}/pipe.png"), timeout=5)
+    assert r.status_code == 404
