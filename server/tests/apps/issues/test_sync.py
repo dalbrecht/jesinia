@@ -1198,3 +1198,45 @@ async def test_watching_a_new_repo_while_github_is_offline_fails_cleanly(
     with pytest.raises(GitHubRequestError):
         await service.configure(REPO, watched=True, settings_schema=None)
     assert store.repo(REPO) is None
+
+
+async def test_an_epic_that_loses_its_last_child_shows_no_children(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    child = issue(2, labels=COMPLETE, parent=IssueRef(REPO, 1))
+    github.put(issue(1, labels=("priority: high",), sub_issue_count=1), child)
+    github.children[(REPO, 1)] = [child]
+    await watched(service, clock)
+    await service.sync(REPO)
+    clock.now += timedelta(minutes=1)
+    github.put(issue(1, labels=("priority: high", "bug"), sub_issue_count=1, updated=clock.now))
+    await service.sync(REPO)  # a later sync fetches the children
+    assert store.sub_issue_links(REPO, 1) == [IssueRef(REPO, 2, 1002)]
+    clock.now += timedelta(minutes=1)
+    github.children[(REPO, 1)] = []
+    github.put(issue(1, labels=("priority: high",), sub_issue_count=0, updated=clock.now))
+    await service.sync(REPO)
+    detail = IssueQueries(store, clock).detail(REPO, 1)
+    assert not detail.children
+
+
+async def test_a_malformed_issue_payload_is_recorded_and_the_cache_kept(
+    service: SyncService,
+    github: FakeIssues,
+    clock: FakeClock,
+    store: SqliteIssuesStore,
+    queries: IssueQueries,
+) -> None:
+    github.put(issue(1))
+    await watched(service, clock)
+    await service.sync(REPO)
+
+    def malformed(call: int) -> None:
+        raise GitHubPayloadError("expected an ISO 8601 time for 'updated_at'")
+
+    github.before_list = malformed
+    clock.now += timedelta(minutes=1)
+    await service.sync(REPO)
+    state = store.repo(REPO)
+    assert state is not None and "updated_at" in (state.sync_error or "")
+    assert await numbers(queries, "backlog") == [1]

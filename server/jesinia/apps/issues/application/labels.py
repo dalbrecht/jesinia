@@ -30,12 +30,13 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from functools import partial
 from typing import Literal
 
 from jesinia.apps.issues.application.ports import LabelPlanStore, LabelWrites, RepoState
+from jesinia.apps.issues.application.sync import read_schema
 from jesinia.apps.issues.domain.labels import (
     CreateLabel,
     DeleteLabel,
@@ -371,12 +372,17 @@ class LabelPlanner:
             LabelNameCollisionError: two GitHub labels compare as one name.
             GitHubError: GitHub couldn't be read.
         """
-        state = self.watched(repo)
-        if state.schema_source == "repo" and state.schema.errors:
+        stored = self.watched(repo)
+        # The schema as GitHub has it now, never the cache: a labels.yml changed since the last
+        # sync (or since the preview) must plan what it says, so an apply's shape check sees
+        # the change and asks for a fresh preview. A failed read raises: nothing runs.
+        source, schema = await read_schema(self._github, stored)
+        if source == "repo" and schema.errors:
             raise SchemaHasErrorsError(
-                f"{state.repo}'s .jesinia/labels.yml has problems, so its labels can't be set "
-                f"up or migrated until it is fixed: {'; '.join(state.schema.errors)}"
+                f"{stored.repo}'s .jesinia/labels.yml has problems, so its labels can't be set "
+                f"up or migrated until it is fixed: {'; '.join(schema.errors)}"
             )
+        state = replace(stored, schema_source=source, schema=schema)
         labels = await self._github.labels(state.repo)
         if kind == "setup":
             return tuple(plan_setup(state.schema, [label.name for label in labels])), labels

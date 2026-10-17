@@ -447,6 +447,12 @@ class SqliteIssuesStore:
                 )
             for parent, children in links.items():
                 self._put_links(repo, parent, children, now)
+            # An issue GitHub reports with no sub-issues has none: links cached while it was an
+            # epic go (its children fetched-as-empty, so the item shows none).
+            for stored in issues:
+                issue = stored.issue
+                if issue.sub_issue_count == 0:
+                    self._clear_links(repo, issue.number, now)
             self._conn.execute(
                 "UPDATE repos SET cursor_json = ? WHERE repo = ?", (cursor.to_json(), repo)
             )
@@ -510,6 +516,16 @@ class SqliteIssuesStore:
             "UPDATE issues SET sub_issues_synced_at = ? WHERE repo = ? AND number = ?",
             (_time(now), repo, parent),
         )
+
+    def _clear_links(self, repo: str, parent: int, now: datetime) -> None:
+        cleared = self._conn.execute(
+            "DELETE FROM sub_issue_links WHERE repo = ? AND parent_number = ?", (repo, parent)
+        )
+        if cleared.rowcount:
+            self._conn.execute(
+                "UPDATE issues SET sub_issues_synced_at = ? WHERE repo = ? AND number = ?",
+                (_time(now), repo, parent),
+            )
 
     def set_sub_issue_links(
         self, repo: str, parent: int, children: Sequence[Issue], now: datetime

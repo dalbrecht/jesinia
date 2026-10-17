@@ -254,8 +254,8 @@ async def test_setup_creates_only_missing_canonical_labels(
     run = await labels.apply(REPO, "setup", plan.id)
     assert run.complete and [r.state for r in run.results] == ["done"] * 3
     assert [w for w, _ in github.writes] == ["create_label"] * 3
-    # IR4: the labels were read fresh before anything was created, once per apply.
-    assert github.call_names() == ["labels"]
+    # IR4: the schema and the labels were read fresh before anything was created, once each.
+    assert github.call_names() == ["file", "labels"]
     assert (await labels.planner.current(REPO, "setup"))[0] == ()
     # IR5: one pause between consecutive writes.
     assert pauses.calls == [WRITE_INTERVAL.total_seconds()] * 2
@@ -806,4 +806,27 @@ async def test_setup_and_migration_refuse_a_broken_labels_yml(
         await labels.preview(REPO, "setup")
     with pytest.raises(SchemaHasErrorsError, match="not valid YAML"):
         await labels.preview(REPO, "migrate")
+    assert github.writes == []
+
+
+async def test_a_labels_yml_changed_after_the_preview_is_a_409_with_no_writes(
+    labels: LabelSetupService, github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    await synced(github, store, clock)
+    plan = await labels.preview(REPO, "setup")
+    # The file changes on GitHub; the cache (no sync since) still holds the old schema.
+    github.files[(REPO, LABELS_YML)] = AMICUS_YML + "  - name: area:web\n"
+    with pytest.raises(LabelPlanOutdatedError):
+        await labels.apply(REPO, "setup", plan.id)
+    assert github.writes == []
+
+
+async def test_a_labels_yml_that_cannot_be_read_applies_nothing(
+    labels: LabelSetupService, github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    await synced(github, store, clock)
+    plan = await labels.preview(REPO, "setup")
+    github.file_error = GitHubRequestError(502, "Bad Gateway")
+    with pytest.raises(GitHubRequestError):
+        await labels.apply(REPO, "setup", plan.id)
     assert github.writes == []

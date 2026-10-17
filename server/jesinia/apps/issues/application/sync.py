@@ -43,6 +43,7 @@ from jesinia.apps.issues.application.ports import (
     IssueReads,
     IssuesStore,
     RepoState,
+    SchemaReads,
     SchemaSource,
     StoredIssue,
 )
@@ -75,6 +76,23 @@ OnInbox = Callable[[str, Sequence[int]], Awaitable[None]]
 def _key(repo: str) -> str:
     """Repo names compare without letter case, as GitHub's do."""
     return repo.casefold()
+
+
+async def read_schema(github: SchemaReads, state: RepoState) -> tuple[SchemaSource, LabelSchema]:
+    """``state``'s effective schema as GitHub has it now: ``.jesinia/labels.yml`` when it exists,
+    else the one kept in Settings, else the default (spec §2). A file that exists but can't be
+    read as text gives the default with the cause in ``errors``.
+
+    Raises:
+        GitHubError: GitHub couldn't be asked (the caller decides; nothing is assumed).
+    """
+    try:
+        text = await github.file(state.repo, LABELS_YML)
+    except GitHubPayloadError as exc:
+        return "repo", replace(DEFAULT_SCHEMA, errors=(str(exc),))
+    if text is None:
+        return _without_file(state.settings_schema)
+    return "repo", parse_labels_yml(text)
 
 
 def _without_file(settings: LabelSchema | None) -> tuple[SchemaSource, LabelSchema]:
@@ -322,21 +340,9 @@ class SyncService:
             log.exception("issues: the Inbox listener failed for %s %s", repo, list(numbers))
 
     async def _refresh_schema(self, state: RepoState) -> LabelSchema:
-        """The repo's schema from ``.jesinia/labels.yml``, else the one kept in settings, else
-        the default; when it differs from the stored one it is stored and every cached issue
-        is re-triaged."""
-        source: SchemaSource
-        try:
-            text = await self._github.file(state.repo, LABELS_YML)
-        except GitHubPayloadError as exc:
-            # The file exists but can't be read as text: the default, with the cause shown.
-            source, schema = "repo", replace(DEFAULT_SCHEMA, errors=(str(exc),))
-        else:
-            if text is None:
-                # No labels.yml: the schema kept in Settings, else the default.
-                source, schema = _without_file(state.settings_schema)
-            else:
-                source, schema = "repo", parse_labels_yml(text)
+        """The repo's schema read now (see ``read_schema``); when it differs from the stored
+        one it is stored and every cached issue is re-triaged."""
+        source, schema = await read_schema(self._github, state)
         self._store_effective(state, source, schema)
         return schema
 

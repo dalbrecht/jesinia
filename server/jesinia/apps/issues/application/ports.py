@@ -33,6 +33,11 @@ from jesinia.services.github.domain.issue import (
 SchemaSource = Literal["default", "repo", "settings"]
 
 
+class SchemaReads(Protocol):
+    async def file(self, repo: str, path: str) -> str | None:
+        """A file's text on the default branch; ``None`` when it doesn't exist."""
+
+
 class IssueReads(Protocol):
     """The GitHub reads sync makes. Every method may raise ``GitHubError`` (a
     ``GitHubRateLimitedError`` while rate limited)."""
@@ -205,6 +210,8 @@ class LabelWrites(Protocol):
     Every method may raise ``GitHubError`` (a ``GitHubRateLimitedError`` while limited)."""
 
     async def labels(self, repo: str) -> list[Label]: ...
+
+    async def file(self, repo: str, path: str) -> str | None: ...
 
     async def labeled(self, repo: str, name: str) -> list[LabeledItem]:
         """Every issue and pull request carrying ``name`` now (``InvalidLabelError`` for a
