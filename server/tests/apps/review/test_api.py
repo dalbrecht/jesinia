@@ -703,3 +703,9 @@ def test_every_typed_review_error_is_structured_json() -> None:
     assert bad.status_code == 400 and b"GateInputError" in bad.body
     internal = _error(WorkspaceError("the mirror is locked"))
     assert internal.status_code == 500 and b"WorkspaceError" in internal.body
+
+
+def test_the_openapi_document_lists_the_structured_500() -> None:
+    from jesinia.apps.review.api.routes import _ERRORS
+
+    assert 500 in _ERRORS

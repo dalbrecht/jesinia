@@ -427,6 +427,9 @@ class PostingService:
             except (GitHubError, GitHubPayloadError) as exc:
                 log.warning("review.reconcile round=%d left unsettled: %s", round_id, exc)
                 continue
+            except Exception:  # one round's surprise must not stop the others; cause logged
+                log.exception("review.reconcile round=%d failed, left unsettled", round_id)
+                continue
             settled += 1
         return settled
 

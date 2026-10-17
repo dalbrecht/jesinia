@@ -4504,6 +4504,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -4615,6 +4625,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           },
           "502": {
             "content": {
@@ -4743,6 +4763,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -4859,6 +4889,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           },
           "502": {
             "content": {
@@ -4994,6 +5034,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           },
           "502": {
             "content": {
@@ -5140,6 +5190,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5285,6 +5345,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5411,6 +5481,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           },
           "502": {
             "content": {
@@ -5555,6 +5635,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5681,6 +5771,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           },
           "502": {
             "content": {
@@ -5827,6 +5927,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5962,6 +6072,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -6042,6 +6162,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           },
           "502": {
             "content": {
@@ -6152,6 +6282,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           },
           "502": {
             "content": {

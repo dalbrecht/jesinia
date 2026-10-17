@@ -133,7 +133,7 @@ _TYPED = (
 )
 # ``Any`` is FastAPI's own type for ``responses`` (free-form OpenAPI fragments).
 _ERRORS: dict[int | str, dict[str, Any]] = {
-    code: {"model": ReviewErrorOut} for code in (400, 404, 409, 422, 502, 503)
+    code: {"model": ReviewErrorOut} for code in (400, 404, 409, 422, 500, 502, 503)
 }
 
 Owner = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]

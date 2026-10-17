@@ -587,6 +587,8 @@ class Pipeline:
                     )
                     return True
         except (*_GITHUB_ERRORS, QueueDomainError, WorkspaceError) as exc:
+            if _transient(exc):  # GitHub's hiccup, not a short list: retry the round later
+                raise _github_failure(f"couldn't read {ref}'s files", exc) from exc
             warnings.append(f"GitHub's list of the PR's files couldn't be read: {exc}")
             return True
         return len(files) < pull.changed_files

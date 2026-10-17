@@ -5654,6 +5654,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
             /** @description Bad Gateway */
             502: {
                 headers: {
@@ -5728,6 +5737,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5814,6 +5832,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
             /** @description Bad Gateway */
             502: {
                 headers: {
@@ -5885,6 +5912,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5982,6 +6018,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
             /** @description Bad Gateway */
             502: {
                 headers: {
@@ -6065,6 +6110,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6162,6 +6216,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
             /** @description Bad Gateway */
             502: {
                 headers: {
@@ -6233,6 +6296,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6325,6 +6397,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
             /** @description Bad Gateway */
             502: {
                 headers: {
@@ -6400,6 +6481,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6492,6 +6582,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
             /** @description Bad Gateway */
             502: {
                 headers: {
@@ -6573,6 +6672,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
             /** @description Bad Gateway */
             502: {
                 headers: {
@@ -6640,6 +6748,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6721,6 +6838,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

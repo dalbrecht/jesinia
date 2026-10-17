@@ -52,7 +52,7 @@ from jesinia.apps.review.domain.workspace import (
     WorkspaceError,
 )
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
-from jesinia.apps.review.module import REVIEW_DB
+from jesinia.apps.review.module import REVIEW_DB, ReviewModule
 from jesinia.core.db import open_db
 from jesinia.core.events import Event, EventBus
 from jesinia.services.github.application.service import (
@@ -705,14 +705,15 @@ async def test_a_head_move_while_reading_files_refetches_once_then_degrades(env:
     coverage = env.artifacts(round_id)["coverage"]
     assert isinstance(coverage, dict) and coverage["files_truncated"] is True
 
-    # Moving again (or GitHub failing) on the retry degrades the same way.
+    # Moving again (or GitHub refusing the list) on the retry degrades the same way; a
+    # transient failure interrupts the round instead (see the file-list test below).
     env.files.script = [PrHeadMovedError("moved"), PrHeadMovedError("again")]
     env.github.heads = [HEAD, NEW_HEAD]
     await env.pipeline.prereview(env.request(ref, "triage"))
-    env.files.script = [GitHubRequestError(502, "Bad Gateway")]
+    env.files.script = [GitHubRequestError(404, "Not Found")]
     await env.pipeline.prereview(env.request(ref, "triage"))
     warnings = env.artifacts(env.jobs.rounds[-1].id)["warnings"]
-    assert isinstance(warnings, list) and any("Bad Gateway" in w for w in warnings)
+    assert isinstance(warnings, list) and any("Not Found" in w for w in warnings)
 
 
 async def test_a_head_that_moved_before_the_round_fails_it_visibly(env: Env) -> None:
@@ -1106,6 +1107,51 @@ async def test_an_open_stopped_while_it_waits_for_a_slot_gives_it_back(env: Env)
     found = env.store.latest_round_on_head(refs[0], HEAD)
     assert again.round_id == running[0].round_id
     assert found is not None and found[1].finished and found[1].error is None
+
+
+async def test_a_shutdown_starts_nothing_and_counts_each_round_once(env: Env) -> None:
+    """M15: stopping cancels the running open, which frees its slot; the queued pre-review
+    must not start mid-shutdown (and be counted as interrupted)."""
+    env.store.upsert_repo(RepoConfig("acme/api", watched=True, prereview="on_open"))
+    opened_refs = [env.add(replace(env.github.pr, repo="acme/api", number=n)) for n in (1, 2)]
+    queued = env.add(replace(env.github.pr, number=3))  # triage: a pre-review waits
+    env.jobs.hold = asyncio.Event()
+    opens = [await env.pipeline.open(ref) for ref in opened_refs]
+    for _ in range(200):
+        if len(env.jobs.rounds) == 2:
+            break
+        await asyncio.sleep(0)
+    await env.scheduler.tick()  # both slots taken: the pre-review stays queued
+    assert env.store.latest_round_on_head(queued, HEAD) is None
+
+    # As ReviewModule.stop does it.
+    module = ReviewModule()
+    module._pipeline, module._scheduler = env.pipeline, env.scheduler
+    await module.stop()
+
+    assert env.store.latest_round_on_head(queued, HEAD) is None  # never started
+    assert len(env.jobs.rounds) == 2
+    for ref, result in zip(opened_refs, opens, strict=True):
+        found = env.store.latest_round_on_head(ref, HEAD)
+        assert found is not None and found[0] == result.round_id
+        assert found[1].interrupted and found[1].interruptions == 1
+    await env.scheduler.tick()  # a stopped scheduler starts nothing either
+    assert env.store.latest_round_on_head(queued, HEAD) is None
+
+
+async def test_a_transient_file_list_failure_interrupts_the_round(env: Env) -> None:
+    """A rate limit or 5xx reading GitHub's file list re-queues the round instead of
+    reporting the list as truncated."""
+    ref = env.add()
+    env.files.script = [GitHubRequestError(502, "Bad Gateway")]
+    await prereview(env)
+    found = env.store.latest_round_on_head(ref, HEAD)
+    assert found is not None and found[1].interrupted and found[1].interruptions == 0
+    assert env.jobs.ran == []
+    await prereview(env)
+    assert latest(env, ref) == (found[0], None)
+    coverage = env.artifacts(found[0])["coverage"]
+    assert isinstance(coverage, dict) and coverage["files_truncated"] is False
 
 
 # --- fix round 1: the hunk index (R42) and minors -----------------------------------------------

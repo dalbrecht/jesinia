@@ -122,6 +122,8 @@ class Scheduler:
         # Rounds the author opened share the slots (R52), ahead of queued pre-reviews.
         self._open_waiters: deque[asyncio.Future[None]] = deque()
         self._opens_running = 0
+        # Set once shutdown begins: a slot freed by a cancelled round starts nothing (M15).
+        self._stopping = False
 
     @property
     def runs_pre_reviews(self) -> bool:
@@ -214,6 +216,8 @@ class Scheduler:
         return len(self._running) + self._opens_running
 
     def _dispatch(self) -> None:
+        if self._stopping:
+            return
         while self._open_waiters and self._busy() < self._concurrency:
             waiter = self._open_waiters.popleft()
             if not waiter.done():  # a cancelled waiter wants no slot
@@ -288,9 +292,16 @@ class Scheduler:
         while self._running:
             await asyncio.gather(*self._running.values(), return_exceptions=True)
 
-    async def stop(self) -> None:
-        """Cancel running pre-reviews; their rounds are marked failed (retry later)."""
+    def pause(self) -> None:
+        """Start nothing new from now on (shutdown begins). Call before cancelling anything
+        that holds a slot, so a freed slot can't start a round only to cancel it (M15)."""
+        self._stopping = True
         self._pending = {}
+
+    async def stop(self) -> None:
+        """Stop dispatching, then cancel running pre-reviews; their rounds are marked
+        interrupted (resumed after the restart)."""
+        self.pause()
         tasks = list(self._running.values())
         for task in tasks:
             task.cancel()

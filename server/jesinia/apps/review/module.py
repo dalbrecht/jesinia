@@ -258,6 +258,8 @@ class ReviewModule:
                 )
 
     async def stop(self) -> None:
+        if self._scheduler is not None:
+            self._scheduler.pause()  # cancelling an open frees a slot: nothing may take it
         if self._pipeline is not None:
             await self._pipeline.stop()
         if self._scheduler is not None:

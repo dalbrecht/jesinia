@@ -871,3 +871,27 @@ async def test_background_reconcile_survives_github_failures(
     (attempt,) = env.store.postings(env.round_id)
     assert attempt.state == "started"  # kept: nothing is posted until it can be settled
     assert "Bad Gateway" in caplog.text
+
+
+async def test_one_unexpected_reconcile_error_does_not_stop_the_others(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    other = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
+    for round_id in (env.round_id, other):
+        env.store.start_posting(round_id, "COMMENT", "k1", "d", "body", [], env.clock())
+    env.clock.advance(4)
+    real = env.github.reviews
+    calls = 0
+
+    async def flaky(repo: str, number: int) -> list[ReviewSummary]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("the response was not JSON")
+        return await real(repo, number)
+
+    env.github.reviews = flaky  # type: ignore[method-assign]
+    assert await env.service.reconcile_unsettled() == 1
+    first, second = env.store.postings(env.round_id)[0], env.store.postings(other)[0]
+    assert first.state == "started" and second.state == "not_posted"
+    assert "the response was not JSON" in caplog.text
