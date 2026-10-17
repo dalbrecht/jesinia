@@ -910,6 +910,12 @@ async def test_pending_changes_round_trip(env: Env) -> None:
         ids.append(response.json()["id"])
     listed = (await env.client.get(PENDING)).json()["changes"]
     assert [c["id"] for c in listed] == ids
+    assert listed[1]["change"] == {
+        "kind": "set_parent",
+        "parent": None,
+        "expected_parent": None,
+        "expects_parent": True,
+    }
     assert listed[3]["change"] == {
         "kind": "close",
         "reason": "duplicate",

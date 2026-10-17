@@ -562,10 +562,14 @@ class RemoveAreaBody(BaseModel):
 
 
 class SetParentBody(BaseModel):
-    """Make ``parent`` the issue's epic, or remove its parent (``null``)."""
+    """Make ``parent`` the issue's epic, or remove its parent (``null``). In the tray,
+    ``expects_parent`` and ``expected_parent`` show the parent it was staged against (a move on
+    GitHub since is a conflict). Staging records them from the cache and ignores what is sent."""
 
     kind: Literal["set_parent"]
     parent: IssueTargetBody | None
+    expects_parent: bool = False
+    expected_parent: IssueTargetBody | None = None
 
 
 class ReorderChildBody(BaseModel):
@@ -623,7 +627,12 @@ def change_body(change: IssueChange) -> IssueChangeBody:
     if isinstance(change, RemoveArea):
         return RemoveAreaBody(kind="remove_area", value=change.value)
     if isinstance(change, SetParent):
-        return SetParentBody(kind="set_parent", parent=_target_body(change.parent))
+        return SetParentBody(
+            kind="set_parent",
+            parent=_target_body(change.parent),
+            expects_parent=change.expects_parent,
+            expected_parent=_target_body(change.expected_parent),
+        )
     if isinstance(change, ReorderChild):
         child = cast(IssueTargetBody, _target_body(change.child))
         return ReorderChildBody(kind="reorder_child", child=child, after=_target_body(change.after))

@@ -13064,6 +13064,21 @@
                 "type": "null"
               }
             ]
+          },
+          "expects_parent": {
+            "type": "boolean",
+            "title": "Expects Parent",
+            "default": false
+          },
+          "expected_parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTargetBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -13072,7 +13087,7 @@
           "parent"
         ],
         "title": "SetParentBody",
-        "description": "Make ``parent`` the issue's epic, or remove its parent (``null``)."
+        "description": "Make ``parent`` the issue's epic, or remove its parent (``null``). In the tray,\n``expects_parent`` and ``expected_parent`` show the parent it was staged against (a move on\nGitHub since is a conflict). Staging records them from the cache and ignores what is sent."
       },
       "SettingsBody": {
         "properties": {

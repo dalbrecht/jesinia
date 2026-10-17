@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, cast
 
 from jesinia.apps.issues.application.apply import ApplyEngine
 from jesinia.apps.issues.application.labels import Clock
@@ -305,7 +305,14 @@ class ApplyService:
                     if found is not None and found.state in OPEN_STATES:
                         self._settle(found, result)
 
-            await self._engine.retry(stored.batch, stored.result, on_result=keep)
+            # A resumed approval protects its draft like the approval did (IR40).
+            sid = stored.suggestion_id
+            claimed = sid is not None and self._suggestions.claim(sid, self._clock())
+            try:
+                await self._engine.retry(stored.batch, stored.result, on_result=keep)
+            finally:
+                if claimed:
+                    self._release(cast(str, sid))
             return kept[0]
 
     async def approve(self, suggestion_id: str) -> Approval:
@@ -351,7 +358,7 @@ class ApplyService:
             try:
                 applied, settled = await self._apply(batch, "suggestion", found)
             finally:
-                self._suggestions.release(found.id)
+                self._release(found.id)
             conflict = next((r for r in applied.result.results if r.is_conflict), None)
             if conflict is not None:
                 # The fresh read contradicts the premise (I1): nothing of it was written.
@@ -359,6 +366,14 @@ class ApplyService:
                     f"suggestion {found.id} no longer fits: {conflict.cause}"
                 )
             return Approval(settled or found, applied)
+
+    def _release(self, suggestion_id: str) -> None:
+        """Release a claim, best effort: a failure here must not hide the apply's own outcome
+        or cause (start releases what is left)."""
+        try:
+            self._suggestions.release(suggestion_id)
+        except Exception:
+            log.exception("issues.apply: releasing the claim on suggestion %s", suggestion_id)
 
     def _settle(self, suggestion: Suggestion, result: BatchResult) -> Suggestion:
         """Approved when its batch completed; otherwise still open, with the cause."""

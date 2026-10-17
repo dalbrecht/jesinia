@@ -472,3 +472,23 @@ def test_preconditions_and_conflicts_round_trip() -> None:
 def test_a_close_comment_is_marked_as_the_closes() -> None:
     (_, comment) = series(ChangeBatch.of({E1: [Close("completed", comment="bye"), Comment("x")]}))
     assert comment.changes == (Comment("bye", from_close=True), Comment("x"))
+
+
+def test_a_readiness_approval_expects_the_readiness_it_was_made_against() -> None:
+    change = SetDimension("readiness", "agent-ready", only_if_value="design-needed")
+    assert label_edit([change], ("design needed",), ON_GITHUB, AMICUS).add == ("agent-ready",)
+    assert label_edit([change], ("agent-ready",), ON_GITHUB, AMICUS).is_empty
+    with pytest.raises(ChangedOnGitHubError):
+        label_edit([change], (), ON_GITHUB, AMICUS)  # the readiness was removed
+    human = SetDimension("readiness", "agent-ready", only_if_value="human-needed")
+    with pytest.raises(ChangedOnGitHubError):
+        label_edit([human], ("blocked",), ON_GITHUB, DEFAULT_SCHEMA)
+    with pytest.raises(ChangedOnGitHubError):
+        label_edit([human], ("human-needed", "blocked"), ON_GITHUB, DEFAULT_SCHEMA)
+    assert parse_change(change_json(change)) == change
+    with pytest.raises(InvalidChangeError):
+        SetDimension("readiness", "agent-ready", only_if_missing=True, only_if_value="blocked")
+    gap = approval_batch(_suggestion("readiness_gap", {"ready": True, "missing": []}))
+    assert gap == ChangeBatch.of(
+        {E1: [SetDimension("readiness", "agent-ready", only_if_value="human-needed")]}
+    )

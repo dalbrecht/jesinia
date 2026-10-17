@@ -45,7 +45,7 @@ from jesinia.apps.issues.domain.schema import (
     label_key,
     write_name,
 )
-from jesinia.apps.issues.domain.suggestions import AGENT_READY, Suggestion
+from jesinia.apps.issues.domain.suggestions import AGENT_READY, HUMAN_NEEDED, Suggestion
 from jesinia.services.github.domain.issue import (
     CloseReason,
     IssueDomainError,
@@ -176,18 +176,25 @@ def _owner(repo: str) -> str:
 @dataclass(frozen=True)
 class SetDimension:
     """Set a single-value dimension (readiness, priority or type) to a schema value, removing
-    the dimension's other values. ``only_if_missing`` (an approval, which only promised to fill a
-    gap) refuses when GitHub already has another value."""
+    the dimension's other values. An approval states what it was made against, so the fresh
+    read can refuse it when GitHub changed the dimension since (``ChangedOnGitHubError``):
+    ``only_if_missing`` (it only promised to fill a gap) or ``only_if_value`` (the one value the
+    dimension had, e.g. ``human-needed`` for a readiness gap). The value already set is fine."""
 
     dimension: SingleDimension
     value: str
     only_if_missing: bool = False
+    only_if_value: str | None = None
 
     def __post_init__(self) -> None:
         if self.dimension not in SINGLE_DIMENSIONS:
             raise InvalidChangeError(f"dimension must be one of {', '.join(SINGLE_DIMENSIONS)}")
         with _checked():
             validate_label_name(self.value)
+            if self.only_if_value is not None:
+                validate_label_name(self.only_if_value)
+        if self.only_if_missing and self.only_if_value is not None:
+            raise InvalidChangeError("a change expects the dimension missing or one value")
 
 
 @dataclass(frozen=True)
@@ -554,6 +561,36 @@ def check_change(change: IssueChange, schema: LabelSchema) -> None:
         area_value(schema, change.value)
 
 
+def _expect(
+    change: SetDimension,
+    canonical: Canonical,
+    values: Sequence[Canonical],
+    others: Sequence[str],
+    *,
+    has_target: bool,
+) -> None:
+    """Refuse ``change`` when the dimension on GitHub isn't what it was made against.
+
+    Raises:
+        ChangedOnGitHubError: see ``SetDimension``.
+    """
+    if change.only_if_missing:
+        holds = not others
+    elif change.only_if_value is not None:
+        expected = _find(values, change.only_if_value)
+        found = {_find(values, other) for other in others}
+        holds = (found == {expected} and expected is not None) or (not others and has_target)
+    else:
+        return
+    if holds:
+        return
+    now = ", ".join(repr(o) for o in others) or "unset"
+    raise ChangedOnGitHubError(
+        f"changed on GitHub since the last sync: {change.dimension} is now {now}, so "
+        f"{canonical.name!r} isn't set"
+    )
+
+
 def label_edit(
     changes: Sequence[LabelChange],
     current: Sequence[str],
@@ -567,7 +604,8 @@ def label_edit(
 
     Raises:
         InvalidChangeError: a value outside the schema.
-        ChangedOnGitHubError: an ``only_if_missing`` dimension GitHub already has a value for.
+        ChangedOnGitHubError: a dimension GitHub changed since the change was made (see
+            ``SetDimension``).
         MissingLabelError: labels to add that GitHub doesn't have (every one of them listed).
     """
     present = {label_key(label): label.strip() for label in current if label.strip()}
@@ -592,11 +630,8 @@ def label_edit(
             canonical = dimension_value(schema, change)
             values = _single(schema, change.dimension)
             others = [p for p in present.values() if (_find(values, p) or canonical) != canonical]
-            if change.only_if_missing and others:
-                raise ChangedOnGitHubError(
-                    f"changed on GitHub since the last sync: {change.dimension} is now "
-                    f"{', '.join(repr(o) for o in others)}, so {canonical.name!r} isn't set"
-                )
+            has_target = any(_matches(canonical, p) for p in present.values())
+            _expect(change, canonical, values, others, has_target=has_target)
             drop(lambda label: (_find(values, label) or canonical) == canonical)
             add(canonical)
         elif isinstance(change, AddArea):
@@ -764,8 +799,9 @@ def approval_batch(suggestion: Suggestion, duplicate_of_id: int | None = None) -
         close = Close("duplicate", duplicate_of_id, ref, f"Duplicate of {ref}", only_if_open=True)
         return ChangeBatch.of({target: [close]})
     if kind == "readiness_gap" and payload["ready"]:
-        # The premise is human-needed, not a missing dimension: a staged-like set.
-        return ChangeBatch.of({target: [SetDimension("readiness", AGENT_READY)]})
+        # The premise is the readiness it was made against (human-needed), not a gap.
+        ready = SetDimension("readiness", AGENT_READY, only_if_value=HUMAN_NEEDED)
+        return ChangeBatch.of({target: [ready]})
     if kind == "readiness_gap":
         return ChangeBatch()
     raise InvalidChangeError(f"a {kind} suggestion can't be approved yet")
@@ -808,6 +844,7 @@ def change_json(change: Change) -> Json:
             "dimension": change.dimension,
             "value": change.value,
             "only_if_missing": change.only_if_missing,
+            "only_if_value": change.only_if_value,
         }
     if isinstance(change, AddArea | RemoveArea):
         kind = "add_area" if isinstance(change, AddArea) else "remove_area"
@@ -912,7 +949,10 @@ def _parse(data: Mapping[str, object]) -> Change:
     kind = data["kind"]
     if kind == "set_dimension":
         return SetDimension(
-            _dimension(data["dimension"]), _text(data, "value"), _flag(data, "only_if_missing")
+            _dimension(data["dimension"]),
+            _text(data, "value"),
+            _flag(data, "only_if_missing"),
+            _optional_text(data, "only_if_value"),
         )
     if kind == "add_area":
         return AddArea(_text(data, "value"))

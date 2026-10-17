@@ -3287,7 +3287,9 @@ export interface components {
         };
         /**
          * SetParentBody
-         * @description Make ``parent`` the issue's epic, or remove its parent (``null``).
+         * @description Make ``parent`` the issue's epic, or remove its parent (``null``). In the tray,
+         *     ``expects_parent`` and ``expected_parent`` show the parent it was staged against (a move on
+         *     GitHub since is a conflict). Staging records them from the cache and ignores what is sent.
          */
         SetParentBody: {
             /**
@@ -3296,6 +3298,12 @@ export interface components {
              */
             kind: "set_parent";
             parent: components["schemas"]["IssueTargetBody"] | null;
+            /**
+             * Expects Parent
+             * @default false
+             */
+            expects_parent: boolean;
+            expected_parent?: components["schemas"]["IssueTargetBody"] | null;
         };
         /** SettingsBody */
         SettingsBody: {

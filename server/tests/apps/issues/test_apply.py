@@ -1091,3 +1091,74 @@ def test_a_corrupt_overlay_row_is_a_typed_error(world: World, conn: sqlite3.Conn
     )
     with pytest.raises(InvalidChangeError):
         world.store.repo(REPO)
+
+
+# --- fix round 2: readiness premise, retry claims, the back-off lapsing -------------------------
+
+
+async def test_approval_refuses_when_github_changed_readiness_since_sync(world: World) -> None:
+    await world.synced(issue(1, labels=("human-needed", "bug")))
+    sid = world.draft(1, "readiness_gap", {"ready": True, "missing": []})
+    world.github.put(replace(world.github.issues[(REPO, 1)], labels=("design needed", "bug")))
+
+    with pytest.raises(SuggestionStaleError) as raised:
+        await world.service.approve(sid)
+
+    assert "readiness" in str(raised.value) and "design needed" in str(raised.value)
+    assert world.write_names() == []
+    found = world.drafts.suggestion(sid)
+    assert found is not None and found.state == "draft" and found.apply_error
+
+
+async def test_a_retried_approval_claims_its_suggestion(conn: sqlite3.Connection) -> None:
+    world = World(conn)
+    held = Held()
+    held.files, held.repo_labels = world.github.files, world.github.repo_labels
+    world.github = held
+    world.engine = ApplyEngine(held, world.store, world.clock, pause=world.pauses)
+    world.service = ApplyService(
+        world.engine, world.applied, world.drafts, world.store, world.clock
+    )
+    world.sync = SyncService(held, world.store, world.clock)
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    held.fail["get:1"] = GitHubRequestError(502, "flaky")
+    approval = await world.service.approve(sid)
+    held.fail.clear()
+
+    retrying = asyncio.create_task(world.service.retry(approval.batch.id))
+    await held.entered.wait()
+    assert not world.drafts.claim(sid, world.clock())  # the retry holds it
+    world.drafts.replace_drafts(REPO, 1, [])
+    held.release.set()
+    await retrying
+
+    found = world.drafts.suggestion(sid)
+    assert found is not None and found.state == "approved"
+    assert world.drafts.claim(sid, world.clock()) is False  # approved: nothing to claim
+
+
+async def test_a_failing_release_keeps_the_applys_own_outcome(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+
+    def broken(suggestion_id: str) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(world.drafts, "release", broken)
+    approval = await world.service.approve(sid)
+    assert approval.suggestion.state == "approved"
+    assert "database is locked" in caplog.text
+
+
+async def test_an_apply_runs_once_the_back_off_lapses(world: World) -> None:
+    await world.synced(issue(1))
+    engine = ApplyEngine(world.github, world.store, world.clock, blocked_until=lambda: RESET)
+    world.clock.now = RESET - timedelta(minutes=1)
+    calls = len(world.github.calls)
+    blocked = await engine.apply(one(E1, Comment("x")))
+    assert blocked.is_rate_limited and len(world.github.calls) == calls  # asked GitHub nothing
+    world.clock.now = RESET + timedelta(seconds=1)
+    assert (await engine.apply(one(E1, Comment("x")))).complete

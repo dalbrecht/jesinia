@@ -220,11 +220,15 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   back-off lasts, a new batch asks GitHub nothing. Writes are spaced 1 second apart.
 - **Approvals:**
   - The premise is checked twice: against the cache first, then against the apply's fresh read.
-    An approval only fills a gap, so a dimension filled on GitHub since the last sync, a parent
-    set there, or an issue closed there makes it a 409 (`SuggestionStaleError`), and nothing of
-    it is written.
+    An approval only fills a gap, so any of these changes on GitHub since the last sync makes it a
+    409 (`SuggestionStaleError`), with nothing of it written:
+    - a dimension filled;
+    - a readiness that is no longer `human-needed` (for "could be agent-ready");
+    - a parent set;
+    - the issue closed.
   - A duplicate takes the original's database id from the cache, and can't name itself.
-  - While an approval applies, its draft is claimed, so retiring and reruns leave it (IR40).
+  - While an approval (or its Retry) applies, its draft is claimed, so retiring and reruns leave
+    it (IR40).
     Claims a stop cut off are released at start.
   - A complete apply marks the suggestion approved. A failed one leaves it approvable, with the
     cause.
