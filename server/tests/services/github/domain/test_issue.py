@@ -118,3 +118,19 @@ def test_linked_pr_state_prefers_merged_then_open() -> None:
     assert summarize_linked_prs([pr("closed")]) == "closed"
     assert summarize_linked_prs([pr("closed"), pr("open")]) == "open"
     assert summarize_linked_prs([pr("open"), pr("merged")]) == "merged"
+
+
+def test_label_names_made_only_of_dots_are_refused() -> None:
+    for dots in (".", "..", "...", "...."):
+        with pytest.raises(InvalidLabelError):
+            validate_label_name(dots)
+    assert validate_label_name("v1.0") == "v1.0"
+
+
+def test_numbers_and_ids_must_be_ints() -> None:
+    with pytest.raises(InvalidIssueReferenceError):
+        validate_issue_number(cast(int, "3"))
+    with pytest.raises(InvalidIssueReferenceError):
+        validate_database_id(cast(int, 2.0))
+    with pytest.raises(InvalidIssueReferenceError):
+        validate_database_id(True)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import copy
 import json
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from importlib.resources import files as package_files
 from pathlib import Path
@@ -31,7 +31,11 @@ from jesinia.services.github.domain.issue import (
     LinkedPr,
     Milestone,
 )
-from jesinia.services.github.domain.pr import InvalidPullRequestReferenceError
+from jesinia.services.github.domain.repo import (
+    InvalidPathSegmentError,
+    InvalidRepoError,
+    path_segment,
+)
 from jesinia.services.github.infrastructure.cache import SqliteGitHubCache
 
 API = "https://api.github.com"
@@ -348,7 +352,15 @@ async def test_sub_issue_and_label_writes_hit_the_right_endpoints(issues: IssueC
     assert remove_label.called
 
     await issues.add_sub_issue("acme/api", 12, 3004)
-    assert json.loads(add_sub.calls.last.request.content) == {"sub_issue_id": 3004}
+    assert json.loads(add_sub.calls.last.request.content) == {
+        "sub_issue_id": 3004,
+        "replace_parent": False,
+    }
+    await issues.add_sub_issue("acme/api", 12, 3004, replace_parent=True)
+    assert json.loads(add_sub.calls.last.request.content) == {
+        "sub_issue_id": 3004,
+        "replace_parent": True,
+    }
     await issues.remove_sub_issue("acme/api", 12, 3004)
     assert json.loads(remove_sub.calls.last.request.content) == {"sub_issue_id": 3004}
     await issues.reprioritize_sub_issue("acme/api", 12, 3004, 2010)
@@ -499,10 +511,12 @@ async def test_write_failures_keep_githubs_cause(issues: IssueClient) -> None:
 
 
 async def test_inputs_are_validated_before_any_request(issues: IssueClient) -> None:
-    with pytest.raises(InvalidPullRequestReferenceError):
+    with pytest.raises(InvalidRepoError):
         await issues.get("acme/../api", 1)
     with pytest.raises(InvalidIssueReferenceError):
         await issues.get("acme/api", 0)
+    with pytest.raises(InvalidIssueReferenceError):
+        await issues.get("acme/api", cast(int, "12"))
     with pytest.raises(InvalidIssueReferenceError):
         await issues.list_issues("acme/api", None, "two")
     with pytest.raises(InvalidIssueReferenceError):
@@ -577,3 +591,49 @@ async def test_non_404_failures_are_not_mistaken_for_absence(issues: IssueClient
     )
     with pytest.raises(GitHubPayloadError, match="not a file"):
         await issues.file("acme/api", "docs")
+
+
+# Label names that could steer the request path: each is refused, or sent as exactly one
+# encoded segment, never as a path to another resource (IR28).
+_HOSTILE_LABELS = [
+    (".", None),
+    ("..", None),
+    ("...", None),
+    ("a/b", "a%2Fb"),
+    ("%2e%2e", "%252e%252e"),
+    ("a?b", "a%3Fb"),
+    ("a#b", "a%23b"),
+]
+
+
+@pytest.mark.parametrize(("name", "segment"), _HOSTILE_LABELS)
+@respx.mock
+async def test_label_names_never_escape_their_path_segment(
+    issues: IssueClient, name: str, segment: str | None
+) -> None:
+    respx.route(method="DELETE", path__regex=r"/issues/12/labels/").mock(
+        return_value=Response(200, json=[])
+    )
+    sent = respx.route(host="api.github.com").mock(
+        return_value=Response(200, json={"name": "x", "color": "ededed", "description": None})
+    )
+    writes: list[tuple[str, Callable[[], Awaitable[object]]]] = [
+        ("/repos/acme/api/labels/", lambda: issues.delete_label("acme/api", name)),
+        ("/repos/acme/api/labels/", lambda: issues.update_label("acme/api", name, color="ededed")),
+        ("/repos/acme/api/issues/12/labels/", lambda: issues.remove_label("acme/api", 12, name)),
+    ]
+    for prefix, write in writes:
+        if segment is None:
+            with pytest.raises(InvalidLabelError):
+                await write()
+            continue
+        await write()
+        assert respx.calls.last.request.url.raw_path.decode() == prefix + segment
+    assert respx.calls.call_count == (0 if segment is None else 3)
+    assert sent.called is (segment is not None)
+
+
+def test_hostile_segments_are_refused_by_the_path_helper() -> None:
+    for bad in ("", ".", ".."):
+        with pytest.raises(InvalidPathSegmentError):
+            path_segment(bad)

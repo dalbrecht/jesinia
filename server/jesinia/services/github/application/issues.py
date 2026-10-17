@@ -20,7 +20,6 @@ import base64
 import binascii
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from urllib.parse import quote
 
 from jesinia.services.github.application.payload import (
     PER_PAGE,
@@ -69,7 +68,7 @@ from jesinia.services.github.domain.issue import (
     validate_label_names,
     validate_page_token,
 )
-from jesinia.services.github.domain.pr import InvalidPullRequestReferenceError, validate_repo
+from jesinia.services.github.domain.repo import InvalidRepoError, path_segment, validate_repo
 
 __all__ = ["PER_PAGE", "IssueClient"]
 
@@ -81,9 +80,9 @@ TIMELINE_EVENTS: frozenset[str] = frozenset(
 _REPOS_PREFIX = f"{API}/repos/"
 
 
-def _quoted(segment: str) -> str:
-    """A label name as one path segment: ``priority: high`` → ``priority%3A%20high``."""
-    return quote(segment, safe="")
+def _label_segment(name: str) -> str:
+    """A label name as one encoded path segment: ``priority: high`` → ``priority%3A%20high``."""
+    return path_segment(validate_label_name(name))
 
 
 def _issue_path(repo: str, number_: int) -> str:
@@ -98,7 +97,7 @@ def _repo_from_api_url(url: str, what: str) -> tuple[str, str]:
     name, slash, rest = remainder.partition("/")
     try:
         return validate_repo(f"{owner}/{name}"), slash + rest
-    except InvalidPullRequestReferenceError as exc:
+    except InvalidRepoError as exc:
         raise GitHubPayloadError(f"unexpected {what}: {exc}") from exc
 
 
@@ -227,7 +226,7 @@ class IssueClient:
     Raises (every method): ``GitHubUnavailable`` without a usable token,
     ``GitHubRateLimitedError`` while rate limited, ``GitHubRequestError`` with GitHub's
     message on any other non-2xx answer, ``GitHubPayloadError`` on an unexpected shape,
-    ``InvalidPullRequestReferenceError`` for a malformed repo and an ``IssueDomainError``
+    ``InvalidRepoError`` for a malformed repo and an ``IssueDomainError``
     subclass for any other invalid argument, the last two before any request is made.
     """
 
@@ -342,7 +341,7 @@ class IssueClient:
         doesn't exist. Used for ``.jesinia/labels.yml``."""
         api_path = (
             f"/repos/{validate_repo(repo)}/contents/"
-            f"{'/'.join(_quoted(part) for part in validate_content_path(path).split('/'))}"
+            f"{'/'.join(path_segment(part) for part in validate_content_path(path).split('/'))}"
         )
         try:
             data = await get_json(self._github, api_path)
@@ -367,7 +366,7 @@ class IssueClient:
     async def remove_label(self, repo: str, n: int, name: str) -> tuple[str, ...]:
         """Remove one label and return the labels left. A label that isn't on the issue (a
         404 while the issue exists) is a no-op; a missing issue raises GitHub's 404."""
-        path = f"{_issue_path(repo, n)}/labels/{_quoted(validate_label_name(name))}"
+        path = f"{_issue_path(repo, n)}/labels/{_label_segment(name)}"
         try:
             data = await self._github.write("DELETE", path)
         except GitHubRequestError as exc:
@@ -377,11 +376,15 @@ class IssueClient:
             return (await self.get(repo, n)).labels
         return tuple(text(mapping(label, path), "name") for label in list_of(data, path))
 
-    async def add_sub_issue(self, repo: str, n: int, child_id: int) -> None:
+    async def add_sub_issue(
+        self, repo: str, n: int, child_id: int, *, replace_parent: bool = False
+    ) -> None:
         """Make the issue with database id ``child_id`` a sub-issue of ``repo#n`` (GitHub
-        requires the same owner)."""
+        requires the same owner). A child that already has a parent is refused by GitHub
+        unless ``replace_parent`` moves it here."""
         path = f"{_issue_path(repo, n)}/sub_issues"
-        await self._github.write("POST", path, {"sub_issue_id": validate_database_id(child_id)})
+        payload = {"sub_issue_id": validate_database_id(child_id), "replace_parent": replace_parent}
+        await self._github.write("POST", path, payload)
 
     async def remove_sub_issue(self, repo: str, n: int, child_id: int) -> None:
         path = f"{_issue_path(repo, n)}/sub_issue"
@@ -467,7 +470,7 @@ class IssueClient:
         description: str | None = None,
     ) -> Label:
         """Rename or restyle a label; issues keep it under the new name."""
-        path = f"/repos/{validate_repo(repo)}/labels/{_quoted(validate_label_name(name))}"
+        path = f"/repos/{validate_repo(repo)}/labels/{_label_segment(name)}"
         payload: dict[str, object] = {}
         if new_name is not None:
             payload["new_name"] = validate_label_name(new_name)
@@ -480,5 +483,5 @@ class IssueClient:
         return _label(mapping(await self._github.write("PATCH", path, payload), path))
 
     async def delete_label(self, repo: str, name: str) -> None:
-        path = f"/repos/{validate_repo(repo)}/labels/{_quoted(validate_label_name(name))}"
+        path = f"/repos/{validate_repo(repo)}/labels/{_label_segment(name)}"
         await self._github.write("DELETE", path)

@@ -56,6 +56,11 @@ class GitHubRequestError(GitHubError):
         self.github_message = github_message
 
 
+class UnsafeGitHubPathError(GitHubError):
+    """A request path that would reach a different resource than the one written (a dot
+    segment, an unencoded character), or a write outside ``/repos/``; refused unsent."""
+
+
 class GitHubRateLimitedError(GitHubRequestError):
     """GitHub is rate limiting this token; ``reset_at`` is when it says to try again
     (``None`` when it didn't say)."""
@@ -214,10 +219,16 @@ class GitHubService:
         """One request, authorized with the in-memory token. A 401 drops the token and
         retries once with a fresh one; a network failure becomes a typed error that keeps
         httpx's cause, and a rate limit raises ``GitHubRateLimitedError``."""
+        client = self._client()
+        # Built once without credentials to check the path httpx will really send: it drops
+        # dot segments and encodes some characters, either of which changes the resource.
+        sent_path = client.build_request(method, path).url.raw_path
+        if sent_path != path.encode("ascii", "replace"):
+            raise UnsafeGitHubPathError(f"refused a request path that changes when sent: {path!r}")
         for attempt in range(2):
             token = await self._current_token(refresh=attempt > 0)
             try:
-                resp = await self._client().request(
+                resp = await client.request(
                     method,
                     path,
                     params=params,
@@ -273,7 +284,10 @@ class GitHubService:
     ) -> object:
         """The one write path: never cached or revalidated, sent through ``_send`` (so the
         token cache, 401 refresh and rate-limit handling apply), and every failure keeps
-        GitHub's cause. An empty answer (a 204) comes back as ``""``."""
+        GitHub's cause. An empty answer (a 204) comes back as ``""``. Writes only reach
+        repository resources: any path outside ``/repos/`` is refused unsent."""
+        if not path.startswith("/repos/"):
+            raise UnsafeGitHubPathError(f"writes must target /repos/..., got {path!r}")
         resp = await self._send(method, path, self._headers(), payload=payload)
         data = _json(resp)
         if not resp.is_success:

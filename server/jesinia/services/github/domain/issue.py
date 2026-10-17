@@ -163,14 +163,18 @@ def summarize_linked_prs(links: Sequence[LinkedPr]) -> str | None:
     return next((state for state in _LINKED_PR_ORDER if state in states), None)
 
 
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
 def validate_issue_number(number: int) -> int:
-    if isinstance(number, bool) or number < 1:
+    if not _is_positive_int(number):
         raise InvalidIssueReferenceError(f"issue number must be 1 or more, got {number!r}")
     return number
 
 
 def validate_database_id(database_id: int) -> int:
-    if isinstance(database_id, bool) or database_id < 1:
+    if not _is_positive_int(database_id):
         raise InvalidIssueReferenceError(f"database id must be 1 or more, got {database_id!r}")
     return database_id
 
@@ -199,6 +203,9 @@ def validate_label_name(name: str) -> str:
         raise InvalidLabelError(f"label name is over {LABEL_NAME_LIMIT} characters: {name!r}")
     if _CONTROL.search(name):
         raise InvalidLabelError(f"label name has a control character: {name!r}")
+    if not name.strip("."):
+        # ``.`` and ``..`` would be dot segments in a label's URL; refuse every dot-only name.
+        raise InvalidLabelError(f"label name can't be only dots: {name!r}")
     return name
 
 
