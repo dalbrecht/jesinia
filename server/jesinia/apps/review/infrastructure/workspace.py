@@ -540,7 +540,9 @@ class GitWorkspace:
             location, args, stdin=stdin, timeout=timeout, output_limit=output_limit
         )
         if truncated:
-            raise DiffTooLargeError(argv, output_limit or 0)
+            limit = output_limit or 0
+            span = "..".join(arg[:12] for arg in argv[-2:])
+            raise DiffTooLargeError(f"the diff {span} is over {limit} bytes", limit)
         if code:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
         return out

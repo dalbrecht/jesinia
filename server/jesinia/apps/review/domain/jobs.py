@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from jesinia.apps.review.domain.coverage import Coverage
+from jesinia.apps.review.domain.coverage import Coverage, HunkIndex
 from jesinia.apps.review.domain.gates import Depth
 from jesinia.apps.review.domain.workspace import canonical_repo
 from jesinia.services.github.domain.pr import CheckState, PrCommit, PullRequest
@@ -84,14 +84,19 @@ class JobKind(StrEnum):
 @dataclass(frozen=True)
 class Round:
     """One review pass over one head: the stored round's id, the PR as fetched for it, its
-    commits (as GitHub listed them), the proposed depth and what Jesinia knows of the
-    author's familiarity with the code (a summary from the knowledge model)."""
+    commits (as GitHub listed them), the proposed depth, what Jesinia knows of the
+    author's familiarity with the code (a summary from the knowledge model), and the merge
+    base and hunk index of the diff coverage is computed against."""
 
     id: int
     pr: PullRequest
     commits: tuple[PrCommit, ...]
     depth: Depth
     knowledge: str = ""
+    # The diff Jesinia scores coverage against runs from the merge base to the head; the
+    # index lists its hunks in Jesinia's numbering, for the agents to cite.
+    merge_base: str = ""
+    hunk_index: HunkIndex | None = None
 
     @property
     def repo(self) -> str:

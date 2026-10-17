@@ -524,6 +524,18 @@ class SqliteReviewStore:
     def set_verdict(self, round_id: int, verdict: str) -> None:
         self._conn.execute("UPDATE rounds SET verdict = ? WHERE id = ?", (verdict, round_id))
 
+    def artifact(self, round_id: int, kind: str) -> object:
+        """One artifact of a round (``None`` if there is none), decoding only that one."""
+        row = self._conn.execute(
+            "SELECT json FROM artifacts WHERE round_id = ? AND kind = ?", (round_id, kind)
+        ).fetchone()
+        return None if row is None else json.loads(row[0])
+
+    def artifact_kinds(self, round_id: int) -> set[str]:
+        """The kinds of artifact a round has, without reading them."""
+        rows = self._conn.execute("SELECT kind FROM artifacts WHERE round_id = ?", (round_id,))
+        return {kind for (kind,) in rows}
+
     def artifacts(self, round_id: int) -> dict[str, object]:
         """Every artifact of a round, by kind."""
         rows = self._conn.execute(

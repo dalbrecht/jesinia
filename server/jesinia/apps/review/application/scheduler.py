@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from jesinia.apps.review.application.errors import HeadMovedOnError
 from jesinia.apps.review.application.ports import PrunableWorkspace, QueueStore
 from jesinia.apps.review.domain.gates import (
     DEFAULT_GATES,
@@ -227,6 +228,10 @@ class Scheduler:
             self._store.finish_round(request.round_id, self._clock(), _STOPPED, interrupted=True)
             self._store.set_state(ref, head, "queued", "interrupted by a stop; it runs again")
             raise
+        except HeadMovedOnError as exc:
+            # A routine push: not the PR's failure. The new head gets its own round.
+            self._store.finish_round(request.round_id, self._clock(), str(exc), interrupted=True)
+            self._store.set_state(ref, head, "queued", str(exc))
         except Exception as exc:  # one PR's failure must not stop the queue; its cause is kept
             cause = str(exc) or type(exc).__name__
             log.warning("review pre-review of %s failed: %s", ref, cause, exc_info=exc)

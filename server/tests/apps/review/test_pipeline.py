@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections import Counter
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
@@ -124,6 +125,7 @@ class FakeGitHub:
         self.ci = CheckState("passing", [Check("ci", "passing", None)])
         self.error: Exception | None = None
         self.checks_error: Exception | None = None
+        self.commits_error: Exception | None = None
 
     async def get(self, repo: str, number: int) -> PullRequest:
         if self.error is not None:
@@ -131,6 +133,8 @@ class FakeGitHub:
         return replace(self.pr, head_sha=self.heads.pop(0)) if self.heads else self.pr
 
     async def commits_of(self, pr: PullRequest) -> tuple[PullRequest, list[PrCommit]]:
+        if self.commits_error is not None:
+            raise self.commits_error
         return replace(pr, commits_truncated=self.commits_truncated), list(self.commits)
 
     async def checks(self, repo: str, sha: str) -> CheckState:
@@ -166,11 +170,14 @@ class FakeWorkspace:
         self.diff_text = DIFF
         self.diff_error: WorkspaceError | None = None
         self.diffs: list[tuple[str, str]] = []
+        self.fetch_hold: asyncio.Event | None = None
 
     async def ensure_mirror(self, repo: str) -> None:
         return None
 
     async def fetch(self, repo: str, refs: list[str]) -> None:
+        if self.fetch_hold is not None:
+            await self.fetch_hold.wait()
         if self.fetch_error is not None:
             raise self.fetch_error
         self.fetched.append(list(refs))
@@ -472,7 +479,7 @@ async def test_open_after_triage_runs_only_the_missing_jobs(env: Env) -> None:
     assert env.store.latest_rounds()[ref].verdict == "approve"  # unchanged
 
 
-async def test_open_while_a_pre_review_runs_adds_only_the_on_open_jobs(env: Env) -> None:
+async def test_open_while_a_pre_review_runs_repeats_none_of_its_jobs(env: Env) -> None:
     ref = env.add()
     env.jobs.hold = asyncio.Event()
     await env.scheduler.tick()
@@ -482,7 +489,8 @@ async def test_open_while_a_pre_review_runs_adds_only_the_on_open_jobs(env: Env)
             break
         await asyncio.sleep(0)
     result = await env.pipeline.open(ref)
-    assert result.jobs == (JobKind.OVERVIEW, JobKind.WALKTHROUGH)
+    # The open lists what the round lacks; the pre-review's jobs are joined, not repeated.
+    assert set(result.jobs) == {*TRIAGE_JOBS, JobKind.OVERVIEW, JobKind.WALKTHROUGH}
     env.jobs.hold.set()
     await env.scheduler.drain()
     await env.pipeline.drain()
@@ -616,7 +624,7 @@ async def test_truncated_lists_use_the_local_diff_and_say_so(env: Env) -> None:
 async def test_a_diff_too_large_marks_coverage_incomplete_and_never_approves(env: Env) -> None:
     """Carry (d) and M8: past the workspace's byte cap the diff is not read; coverage is
     incomplete, never 100%, and the round can't be approved."""
-    env.workspace.diff_error = DiffTooLargeError(("git", "diff", BASE, HEAD), 32)
+    env.workspace.diff_error = DiffTooLargeError("the diff is over 32 bytes", 32)
     ref = env.add()
     await prereview(env)
     round_id, error = latest(env, ref)
@@ -687,9 +695,14 @@ async def test_a_head_that_moved_before_the_round_fails_it_visibly(env: Env) -> 
     env.github.pr = replace(env.github.pr, number=2)
     env.github.heads = [NEW_HEAD]
     await prereview(env)
-    ref = second
-    _, error = latest(env, ref)
-    assert error is not None and "moved on" in error
+    found = env.store.latest_round_on_head(second, HEAD)
+    assert found is not None
+    status = found[1]
+    assert status.error is not None and "moved on" in status.error
+    # A routine push isn't a failure: the round reads as interrupted, the row as waiting.
+    assert status.interrupted
+    stored = env.store.pr(second)
+    assert stored is not None and stored.state == "queued" and "moved on" in stored.state_reason
 
 
 @pytest.mark.parametrize("where", ["github", "fetch", "diff"])
@@ -749,7 +762,7 @@ async def test_progress_events_carry_only_ids_states_and_counts(env: Env) -> Non
     assert (last["state"], last["done"], last["total"]) == ("finished", 3, 3)
 
 
-async def test_stop_cancels_an_open_and_its_round_runs_again(env: Env) -> None:
+async def test_stop_cancels_an_open_and_marks_its_round_interrupted(env: Env) -> None:
     env.store.set_prereview_default("on_open")
     ref = env.add()
     env.jobs.hold = asyncio.Event()
@@ -781,3 +794,140 @@ async def test_a_failed_open_finishes_its_round_with_the_cause(env: Env) -> None
     retry = await env.pipeline.open(ref)
     assert retry.state == "started" and retry.round_id != result.round_id
     await env.pipeline.drain()
+
+
+# --- fix round 1: single-flight jobs (R40) ------------------------------------------------------
+
+
+async def test_an_open_during_an_everything_pre_review_runs_each_job_once(env: Env) -> None:
+    """I1, first reproduction: the author opens a deep PR while its "everything" pre-review
+    is still preparing. Every job runs exactly once, whoever asked first."""
+    env.store.set_prereview_default("everything")
+    env.github.pr = replace(env.github.pr, additions=300)
+    ref = env.add(env.github.pr)
+    env.workspace.fetch_hold = asyncio.Event()
+    await env.scheduler.tick()
+    for _ in range(50):
+        await asyncio.sleep(0)
+    result = await env.pipeline.open(ref)
+    # Everything it lacks is already planned by the pre-review: nothing new starts.
+    assert result.state == "running" and result.jobs == ()
+    env.workspace.fetch_hold.set()
+    await env.scheduler.drain()
+    await env.pipeline.drain()
+    assert Counter(env.jobs.ran) == Counter(ALL_DEEP)
+    assert env.workspace.fetched == [[BASE, HEAD]]  # one preparation for both runners
+    round_id, error = latest(env, ref)
+    assert error is None and env.store.latest_rounds()[ref].verdict == "approve"
+    jobs = env.artifacts(round_id)["jobs"]
+    assert isinstance(jobs, dict) and set(jobs) == {kind.value for kind in ALL_DEEP}
+
+
+async def test_an_open_right_after_the_scheduler_starts_a_round_runs_each_job_once(
+    env: Env,
+) -> None:
+    """I1, second reproduction: the open lands before the pre-review's task has run."""
+    ref = env.add()
+    await env.scheduler.tick()  # the round exists; its task hasn't started
+    result = await env.pipeline.open(ref)
+    assert result.state == "started"
+    await env.scheduler.drain()
+    await env.pipeline.drain()
+    assert Counter(env.jobs.ran) == Counter((*TRIAGE_JOBS, JobKind.OVERVIEW, JobKind.WALKTHROUGH))
+    _, error = latest(env, ref)
+    assert error is None
+
+
+async def test_a_second_open_while_the_first_runs_says_running(env: Env) -> None:
+    env.store.set_prereview_default("on_open")
+    ref = env.add()
+    env.jobs.hold = asyncio.Event()
+    first = await env.pipeline.open(ref)
+    for _ in range(50):
+        await asyncio.sleep(0)
+    second = await env.pipeline.open(ref)
+    assert second.state == "running" and second.round_id == first.round_id
+    env.jobs.hold.set()
+    await env.pipeline.drain()
+    assert Counter(env.jobs.ran) == Counter(first.jobs)
+
+
+async def test_job_state_survives_a_restart(env: Env) -> None:
+    """R30: what a round finished is kept in review.sqlite; after a restart, a job that was
+    running (no output stored) runs again and a finished one doesn't."""
+    ref = env.add()
+    round_id = env.store.start_round(ref, HEAD, BASE, "quick", env.clock())
+    env.store.put_artifact(round_id, "findings", {"findings": []})
+    env.store.put_artifact(
+        round_id,
+        "jobs",
+        {"findings": {"state": "done", "error": None},
+         "correctness": {"state": "running", "error": None}},
+    )  # fmt: skip
+    env.store.interrupt_unfinished_rounds(env.clock(), "restart")
+    env.store.finish_round(round_id, env.clock(), None)  # as if it had finished cleanly
+    restarted = Pipeline(
+        github=env.github, files=env.files, workspace=env.workspace, jobs=env.jobs,
+        store=env.store, bus=EventBus(), clock=env.clock,
+    )  # fmt: skip
+    result = await restarted.open(ref)
+    assert result.round_id == round_id
+    assert JobKind.FINDINGS not in result.jobs and JobKind.CORRECTNESS in result.jobs
+    await restarted.drain()
+    assert JobKind.FINDINGS not in env.jobs.ran
+
+
+# --- fix round 1: the hunk index (R42) and minors -----------------------------------------------
+
+
+async def test_jobs_get_the_merge_base_and_jesinias_hunk_index(env: Env) -> None:
+    env.store.set_prereview_default("everything")
+    ref = env.add()
+    seen: list[object] = []
+
+    async def at_job_done(event: Event) -> None:
+        if event.payload["state"] == "job_done" and event.payload["job"] == "walkthrough":
+            seen.append(env.store.artifact(event.payload["round_id"], "walkthrough"))  # type: ignore[arg-type]
+
+    env.pipeline._bus.subscribe(PROGRESS_TOPIC, at_job_done)
+    await prereview(env)
+    first = env.jobs.rounds[0]
+    assert first.merge_base == MERGE_BASE
+    assert first.hunk_index is not None
+    assert "hunk 1: @@ -10,2 +11,2 @@ (+1 -1)" in first.hunk_index.text
+    # A step citing an indexed hunk counts; the fabricated one is dropped (WALK's "ghost").
+    round_id, _ = latest(env, ref)
+    coverage = env.artifacts(round_id)["coverage"]
+    assert isinstance(coverage, dict) and isinstance(coverage["walkthrough"], dict)
+    assert coverage["walkthrough"]["lines_covered"] == 3
+    assert coverage["walkthrough"]["dropped_steps"] == 1
+    # M10: by the time anyone hears the walkthrough is done, the stored one is filtered.
+    (stored,) = seen
+    assert isinstance(stored, dict) and len(stored["steps"]) == 1
+
+
+async def test_an_unread_diff_gives_the_agents_no_index(env: Env) -> None:
+    env.workspace.diff_error = DiffTooLargeError("the diff is over 32 bytes", 32)
+    env.add()
+    await prereview(env)
+    assert env.jobs.rounds[0].hunk_index is None
+
+
+async def test_review_anyway_refuses_a_pr_that_failed_to_load(env: Env) -> None:
+    """M5 (Task 4 carry a): a PR whose GitHub fetch failed is never reviewed."""
+    ref = env.add()
+    stored = env.store.pr(ref)
+    assert stored is not None
+    env.store.apply_sync([], [(stored.pr, "GitHub said 502")], [], env.clock())
+    with pytest.raises(ReviewNotAllowedError, match="reload"):
+        await env.pipeline.review_anyway(ref)
+    assert (await env.pipeline.open(ref)).state == "fetch_failed"
+
+
+async def test_an_unexpected_preparation_error_still_reports_failed(env: Env) -> None:
+    """M12: whatever goes wrong while preparing, the stream ends on "failed"."""
+    ref = env.add()
+    env.github.commits_error = RuntimeError("sqlite is locked")
+    with pytest.raises(RuntimeError):
+        await env.pipeline.prereview(env.request(ref, "triage"))
+    assert env.states()[-1] == "failed"

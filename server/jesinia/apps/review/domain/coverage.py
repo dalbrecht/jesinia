@@ -9,16 +9,25 @@ silently. Every file or hunk not covered is listed with its reason: Jesinia's ow
 the agent's (``generated``, ``lockfile``, ``vendored``, ``rename_only``, ``format_only``,
 ``judged_mechanical``), or ``omitted`` when nobody gave one. A step that cites a hunk the
 diff doesn't have is dropped whole, so the lines it claimed count as not covered.
+
+The cost is bounded by what a diff changes, not by its bytes: changed lines are kept as
+runs (never one object per line), a diff over ``MAX_CHANGED_LINES`` changed lines or
+``MAX_FILES`` files is refused while it is read, coverage is interval arithmetic, and the
+"not walked" list keeps at most ``NOT_WALKED_LIMIT`` entries beside its full count.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Final, Literal
 
 from jesinia.apps.review.domain.skip import auto_skip_reason
+from jesinia.apps.review.domain.workspace import DiffTooLargeError
 
 SkipReason = Literal[
     "generated",
@@ -39,9 +48,18 @@ FileStatus = Literal["added", "deleted", "modified", "renamed"]
 LineKind = Literal["+", "-"]
 # A diff that couldn't be read in full never shows as fully covered (it can't be known).
 INCOMPLETE_CEILING: Final = 99.0
+# Past these a diff isn't read (it is incomplete instead): bounds on time and memory that a
+# PR's size can't push, whatever its bytes (ruling R41).
+MAX_CHANGED_LINES: Final = 200_000
+MAX_FILES: Final = 20_000
+# Entries of "not walked" kept; ``not_walked_total`` counts them all.
+NOT_WALKED_LIMIT: Final = 500
+# Characters of the hunk index an agent is given.
+HUNK_INDEX_CHARS: Final = 60_000
 
 _DIFF_HEADER = "diff --git "
-_HUNK_HEADER = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+# Ten digits: git's line numbers fit, and int() never sees an absurd string.
+_HUNK_HEADER = re.compile(r"@@ -(\d{1,10})(?:,(\d{1,10}))? \+(\d{1,10})(?:,(\d{1,10}))? @@")
 _ESCAPES: Final = {
     "a": 7,
     "b": 8,
@@ -64,21 +82,37 @@ class DiffParseError(CoverageError):
 
 
 @dataclass(frozen=True)
-class ChangedLine:
-    """An added (``+``, ``number`` in the new file) or removed (``-``, ``number`` in the old
-    file) line. ``anchor`` is where it sits in the new file: the line number an added line
-    has, or the new line a removed one was in front of."""
+class Run:
+    """Consecutive changed lines of one kind: added lines ``start``..``end`` of the new file
+    (``+``), or removed lines ``start``..``end`` of the old file (``-``). ``anchor`` is where
+    the run sits in the new file: its first line for added lines, or the new line the
+    removed ones were in front of."""
 
     kind: LineKind
-    number: int
+    start: int
+    end: int
     anchor: int
+
+    @property
+    def count(self) -> int:
+        return self.end - self.start + 1
 
 
 @dataclass(frozen=True)
 class Hunk:
     old_start: int
+    old_count: int
     new_start: int
-    lines: tuple[ChangedLine, ...]
+    new_count: int
+    runs: tuple[Run, ...]
+
+    @property
+    def changed(self) -> int:
+        return sum(run.count for run in self.runs)
+
+    @property
+    def header(self) -> str:
+        return f"@@ -{self.old_start},{self.old_count} +{self.new_start},{self.new_count} @@"
 
 
 @dataclass(frozen=True)
@@ -93,7 +127,7 @@ class FileDiff:
 
     @property
     def changed_lines(self) -> int:
-        return sum(len(hunk.lines) for hunk in self.hunks)
+        return sum(hunk.changed for hunk in self.hunks)
 
 
 @dataclass(frozen=True)
@@ -111,8 +145,16 @@ class ParsedDiff:
     def changed_lines(self) -> int:
         return sum(f.changed_lines for f in self.files)
 
+    @cached_property
+    def _by_path(self) -> dict[str, int]:
+        index: dict[str, int] = {}
+        for position, diff_file in enumerate(self.files):
+            index.setdefault(diff_file.path, position)
+        return index
+
     def file(self, path: str) -> FileDiff | None:
-        return next((f for f in self.files if f.path == path), None)
+        position = self._by_path.get(path)
+        return None if position is None else self.files[position]
 
 
 @dataclass(frozen=True)
@@ -155,8 +197,10 @@ class Coverage:
 
     ``pct`` is covered changed lines over all changed lines, lockfiles and binaries
     included: the honest headline. ``reviewable_pct`` leaves out the lines of files
-    Jesinia itself skips (lockfiles, vendored, generated, binaries); the evidence rule reads
-    it. Neither reaches 100 for an incomplete diff.
+    Jesinia itself skips (lockfiles, vendored, generated, binaries) and of deleted files
+    (nothing of them is left at the head to read); the evidence rule reads it. Neither
+    reaches 100 for an incomplete diff. ``not_walked`` keeps the first
+    ``NOT_WALKED_LIMIT`` entries; ``not_walked_total`` counts them all.
     """
 
     pct: float
@@ -170,6 +214,7 @@ class Coverage:
     dropped_steps: int = 0
     complete: bool = True
     incomplete_reason: str | None = None
+    not_walked_total: int = 0
 
     def as_json(self) -> dict[str, object]:
         return {
@@ -187,6 +232,7 @@ class Coverage:
                 {"path": skip.path, "hunk": skip.hunk, "reason": skip.reason}
                 for skip in self.not_walked
             ],
+            "not_walked_total": self.not_walked_total,
         }
 
 
@@ -245,6 +291,26 @@ def _header_paths(rest: str) -> tuple[str, str]:
     return _strip_side(old, "a"), _strip_side(new, "b")
 
 
+class _Lines:
+    """git's output one line at a time, without splitting it all up front."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._at = 0
+
+    def peek(self) -> str | None:
+        if self._at >= len(self._text):
+            return None
+        end = self._text.find("\n", self._at)
+        return self._text[self._at : len(self._text) if end < 0 else end]
+
+    def take(self) -> str | None:
+        line = self.peek()
+        if line is not None:
+            self._at += len(line) + 1
+        return line
+
+
 @dataclass
 class _FileBuilder:
     old_path: str
@@ -272,38 +338,66 @@ class _FileBuilder:
         return FileDiff(path, self.old_path, self.status, self.is_binary, tuple(self.hunks))
 
 
-def _hunk(lines: list[str], index: int) -> tuple[Hunk, int]:
-    """The hunk whose header is ``lines[index]``, and the index after it. The header's
-    counts say where it ends: a removed line may itself start with ``---``."""
-    match = _HUNK_HEADER.match(lines[index])
+class _Budget:
+    """Changed lines left before the diff counts as too large."""
+
+    def __init__(self) -> None:
+        self.left = MAX_CHANGED_LINES
+
+    def spend(self, lines: int) -> None:
+        self.left -= lines
+        if self.left < 0:
+            raise DiffTooLargeError(
+                f"the diff has over {MAX_CHANGED_LINES} changed lines", MAX_CHANGED_LINES
+            )
+
+
+def _hunk(header: str, lines: _Lines, budget: _Budget) -> Hunk:
+    """The hunk under ``header``. Its counts say where it ends: a removed line may itself
+    start with ``---``. Consecutive lines of one kind are kept as one run."""
+    match = _HUNK_HEADER.match(header)
     if match is None:
-        raise DiffParseError(f"unreadable hunk header: {lines[index][:80]!r}")
+        raise DiffParseError(f"unreadable hunk header: {header[:80]!r}")
     old_number, new_number = int(match.group(1)), int(match.group(3))
-    old_left = 1 if match.group(2) is None else int(match.group(2))
-    new_left = 1 if match.group(4) is None else int(match.group(4))
-    start_old, start_new = old_number, new_number
-    changed: list[ChangedLine] = []
-    index += 1
+    old_count = 1 if match.group(2) is None else int(match.group(2))
+    new_count = 1 if match.group(4) is None else int(match.group(4))
+    old_left, new_left = old_count, new_count
+    runs: list[Run] = []
+    kind: str | None = None
+    start = anchor = 0
+
+    def close(end: int) -> None:
+        if kind is not None:
+            runs.append(Run("+" if kind == "+" else "-", start, end, anchor))
+            budget.spend(end - start + 1)
+
     while old_left or new_left:
-        if index >= len(lines):
+        line = lines.take()
+        if line is None:
             raise DiffParseError("a hunk ends before its header's line counts")
-        line = lines[index]
         marker = line[:1]
+        if marker == "\\":
+            continue  # "\ No newline at end of file"
+        if marker not in ("+", "-") or marker != kind:
+            close((new_number if kind == "+" else old_number) - 1)
+            kind = None
         if marker == " " and old_left and new_left:
             old_number, new_number = old_number + 1, new_number + 1
             old_left, new_left = old_left - 1, new_left - 1
         elif marker == "-" and old_left:
-            changed.append(ChangedLine("-", old_number, max(new_number, 1)))
+            if kind is None:
+                kind, start, anchor = "-", old_number, max(new_number, 1)
             old_number, old_left = old_number + 1, old_left - 1
         elif marker == "+" and new_left:
-            changed.append(ChangedLine("+", new_number, new_number))
+            if kind is None:
+                kind, start, anchor = "+", new_number, new_number
             new_number, new_left = new_number + 1, new_left - 1
-        elif marker != "\\":
+        else:
             raise DiffParseError(f"unexpected line in a hunk: {line[:80]!r}")
-        index += 1
-    while index < len(lines) and lines[index].startswith("\\"):
-        index += 1  # "\ No newline at end of file" after the hunk's last line
-    return Hunk(start_old, start_new, tuple(changed)), index
+    close((new_number if kind == "+" else old_number) - 1)
+    while (following := lines.peek()) is not None and following.startswith("\\"):
+        lines.take()
+    return Hunk(int(match.group(1)), old_count, int(match.group(3)), new_count, tuple(runs))
 
 
 def parse_unified_diff(text: str) -> ParsedDiff:
@@ -312,81 +406,139 @@ def parse_unified_diff(text: str) -> ParsedDiff:
 
     Raises:
         DiffParseError: the text is not a unified diff, or a hunk is cut short.
+        DiffTooLargeError: it changes over ``MAX_CHANGED_LINES`` lines or ``MAX_FILES``
+            files (found while reading, before anything past the cap is built).
     """
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
+    lines = _Lines(text)
+    budget = _Budget()
     files: list[FileDiff] = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
+    while (line := lines.take()) is not None:
         if not line.startswith(_DIFF_HEADER):
             raise DiffParseError(f"expected a diff --git header: {line[:80]!r}")
+        if len(files) >= MAX_FILES:
+            raise DiffTooLargeError(f"the diff changes over {MAX_FILES} files", MAX_FILES)
         old, new = _header_paths(line.removeprefix(_DIFF_HEADER))
         builder = _FileBuilder(old, new)
-        index += 1
-        while index < len(lines) and not lines[index].startswith((_DIFF_HEADER, "@@")):
-            builder.header(lines[index])
-            index += 1
-        while index < len(lines) and lines[index].startswith("@@"):
-            hunk, index = _hunk(lines, index)
-            builder.hunks.append(hunk)
+        while (following := lines.peek()) is not None and not following.startswith(
+            (_DIFF_HEADER, "@@")
+        ):
+            builder.header(following)
+            lines.take()
+        while (following := lines.peek()) is not None and following.startswith("@@"):
+            lines.take()
+            builder.hunks.append(_hunk(following, lines, budget))
         files.append(builder.build())
     return ParsedDiff(tuple(files))
 
 
+def hunk_index(diff: ParsedDiff, limit: int = HUNK_INDEX_CHARS) -> HunkIndex:
+    """The hunks of ``diff`` as agents must cite them: each file (its path JSON-quoted, as
+    PR content) with every hunk's 0-based index, header and changed-line counts, in
+    Jesinia's own numbering. Files past ``limit`` characters are left out, and counted."""
+    parts: list[str] = []
+    used = listed = 0
+    for diff_file in diff.files:
+        path = json.dumps(diff_file.path, ensure_ascii=False)
+        if diff_file.hunks:
+            entry = [f"{path} ({diff_file.status})"]
+            for h, hunk in enumerate(diff_file.hunks):
+                added = sum(run.count for run in hunk.runs if run.kind == "+")
+                entry.append(f"  hunk {h}: {hunk.header} (+{added} -{hunk.changed - added})")
+            block = "\n".join(entry)
+        else:
+            if diff_file.status == "renamed":
+                what = f"renamed from {json.dumps(diff_file.old_path, ensure_ascii=False)}"
+            else:
+                what = f"{diff_file.status}, binary" if diff_file.is_binary else diff_file.status
+            block = f"{path} ({what}: no hunks)"
+        if used + len(block) + 1 > limit:
+            break
+        parts.append(block)
+        used += len(block) + 1
+        listed += 1
+    return HunkIndex("\n".join(parts), listed, len(diff.files))
+
+
+@dataclass(frozen=True)
+class HunkIndex:
+    """The hunk index text, and how many of the diff's files it lists."""
+
+    text: str
+    files_listed: int
+    files_total: int
+
+    @property
+    def truncated(self) -> bool:
+        return self.files_listed < self.files_total
+
+
 # --- coverage --------------------------------------------------------------------------------
 
-# A covered changed line: (path, hunk index, index among the hunk's changed lines).
-_Covered = set[tuple[str, int, int]]
+# Covered changed lines per hunk, keyed by (file position, hunk index).
+_Covered = dict[tuple[int, int], int]
 
 
 def _percent(covered: int, total: int) -> float:
     return round(100.0 * covered / total, 1)
 
 
-def _summarise(
-    diff: ParsedDiff, covered: _Covered, agent_skips: Sequence[Skip], dropped_steps: int
-) -> Coverage:
+def _agent_reasons(
+    diff: ParsedDiff, agent_skips: Sequence[Skip]
+) -> dict[tuple[str, int | None], str]:
     reasons: dict[tuple[str, int | None], str] = {}
     for skip in agent_skips:
         known = diff.file(skip.path)
         valid_hunk = skip.hunk is None or (known is not None and 0 <= skip.hunk < len(known.hunks))
         if known is not None and valid_hunk and skip.reason in AGENT_SKIP_REASONS:
             reasons.setdefault((skip.path, skip.hunk), skip.reason)
+    return reasons
+
+
+def _summarise(
+    diff: ParsedDiff, covered: _Covered, agent_skips: Sequence[Skip], dropped_steps: int
+) -> Coverage:
+    reasons = _agent_reasons(diff, agent_skips)
     not_walked: list[Skip] = []
-    files_covered = auto_skipped = 0
-    for diff_file in diff.files:
-        walked = [
-            sum((diff_file.path, h, i) in covered for i in range(len(hunk.lines)))
-            for h, hunk in enumerate(diff_file.hunks)
-        ]
+    total_not_walked = files_covered = auto_skipped = 0
+    deleted_lines = deleted_covered = 0
+
+    def left_out(skip: Skip) -> None:
+        nonlocal total_not_walked
+        total_not_walked += 1
+        if len(not_walked) < NOT_WALKED_LIMIT:
+            not_walked.append(skip)
+
+    for f, diff_file in enumerate(diff.files):
+        walked = [covered.get((f, h), 0) for h in range(len(diff_file.hunks))]
+        auto = None if any(walked) else _auto_reason(diff_file)
+        if diff_file.status == "deleted" and auto is None:
+            deleted_lines += diff_file.changed_lines
+            deleted_covered += sum(walked)
         if diff_file.hunks and all(
-            count == len(hunk.lines) for count, hunk in zip(walked, diff_file.hunks, strict=True)
+            count == hunk.changed for count, hunk in zip(walked, diff_file.hunks, strict=True)
         ):
             files_covered += 1
-            continue
-        auto = None if any(walked) else _auto_reason(diff_file)
-        if auto is not None:
+        elif auto is not None:
             auto_skipped += diff_file.changed_lines
-            not_walked.append(Skip(diff_file.path, None, auto))
+            left_out(Skip(diff_file.path, None, auto))
         elif (diff_file.path, None) in reasons and not any(walked):
-            not_walked.append(Skip(diff_file.path, None, reasons[(diff_file.path, None)]))
+            left_out(Skip(diff_file.path, None, reasons[(diff_file.path, None)]))
         else:
             for h, hunk in enumerate(diff_file.hunks):
-                if walked[h] < len(hunk.lines):
-                    reason = reasons.get((diff_file.path, h), "omitted")
-                    not_walked.append(Skip(diff_file.path, h, reason))
+                if walked[h] < hunk.changed:
+                    left_out(Skip(diff_file.path, h, reasons.get((diff_file.path, h), "omitted")))
     lines_total, files_total = diff.changed_lines, len(diff.files)
     if not diff.complete:
         lines_total = max(lines_total, diff.expected_lines)
         files_total = max(files_total, diff.expected_files)
-    lines_covered = len(covered)
-    everything = 100.0 if diff.complete and files_covered == files_total else 0.0
-    pct = _percent(lines_covered, lines_total) if lines_total else everything
-    reviewable = lines_total - auto_skipped
+    lines_covered = sum(covered.values())
+    # Nothing changed line by line (binaries, renames): nothing was left unread.
+    pct = _percent(lines_covered, lines_total) if lines_total else (100.0 if diff.complete else 0.0)
+    reviewable = lines_total - auto_skipped - deleted_lines
     reviewable_pct = (
-        _percent(lines_covered, reviewable) if reviewable else (100.0 if diff.complete else 0.0)
+        _percent(lines_covered - deleted_covered, reviewable)
+        if reviewable
+        else (100.0 if diff.complete else 0.0)
     )
     if not diff.complete:
         pct, reviewable_pct = min(pct, INCOMPLETE_CEILING), min(reviewable_pct, INCOMPLETE_CEILING)
@@ -402,6 +554,7 @@ def _summarise(
         dropped_steps=dropped_steps,
         complete=diff.complete,
         incomplete_reason=diff.incomplete_reason,
+        not_walked_total=total_not_walked,
     )
 
 
@@ -418,37 +571,68 @@ def coverage(diff: ParsedDiff, steps: list[Step], skipped: list[Skip]) -> Covera
     it cites. A step citing a hunk the diff doesn't have (or none) is dropped, and counted.
     ``skipped`` is the agent's list of what it left out; entries for unknown files or hunks,
     or with a reason it may not give, are ignored."""
-    known = {(f.path, h) for f in diff.files for h in range(len(f.hunks))}
-    walked: set[tuple[str, int]] = set()
+    positions = {f.path: position for position, f in reversed(list(enumerate(diff.files)))}
+    walked: set[tuple[int, int]] = set()
     dropped = 0
     for step in steps:
-        cited = {(ref.path, ref.hunk) for ref in step.hunks}
-        if not cited or not cited <= known:
+        cited = {
+            (positions[ref.path], ref.hunk)
+            for ref in step.hunks
+            if ref.path in positions and 0 <= ref.hunk < len(diff.files[positions[ref.path]].hunks)
+        }
+        if not step.hunks or len(cited) < len({(ref.path, ref.hunk) for ref in step.hunks}):
             dropped += 1
             continue
         walked |= cited
-    covered: _Covered = {
-        (f.path, h, i)
-        for f in diff.files
-        for h, hunk in enumerate(f.hunks)
-        if (f.path, h) in walked
-        for i in range(len(hunk.lines))
-    }
+    covered: _Covered = {(f, h): diff.files[f].hunks[h].changed for f, h in walked}
     return _summarise(diff, covered, skipped, dropped)
+
+
+def _merged(ranges: Sequence[LineRange]) -> tuple[list[int], list[int]]:
+    """``ranges`` sorted and merged into disjoint intervals, as parallel start/end lists."""
+    starts: list[int] = []
+    ends: list[int] = []
+    for item in sorted(ranges, key=lambda r: r.start):
+        if ends and item.start <= ends[-1] + 1:
+            ends[-1] = max(ends[-1], item.end)
+        else:
+            starts.append(item.start)
+            ends.append(item.end)
+    return starts, ends
+
+
+def _overlap(intervals: tuple[list[int], list[int]], start: int, end: int) -> int:
+    """How many of the lines ``start``..``end`` the merged intervals contain."""
+    starts, ends = intervals
+    total = 0
+    position = bisect_left(ends, start)
+    while position < len(starts) and starts[position] <= end:
+        total += min(end, ends[position]) - max(start, starts[position]) + 1
+        position += 1
+    return total
 
 
 def checked_coverage(diff: ParsedDiff, checked: Sequence[LineRange]) -> Coverage:
     """The correctness pass's coverage: the changed lines inside the ranges it read. Ranges
-    are in new-file lines (a removed line counts by where it was in the new file), except
-    in a deleted file, which only has old lines."""
-    covered: _Covered = set()
-    for diff_file in diff.files:
-        ranges = [(r.start, r.end) for r in checked if r.path == diff_file.path]
+    are in new-file lines (a removed run counts when the new line it sat in front of was
+    read), except in a deleted file, which only has old lines."""
+    by_path: dict[str, list[LineRange]] = {}
+    for item in checked:
+        by_path.setdefault(item.path, []).append(item)
+    covered: _Covered = {}
+    for f, diff_file in enumerate(diff.files):
+        if diff_file.path not in by_path:
+            continue
+        intervals = _merged(by_path[diff_file.path])
         for h, hunk in enumerate(diff_file.hunks):
-            for i, line in enumerate(hunk.lines):
-                where = line.number if diff_file.status == "deleted" else line.anchor
-                if any(start <= where <= end for start, end in ranges):
-                    covered.add((diff_file.path, h, i))
+            count = 0
+            for run in hunk.runs:
+                if run.kind == "+" or diff_file.status == "deleted":
+                    count += _overlap(intervals, run.start, run.end)
+                elif _overlap(intervals, run.anchor, run.anchor):
+                    count += run.count
+            if count:
+                covered[(f, h)] = count
     return _summarise(diff, covered, [], 0)
 
 

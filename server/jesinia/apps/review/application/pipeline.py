@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections import Counter
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Final, Literal, Protocol
@@ -45,6 +46,7 @@ from jesinia.apps.review.domain.coverage import (
     ParsedDiff,
     checked_coverage,
     coverage,
+    hunk_index,
     parse_unified_diff,
     ranges_from_json,
     skips_from_json,
@@ -110,7 +112,7 @@ Clock = Callable[[], datetime]
 # The author's knowledge of a repo, from the knowledge model (plan Task 14). Trusted
 # context for the agents, so it is built from Jesinia's own records only, never PR text.
 KnowledgeSource = Callable[[str], str]
-OpenState = Literal["started", "up_to_date"] | GateState
+OpenState = Literal["started", "running", "up_to_date"] | GateState
 ProgressState = Literal["started", "job_started", "job_done", "job_failed", "finished", "failed"]
 
 
@@ -170,9 +172,10 @@ class PipelineJobs(Protocol):
 
 @dataclass(frozen=True)
 class OpenResult:
-    """What opening a PR did: ``started`` the listed jobs on ``round_id``; found the round
-    ``up_to_date``; or a gate state (``ci_failing``, ``waiting_ci``…) with its reason, the
-    UI showing **Review anyway**, and nothing started."""
+    """What opening a PR did: ``started`` the listed jobs on ``round_id`` (joining any
+    already running); found everything it lacks already planned (``running``); found the
+    round ``up_to_date``; or a gate state (``ci_failing``, ``waiting_ci``…) with its reason,
+    the UI showing **Review anyway**, and nothing started."""
 
     state: OpenState
     reason: str
@@ -192,8 +195,45 @@ class _Prepared:
     warnings: tuple[str, ...]
 
 
+class _SingleFlight[K, T]:
+    """At most one run per key: a caller that finds one running joins it (shares its
+    result or error) instead of starting another."""
+
+    def __init__(self) -> None:
+        self._running: dict[K, asyncio.Future[T]] = {}
+
+    def running(self, key: K) -> bool:
+        return key in self._running
+
+    async def run(self, key: K, make: Callable[[], Awaitable[T]]) -> T:
+        joined = self._running.get(key)
+        if joined is not None:
+            return await asyncio.shield(joined)
+        future: asyncio.Future[T] = asyncio.get_running_loop().create_future()
+        # Mark an error as seen even when nobody joined, so asyncio doesn't log it.
+        future.add_done_callback(lambda done: done.cancelled() or done.exception())
+        self._running[key] = future
+        try:
+            value = await make()
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+        else:
+            future.set_result(value)
+            return value
+        finally:
+            del self._running[key]
+
+
 class Pipeline:
     """Runs review rounds.
+
+    Every job runs at most once per round (ruling R40): a job whose artifact is stored is
+    done, also after a restart; a job that is running is joined, never started again; and
+    the runners of one round share its preparation (one fetch, one diff).
 
     Args:
         github: PR, commit and CI reads (``PrClient``).
@@ -226,8 +266,16 @@ class Pipeline:
         self._bus = bus
         self._clock = clock
         self._knowledge = knowledge
-        # Jobs queued or running per round, so an open never repeats a pre-review's.
-        self._in_flight: dict[int, set[JobKind]] = {}
+        self._job_flights: _SingleFlight[tuple[int, JobKind], dict[str, object] | None] = (
+            _SingleFlight()
+        )
+        self._recommend_flights: _SingleFlight[int, str] = _SingleFlight()
+        self._prepare_flights: _SingleFlight[int, _Prepared] = _SingleFlight()
+        # A round's preparation, kept while any runner of it is active.
+        self._prepared: dict[int, _Prepared] = {}
+        self._runners: dict[int, int] = {}
+        # The jobs each round's active runners will still run, counted per runner.
+        self._planned: dict[int, Counter[JobKind]] = {}
         self._opens: set[asyncio.Task[None]] = set()
 
     # --- the scheduler's runner ----------------------------------------------------------
@@ -239,21 +287,25 @@ class Pipeline:
             RoundPreparationError: the round couldn't be prepared (``HeadMovedOnError``
                 when the PR has moved on from the round's head).
         """
-        planned = background_jobs(request.mode, "quick", loaded=request.loaded)
-        if not planned:
+        if not background_jobs(request.mode, "quick", loaded=request.loaded):
             return  # "on open" and not loaded: nothing runs until the author opens it
-        # Reserved before preparing, so an open meanwhile leaves these jobs to this run.
-        reserved = self._reserve(request.round_id, planned)
+        ref, head, round_id = request.ref, request.head_sha, request.round_id
+        self._runners[round_id] = self._runners.get(round_id, 0) + 1
+        # Planned at once, so an open meanwhile knows these are coming (the deep ones
+        # once the depth is known).
+        planned = background_jobs(request.mode, request.depth, loaded=request.loaded)
+        self._plan(round_id, planned, +1)
         try:
-            await self._progress(request.ref, request.round_id, request.head_sha, "started")
-            prepared = await self._prepare_or_report(
-                request.ref, request.head_sha, request.round_id
-            )
+            await self._progress(ref, round_id, head, "started")
+            prepared = await self._prepare_or_report(ref, head, round_id)
             kinds = background_jobs(request.mode, prepared.round.depth, loaded=request.loaded)
-            reserved |= self._reserve(request.round_id, kinds)
+            self._plan(round_id, kinds, +1)
+            self._plan(round_id, planned, -1)
+            planned = kinds
             await self._run(prepared, kinds)
         finally:
-            self._release(request.round_id, reserved)
+            self._plan(round_id, planned, -1)
+            self._leave(round_id)
 
     # --- opening a PR --------------------------------------------------------------------
 
@@ -262,7 +314,8 @@ class Pipeline:
 
         Raises:
             PrNotInQueueError: the PR isn't cached (load it first).
-            ReviewNotAllowedError: it is in a suggested repo and wasn't loaded.
+            ReviewNotAllowedError: it is in a suggested repo and wasn't loaded, or GitHub
+                couldn't load it on the last sync.
         """
         stored = self._consented(ref)
         config = self._store.repo_configs().get(ref.repo)
@@ -272,13 +325,19 @@ class Pipeline:
         return self._start_open(stored)
 
     async def review_anyway(self, ref: PrRef) -> OpenResult:
-        """``open`` without the gates (the author's **Review anyway**). The evidence rule
-        still applies: failing CI never approves.
+        """``open`` without the CI and automated-review gates (the author's **Review
+        anyway**). The evidence rule still applies: failing CI never approves.
 
         Raises:
-            PrNotInQueueError, ReviewNotAllowedError: as ``open``.
+            PrNotInQueueError, ReviewNotAllowedError: as ``open``; a PR GitHub couldn't
+                load is reloaded, never reviewed from stale data.
         """
-        return self._start_open(self._consented(ref))
+        stored = self._consented(ref)
+        if stored.fetch_error is not None:
+            raise ReviewNotAllowedError(
+                f"{ref} couldn't be loaded from GitHub ({stored.fetch_error}); reload it first"
+            )
+        return self._start_open(stored)
 
     def _consented(self, ref: PrRef) -> StoredPr:
         stored = self._store.pr(ref)
@@ -301,15 +360,19 @@ class Pipeline:
         else:
             round_id = self._store.start_round(ref, head, pr.base_sha, pr.depth, self._clock())
             owned = True
-        done = set(self._store.artifacts(round_id)) if not owned else set()
-        busy = self._in_flight.get(round_id, set())
+        done = self._store.artifact_kinds(round_id)
         wanted = (*TRIAGE_JOBS, *ON_OPEN_JOBS[pr.depth])
-        missing = tuple(kind for kind in wanted if kind.value not in done and kind not in busy)
+        missing = tuple(kind for kind in wanted if kind.value not in done)
         if not missing:
             return OpenResult("up_to_date", "this head's review is complete", round_id)
-        self._reserve(round_id, missing)
+        coming = self._planned.get(round_id, Counter())
+        if all(coming[kind] for kind in missing):
+            return OpenResult("running", "this head is being reviewed", round_id)
+        self._plan(round_id, missing, +1)
         if owned:
             self._store.set_state(ref, head, "running", "reviewing (opened)")
+        # Counted now, so a runner finishing meanwhile can't drop the shared preparation.
+        self._runners[round_id] = self._runners.get(round_id, 0) + 1
         task = asyncio.create_task(
             self._run_open(ref, head, round_id, missing, owned), name=f"review-open:{ref}"
         )
@@ -333,8 +396,6 @@ class Pipeline:
             raise
         except Exception as exc:  # the round must end, with its cause, whatever went wrong
             log.warning("review of %s failed: %s", ref, exc, exc_info=exc)
-            if not isinstance(exc, RoundPreparationError):
-                await self._progress(ref, round_id, head, "failed")
             if owned:
                 self._store.finish_round(round_id, self._clock(), str(exc) or type(exc).__name__)
                 self._store.set_state(ref, head, "failed", f"review failed: {exc}")
@@ -343,7 +404,8 @@ class Pipeline:
                 self._store.finish_round(round_id, self._clock(), None, verdict)
                 self._store.set_state(ref, head, "ready", "review finished")
         finally:
-            self._release(round_id, set(kinds))
+            self._plan(round_id, kinds, -1)
+            self._leave(round_id)
 
     async def drain(self) -> None:
         """Wait for every review started by ``open`` to end."""
@@ -363,11 +425,33 @@ class Pipeline:
     # --- preparing a round ---------------------------------------------------------------
 
     async def _prepare_or_report(self, ref: PrRef, head: str, round_id: int) -> _Prepared:
+        """The round's shared preparation (made once while it has runners); any failure is
+        published as ``failed`` before it is raised."""
         try:
-            return await self._prepare(ref, head, round_id)
-        except RoundPreparationError:
+            prepared = self._prepared.get(round_id)
+            if prepared is None:
+                prepared = await self._prepare_flights.run(
+                    round_id, lambda: self._prepare(ref, head, round_id)
+                )
+                self._prepared[round_id] = prepared
+            return prepared
+        except Exception:
             await self._progress(ref, round_id, head, "failed")
             raise
+
+    def _plan(self, round_id: int, kinds: tuple[JobKind, ...], step: int) -> None:
+        planned = self._planned.setdefault(round_id, Counter())
+        planned.update({kind: step for kind in kinds})
+        if not +planned:
+            del self._planned[round_id]
+
+    def _leave(self, round_id: int) -> None:
+        left = self._runners.get(round_id, 1) - 1
+        if left > 0:
+            self._runners[round_id] = left
+        else:
+            self._runners.pop(round_id, None)
+            self._prepared.pop(round_id, None)
 
     async def _prepare(self, ref: PrRef, head: str, round_id: int) -> _Prepared:
         repo, warnings = ref.repo, list[str]()
@@ -405,7 +489,16 @@ class Pipeline:
             ci = None
             warnings.append(f"CI on this head couldn't be read, so it counts as missing: {exc}")
         depth = propose_depth(pull.additions + pull.deletions, pull.changed_files, None)
-        round = Round(round_id, pull, tuple(commits), depth, knowledge=self._knowledge(repo))
+        index = await asyncio.to_thread(hunk_index, diff) if diff.complete else None
+        round = Round(
+            round_id,
+            pull,
+            tuple(commits),
+            depth,
+            knowledge=self._knowledge(repo),
+            merge_base=base,
+            hunk_index=index,
+        )
         correctness_depth = await self._jobs.correctness_depth(round)
         self._store.set_depth(ref, head, round_id, depth)
         self._store.put_artifact(
@@ -474,14 +567,15 @@ class Pipeline:
         triage = tuple(kind for kind in kinds if kind in TRIAGE_JOBS)
         rest = tuple(kind for kind in kinds if kind not in TRIAGE_JOBS)
         progress = {"done": 0, "total": len(kinds)}
-        failures: dict[JobKind, JobFailed] = {}
         for kind in triage:
-            await self._job(prepared, kind, progress, failures)
-        verdict = await self._recommend(prepared, failures) if triage else None
+            await self._job(prepared, kind, progress)
+        verdict = None
+        if triage:
+            verdict = await self._recommend_flights.run(
+                prepared.round.id, lambda: self._recommend(prepared)
+            )
         for later in rest:
-            output = await self._job(prepared, later, progress, failures)
-            if later is JobKind.WALKTHROUGH and output is not None:
-                await self._walkthrough(prepared, output)
+            await self._job(prepared, later, progress)
         await self._progress(
             prepared.ref,
             prepared.round.id,
@@ -492,63 +586,57 @@ class Pipeline:
         )
         return verdict
 
-    async def _job(
-        self,
-        prepared: _Prepared,
-        kind: JobKind,
-        progress: dict[str, int],
-        failures: dict[JobKind, JobFailed],
-    ) -> dict[str, object] | None:
+    async def _job(self, prepared: _Prepared, kind: JobKind, progress: dict[str, int]) -> None:
+        """Run ``kind`` unless it is done; join it if it is running (R40)."""
         round = prepared.round
         head = round.pr.head_sha
-        await self._progress(
-            prepared.ref,
-            round.id,
-            head,
-            "job_started",
-            kind,
-            done=progress["done"],
-            total=progress["total"],
-        )
+        counts = {"done": progress["done"], "total": progress["total"]}
+        await self._progress(prepared.ref, round.id, head, "job_started", kind, **counts)
+        key = (round.id, kind)
+        if not self._job_flights.running(key) and kind.value in self._store.artifact_kinds(
+            round.id
+        ):
+            output: dict[str, object] | None = {}  # done earlier, maybe before a restart
+        else:
+            output = await self._job_flights.run(key, lambda: self._execute(prepared, kind))
+        progress["done"] += 1
+        state: ProgressState = "job_failed" if output is None else "job_done"
+        counts = {"done": progress["done"], "total": progress["total"]}
+        await self._progress(prepared.ref, round.id, head, state, kind, **counts)
+
+    async def _execute(self, prepared: _Prepared, kind: JobKind) -> dict[str, object] | None:
+        """Run one job and record how it went (``review.sqlite`` keeps the state, so a
+        restart knows what finished); ``None`` if it failed."""
+        round_id = prepared.round.id
+        self._record_job(round_id, kind, "running", None)
         try:
-            output: dict[str, object] | None = await self._jobs.run(kind, round)
+            output = await self._jobs.run(kind, prepared.round)
         except JobFailed as exc:
             log.warning("review %s job failed on %s: %s", kind.value, prepared.ref, exc)
-            failures[kind] = exc
-            output = None
-        progress["done"] += 1
-        self._release(round.id, {kind})
-        self._record_job(round.id, kind, failures.get(kind))
-        state: ProgressState = "job_failed" if kind in failures else "job_done"
-        await self._progress(
-            prepared.ref,
-            round.id,
-            head,
-            state,
-            kind,
-            done=progress["done"],
-            total=progress["total"],
-        )
+            self._record_job(round_id, kind, "failed", str(exc))
+            return None
+        if kind is JobKind.WALKTHROUGH:
+            # Filtered at once, before anything else runs, so no reader sees invented hunks.
+            self._store.put_artifact(round_id, kind.value, _known_steps(prepared.diff, output))
+        self._record_job(round_id, kind, "done", None)
+        if kind is JobKind.WALKTHROUGH:
+            await self._walkthrough(prepared, output)
         return output
 
-    def _record_job(self, round_id: int, kind: JobKind, failure: JobFailed | None) -> None:
-        jobs = self._store.artifacts(round_id).get("jobs")
+    def _record_job(self, round_id: int, kind: JobKind, state: str, error: str | None) -> None:
+        jobs = self._store.artifact(round_id, "jobs")
         record = dict(jobs) if isinstance(jobs, Mapping) else {}
-        record[kind.value] = {
-            "state": "failed" if failure else "done",
-            "error": None if failure is None else str(failure),
-        }
+        record[kind.value] = {"state": state, "error": error}
         self._store.put_artifact(round_id, "jobs", record)
 
-    async def _recommend(self, prepared: _Prepared, failures: Mapping[JobKind, JobFailed]) -> str:
+    async def _recommend(self, prepared: _Prepared) -> str:
         """Apply the evidence rule to the triage's artifacts; store the verdict, the
         evidence and the correctness pass's coverage."""
         round_id = prepared.round.id
-        artifacts = self._store.artifacts(round_id)
-        correctness = artifacts.get("correctness")
-        found = artifacts.get("findings")
+        correctness = self._store.artifact(round_id, "correctness")
+        found = self._store.artifact(round_id, "findings")
         findings = found.get("findings") if isinstance(found, Mapping) else None
-        suggestion = artifacts.get("recommendation")
+        suggestion = self._store.artifact(round_id, "recommendation")
         read = (
             await asyncio.to_thread(checked_coverage, prepared.diff, ranges_from_json(correctness))
             if isinstance(correctness, Mapping)
@@ -562,7 +650,15 @@ class Pipeline:
             depth=prepared.correctness_depth,
             coverage=read,
         )
-        reasons = [*result.reasons, *(str(failure) for failure in failures.values())]
+        jobs = self._store.artifact(round_id, "jobs")
+        failed = [
+            str(entry.get("error"))
+            for kind, entry in (jobs.items() if isinstance(jobs, Mapping) else ())
+            if kind in {k.value for k in TRIAGE_JOBS}
+            and isinstance(entry, Mapping)
+            and entry.get("state") == "failed"
+        ]
+        reasons = [*result.reasons, *failed]
         self._store.put_artifact(round_id, "evidence", result.evidence.as_json())
         self._store.put_artifact(
             round_id, "verdict", {"verdict": result.verdict, "reasons": reasons}
@@ -572,17 +668,9 @@ class Pipeline:
         return result.verdict
 
     async def _walkthrough(self, prepared: _Prepared, output: Mapping[str, object]) -> None:
-        """Compute the walkthrough's coverage, and keep only the steps whose hunks exist."""
+        """Compute the walkthrough's coverage."""
         steps, skips = steps_from_json(output), skips_from_json(output)
         walked = await asyncio.to_thread(coverage, prepared.diff, steps, skips)
-        known = {(f.path, h) for f in prepared.diff.files for h in range(len(f.hunks))}
-        raw = output.get("steps")
-        kept = [
-            item
-            for item, step in zip(raw if isinstance(raw, list) else [], steps, strict=False)
-            if step.hunks and {(ref.path, ref.hunk) for ref in step.hunks} <= known
-        ]
-        self._store.put_artifact(prepared.round.id, "walkthrough", {**output, "steps": kept})
         self._put_coverage(prepared, walkthrough=walked)
 
     def _put_coverage(
@@ -596,7 +684,7 @@ class Pipeline:
         writers can't lose each other's part). Its ``pct``, which the queue row shows, is
         the walkthrough's once there is one, else the correctness pass's."""
         round_id, pr = prepared.round.id, prepared.round.pr
-        old = self._store.artifacts(round_id).get("coverage")
+        old = self._store.artifact(round_id, "coverage")
         before = old if isinstance(old, Mapping) else {}
         walk = walkthrough.as_json() if walkthrough else before.get("walkthrough")
         read = correctness.as_json() if correctness else before.get("correctness")
@@ -616,20 +704,6 @@ class Pipeline:
                 "correctness": read,
             },
         )
-
-    # --- bookkeeping ---------------------------------------------------------------------
-
-    def _reserve(self, round_id: int, kinds: tuple[JobKind, ...]) -> set[JobKind]:
-        added = set(kinds) - self._in_flight.get(round_id, set())
-        self._in_flight.setdefault(round_id, set()).update(added)
-        return added
-
-    def _release(self, round_id: int, kinds: set[JobKind]) -> None:
-        busy = self._in_flight.get(round_id)
-        if busy is not None:
-            busy -= kinds
-            if not busy:
-                del self._in_flight[round_id]
 
     async def _progress(
         self,
@@ -658,3 +732,17 @@ class Pipeline:
                 },
             )
         )
+
+
+def _known_steps(diff: ParsedDiff, output: Mapping[str, object]) -> dict[str, object]:
+    """The walkthrough with only the steps whose every hunk is in ``diff``."""
+    known = {(f.path, h) for f in diff.files for h in range(len(f.hunks))}
+    raw = output.get("steps")
+    kept = [
+        item
+        for item, step in zip(
+            raw if isinstance(raw, list) else [], steps_from_json(output), strict=False
+        )
+        if step.hunks and {(ref.path, ref.hunk) for ref in step.hunks} <= known
+    ]
+    return {**output, "steps": kept}

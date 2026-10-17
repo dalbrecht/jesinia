@@ -5,12 +5,17 @@ about what was left out."""
 
 from __future__ import annotations
 
+import time
+import tracemalloc
 from dataclasses import replace
 
 import pytest
 
 from jesinia.apps.review.domain.coverage import (
     INCOMPLETE_CEILING,
+    MAX_CHANGED_LINES,
+    MAX_FILES,
+    NOT_WALKED_LIMIT,
     Coverage,
     DiffParseError,
     HunkRef,
@@ -20,11 +25,13 @@ from jesinia.apps.review.domain.coverage import (
     Step,
     checked_coverage,
     coverage,
+    hunk_index,
     parse_unified_diff,
     ranges_from_json,
     skips_from_json,
     steps_from_json,
 )
+from jesinia.apps.review.domain.workspace import DiffTooLargeError
 
 APP = """\
 diff --git a/src/app.py b/src/app.py
@@ -110,7 +117,11 @@ def test_parse_unified_diff_reads_files_hunks_and_changed_lines() -> None:
     app, lock, logo, renamed, added, gone = diff.files
     assert app.status == "modified" and len(app.hunks) == 2 and app.changed_lines == 5
     first = app.hunks[0]
-    assert [(line.kind, line.number) for line in first.lines] == [("-", 2), ("+", 2), ("+", 3)]
+    assert [(run.kind, run.start, run.end, run.anchor) for run in first.runs] == [
+        ("-", 2, 2, 2),
+        ("+", 2, 3, 2),
+    ]
+    assert first.header == "@@ -1,3 +1,4 @@" and first.changed == 3
     assert lock.changed_lines == 6
     assert logo.is_binary and logo.status == "added" and logo.hunks == ()
     assert renamed.status == "renamed" and renamed.old_path == "old name.py"
@@ -167,6 +178,7 @@ def test_parse_reads_mode_changes_and_an_empty_diff() -> None:
         'diff --git "a/x b/x\n',  # an unterminated quote
         "diff --git a/x\n",
         'diff --git "a/x" "b/\\9"\n',  # a bad escape
+        "diff --git a/x b/x\n@@ -" + "9" * 5000 + " +1 @@\n",  # absurd line numbers
     ],
 )
 def test_parse_refuses_malformed_diffs(text: str) -> None:
@@ -197,9 +209,11 @@ def test_coverage_counts_skipped_binaries_and_lockfiles() -> None:
         Skip("new name.py", None, "rename_only"),
         Skip("gone.py", None, "judged_mechanical"),
     ]
-    # Only Jesinia's own skips leave the reviewable lines: the agent's don't.
+    # Only Jesinia's own skips and whole-file deletions (there's nothing left to read at
+    # the head) leave the reviewable lines; the agent's skips don't.
     assert result.lines_auto_skipped == 6
-    assert result.reviewable_pct == pytest.approx(77.8)
+    assert result.reviewable_pct == 100.0
+    assert result.not_walked_total == 4
     assert result.complete and result.incomplete_reason is None
 
 
@@ -269,8 +283,10 @@ def test_full_and_empty_walks() -> None:
     assert full.reviewable_pct == 100.0
     empty = coverage(parse_unified_diff(""), [], [])
     assert (empty.pct, empty.files_total, empty.reviewable_pct) == (100.0, 0, 100.0)
+    # Nothing to walk (binaries, renames) reads as fully covered, not as "0% looked at".
     only_binary = coverage(parse_unified_diff(BINARY), [], [])
-    assert only_binary.pct == 0.0 and only_binary.reviewable_pct == 100.0
+    assert only_binary.pct == 100.0 and only_binary.reviewable_pct == 100.0
+    assert only_binary.not_walked == [Skip("assets/logo.png", None, "binary")]
     assert only_binary.lines_auto_skipped == 0
 
 
@@ -365,3 +381,80 @@ def test_walkthrough_and_correctness_json_become_steps_skips_and_ranges() -> Non
     }
     assert ranges_from_json(checked) == [LineRange("a.py", 1, 4)]
     assert ranges_from_json(None) == [] and ranges_from_json({"checked": None}) == []
+
+
+# --- bounds (fix round 1, R41) ------------------------------------------------------------------
+
+
+def _added(path: str, lines: int, hunks: int = 1) -> str:
+    """A diff adding ``lines`` lines to ``path``, split over ``hunks`` hunks."""
+    per = lines // hunks
+    parts = [f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"]
+    for h in range(hunks):
+        start = h * (per + 10) + 1
+        parts.append(f"@@ -{start},0 +{start},{per} @@\n" + "+x\n" * per)
+    return "".join(parts)
+
+
+def test_a_diff_over_the_changed_line_cap_is_refused_quickly() -> None:
+    text = _added("big.py", MAX_CHANGED_LINES + 1)
+    started = time.perf_counter()
+    with pytest.raises(DiffTooLargeError, match=f"over {MAX_CHANGED_LINES} changed lines") as e:
+        parse_unified_diff(text)
+    assert e.value.limit == MAX_CHANGED_LINES
+    assert time.perf_counter() - started < 2.0
+    many = "".join(f"diff --git a/f{i} b/f{i}\nold mode 100644\nnew mode 100755\n"
+                   for i in range(MAX_FILES + 1))  # fmt: skip
+    with pytest.raises(DiffTooLargeError, match=f"over {MAX_FILES} files"):
+        parse_unified_diff(many)
+
+
+def test_coverage_of_a_huge_diff_is_fast_and_bounded() -> None:
+    """150k changed lines in 3,000 hunks, read with the schema's 2,000 ranges: coverage is
+    interval maths, not per-line sets."""
+    text = _added("big.py", 150_000, hunks=3_000)
+    tracemalloc.start()
+    diff = parse_unified_diff(text)
+    ranges = [LineRange("big.py", i * 80 + 1, i * 80 + 40) for i in range(2_000)]
+    started = time.perf_counter()
+    read = checked_coverage(diff, ranges)
+    walked = coverage(diff, [walk(*(("big.py", h) for h in range(0, 3_000, 2)))], [])
+    elapsed = time.perf_counter() - started
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert elapsed < 1.0
+    assert peak < 64 * 1024 * 1024  # the 1 MB diff text plus compact hunks
+    assert read.lines_total == 150_000 and 0 < read.lines_covered < 150_000
+    assert walked.lines_covered == 75_000 and walked.pct == 50.0
+    # Half the hunks weren't walked: the list is capped, with the full count beside it.
+    assert len(walked.not_walked) == NOT_WALKED_LIMIT and walked.not_walked_total == 1_500
+    assert walked.as_json()["not_walked_total"] == 1_500
+
+
+def test_checked_ranges_merge_and_count_each_line_once() -> None:
+    diff = parse_unified_diff(_added("a.py", 10))
+    overlapping = [LineRange("a.py", 1, 4), LineRange("a.py", 3, 6), LineRange("a.py", 9, 30)]
+    assert checked_coverage(diff, overlapping).lines_covered == 8
+    # A removed run counts only when the line it sat in front of was read.
+    app = checked_coverage(parse_unified_diff(APP), [LineRange("src/app.py", 12, 12)])
+    assert app.lines_covered == 2 and app.not_walked == [Skip("src/app.py", 0, "omitted")]
+
+
+# --- the hunk index agents cite (fix round 1, R42) ------------------------------------------------
+
+
+def test_hunk_index_lists_every_hunk_with_jesinias_numbering() -> None:
+    index = hunk_index(parse_unified_diff(APP + BINARY + RENAME))
+    assert not index.truncated and index.files_listed == index.files_total == 3
+    assert '"src/app.py" (modified)' in index.text
+    assert "hunk 0: @@ -1,3 +1,4 @@ (+2 -1)" in index.text
+    assert "hunk 1: @@ -10,2 +11,2 @@ (+1 -1)" in index.text
+    assert '"assets/logo.png" (added, binary: no hunks)' in index.text
+    assert '"new name.py" (renamed from "old name.py": no hunks)' in index.text
+
+
+def test_hunk_index_is_capped() -> None:
+    diff = parse_unified_diff("".join(_added(f"f{i}.py", 1) for i in range(400)))
+    index = hunk_index(diff, limit=2_000)
+    assert index.truncated and index.files_total == 400
+    assert 0 < index.files_listed < 400 and len(index.text) <= 2_000

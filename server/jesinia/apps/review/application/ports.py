@@ -258,6 +258,12 @@ class PipelineStore(QueueStore, Protocol):
     def artifacts(self, round_id: int) -> dict[str, object]:
         """Every artifact of a round, by kind."""
 
+    def artifact(self, round_id: int, kind: str) -> object:
+        """One artifact of a round, or ``None``."""
+
+    def artifact_kinds(self, round_id: int) -> set[str]:
+        """The kinds of artifact a round has."""
+
     def latest_round_on_head(self, ref: PrRef, head_sha: str) -> tuple[int, RoundStatus] | None:
         """The newest round on ``(ref, head_sha)`` and its status (``interruptions`` is not
         counted here)."""

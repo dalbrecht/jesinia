@@ -30,7 +30,7 @@ from jesinia.apps.review.application.jobs import (
     schema_for,
 )
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
-from jesinia.apps.review.domain.coverage import Coverage
+from jesinia.apps.review.domain.coverage import Coverage, hunk_index, parse_unified_diff
 from jesinia.apps.review.domain.jobs import (
     DEEP_COVERAGE_FLOOR,
     JobKind,
@@ -888,3 +888,41 @@ def test_findings_are_deduplicated_before_counting() -> None:
     result = judge(GREEN, correctness, findings, "approve")
     assert result.evidence.findings == {"correctness": 1, "design": 2, "style": 2}
     assert result.verdict == "needs_closer_look"  # the important one still blocks
+
+
+# --- the hunk index (fix round 1, R42) -----------------------------------------------------------
+
+
+async def test_the_pack_carries_jesinias_hunk_index_as_untrusted_data(env: Env) -> None:
+    diff = parse_unified_diff(
+        "diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n+++ b/src/app.py\n"
+        "@@ -1,2 +1,2 @@\n-a\n+b\n c\n"
+    )
+    index = hunk_index(diff)
+    merge = "e" * 40
+    pack = env.capture_pack()
+    env.script(json.dumps({"steps": [], "skipped": []}))
+    await env.jobs.run(JobKind.WALKTHROUGH, replace(a_round(), merge_base=merge, hunk_index=index))
+    assert pack["diff-index.md"].startswith("<untrusted-data")
+    assert "hunk 0: @@ -1,2 +1,2 @@ (+1 -1)" in pack["diff-index.md"]
+    assert f"Merge base (hunks are numbered against it): {merge}" in pack["job.md"]
+    assert "src/app.py" not in pack["job.md"]  # file names are PR content: fenced only
+    assert "diff-index.md" in env.runner.requests[0].system_prompt
+
+
+async def test_a_cut_hunk_index_says_so_in_job_md(env: Env) -> None:
+    text = "".join(
+        f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n@@ -1 +1 @@\n-a\n+b\n"
+        for i in range(50)
+    )
+    index = hunk_index(parse_unified_diff(text), limit=300)
+    pack = env.capture_pack()
+    env.script(json.dumps({"steps": [], "skipped": []}))
+    await env.jobs.run(JobKind.WALKTHROUGH, replace(a_round(), hunk_index=index))
+    assert f"the hunk index lists {index.files_listed} of 50 files" in pack["job.md"]
+    assert "lists" not in pack["diff-index.md"].split("\n", 1)[1]
+    # Without an index (no diff was read), the agents are told so.
+    pack2 = env.capture_pack()
+    env.script(json.dumps({"steps": [], "skipped": []}))
+    await env.jobs.run(JobKind.WALKTHROUGH, a_round())
+    assert "No hunk index" in pack2["diff-index.md"]

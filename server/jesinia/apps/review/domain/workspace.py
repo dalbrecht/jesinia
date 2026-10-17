@@ -59,13 +59,12 @@ class GitCommandError(WorkspaceError):
 
 
 class DiffTooLargeError(WorkspaceError):
-    """A diff printed more than the workspace reads (``limit`` bytes); git was stopped rather
-    than buffered. Callers state the cap (coverage marks the diff incomplete)."""
+    """A diff larger than Jesinia reads: over the workspace's byte cap (git was stopped
+    rather than buffered), or over the coverage parser's changed-line or file cap. Callers
+    state the cap; coverage marks the diff incomplete."""
 
-    def __init__(self, argv: tuple[str, ...], limit: int) -> None:
-        span = "..".join(arg[:12] for arg in argv[-2:])
-        super().__init__(f"the diff {span} is over {limit} bytes")
-        self.argv = argv
+    def __init__(self, message: str, limit: int) -> None:
+        super().__init__(message)
         self.limit = limit
 
 
