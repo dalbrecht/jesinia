@@ -407,7 +407,12 @@ class SqlitePostStore:
         return [_post(row) for row in rows]
 
     def prune(self, cutoff: datetime, now: datetime) -> int:
-        old = "FROM posts WHERE kept_page_id IS NULL AND COALESCE(published_at, first_seen_at) < ?"
+        # Never a kept post, nor one being kept: Keep sets its archive state before the page
+        # write it awaits, so a prune in between must leave it (and its GUID) alone.
+        old = (
+            "FROM posts WHERE kept_page_id IS NULL AND archive_state IS NULL "
+            "AND COALESCE(published_at, first_seen_at) < ?"
+        )
         with self._transaction():
             # Forgotten once the feed was read in full without offering it for the TTL: an
             # item it still lists keeps a fresh tombstone at every full read.

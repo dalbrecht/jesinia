@@ -973,3 +973,31 @@ async def test_deleting_a_feed_keeps_its_kept_posts_and_their_archive(
     assert retry.status_code == 202, retry.text
     await keep_env.rss.keeper.drain()
     assert keep_env.state(post_id)[1] == "done"
+
+
+async def test_a_prune_during_keep_never_takes_the_post_being_kept(
+    keep_env: KeepEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    post_id = keep_env.post()
+    keep_env.cache_article(post_id, "The article.")
+    old = (datetime.now(UTC) - timedelta(days=90)).isoformat()
+    keep_env.conn.execute("UPDATE posts SET published_at = ? WHERE id = ?", (old, post_id))
+    kb = keep_env.kb
+    original = kb.write
+    pruned: list[int] = []
+
+    async def prune_first(draft: PageDraft, *, expected_rev: str | None = None):  # type: ignore[no-untyped-def]
+        if draft.id is None and not pruned:
+            # The daily prune runs after Keep marked the post, before its page is written.
+            assert keep_env.state(post_id) == (None, "archiving", None)
+            pruned.append(keep_env.rss.posts.prune(datetime.now(UTC)))
+        return await original(draft, expected_rev=expected_rev)
+
+    monkeypatch.setattr(kb, "write", prune_first)
+    kept = await keep_env.keep(post_id, "Mine.")
+    assert kept.status_code == 201, kept.text
+    assert pruned == [0]
+    tombstones = keep_env.conn.execute("SELECT COUNT(*) FROM pruned_posts").fetchone()[0]
+    assert tombstones == 0
+    await keep_env.rss.keeper.drain()
+    assert keep_env.state(post_id) == (kept.json()["page_id"], "done", None)

@@ -188,8 +188,8 @@ class PostStore(Protocol):
         ...
 
     def prune(self, cutoff: datetime, now: datetime) -> int:
-        """Delete unkept posts dated before ``cutoff`` (remembering their GUIDs, so the feed
-        cannot bring them back); how many were deleted."""
+        """Delete posts dated before ``cutoff`` that are not kept nor being kept
+        (remembering their GUIDs, so the feed cannot bring them back); how many."""
         ...
 
     def counts(self) -> Counts: ...
