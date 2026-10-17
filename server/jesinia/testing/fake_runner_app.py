@@ -8,9 +8,13 @@ endpoint, exactly as a real agent would (so the write gate makes it a pending wr
 then replies. Later turns only reply. A tag ask (a prompt starting ``TAGS:``) gets a
 fixed JSON tag list and never writes. The fetch service may also reach loopback
 addresses, so e2e can serve fixture feeds from a local port. The github service has no
-token, so e2e never syncs a real account (Review shows its auth-missing state). It
-refuses to load outside a throwaway ``JESINIA_HOME``, so none of this can ever activate in
-a real install.
+token, so e2e never syncs a real account (Review shows its auth-missing state), unless
+``JESINIA_FAKE_GITHUB_URL`` names the e2e fixture GitHub on loopback: then github talks only
+to that, with a fixed test token, and ``JESINIA_FAKE_GITHUB_REPOS`` makes the review
+workspace fetch from the bare repositories beside it. A review job prompt (``Run the <job>
+job.``) is answered with a fixed JSON output for the fixture PR, valid against the job's real
+schema. It refuses to load outside a throwaway ``JESINIA_HOME``, so none of this can ever
+activate in a real install.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import tempfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -26,6 +31,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 
+from jesinia.apps.review.module import ReviewModule
 from jesinia.services.agents.application.runner import RunnerStatus, TurnRequest
 from jesinia.services.agents.domain.events import (
     AgentEvent,
@@ -51,6 +57,104 @@ REPLY = (
 )
 
 Post = Callable[[str, dict[str, str], dict[str, Any]], Any]
+
+_REVIEW_PROMPT = re.compile(r"^Run the (\w+) job\.")
+_GREETER = "src/greeter.py"
+_GREETER_TEST = "tests/test_greeter.py"
+_FINDING = {
+    "group": "design",
+    "severity": "minor",
+    "path": _GREETER,
+    "start_line": 5,
+    "end_line": 6,
+    "explanation": "The fallback greeting is a literal; a named constant would document it.",
+    "rule": None,
+}
+# What each review job answers for the fixture PR (src/greeter.py gains an empty-name guard,
+# tests/test_greeter.py is new), each valid against its schema in apps/review/schemas.
+REVIEW_JOB_OUTPUTS: dict[str, dict[str, object]] = {
+    "overview": {
+        "summary": "Greeting an empty name no longer produces a broken greeting.",
+        "purpose": "Callers that format a greeting from user input sometimes pass an empty name.",
+        "sources": ["the PR description", "src/greeter.py"],
+    },
+    "background": {
+        "sections": [
+            {
+                "title": "How greetings work today",
+                "body": "greet() joins a salutation and the name, whatever the name is.",
+                "code": [{"path": _GREETER}],
+                "kb": [],
+            }
+        ]
+    },
+    "walkthrough": {
+        "steps": [
+            {
+                "title": "Guard the empty name",
+                "body": "greet() now answers an empty name with a stranger greeting.",
+                "hunks": [{"path": _GREETER, "hunk": 0}],
+            },
+            {
+                "title": "Cover it with a test",
+                "body": "A new test pins the behaviour for an empty name.",
+                "hunks": [{"path": _GREETER_TEST, "hunk": 0}],
+            },
+        ],
+        "skipped": [],
+    },
+    "correctness": {
+        "summary": "The guard is correct and the new test covers it.",
+        "checked": [
+            {"path": _GREETER, "start_line": 2, "end_line": 9},
+            {"path": _GREETER_TEST, "start_line": 1, "end_line": 5},
+        ],
+        "findings": [],
+        "tests": [{"path": _GREETER_TEST, "name": "test_greet_handles_an_empty_name"}],
+    },
+    "findings": {"findings": [_FINDING]},
+    "recommendation": {"verdict": "approve", "reasoning": "A small, tested fix."},
+    "metrics": {
+        "scores": [
+            {
+                "criterion": "Tests",
+                "rule": {"id": "testing", "layer": "base"},
+                "score": 9,
+                "note": "The change ships with a test.",
+            }
+        ]
+    },
+    "quiz": {
+        "questions": [
+            {
+                "question": f"What does greet('') return after this change in {_GREETER}?",
+                "choices": ["Hello, ", "Hello, stranger", "An error"],
+                "answer": 1,
+                "explanation": "The new guard returns the stranger greeting.",
+            },
+            {
+                "question": "Where is the empty name handled?",
+                "choices": ["In farewell()", "In greet()"],
+                "answer": 1,
+                "explanation": "greet() checks the name before joining.",
+            },
+            {
+                "question": "How is the behaviour pinned?",
+                "choices": ["A new test", "A comment", "Nothing"],
+                "answer": 0,
+                "explanation": f"{_GREETER_TEST} is new.",
+            },
+        ]
+    },
+}
+
+
+def review_job_reply(prompt: str) -> str | None:
+    """The JSON a review job prompt (``Run the <job> job. ...``) is answered with, or
+    ``None`` when ``prompt`` isn't one of the jobs the fixture PR has an output for."""
+    match = _REVIEW_PROMPT.match(prompt)
+    output = REVIEW_JOB_OUTPUTS.get(match.group(1)) if match else None
+    return None if output is None else json.dumps(output)
 
 
 async def _post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
@@ -88,6 +192,10 @@ class McpScriptRunner:
 
     async def run(self, req: TurnRequest) -> AsyncIterator[AgentEvent]:
         key = str(req.workdir)
+        if (review := review_job_reply(req.prompt)) is not None:
+            yield TextDelta(review)
+            yield TurnDone(f"fake-{key[-8:]}", "fake-model")
+            return
         if req.prompt.startswith("TAGS:"):
             yield TextDelta(TAG_REPLY)
             yield TurnDone(f"fake-{key[-8:]}", "fake-model")
@@ -149,6 +257,65 @@ def signed_out_github_module() -> GitHubModule:
     return GitHubModule(token=no_github_token)
 
 
+async def fake_github_token() -> str | None:
+    """The one token the fixture GitHub is given: a constant test value, never a real one."""
+    return "e2e-token"
+
+
+class LoopbackGitHubTransport(httpx.AsyncBaseTransport):
+    """Sends every request meant for api.github.com to the fixture GitHub instead.
+
+    Args:
+        base_url: the fixture server's origin (``http://127.0.0.1:<port>``).
+        inner: where the rewritten request actually goes (a real transport by default).
+    """
+
+    def __init__(self, base_url: str, inner: httpx.AsyncBaseTransport | None = None) -> None:
+        self._target = httpx.URL(base_url)
+        self._inner = inner or httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        request.url = request.url.copy_with(
+            scheme=self._target.scheme, host=self._target.host, port=self._target.port
+        )
+        request.headers["host"] = f"{self._target.host}:{self._target.port}"
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _fixture_github_url() -> str:
+    """The fixture GitHub's origin from ``JESINIA_FAKE_GITHUB_URL`` (loopback http only)."""
+    url = httpx.URL(os.environ["JESINIA_FAKE_GITHUB_URL"])
+    if url.scheme != "http" or url.port is None or url.host != "127.0.0.1":
+        raise RuntimeError(
+            f"the fixture GitHub must be an http loopback origin with a port, not {url}"
+        )
+    return str(url).rstrip("/")
+
+
+def github_module() -> GitHubModule:
+    """The github service: the fixture GitHub when ``JESINIA_FAKE_GITHUB_URL`` is set (only
+    under the temporary-home guard), else signed out."""
+    if not os.environ.get("JESINIA_FAKE_GITHUB_URL"):
+        return signed_out_github_module()
+    _require_temporary_home()
+    return GitHubModule(
+        token=fake_github_token, transport=LoopbackGitHubTransport(_fixture_github_url())
+    )
+
+
+def review_module() -> ReviewModule:
+    """The review app, fetching from the fixture repositories when
+    ``JESINIA_FAKE_GITHUB_REPOS`` names their directory (only under the temporary-home guard)."""
+    repos = os.environ.get("JESINIA_FAKE_GITHUB_REPOS")
+    if not repos:
+        return ReviewModule()
+    _require_temporary_home()
+    return ReviewModule(lambda repo: str(Path(repos) / f"{repo}.git"))
+
+
 def build_app() -> FastAPI:
     _require_throwaway_home()
     from jesinia.core.app import create_app
@@ -161,7 +328,8 @@ def build_app() -> FastAPI:
     replacements: dict[str, Callable[[], Module]] = {
         "agents": lambda: AgentsModule(runners={"fake": McpScriptRunner()}),
         "fetch": fixture_fetch_module,
-        "github": signed_out_github_module,
+        "github": github_module,
+        "review": review_module,
     }
     mods = [replacements[m.name]() if m.name in replacements else m for m in modules()]
     return create_app(load_config(config_path()), mods)

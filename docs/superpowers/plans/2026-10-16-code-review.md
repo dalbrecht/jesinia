@@ -482,7 +482,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   until it refreshes.
 - **Routes:** `/review/` and `/review/<owner>/<repo>/<n>`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - rows render every field;
   - the cached queue renders immediately while sync is pending, and stays visible under a
     banner when sync fails;
@@ -491,10 +491,10 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - the Still approved group is collapsed;
   - the auth-missing state;
   - `icons.test.ts` with `BASE="/review"`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): app scaffold and queue`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): app scaffold and queue`.
 
 ### Task 9: PR view
 
@@ -526,17 +526,17 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **Posting:** a confirmation dialog showing the exact text and every warning, with explicit
   confirm checkboxes per warning.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - the coverage line and not-walked list render, and Walk everything requests steps;
   - editing a draft persists;
   - a BLOCKING warning blocks Approve until confirmed;
   - the newer-head warning;
   - own PR shows Comment only;
   - quiz skip.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): PR view`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): PR view`.
 
 ### Task 10: e2e and docs
 
@@ -549,13 +549,13 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - `fake_runner_app.py` (schema-valid review outputs);
   - `docs/operations.md`, `README.md`, the skills.
 
-- [ ] **Step 1: Write the e2e:** a queue with CI-waiting and ready rows; open a deep review;
+- [x] **Step 1: Write the e2e:** a queue with CI-waiting and ready rows; open a deep review;
   coverage shown; edit a draft adding "BLOCKING"; Approve warns; confirm; the posted review
   reaches the fake GitHub as one request. Expected: FAIL.
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Run** `make ci` and `GIT_CONFIG_GLOBAL=/dev/null make test-e2e`. Expected:
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Run** `make ci` and `GIT_CONFIG_GLOBAL=/dev/null make test-e2e`. Expected:
   PASS.
-- [ ] **Step 4: Commit** `feat(review): e2e and docs`. **Open PR 3**, then the Codex loop
+- [x] **Step 4: Commit** `feat(review): e2e and docs`. **Open PR 3**, then the Codex loop
   and merge.
 
 ## PR 4: Follow-ups and stacks (Tasks 11–13)

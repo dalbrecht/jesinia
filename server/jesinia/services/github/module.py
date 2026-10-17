@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from importlib.resources import files
 
+import httpx
 from fastapi import APIRouter
 
 from jesinia.core.db import DbClass, ModuleDb, open_db
@@ -24,8 +25,14 @@ CACHE_TTL = timedelta(days=30)
 class GitHubModule:
     name = "github"
 
-    def __init__(self, token: TokenSource = github_token) -> None:
+    def __init__(
+        self,
+        token: TokenSource = github_token,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._token = token
+        # Only the e2e fixture app sets this (to reach its fake GitHub); production never does.
+        self._transport = transport
         self._conn: sqlite3.Connection | None = None
         self._has_token: bool | None = None
         self._service: GitHubService | None = None
@@ -40,7 +47,7 @@ class GitHubModule:
         self._conn = open_db(ctx.cfg.data_dir, GITHUB_DB)
         cache = SqliteGitHubCache(self._conn)
         cache.prune(CACHE_TTL)
-        self._service = GitHubService(self._token, cache)
+        self._service = GitHubService(self._token, cache, self._transport)
         ctx.services["github"] = self._service
         self._has_token = (await self._token()) is not None
 

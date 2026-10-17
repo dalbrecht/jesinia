@@ -1,0 +1,11 @@
+[
+  {
+    "sha": "3333333333333333333333333333333333333333",
+    "filename": "src/greeter.py",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2,
+    "patch": "@@ -6,4 +6,4 @@ def greet(name):\n \n \n def farewell(name):\n-    return \"Bye, \" + name\n+    return \"BYE, \" + name.upper()"
+  }
+]

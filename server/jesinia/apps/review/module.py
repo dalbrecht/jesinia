@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 
@@ -63,7 +63,10 @@ def _utc_now() -> datetime:
 class ReviewModule:
     name = "review"
 
-    def __init__(self) -> None:
+    def __init__(self, remote_url: Callable[[str], str] | None = None) -> None:
+        # Where a repo is fetched from: GitHub (None), except for the e2e fixture app, which
+        # fetches from local repositories beside its fake GitHub.
+        self._remote_url = remote_url
         self._workspace: GitWorkspace | None = None
         self._conn: sqlite3.Connection | None = None
         self._repo_tools: RepoTools | None = None
@@ -191,7 +194,9 @@ class ReviewModule:
 
     async def start(self, ctx: AppContext) -> None:
         self._conn = open_db(ctx.cfg.data_dir, REVIEW_DB)
-        self._workspace = GitWorkspace(ctx.cfg.data_dir / "review" / "repos", github_remote_url)
+        self._workspace = GitWorkspace(
+            ctx.cfg.data_dir / "review" / "repos", self._remote_url or github_remote_url
+        )
         self._repo_tools = RepoTools(
             self.sessions.worktree_for,
             self._workspace,

@@ -1,0 +1,17 @@
+[
+  {
+    "sha": "{{sha:greeter-empty-name}}",
+    "commit": {
+      "message": "Handle empty names in greet",
+      "author": {
+        "name": "Teammate",
+        "email": "teammate@example.invalid",
+        "date": "2026-10-14T09:00:00Z"
+      }
+    },
+    "author": {
+      "login": "teammate",
+      "type": "User"
+    }
+  }
+]

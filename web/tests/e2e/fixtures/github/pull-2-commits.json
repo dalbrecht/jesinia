@@ -1,0 +1,17 @@
+[
+  {
+    "sha": "{{sha:farewell-shout}}",
+    "commit": {
+      "message": "Shout farewells",
+      "author": {
+        "name": "Teammate",
+        "email": "teammate@example.invalid",
+        "date": "2026-10-15T07:30:00Z"
+      }
+    },
+    "author": {
+      "login": "teammate",
+      "type": "User"
+    }
+  }
+]

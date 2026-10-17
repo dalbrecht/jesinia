@@ -48,19 +48,28 @@ e2e-server: ## Build the apps and serve a throwaway e2e instance (needs E2E_HOME
 	bash web/tests/e2e/fixture.sh
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set server.port "$(E2E_PORT)" >/dev/null
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set kbsync.quiet 1s >/dev/null
-	@# The fixture feeds, on a second loopback port. Only this throwaway server may fetch
-	@# loopback (fake_runner_app's temporary-home guard); the feeds stop with the server.
+	@# The fixture feeds, on a second loopback port, and a fake GitHub on an ephemeral one
+	@# (its port lands in $(E2E_HOME)/github.port). Only this throwaway server may fetch
+	@# loopback or be pointed at the fake GitHub (fake_runner_app's temporary-home guard): the
+	@# real `gh` config and credentials are never read. Both stop with the server.
 	@# Then the server plus a scripted "fake" runner that calls kb_write through MCP (tests
 	@# only). It commits to the fixture KB; CI runners have no git identity of their own.
 	@# Its errors (a port in use, say) reach Playwright's log; uvicorn starts once it answers.
 	$(UV) run python -m http.server "$(E2E_FEEDS_PORT)" --bind 127.0.0.1 \
 	  --directory "$(CURDIR)/web/tests/e2e/fixtures/feeds" >/dev/null & feeds=$$!; \
-	trap 'kill $$feeds 2>/dev/null' EXIT; \
+	$(UV) run python "$(CURDIR)/web/tests/e2e/fixtures/github/server.py" \
+	  --repo "$(E2E_HOME)/github-repos/e2e-dev/greeter.git" \
+	  --port-file "$(E2E_HOME)/github.port" >/dev/null & github=$$!; \
+	trap 'kill $$feeds $$github 2>/dev/null' EXIT; \
 	curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null \
 	  "http://127.0.0.1:$(E2E_FEEDS_PORT)/fixture.xml" || exit 1; \
+	for attempt in $$(seq 1 60); do test -s "$(E2E_HOME)/github.port" && break; sleep 0.5; done; \
+	test -s "$(E2E_HOME)/github.port" || { echo "the fixture GitHub did not start"; exit 1; }; \
 	GIT_AUTHOR_NAME="Jesinia E2E" GIT_AUTHOR_EMAIL="e2e@example.invalid" \
 	  GIT_COMMITTER_NAME="Jesinia E2E" GIT_COMMITTER_EMAIL="e2e@example.invalid" \
-	  JESINIA_HOME="$(E2E_HOME)/data" JESINIA_FAKE_RUNNER=1 $(UV) run uvicorn \
+	  JESINIA_HOME="$(E2E_HOME)/data" JESINIA_FAKE_RUNNER=1 \
+	  JESINIA_FAKE_GITHUB_URL="http://127.0.0.1:$$(cat "$(E2E_HOME)/github.port")" \
+	  JESINIA_FAKE_GITHUB_REPOS="$(E2E_HOME)/github-repos" $(UV) run uvicorn \
 	  jesinia.testing.fake_runner_app:app --host 127.0.0.1 --port "$(E2E_PORT)"
 
 lint: ## Lint Python and JS
