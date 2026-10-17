@@ -136,10 +136,17 @@ class SyncService:
         Raises:
             InvalidRepoError: ``repo`` is not ``owner/name``.
             RepoNotWatchedError: unwatching a repo the author never added.
-            GitHubError: watching a repo GitHub can't find (or can't be reached).
+            GitHubError: watching a new repo GitHub can't find (or can't be reached).
         """
         if watched:
-            name = validate_repo(await self._github.repository(validate_repo(repo)))
+            stored = self._store.repo(validate_repo(repo))
+            # Only a repo not stored yet is named by GitHub: a stored one already has GitHub's
+            # name, so Settings edits keep working while GitHub is unreachable.
+            name = (
+                stored.repo
+                if stored is not None
+                else validate_repo(await self._github.repository(validate_repo(repo)))
+            )
             self._store.watch(name, self._clock())
         else:
             name = self.state(repo).repo  # only a repo the author added can be unwatched

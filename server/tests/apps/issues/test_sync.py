@@ -122,6 +122,7 @@ class FakeIssues:
         self.file_error: Exception | None = None
         # GitHub's own spelling of a repo name, by casefolded name (else the name as asked).
         self.full_names: dict[str, str] = {}
+        self.repository_error: Exception | None = None
 
     def put(self, *issues: Issue) -> None:
         for item in issues:
@@ -153,6 +154,8 @@ class FakeIssues:
         return Page(shown, str(page + 1) if len(chunk) == PER_PAGE else None)
 
     async def repository(self, repo: str) -> str:
+        if self.repository_error is not None:
+            raise self.repository_error
         return self.full_names.get(repo.casefold(), repo)
 
     async def labels(self, repo: str) -> list[Label]:
@@ -1173,3 +1176,25 @@ async def test_a_failure_that_cannot_even_be_recorded_is_logged_and_the_run_goes
     await service.sync_all()  # never raises
     assert "could not record the failure of acme/api" in caplog.text
     assert "could not record the failure of acme/web" in caplog.text
+
+
+async def test_settings_save_for_a_watched_repo_while_github_is_offline(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    github.full_names["acme/web"] = REPO
+    await service.configure("ACME/Web", watched=True, settings_schema=None)
+    github.repository_error = GitHubRequestError(None, "ConnectError")
+    schema = replace(DEFAULT_SCHEMA, readiness=())
+    state = await service.configure("ACME/WEB", watched=True, settings_schema=schema)
+    assert state.repo == REPO and state.settings_schema == schema
+    cleared = await service.configure(REPO, watched=True, settings_schema=None)
+    assert cleared.settings_schema is None
+
+
+async def test_watching_a_new_repo_while_github_is_offline_fails_cleanly(
+    service: SyncService, github: FakeIssues, store: SqliteIssuesStore
+) -> None:
+    github.repository_error = GitHubRequestError(None, "ConnectError")
+    with pytest.raises(GitHubRequestError):
+        await service.configure(REPO, watched=True, settings_schema=None)
+    assert store.repo(REPO) is None
