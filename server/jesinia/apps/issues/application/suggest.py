@@ -397,6 +397,8 @@ class SuggestService:
         drafts = triage_drafts(TriageReply.from_json(data), ctx)
         kept = self._store.suggestions(SuggestionFilters(issue.repo, n, states=_KEPT_STATES))
         content = content_hash(issue.title, issue.body, issue.labels)
+        # The ask took a while: a sync may have changed (and retired drafts of) the issue.
+        now_cached = self._cache.cached_issue(issue.repo, n)
         now = self._clock()
         fresh = [
             Suggestion(
@@ -411,9 +413,23 @@ class SuggestService:
                 now,
                 now,
                 origin=identity(d.kind, d.payload),
+                basis=content,
             )
             for d in fresh_drafts(drafts, kept, content)
         ]
+        if now_cached is None or now_cached.issue.state != "open":
+            fresh = []
+        else:
+            fresh = [
+                s
+                for s in fresh
+                if not stale(
+                    s,
+                    now_cached.triage,
+                    has_parent=now_cached.issue.parent is not None,
+                    is_open=True,
+                )
+            ]
         self._store.replace_drafts(issue.repo, n, fresh)
         return self._store.suggestions(SuggestionFilters(issue.repo, n))
 
@@ -560,17 +576,8 @@ class SuggestService:
             SuggestionNotFoundError, SuggestionStateError (it was approved).
         """
         current = self.suggestion(suggestion_id)
-        cached = (
-            None
-            if current.repo is None or current.n is None
-            else self._cache.cached_issue(current.repo, current.n)
-        )
-        basis = (
-            None
-            if cached is None
-            else content_hash(cached.issue.title, cached.issue.body, cached.issue.labels)
-        )
-        dismissed = dismiss(current, self._clock(), basis)
+        # The basis stays the content the draft was made from (set when it was stored).
+        dismissed = dismiss(current, self._clock())
         if dismissed is not current:
             self._store.save(dismissed)
         return dismissed

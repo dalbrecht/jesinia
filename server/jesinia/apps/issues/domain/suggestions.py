@@ -148,8 +148,8 @@ class Suggestion:
     shaped per kind (see ``triage_drafts``).
 
     ``origin`` is the ``identity`` it was proposed with (kept through edits, so an edited area
-    still answers for the area first proposed); ``basis`` is the issue's ``content_hash`` when
-    it was dismissed (a dismissal holds only while the issue still says the same)."""
+    still answers for the area first proposed); ``basis`` is the issue's ``content_hash`` the
+    draft was made from (a dismissal holds only while the issue still says the same)."""
 
     id: str
     repo: str | None
@@ -563,8 +563,9 @@ def _edited_gap(payload: Mapping[str, object]) -> dict[str, object]:
 
 
 def dismiss(suggestion: Suggestion, now: datetime, basis: str | None = None) -> Suggestion:
-    """``suggestion`` dismissed while its issue's ``content_hash`` is ``basis``; dismissing it
-    again changes nothing.
+    """``suggestion`` dismissed; ``basis`` replaces the content hash it holds when given (by
+    default the dismissal holds for the content the draft was made from). Dismissing it again
+    changes nothing.
 
     Raises:
         SuggestionStateError: it was approved already.
@@ -572,7 +573,7 @@ def dismiss(suggestion: Suggestion, now: datetime, basis: str | None = None) -> 
     if suggestion.state == "dismissed":
         return suggestion
     _require_open(suggestion)
-    return replace(suggestion, state="dismissed", updated_at=now, basis=basis)
+    return replace(suggestion, state="dismissed", updated_at=now, basis=basis or suggestion.basis)
 
 
 def payload_json(payload: Mapping[str, object]) -> str:

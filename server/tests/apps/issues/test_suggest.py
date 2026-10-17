@@ -851,3 +851,83 @@ async def test_a_failing_triage_listener_never_breaks_sync(
     await sync.sync(REPO)
     assert sync.state(REPO).sync_error is None
     assert "the triage listener failed" in caplog.text
+
+
+# Fix round 2 -------------------------------------------------------------------------------
+
+
+async def _hold_triage(env: Env) -> tuple[asyncio.Task[list[Suggestion]], asyncio.Event]:
+    gate = env.agent.gate = asyncio.Event()
+    task = asyncio.create_task(env.suggest.triage(REPO, 1))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert env.agent.in_flight == 1
+    return task, gate
+
+
+async def test_drafts_stale_by_the_time_the_agent_answers_are_not_stored(env: Env) -> None:
+    await env.watch()
+    env.new_issue(1)
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(
+        labels=[("priority", "priority: high"), ("readiness", "agent-ready")]
+    )
+    task, gate = await _hold_triage(env)
+    # While the agent thinks, priority is set on GitHub and synced.
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(
+        issue(1, labels=("bug", "priority: low"), created=T0 + timedelta(minutes=1),
+              updated=env.clock.now)
+    )  # fmt: skip
+    await env.sync.sync(REPO)
+    gate.set()
+    await task
+    assert [s.payload["dimension"] for s in env.all(1)] == ["readiness"]
+
+
+async def test_no_drafts_are_stored_for_an_issue_closed_during_the_ask(env: Env) -> None:
+    await env.watch()
+    env.new_issue(1)
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(labels=[("priority", "priority: high")])
+    task, gate = await _hold_triage(env)
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(
+        issue(1, created=T0 + timedelta(minutes=1), updated=env.clock.now, state="closed")
+    )
+    await env.sync.sync(REPO)
+    gate.set()
+    assert await task == []
+    assert env.all(1) == []
+
+
+async def test_a_limited_list_keeps_the_newest(env: Env) -> None:
+    await env.watch()
+    env.new_issue(1)
+    env.new_issue(2)
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(labels=[("priority", "priority: high")])
+    await env.suggest.triage(REPO, 1)
+    env.clock.now += timedelta(minutes=1)
+    await env.suggest.triage(REPO, 2)
+    [newest] = env.suggest.suggestions(SuggestionFilters(), 1)
+    assert newest.n == 2
+    both = env.suggest.suggestions(SuggestionFilters(), 5)
+    assert [s.n for s in both] == [1, 2]  # still shown oldest first
+
+
+async def test_a_dismissal_holds_for_the_content_the_draft_was_made_from(env: Env) -> None:
+    await env.watch()
+    env.new_issue(1)
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(labels=[("priority", "priority: high")])
+    await env.suggest.triage(REPO, 1)
+    # The issue changes before the author dismisses a draft made from the old text.
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(
+        issue(1, created=T0 + timedelta(minutes=1), updated=env.clock.now, body="new detail")
+    )
+    await env.sync.sync(REPO)
+    env.suggest.dismiss(env.all(1)[0].id)
+    await env.suggest.triage(REPO, 1)
+    assert [s.state for s in env.all(1)] == ["dismissed", "draft"]

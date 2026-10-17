@@ -100,14 +100,13 @@ class SqliteSuggestionStore:
             where.append("kind = ?")
             params.append(filters.kind)
         clause = f"WHERE {' AND '.join(where)} " if where else ""
-        bound = ""
+        query = f"SELECT {_COLUMNS}, rowid FROM suggestions {clause}"
         if limit is not None:
-            bound = " LIMIT ?"
+            # The newest ``limit``, still listed oldest first.
+            query = f"SELECT * FROM ({query}ORDER BY created_at DESC, rowid DESC LIMIT ?) "
             params.append(limit)
-        rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM suggestions {clause}ORDER BY created_at, rowid{bound}", params
-        )
-        return [_suggestion(row) for row in rows]
+        rows = self._conn.execute(f"{query}ORDER BY created_at, rowid", params)
+        return [_suggestion(row[:-1]) for row in rows]
 
     def suggestion(self, suggestion_id: str) -> Suggestion | None:
         row = self._conn.execute(
