@@ -106,13 +106,15 @@ def is_inbox(
     """The issue's Inbox flag after a sync.
 
     A complete issue is triaged, so never in the Inbox. A first sighting is in the Inbox only
-    when opened after the repo was added; after that an incomplete issue stays there, or enters
-    it when it was complete before.
+    when opened after the repo was added (the same second counts, at GitHub's precision);
+    after that an incomplete issue stays there, or enters it when it was complete before.
     """
     if complete:
         return False
     if previous is None:
-        return created_at > added_at
+        # GitHub's times have whole seconds and the watch time has microseconds: an issue
+        # opened in the same second as the watch counts as new.
+        return created_at >= added_at.replace(microsecond=0)
     return previous.inbox or previous.complete
 
 

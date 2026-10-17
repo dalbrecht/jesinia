@@ -51,7 +51,7 @@ from jesinia.apps.issues.domain.labels import (
     plan_setup,
     skip_cause,
 )
-from jesinia.apps.issues.domain.schema import label_key
+from jesinia.apps.issues.domain.schema import LabelSchema, label_key
 from jesinia.apps.issues.domain.triage import RepoNotWatchedError, triage
 from jesinia.services.github.application.service import (
     GitHubError,
@@ -331,6 +331,15 @@ class LabelExecutor:
         )
 
 
+@dataclass(frozen=True)
+class Planned:
+    """What a batch would run now, and the fresh reads it was planned from."""
+
+    ops: tuple[LabelOp, ...]
+    labels: list[Label]
+    schema: LabelSchema
+
+
 class LabelPlanner:
     """Plans a repo's label setup or migration from a fresh read of its labels, its stored
     schema and (for a migration) each alias's members listed live."""
@@ -358,10 +367,10 @@ class LabelPlanner:
 
     async def current(
         self, repo: str, kind: LabelPlanKind, *, with_members: bool = True
-    ) -> tuple[tuple[LabelOp, ...], list[Label]]:
+    ) -> Planned:
         """The ops ``kind`` would run now (a setup: the canonical labels the repo is missing; a
         migration: every alias on GitHub mapped to its canonical, its members listed live, none
-        for a name with a comma), and the fresh read of the labels they came from.
+        for a name with a comma), with the fresh reads of the labels and schema they came from.
         ``with_members=False`` skips listing each alias's members: an apply's shape check
         ignores them (the executor lists them live itself).
 
@@ -385,9 +394,10 @@ class LabelPlanner:
         state = replace(stored, schema_source=source, schema=schema)
         labels = await self._github.labels(state.repo)
         if kind == "setup":
-            return tuple(plan_setup(state.schema, [label.name for label in labels])), labels
+            ops = tuple(plan_setup(schema, [label.name for label in labels]))
+            return Planned(ops, labels, schema)
         plan = await self._migration(state, labels, with_members=with_members)
-        return tuple(plan.ops()), labels
+        return Planned(tuple(plan.ops()), labels, schema)
 
 
 class LabelSetupService:
@@ -423,7 +433,7 @@ class LabelSetupService:
 
     async def _current(
         self, repo: str, kind: LabelPlanKind, *, with_members: bool = True
-    ) -> tuple[tuple[LabelOp, ...], list[Label]]:
+    ) -> Planned:
         try:
             return await self.planner.current(repo, kind, with_members=with_members)
         except GitHubRateLimitedError as exc:
@@ -438,9 +448,9 @@ class LabelSetupService:
             planner's.
         """
         name = self.planner.watched(repo).repo  # GitHub's spelling, whatever was typed
-        ops, _ = await self._current(name, kind)
+        planned = await self._current(name, kind)
         now = self._clock()
-        plan = LabelPlan(uuid.uuid4().hex, name, kind, ops, now)
+        plan = LabelPlan(uuid.uuid4().hex, name, kind, planned.ops, now)
         self._store.save_plan(plan, now)
         return plan
 
@@ -466,18 +476,18 @@ class LabelSetupService:
             name = plan.repo  # GitHub's spelling, kept by the preview
             # Kind and expiry first, before asking GitHub; then against the repo as it is now.
             plan.check(kind, self._clock(), plan.ops)
-            ops, labels = await self._current(name, kind, with_members=False)
-            plan.check(kind, self._clock(), ops)
+            planned = await self._current(name, kind, with_members=False)
+            plan.check(kind, self._clock(), planned.ops)
             run: LabelRun | None = None
             try:
-                run = await self._executor.run(name, plan.ops, labels)
+                run = await self._executor.run(name, plan.ops, planned.labels)
             finally:
                 self._log(plan, run)
             if run.is_rate_limited:
                 self._rate_limited(run.rate_limited_until)
             if kind == "migrate" and run.complete:
                 self._store.set_migrated(name)
-            self._update_cache(name, run)
+            self._update_cache(name, run, planned.schema)
             return run
 
     @staticmethod
@@ -508,10 +518,12 @@ class LabelSetupService:
             run.is_rate_limited,
         )
 
-    def _update_cache(self, repo: str, run: LabelRun) -> None:
-        """Write the run's labels and moved issues to the cache now, re-triaged, so views and
-        a re-preview don't wait for the next sync. Best effort: a failure here is logged with
-        its cause and never fails the apply (the next sync corrects the cache)."""
+    def _update_cache(self, repo: str, run: LabelRun, schema: LabelSchema) -> None:
+        """Write the run's labels and moved issues to the cache now, re-triaged against
+        ``schema`` (the one the apply was validated with, read fresh from GitHub, not the
+        cached one), so views and a re-preview don't wait for the next sync. Best effort: a
+        failure here is logged with its cause and never fails the apply (the next sync corrects
+        the cache)."""
         try:
             state = self.planner.watched(repo)
             self._store.replace_labels(state.repo, run.labels)
@@ -519,7 +531,7 @@ class LabelSetupService:
                 cached = self._store.issue(state.repo, number)
                 if cached is None:
                     continue  # labelled on GitHub after the last sync: the sync brings it
-                result = triage(labels, cached.sub_issue_count, state.schema)
+                result = triage(labels, cached.sub_issue_count, schema)
                 self._store.update_issue_labels(cached, labels, result)
         except Exception:  # error-isolated: the GitHub writes already happened
             log.exception("issues.labels: updating the cache of %s after an apply failed", repo)

@@ -33,7 +33,13 @@ COMPLETE = ("agent-ready", "priority: high", "bug", "area:web")
 
 def test_issue_opened_after_the_repo_was_added_is_in_the_inbox() -> None:
     assert is_inbox(None, created_at=T0 + timedelta(seconds=1), added_at=T0, complete=False)
-    assert not is_inbox(None, created_at=T0, added_at=T0, complete=False)
+    # GitHub's times have whole seconds; the watch time has microseconds. An issue opened in
+    # the same second as the watch counts as new, one a second earlier as existing.
+    watched_at = T0 + timedelta(microseconds=400_000)
+    assert is_inbox(None, created_at=T0, added_at=watched_at, complete=False)
+    assert not is_inbox(
+        None, created_at=T0 - timedelta(seconds=1), added_at=watched_at, complete=False
+    )
     assert not is_inbox(None, created_at=T0 - timedelta(days=9), added_at=T0, complete=True)
 
 

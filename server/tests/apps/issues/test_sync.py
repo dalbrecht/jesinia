@@ -1240,3 +1240,15 @@ async def test_a_malformed_issue_payload_is_recorded_and_the_cache_kept(
     state = store.repo(REPO)
     assert state is not None and "updated_at" in (state.sync_error or "")
     assert await numbers(queries, "backlog") == [1]
+
+
+async def test_an_issue_opened_in_the_same_second_as_the_watch_is_in_the_inbox(
+    service: SyncService, github: FakeIssues, clock: FakeClock, queries: IssueQueries
+) -> None:
+    clock.now = T0 + timedelta(microseconds=400_000)  # the watch has microseconds
+    await service.configure(REPO, watched=True, settings_schema=None)
+    github.put(issue(1, created=T0), issue(2, created=T0 - timedelta(seconds=1)))
+    clock.now += timedelta(minutes=1)
+    await service.sync(REPO)
+    assert await numbers(queries, "inbox") == [1]
+    assert await numbers(queries, "backlog") == [2]

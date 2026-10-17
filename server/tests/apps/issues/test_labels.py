@@ -23,6 +23,7 @@ from jesinia.apps.issues.application.labels import (
     LabelExecutor,
     LabelSetupService,
 )
+from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
 from jesinia.apps.issues.domain.labels import (
     COMMA_CAUSE,
@@ -36,7 +37,7 @@ from jesinia.apps.issues.domain.labels import (
     SchemaHasErrorsError,
     skip_cause,
 )
-from jesinia.apps.issues.domain.triage import RepoNotWatchedError
+from jesinia.apps.issues.domain.triage import IssueFilters, RepoNotWatchedError
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.module import ISSUES_DB
 from jesinia.core.db import open_db
@@ -256,7 +257,7 @@ async def test_setup_creates_only_missing_canonical_labels(
     assert [w for w, _ in github.writes] == ["create_label"] * 3
     # IR4: the schema and the labels were read fresh before anything was created, once each.
     assert github.call_names() == ["file", "labels"]
-    assert (await labels.planner.current(REPO, "setup"))[0] == ()
+    assert (await labels.planner.current(REPO, "setup")).ops == ()
     # IR5: one pause between consecutive writes.
     assert pauses.calls == [WRITE_INTERVAL.total_seconds()] * 2
 
@@ -830,3 +831,26 @@ async def test_a_labels_yml_that_cannot_be_read_applies_nothing(
     with pytest.raises(GitHubRequestError):
         await labels.apply(REPO, "setup", plan.id)
     assert github.writes == []
+
+
+async def test_the_cache_after_a_migration_is_triaged_with_the_fresh_schema(
+    labels: LabelSetupService, github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    github.files[(REPO, LABELS_YML)] = "readiness:\n  - human-needed\n"
+    github.set_labels("agent-ready", "ready", "priority: high", "bug", "area:web")
+    complete = ("agent-ready", "priority: high", "bug", "area:web")
+    github.put(issue(1, labels=complete, created=clock.now + timedelta(seconds=30)))
+    await synced(github, store, clock)
+    inbox = IssueQueries(store, clock)
+    assert [r.number for r in inbox.view("inbox", IssueFilters()).rows] == [1]
+    # labels.yml now names ``ready``, with ``agent-ready`` as its alias; no sync since.
+    github.files[(REPO, LABELS_YML)] = (
+        "readiness:\n  - name: ready\n    aliases: [agent-ready]\n  - human-needed\n"
+    )
+    plan = await labels.preview(REPO, "migrate")
+    assert plan.ops == (DeleteLabel("agent-ready", "ready", (1,)),)
+    assert (await labels.apply(REPO, "migrate", plan.id)).complete
+    cached = store.cached_issue(REPO, 1)
+    assert cached is not None and "ready" in cached.issue.labels
+    assert cached.triage.complete and cached.triage.readiness == "ready"
+    assert inbox.view("inbox", IssueFilters()).rows == []
