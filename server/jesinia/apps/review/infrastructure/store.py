@@ -593,6 +593,27 @@ class SqliteReviewStore:
         round_id, finished, error, interrupted, interruptions = row
         return round_id, RoundStatus(bool(finished), error, bool(interrupted), interruptions)
 
+    def choose_depth(self, ref: PrRef, head_sha: str, depth: Depth) -> None:
+        """Record the author's depth for a head (R57), and show it on the queue row while the
+        PR is still at that head."""
+        with transaction(self._conn):
+            self._conn.execute(
+                "INSERT INTO depth_choices (repo, number, head_sha, depth) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (repo, number, head_sha) DO UPDATE SET depth = excluded.depth",
+                (ref.repo, ref.number, head_sha, depth),
+            )
+            self._conn.execute(
+                "UPDATE prs SET depth = ? WHERE repo = ? AND number = ? AND head_sha = ?",
+                (depth, ref.repo, ref.number, head_sha),
+            )
+
+    def chosen_depth(self, ref: PrRef, head_sha: str) -> Depth | None:
+        row = self._conn.execute(
+            "SELECT depth FROM depth_choices WHERE repo = ? AND number = ? AND head_sha = ?",
+            (ref.repo, ref.number, head_sha),
+        ).fetchone()
+        return None if row is None else cast(Depth, row[0])
+
     def set_depth(self, ref: PrRef, head_sha: str, round_id: int, depth: Depth) -> None:
         """Record the depth a round runs at, on the round and (while the PR is still at
         ``head_sha``) on its queue row."""

@@ -15,6 +15,8 @@ import {
   type SectionId,
 } from "./api";
 import { LoadPr } from "./LoadPr";
+import { visibleText } from "./pr/model";
+import { Visible } from "./pr/Visible";
 import s from "./review.module.css";
 
 export const SUGGESTED_NOTE = "Suggested repo — confirm to review automatically";
@@ -129,14 +131,14 @@ export function RowCard({ row, actions }: { row: QueueRow; actions?: RowActions 
           <button
             type="button"
             className={s.titleButton}
-            aria-label={`Open ${ref} · ${row.title}`}
+            aria-label={`Open ${ref} · ${visibleText(row.title)}`}
             onClick={() => actions.onOpen(row)}
           >
-            <span className={s.ref}>{ref}</span> · {row.title}
+            <span className={s.ref}>{ref}</span> · <Visible text={row.title} />
           </button>
         ) : (
           <>
-            <span className={s.ref}>{ref}</span> · {row.title}
+            <span className={s.ref}>{ref}</span> · <Visible text={row.title} />
           </>
         )}
       </h3>

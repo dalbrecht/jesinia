@@ -156,9 +156,11 @@ export type ErrorFacts = {
   reviewUrl: string | null;
   /** NeedsConfirmation: every warning to confirm. */
   warnings: PostWarning[] | null;
+  /** InvalidDraftContent: the refused draft (0-based), or null for the summary. */
+  draftIndex: number | null;
 };
 
-const NO_FACTS: ErrorFacts = { code: null, retryAfter: null, reviewUrl: null, warnings: null };
+const NO_FACTS: ErrorFacts = { code: null, retryAfter: null, reviewUrl: null, warnings: null, draftIndex: null };
 
 /** A failed review request, carrying the server's cause (`detail`) as its message. */
 export class ReviewRequestError extends Error {
@@ -196,6 +198,7 @@ function factsOf(error: unknown, response: Response): Partial<ErrorFacts> {
     retryAfter: retry,
     reviewUrl: typeof body.review_url === "string" ? body.review_url : null,
     warnings: Array.isArray(body.warnings) ? (body.warnings as PostWarning[]) : null,
+    draftIndex: typeof body.draft_index === "number" ? body.draft_index : null,
   };
 }
 

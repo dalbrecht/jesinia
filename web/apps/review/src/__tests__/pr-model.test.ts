@@ -5,11 +5,13 @@ import {
   coverageLine,
   findingNote,
   findingsInStep,
+  hasHidden,
   notWalkedNote,
   outlineOf,
   parsePatch,
   pending,
   readArtifacts,
+  revealHidden,
   type Finding,
   type WalkCoverage,
 } from "../pr/model";
@@ -162,5 +164,63 @@ describe("outlineOf", () => {
     expect(pending(a, "overview")).toBeNull();
     expect(pending(a, "step")).toBeNull();
     expect(pending(readArtifacts(prView(REVIEWED)), "recommendation")).toEqual({ state: "missing", error: null });
+  });
+});
+
+describe("big PRs (I4, R61)", () => {
+  /** n steps over one file of n hunks, with 30 findings spread across it. */
+  function big(n: number) {
+    const patch = Array.from({ length: n }, (_, i) => `@@ -${i * 10 + 1},2 +${i * 10 + 1},3 @@\n a\n-b\n+c\n+d`).join(
+      "\n",
+    );
+    const files = [{ path: "big.py", status: "modified", additions: 2 * n, deletions: n, patch, previous_path: null }];
+    const steps = Array.from({ length: n }, (_, i) => ({
+      title: `Step ${i}`,
+      body: "b",
+      hunks: [{ path: "big.py", hunk: i }],
+    }));
+    const findings = Array.from({ length: 30 }, (_, i) => ({
+      ...ARTIFACTS.findings.findings[0],
+      path: "big.py",
+      start_line: Math.floor((i * n) / 30) * 10 + 2,
+      end_line: Math.floor((i * n) / 30) * 10 + 2,
+    }));
+    return prView(REVIEWED, {
+      files,
+      artifacts: { ...ARTIFACTS, walkthrough: { steps, skipped: [] }, findings: { findings } },
+    });
+  }
+  const time = (n: number) => {
+    const view = big(n);
+    const start = performance.now();
+    const entries = outlineOf("deep", readArtifacts(view), view.files, 1);
+    const ms = performance.now() - start;
+    return { ms, entries };
+  };
+
+  it("builds the outline in about linear time (n vs 4n), well under the ceiling", () => {
+    time(50); // warm up
+    const small = time(250);
+    const large = time(1000);
+    expect(large.entries.filter((e) => e.kind === "step")).toHaveLength(1000);
+    expect(large.entries.filter((e) => e.bad).length).toBeGreaterThan(20); // findings landed on steps
+    expect(large.ms).toBeLessThan(3000);
+    expect(large.ms / Math.max(small.ms, 1)).toBeLessThan(16);
+  });
+});
+
+describe("revealHidden (I6, R62)", () => {
+  it("splits text into plain runs and visible tokens, by class", () => {
+    expect(revealHidden("plain")).toEqual([{ text: "plain" }]);
+    expect(revealHidden("a\u202Eb\u200Bc\u0007")).toEqual([
+      { text: "a" },
+      { code: "U+202E", kind: "bidi" },
+      { text: "b" },
+      { code: "U+200B", kind: "invisible" },
+      { text: "c" },
+      { code: "U+0007", kind: "control" },
+    ]);
+    expect(hasHidden("tab\tis fine")).toBe(false);
+    expect(hasHidden("x\u2069")).toBe(true);
   });
 });

@@ -7395,6 +7395,7 @@
             "default": false
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "OpenIn",
         "description": "What the author asks of opening (both optional): their ``depth`` in place of\nJesinia's proposal, or ``walk_everything`` to walk the rest of the change too."
@@ -8049,6 +8050,11 @@
             },
             "type": "array",
             "title": "Notes"
+          },
+          "pr_head_sha": {
+            "type": "string",
+            "title": "Pr Head Sha",
+            "description": "The PR's head on GitHub now (newer_head names it)"
           }
         },
         "type": "object",
@@ -8061,7 +8067,8 @@
           "warnings",
           "allowed_events",
           "digest",
-          "notes"
+          "notes",
+          "pr_head_sha"
         ],
         "title": "PreviewOut",
         "description": "Exactly what posting ``event`` sends; pass ``digest`` back to post it."
@@ -8583,6 +8590,30 @@
             ],
             "title": "Event",
             "description": "For EarlierReviewPosted: that review's event"
+          },
+          "draft_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Index",
+            "description": "For InvalidDraftContent: the refused draft (0-based)"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field",
+            "description": "For InvalidDraftContent: 'summary' or 'draft'"
           },
           "retry_after": {
             "anyOf": [

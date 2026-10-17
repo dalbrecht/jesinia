@@ -1876,6 +1876,11 @@ export interface components {
             digest: string;
             /** Notes */
             notes: string[];
+            /**
+             * Pr Head Sha
+             * @description The PR's head on GitHub now (newer_head names it)
+             */
+            pr_head_sha: string;
         };
         /**
          * QueueOut
@@ -2059,6 +2064,16 @@ export interface components {
              * @description For EarlierReviewPosted: that review's event
              */
             event?: ("APPROVE" | "REQUEST_CHANGES" | "COMMENT") | null;
+            /**
+             * Draft Index
+             * @description For InvalidDraftContent: the refused draft (0-based)
+             */
+            draft_index?: number | null;
+            /**
+             * Field
+             * @description For InvalidDraftContent: 'summary' or 'draft'
+             */
+            field?: string | null;
             /**
              * Retry After
              * @description For PostingStillUncertain and PostingInProgress: seconds before retrying (also the Retry-After header)

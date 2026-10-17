@@ -646,7 +646,6 @@ class _TripwireError(Exception):
 
 async def test_no_get_route_ever_calls_github(env: Env) -> None:
     env.round()
-    env.store._conn.execute("DELETE FROM pr_files")  # drafts would need GitHub's file list
     calls: list[str] = []
 
     def trip(name: str) -> _TripwireError:
@@ -668,6 +667,13 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
         if "GET" in getattr(route, "methods", set())
     ]
     assert len(gets) == 4  # queue, the PR, its drafts, settings
+    # M4: walked with the head's files cached (the PR view's diff) and without (drafts
+    # would need GitHub's file list).
+    for path in gets:
+        response = await env.client.get(path)
+        assert response.status_code == 200, path
+    assert (await env.client.get(PR)).json()["files"] is not None
+    env.store._conn.execute("DELETE FROM pr_files")
     for path in gets:
         response = await env.client.get(path)
         assert response.status_code == 200, path
@@ -773,3 +779,31 @@ async def test_open_takes_the_authors_depth_and_walk_everything(env: Env) -> Non
     await env.host.pipeline.drain()
     bad = await env.client.post(f"{PR}/open", json={"depth": "huge"}, headers=keyed())
     assert bad.status_code == 422
+
+
+async def test_open_refuses_unknown_or_lax_fields(env: Env) -> None:
+    """M5: the body is strict."""
+    for body in ({"walk_everything": "yes"}, {"walk_everything": 1}, {"depht": "deep"}):
+        bad = await env.client.post(f"{PR}/open", json=body, headers=keyed())
+        assert bad.status_code == 422, body
+
+
+async def test_preview_names_the_live_head_and_refusals_name_the_draft(env: Env) -> None:
+    """M3: the newer-head warning shows GitHub's head; M6: a refused draft is named by
+    index, not by parsing prose."""
+    env.round()
+    preview = (await env.client.post(f"{PR}/post/preview", json={"event": "COMMENT"})).json()
+    assert preview["pr_head_sha"] == env.poster.pr.head_sha
+    body = {"summary": "", "drafts": [
+        {"path": "src/app.py", "body": "fine", "line": 3, "side": "RIGHT"},
+        {"path": "src/app.py", "body": "x <!-- jesinia-posting:1 -->", "line": 3, "side": "RIGHT"},
+    ]}  # fmt: skip
+    refused = await env.client.put(f"{PR}/drafts", json=body, headers=keyed())
+    assert refused.status_code == 422 and refused.json()["error"] == "InvalidDraftContent"
+    assert refused.json()["draft_index"] == 1
+    summary = await env.client.put(
+        f"{PR}/drafts",
+        json={"summary": "<!-- jesinia-posting:2 -->", "drafts": []},
+        headers=keyed(),
+    )
+    assert summary.status_code == 422 and summary.json()["field"] == "summary"

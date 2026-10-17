@@ -5,7 +5,7 @@
 // digest: a retry of the same post reuses its key, and any edit (a new digest) gets a new one.
 import type { JesiniaClient } from "@jesinia/client";
 import { Button } from "@jesinia/design";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ActionKeys,
   errorCause,
@@ -17,8 +17,9 @@ import {
   type PostWarning,
   type ReviewEvent,
 } from "../api";
-import { lines, short } from "./model";
+import { lines, short, visibleText } from "./model";
 import s from "./pr.module.css";
+import { Visible } from "./Visible";
 
 const TITLE: Record<ReviewEvent, string> = {
   APPROVE: "Approve",
@@ -96,6 +97,35 @@ export function PostDialog(props: PostDialogProps) {
 
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
   useEffect(() => dialog.current?.focus(), []);
+
+  // Focus stays inside while the dialog is open (I5): Tab and Shift+Tab wrap around.
+  const trap = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      props.onClose();
+      return;
+    }
+    if (e.key !== "Tab" || !dialog.current) return;
+    const focusable = [
+      ...dialog.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), [tabindex="0"]',
+      ),
+    ];
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      e.preventDefault();
+      return;
+    }
+    const at = document.activeElement;
+    if (e.shiftKey && (at === first || at === dialog.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && at === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   const switchTo = (next: ReviewEvent) => {
     setFailure(null);
@@ -189,7 +219,7 @@ export function PostDialog(props: PostDialogProps) {
         ...(BLOCKING.test(preview.body) ? ["the review body"] : []),
         ...preview.comments
           .filter((c) => BLOCKING.test(c.body))
-          .map((c) => `${c.path}:${lines({ start_line: c.start_line ?? c.line, end_line: c.line })}`),
+          .map((c) => visibleText(`${c.path}:${lines({ start_line: c.start_line ?? c.line, end_line: c.line })}`)),
       ]
     : [];
 
@@ -244,7 +274,7 @@ export function PostDialog(props: PostDialogProps) {
           <div key={w} role="group" aria-labelledby={id} className={s.warning}>
             <b id={id}>There are newer commits</b>
             <span>
-              {`This review covers ${short(preview?.head_sha ?? "")}; the PR head is now ${short(props.prHead)}. The review will be posted against ${short(preview?.head_sha ?? "")}.`}
+              {`This review covers ${short(preview?.head_sha ?? "")}; the PR head is now ${short(preview?.pr_head_sha || props.prHead)}. The review will be posted against ${short(preview?.head_sha ?? "")}.`}
             </span>
             {confirmBox(w)}
             <span>
@@ -280,9 +310,7 @@ export function PostDialog(props: PostDialogProps) {
         aria-modal="true"
         aria-labelledby={heading}
         tabIndex={-1}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") props.onClose();
-        }}
+        onKeyDown={trap}
       >
         <h2 id={heading} className={s.dialogHead}>{`${TITLE[event]} ${props.prRef} on GitHub`}</h2>
         <div className={s.dialogBody}>
@@ -320,9 +348,9 @@ export function PostDialog(props: PostDialogProps) {
               </div>
               {preview.comments.map((c, i) => (
                 <div key={i} className={s.comment}>
-                  <span
-                    className={s.loc}
-                  >{`${c.path}:${lines({ start_line: c.start_line ?? c.line, end_line: c.line })}`}</span>
+                  <span className={s.loc}>
+                    <Visible text={`${c.path}:${lines({ start_line: c.start_line ?? c.line, end_line: c.line })}`} />
+                  </span>
                   <pre className={s.exact}>{c.body}</pre>
                 </div>
               ))}

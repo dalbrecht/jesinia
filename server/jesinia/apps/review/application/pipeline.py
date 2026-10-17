@@ -139,7 +139,7 @@ Clock = Callable[[], datetime]
 # The author's knowledge of a repo, from the knowledge model (plan Task 14). Trusted
 # context for the agents, so it is built from Jesinia's own records only, never PR text.
 KnowledgeSource = Callable[[str], str]
-OpenState = Literal["started", "running", "up_to_date"] | GateState
+OpenState = Literal["started", "running", "up_to_date", "failed"] | GateState
 ProgressState = Literal["started", "job_started", "job_done", "job_failed", "finished", "failed"]
 
 
@@ -318,8 +318,6 @@ class Pipeline:
         self._runners: dict[int, int] = {}
         # The jobs each round's active runners will still run, counted per runner.
         self._planned: dict[int, Counter[JobKind]] = {}
-        # The depth the author chose per round (spec §3.1), over Jesinia's proposal.
-        self._depths: dict[int, Depth] = {}
         self._opens: set[asyncio.Task[None]] = set()
 
     # --- the scheduler's runner ----------------------------------------------------------
@@ -368,11 +366,28 @@ class Pipeline:
                 couldn't load it on the last sync.
         """
         stored = self._consented(ref)
+        if depth is not None:
+            # Stored before the gate answers (M2): Review anyway later reviews at this depth.
+            self._store.choose_depth(ref, stored.pr.head_sha, depth)
         config = self._store.repo_configs().get(ref.repo)
         result = gate_for(stored, config, self._clock(), immediate=True)
         if result.state != "ready":
             return OpenResult(result.state, result.reason)
         return self._start_open(stored, depth=depth, walk_everything=walk_everything)
+
+    async def retry(self, ref: PrRef) -> OpenResult:
+        """The author's **Retry**: ``open``, but a failed round on the head is replaced by a
+        new one (opening alone never reruns it, R60).
+
+        Raises:
+            PrNotInQueueError, ReviewNotAllowedError: as ``open``.
+        """
+        stored = self._consented(ref)
+        config = self._store.repo_configs().get(ref.repo)
+        result = gate_for(stored, config, self._clock(), immediate=True)
+        if result.state != "ready":
+            return OpenResult(result.state, result.reason)
+        return self._start_open(stored, rerun_failed=True)
 
     async def review_anyway(self, ref: PrRef) -> OpenResult:
         """``open`` without the CI and automated-review gates (the author's **Review
@@ -387,7 +402,7 @@ class Pipeline:
             raise ReviewNotAllowedError(
                 f"{ref} couldn't be loaded from GitHub ({stored.fetch_error}); reload it first"
             )
-        return self._start_open(stored)
+        return self._start_open(stored, rerun_failed=True)
 
     def _consented(self, ref: PrRef) -> StoredPr:
         stored = self._store.pr(ref)
@@ -401,20 +416,31 @@ class Pipeline:
         return stored
 
     def _start_open(
-        self, stored: StoredPr, *, depth: Depth | None = None, walk_everything: bool = False
+        self,
+        stored: StoredPr,
+        *,
+        depth: Depth | None = None,
+        walk_everything: bool = False,
+        rerun_failed: bool = False,
     ) -> OpenResult:
         pr = stored.pr
         ref, head = pr.ref, pr.head_sha
         latest = self._store.latest_round_on_head(ref, head)
         reusable = latest is not None and (not latest[1].finished or latest[1].error is None)
+        if latest is not None and not reusable and not latest[1].interrupted and not rerun_failed:
+            # A look (a tab switch, a reload) never starts a new agent round: Retry does. An
+            # interrupted round isn't a failure: it is resumed (R51).
+            cause = latest[1].error or "no cause recorded"
+            return OpenResult(
+                "failed", f"the last review of this head failed: {cause}; Retry runs it again",
+                latest[0],
+            )  # fmt: skip
         if latest is not None and reusable:
             round_id, owned = latest[0], False
         else:  # an interrupted round is resumed (R51); a failed one is replaced
             round_id = resume_or_start_round(self._store, stored, self._clock())
             owned = True
         if depth is not None:
-            # Kept for the round's preparation, which would otherwise propose its own.
-            self._depths[round_id] = depth
             self._store.set_depth(ref, head, round_id, depth)
         done = self._store.artifact_kinds(round_id)
         wanted = (*TRIAGE_JOBS, *ON_OPEN_JOBS[depth or pr.depth])
@@ -566,7 +592,7 @@ class Pipeline:
             ci = None
             warnings.append(f"CI on this head couldn't be read, so it counts as missing: {exc}")
         proposed = propose_depth(pull.additions + pull.deletions, pull.changed_files, None)
-        depth = self._depths.get(round_id, proposed)
+        depth = self._store.chosen_depth(ref, head) or proposed
         index = await asyncio.to_thread(hunk_index, diff) if diff.complete else None
         round = Round(
             round_id,

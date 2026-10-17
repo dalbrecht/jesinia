@@ -46,6 +46,7 @@
   list-style: none;
 }
 .part {
+  margin: 0;
   padding: var(--jx-space-3) var(--jx-space-3) 4px;
   color: var(--jx-fg-muted);
   font-size: var(--jx-text-xs);
@@ -370,7 +371,7 @@
 }
 .line {
   display: grid;
-  grid-template-columns: 4ch 4ch minmax(0, 1fr);
+  grid-template-columns: 6ch 6ch minmax(0, 1fr);
   gap: 8px;
   padding-inline: var(--jx-space-3);
 }
@@ -725,4 +726,50 @@
   .page {
     padding: var(--jx-space-4) var(--jx-space-3);
   }
+}
+
+/* Hidden and direction-changing characters, made visible (I6). */
+.hiddenChar {
+  display: inline-block;
+  margin-inline: 1px;
+  padding: 0 3px;
+  border: 1px solid var(--jx-warn);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-warn-bg);
+  color: var(--jx-warn);
+  font-family: var(--jx-font-mono);
+  font-size: 0.85em;
+  line-height: 1.2;
+}
+.hiddenChar[data-kind="bidi"] {
+  border-color: var(--jx-danger);
+  background: var(--jx-danger-bg);
+  color: var(--jx-danger);
+}
+
+/* The outline's parts (M11) and the windowed walkthrough list (I4). */
+.partList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.windowed {
+  max-height: 60vh;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.windowed .entry {
+  height: 30px;
+  box-sizing: border-box;
+  align-items: center;
+}
+.windowed .entryLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.entryLabel {
+  min-width: 0;
 }

@@ -225,6 +225,8 @@ class PostPreview:
     allowed_events: tuple[ReviewEvent, ...]
     digest: str
     notes: tuple[str, ...] = ()
+    # The PR's head on GitHub when previewed (the newer-head warning names it, M3).
+    pr_head_sha: str = ""
 
 
 class PostingService:
@@ -408,6 +410,7 @@ class PostingService:
             allowed_events=("COMMENT",) if own_pr else REVIEW_EVENTS,
             digest=review_digest(round_id, rnd.head_sha, event, review),
             notes=tuple(notes),
+            pr_head_sha=live.head_sha,
         )
 
     def _against_evidence(self, rnd: RoundRecord) -> str | None:

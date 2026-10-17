@@ -27,6 +27,7 @@ import {
   type QueueRow,
 } from "./api";
 import { PrView } from "./pr/PrView";
+import { Visible } from "./pr/Visible";
 import { actionId, Queue, refOf, VERDICT } from "./Queue";
 import s from "./review.module.css";
 import { loadTabs, sameTab, saveTabs, type OpenTab } from "./tabs";
@@ -113,6 +114,7 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
   });
   const [active, setActive] = useState<Pr | null>(() => routeOf(window.location.pathname));
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  const [visited, setVisited] = useState<ReadonlySet<string>>(new Set());
   const failing = useRef(false);
   const [failedReads, setFailedReads] = useState(0);
 
@@ -236,6 +238,11 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
     const at = tabs.findIndex((t) => sameTab(t, tab));
     const neighbour = tabs[at + 1] ?? tabs[at - 1] ?? null;
     setTabs((prev) => prev.filter((t) => !sameTab(t, tab)));
+    setVisited((v) => {
+      const next = new Set(v);
+      next.delete(tabKey(tab));
+      return next;
+    });
     focusTab.current = tabKey(neighbour);
     // Closing the open review shows its neighbour, like a browser tab.
     if (active && sameTab(active, tab)) navigate(neighbour);
@@ -373,6 +380,9 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
 
   const syncError = queue?.sync_error ?? null;
   const activeTab = active ? (tabs.find((t) => sameTab(t, active)) ?? null) : null;
+  // R60: a review's view mounts the first time its tab is shown, then stays mounted (hidden
+  // while another tab is shown) until the tab closes: it opens once and keeps its place.
+  if (activeTab && !visited.has(tabKey(activeTab))) setVisited((v) => new Set(v).add(tabKey(activeTab)));
 
   return (
     <div className={s.workspace}>
@@ -405,7 +415,9 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
                   aria-label={verdict ? verdict.text.slice(2) : "Not reviewed yet"}
                   title={verdict ? verdict.text.slice(2) : "Not reviewed yet"}
                 />{" "}
-                <span className={s.wtabLabel}>{t.label}</span>
+                <span className={s.wtabLabel}>
+                  <Visible text={t.label} />
+                </span>
               </a>
               <button type="button" className={s.wtabClose} aria-label={`Close ${ref}`} onClick={() => closeTab(t)}>
                 ✕
@@ -449,16 +461,16 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
           </div>
         ) : null}
       </div>
-      {activeTab ? (
-        <div className={s.body}>
-          <PrView
-            key={`${activeTab.repo}#${activeTab.number}`}
-            repo={activeTab.repo}
-            number={activeTab.number}
-            refresh={reads}
-          />
-        </div>
-      ) : null}
+      {tabs
+        .filter((t) => visited.has(tabKey(t)))
+        .map((t) => {
+          const shown = activeTab !== null && sameTab(activeTab, t);
+          return (
+            <div key={tabKey(t)} className={s.body} hidden={!shown}>
+              <PrView repo={t.repo} number={t.number} refresh={reads} active={shown} />
+            </div>
+          );
+        })}
     </div>
   );
 }

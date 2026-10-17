@@ -15,8 +15,9 @@ import {
   type DraftSet,
   type DraftsUpdate,
 } from "../api";
-import { lines, type Finding } from "./model";
+import { lines, visibleText, type Finding } from "./model";
 import s from "./pr.module.css";
+import { Visible } from "./Visible";
 
 export type LocalDraft = { key: string; draft: Draft; isNew: boolean };
 type Status =
@@ -58,6 +59,19 @@ type UseDraftsArgs = {
   refresh: number;
 };
 
+/** Typing pauses this long before the drafts save on their own (R59). */
+export const AUTOSAVE_MS = 800;
+
+/**
+ * The drafts of a PR's latest round, with one serialised save queue (R59, I1, I2):
+ * - every edit bumps a revision; the queue saves until the saved revision is the latest, one
+ *   PUT at a time, so saves never race and the latest content wins;
+ * - each distinct content has its own idempotency key, reused only to retry that same content;
+ * - text typed while a save is in flight is kept (only ids and placement are taken from the
+ *   answer), and draft keys stay stable, so nobody loses a word or their cursor;
+ * - it saves after a pause in typing, on blur, when the window is hidden and on unmount, and
+ *   guards leaving the page while anything is unsaved.
+ */
 export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsArgs) {
   const keys = useRef(new ActionKeys());
   const counter = useRef(0);
@@ -68,11 +82,16 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [again, setAgain] = useState(0);
+  const [unsaved, setUnsaved] = useState(false);
   const summaryRef = useRef("");
   const itemsRef = useRef<LocalDraft[]>([]);
-  const dirty = useRef(false);
+  const revision = useRef(0);
+  const savedRevision = useRef(0);
+  const inflight = useRef<Promise<boolean> | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const nextKey = () => `d${(counter.current += 1)}`;
+  const isDirty = () => revision.current !== savedRevision.current;
   const setSummary = (text: string) => {
     summaryRef.current = text;
     setSummaryState(text);
@@ -81,21 +100,18 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
     itemsRef.current = next;
     setItemsState(next);
   };
-  const adopt = useCallback((d: DraftSet, keepLocal: LocalDraft[] = []) => {
+  const adopt = useCallback((d: DraftSet) => {
     setSet(d);
-    summaryRef.current = d.summary;
-    setSummaryState(d.summary);
-    const next = [...d.drafts.map((draft) => ({ key: nextKey(), draft, isNew: false })), ...keepLocal];
-    itemsRef.current = next;
-    setItemsState(next);
+    setSummary(d.summary);
+    setItems(d.drafts.map((draft) => ({ key: nextKey(), draft, isNew: false })));
   }, []);
 
   useEffect(() => {
-    if (!enabled || dirty.current) return;
+    if (!enabled || isDirty() || inflight.current) return;
     let current = true;
     getDrafts(client, repo, number).then(
       (d) => {
-        if (!current || dirty.current) return;
+        if (!current || isDirty() || inflight.current) return;
         adopt(d);
         setLoadError(null);
       },
@@ -108,17 +124,33 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
     };
   }, [client, repo, number, enabled, refresh, again, adopt]);
 
-  const save = useCallback(async (): Promise<boolean> => {
+  /** One PUT of the current content. */
+  const saveOnce = useCallback(async (): Promise<boolean> => {
+    const rev = revision.current;
     const kept = itemsRef.current.filter((i) => i.draft.body.trim() !== "");
-    const unsaved = itemsRef.current.filter((i) => i.draft.body.trim() === "");
     const update: DraftsUpdate = { summary: summaryRef.current, drafts: kept.map((i) => toBody(i.draft)) };
     const action = `drafts:${JSON.stringify(update)}`;
     setStatus({ kind: "saving" });
     try {
       const saved = await putDrafts(client, repo, number, keys.current.keyFor(action), update);
-      keys.current.settle(action);
-      dirty.current = false;
-      adopt(saved, unsaved);
+      // Saved: keys kept for content whose outcome was unknown are stale now (the server holds
+      // this content), so none can replay an older answer.
+      keys.current = new ActionKeys();
+      savedRevision.current = Math.max(savedRevision.current, rev);
+      setSet(saved);
+      // The answer lists the saved drafts in the order sent: they keep their keys, and take the
+      // server's ids and placement. Their text is taken only if nothing was typed meanwhile.
+      const answer = new Map(kept.map((item, i) => [item.key, saved.drafts[i]]));
+      const untouched = revision.current === rev;
+      if (untouched) setSummary(saved.summary);
+      setItems(
+        itemsRef.current.map((item) => {
+          const server = answer.get(item.key);
+          if (!server) return item;
+          const draft = untouched ? server : { ...item.draft, id: server.id ?? null, in_body: server.in_body ?? null };
+          return { ...item, draft, isNew: false };
+        }),
+      );
       setStatus({ kind: "saved" });
       return true;
     } catch (e) {
@@ -126,11 +158,11 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
       let message = `Couldn't save the drafts: ${errorCause(e)}`;
       let invalid: string | null = null;
       if (e instanceof ReviewRequestError && e.code === "InvalidDraftContent") {
-        const which = /draft (\d+)/.exec(e.message);
-        const item = which ? kept[Number(which[1]) - 1] : undefined;
-        if (item && which) {
+        const index = e.facts.draftIndex;
+        const item = index === null ? undefined : kept[index];
+        if (item && index !== null) {
           invalid = item.key;
-          message = `Draft ${which[1]} (${draftLocation(item.draft)}) can't be saved: ${errorCause(e)}`;
+          message = `Draft ${index + 1} (${draftLocation(item.draft)}) can't be saved: ${errorCause(e)}`;
         } else {
           invalid = "summary";
           message = `The summary can't be saved: ${errorCause(e)}`;
@@ -139,7 +171,57 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
       setStatus({ kind: "error", message, invalid });
       return false;
     }
-  }, [client, repo, number, adopt]);
+  }, [client, repo, number]);
+
+  /** Save until the latest content is saved, after any save already running (never two at once). */
+  const flush = useCallback((): Promise<boolean> => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    const run = async (): Promise<boolean> => {
+      while (isDirty()) {
+        if (!(await saveOnce())) return false;
+      }
+      return true;
+    };
+    const next = (inflight.current ?? Promise.resolve(true)).then(run, run);
+    inflight.current = next;
+    void next.then((ok) => {
+      if (inflight.current !== next) return;
+      inflight.current = null;
+      setUnsaved(!ok || isDirty());
+    });
+    return next;
+  }, [saveOnce]);
+
+  const edited = () => {
+    revision.current += 1;
+    setUnsaved(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => void flush(), AUTOSAVE_MS);
+  };
+
+  // Hidden (another app, a closed lid) or gone: save now. Leaving with unsaved text asks first.
+  const latestFlush = useRef(flush);
+  latestFlush.current = flush;
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden" && isDirty()) void latestFlush.current();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      if (isDirty()) void latestFlush.current();
+    };
+  }, []);
+  useEffect(() => {
+    if (!unsaved) return;
+    const guard = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ""; // older browsers ask only when it is set
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [unsaved]);
 
   return {
     set,
@@ -148,23 +230,25 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
     items,
     status,
     focusKey,
+    unsaved,
     clearFocus: () => setFocusKey(null),
     reload: () => setAgain((n) => n + 1),
     editSummary: (text: string) => {
-      dirty.current = true;
       setSummary(text);
+      edited();
     },
     editBody: (key: string, body: string) => {
-      dirty.current = true;
       setItems(itemsRef.current.map((i) => (i.key === key ? { ...i, draft: { ...i.draft, body } } : i)));
+      edited();
     },
-    /** Saves after an edit (on blur): nothing to do when nothing changed. */
-    commit: async () => (dirty.current ? save() : true),
-    save,
+    /** Saves now (on blur, before a preview): resolves once the latest content is saved. */
+    commit: flush,
+    save: flush,
     remove: async (key: string) => {
-      dirty.current = true;
       setItems(itemsRef.current.filter((i) => i.key !== key));
-      await save();
+      revision.current += 1;
+      setUnsaved(true);
+      await flush();
     },
     /** A new draft of the author's own, anchored on a finding's lines. */
     addOn: (f: Finding) => {
@@ -237,7 +321,9 @@ export function DraftsEditor({ drafts }: { drafts: DraftsState }) {
           <div key={item.key} className={s.draft}>
             <label className={s.group}>
               <span className={s.label}>
-                <span className={s.loc}>{where}</span>
+                <span className={s.loc}>
+                  <Visible text={where} />
+                </span>
                 {item.isNew ? " (new)" : null}
               </span>
               <textarea
@@ -246,7 +332,7 @@ export function DraftsEditor({ drafts }: { drafts: DraftsState }) {
                   else boxes.current.delete(item.key);
                 }}
                 className={s.textarea}
-                aria-label={`Comment on ${where}${item.isNew ? " (new)" : ""}`}
+                aria-label={`Comment on ${visibleText(where)}${item.isNew ? " (new)" : ""}`}
                 aria-invalid={invalid === item.key || undefined}
                 value={item.draft.body}
                 onChange={(e) => drafts.editBody(item.key, e.target.value)}
@@ -268,7 +354,7 @@ export function DraftsEditor({ drafts }: { drafts: DraftsState }) {
               <Button
                 size="sm"
                 variant="ghost"
-                aria-label={`Delete comment on ${where}`}
+                aria-label={`Delete comment on ${visibleText(where)}`}
                 onClick={() => void drafts.remove(item.key)}
               >
                 Delete

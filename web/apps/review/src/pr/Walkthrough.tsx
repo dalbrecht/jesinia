@@ -4,14 +4,17 @@
 // The diff is PR content: every line is a monospace <pre> of text, never HTML.
 import { Button } from "@jesinia/design";
 import { SafeMarkdown } from "@jesinia/shell";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { PrFile } from "../api";
 import { FindingCard } from "./Findings";
 import {
   coverageLine,
   fileOf,
-  parsePatch,
+  hasHidden,
+  hunkHasHidden,
+  hunksOf,
   REASONS,
+  visibleText,
   type DiffLine,
   type Finding,
   type Hunk,
@@ -19,16 +22,48 @@ import {
   type WalkCoverage,
 } from "./model";
 import s from "./pr.module.css";
+import { HiddenBadge, Visible } from "./Visible";
 
 export type DiffLayout = "unified" | "split";
 
+/** A big hunk shows this many lines at first (I4); the rest on request. */
+export const LINES_SHOWN = 400;
+
 const sign = (line: DiffLine) => (line.kind === " " ? " " : line.kind);
+const lineText = (line: DiffLine) => <Visible text={`${sign(line)}${line.text}`} />;
+
+/** "Show 1,200 more lines": a big hunk renders in pieces, so a huge diff never freezes the tab. */
+function useShown(total: number): [number, ReactNode] {
+  const [shown, setShown] = useState(LINES_SHOWN);
+  const more =
+    total > shown ? (
+      <Button size="sm" variant="ghost" onClick={() => setShown((n) => n + 4 * LINES_SHOWN)}>
+        {`Show ${(total - shown).toLocaleString()} more lines`}
+      </Button>
+    ) : null;
+  return [shown, more];
+}
+
+function HunkHead({ hunk }: { hunk: Hunk }) {
+  return (
+    <pre className={s.hunkHead}>
+      <Visible text={hunk.header} />
+      {hunkHasHidden(hunk) ? (
+        <>
+          {" "}
+          <HiddenBadge />
+        </>
+      ) : null}
+    </pre>
+  );
+}
 
 function UnifiedHunk({ hunk }: { hunk: Hunk }) {
+  const [shown, more] = useShown(hunk.lines.length);
   return (
     <>
-      <pre className={s.hunkHead}>{hunk.header}</pre>
-      {hunk.lines.map((line, i) => (
+      <HunkHead hunk={hunk} />
+      {hunk.lines.slice(0, shown).map((line, i) => (
         <div key={i} className={s.line} data-kind={line.kind}>
           <span className={s.ln} aria-hidden="true">
             {line.old ?? ""}
@@ -36,9 +71,10 @@ function UnifiedHunk({ hunk }: { hunk: Hunk }) {
           <span className={s.ln} aria-hidden="true">
             {line.new ?? ""}
           </span>
-          <pre>{`${sign(line)}${line.text}`}</pre>
+          <pre>{lineText(line)}</pre>
         </div>
       ))}
+      {more ? <div className={s.empty}>{more}</div> : null}
     </>
   );
 }
@@ -68,7 +104,32 @@ export function pairLines(lines: DiffLine[]): Pair[] {
 }
 
 function Cell({ line }: { line: DiffLine | null }) {
-  return <td data-kind={line?.kind}>{line ? <pre>{`${sign(line)}${line.text}`}</pre> : null}</td>;
+  return <td data-kind={line?.kind}>{line ? <pre>{lineText(line)}</pre> : null}</td>;
+}
+
+function SplitHunk({ hunk, label, current }: { hunk: Hunk; label: string; current: boolean }) {
+  const pairs = useMemo(() => pairLines(hunk.lines), [hunk]);
+  const [shown, more] = useShown(pairs.length);
+  return (
+    <tbody role="group" aria-label={label} className={s.hunk} data-current={current || undefined}>
+      <tr>
+        <td colSpan={2}>
+          <HunkHead hunk={hunk} />
+        </td>
+      </tr>
+      {pairs.slice(0, shown).map((pair, i) => (
+        <tr key={i}>
+          <Cell line={pair.left} />
+          <Cell line={pair.right} />
+        </tr>
+      ))}
+      {more ? (
+        <tr>
+          <td colSpan={2}>{more}</td>
+        </tr>
+      ) : null}
+    </tbody>
+  );
 }
 
 type FileDiffProps = {
@@ -80,11 +141,15 @@ type FileDiffProps = {
 };
 
 export function FileDiff({ file, only, current = [], layout }: FileDiffProps) {
-  const hunks = file.patch ? parsePatch(file.patch) : [];
+  const hunks = file.patch ? hunksOf(file.patch) : [];
   const shown = hunks.map((hunk, index) => ({ hunk, index })).filter(({ index }) => !only || only.includes(index));
+  const hidden = hasHidden(file.path) || shown.some(({ hunk }) => hunkHasHidden(hunk));
   const head = (
     <div className={s.fileHead}>
-      <span>{file.path}</span>
+      <span>
+        <Visible text={file.path} />
+      </span>
+      {hidden ? <HiddenBadge /> : null}
       <span>
         <span className={s.plus}>{`+${file.additions}`}</span> <span className={s.minus}>{`−${file.deletions}`}</span>
       </span>
@@ -100,7 +165,8 @@ export function FileDiff({ file, only, current = [], layout }: FileDiffProps) {
       </div>
     );
   }
-  const label = (index: number) => `${file.path} hunk ${index + 1}${current.includes(index) ? " (this step)" : ""}`;
+  const label = (index: number) =>
+    `${visibleText(file.path)} hunk ${index + 1}${current.includes(index) ? " (this step)" : ""}`;
   if (layout === "split") {
     return (
       <div>
@@ -113,25 +179,7 @@ export function FileDiff({ file, only, current = [], layout }: FileDiffProps) {
             </tr>
           </thead>
           {shown.map(({ hunk, index }) => (
-            <tbody
-              key={index}
-              role="group"
-              aria-label={label(index)}
-              className={s.hunk}
-              data-current={current.includes(index) || undefined}
-            >
-              <tr>
-                <td colSpan={2}>
-                  <pre className={s.hunkHead}>{hunk.header}</pre>
-                </td>
-              </tr>
-              {pairLines(hunk.lines).map((pair, i) => (
-                <tr key={i}>
-                  <Cell line={pair.left} />
-                  <Cell line={pair.right} />
-                </tr>
-              ))}
-            </tbody>
+            <SplitHunk key={index} hunk={hunk} label={label(index)} current={current.includes(index)} />
           ))}
         </table>
       </div>
@@ -155,6 +203,25 @@ export function FileDiff({ file, only, current = [], layout }: FileDiffProps) {
   );
 }
 
+/** A file of a step: the step's hunks, and the file's other hunks behind a toggle (I4). */
+function StepFile({ file, current, layout }: { file: PrFile; current: number[]; layout: DiffLayout }) {
+  const [all, setAll] = useState(false);
+  const total = file.patch ? hunksOf(file.patch).length : 0;
+  const others = total - current.length;
+  return (
+    <>
+      <FileDiff file={file} only={all ? undefined : current} current={current} layout={layout} />
+      {others > 0 ? (
+        <div className={s.empty}>
+          <Button size="sm" variant="ghost" onClick={() => setAll((a) => !a)}>
+            {all ? "Show only this step's hunks" : `Show the file's ${others} other ${others === 1 ? "hunk" : "hunks"}`}
+          </Button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 const NO_DIFF =
   "The diff isn't cached yet: GitHub's file list for this head hasn't been read. It shows here once the review has read it.";
 
@@ -165,9 +232,11 @@ type StepPageProps = {
   findings: Finding[];
   files: PrFile[] | null;
   layout: DiffLayout;
+  /** Drafts a comment on a finding (M8); absent while there is no round to draft on. */
+  onDraft?: ((finding: Finding) => void) | undefined;
 };
 
-export function StepPage({ step, index, total, findings, files, layout }: StepPageProps) {
+export function StepPage({ step, index, total, findings, files, layout, onDraft }: StepPageProps) {
   const diff = useRef<HTMLElement>(null);
   const paths = [...new Set(step.hunks.map((h) => h.path))];
   // The step's first hunk comes into view within the diff (highlighted among its file's other
@@ -181,12 +250,14 @@ export function StepPage({ step, index, total, findings, files, layout }: StepPa
     <div className={s.step}>
       <article className={s.narrative} aria-label={step.title}>
         <p className={s.context}>{`Step ${index + 1} of ${total}`}</p>
-        <h2>{step.title}</h2>
+        <h2>
+          <Visible text={step.title} />
+        </h2>
         <div className={s.prose}>
           <SafeMarkdown markdown={step.body} />
         </div>
         {findings.map((f, i) => (
-          <FindingCard key={i} finding={f} showGroup />
+          <FindingCard key={i} finding={f} showGroup onDraft={onDraft ? () => onDraft(f) : undefined} />
         ))}
       </article>
       <section ref={diff} className={s.diff} role="region" aria-label="Diff for this step">
@@ -196,9 +267,11 @@ export function StepPage({ step, index, total, findings, files, layout }: StepPa
               const file = fileOf(files, path);
               const current = step.hunks.filter((h) => h.path === path).map((h) => h.hunk);
               return file ? (
-                <FileDiff key={path} file={file} current={current} layout={layout} />
+                <StepFile key={path} file={file} current={current} layout={layout} />
               ) : (
-                <p key={path} className={s.empty}>{`GitHub's file list has no ${path}.`}</p>
+                <p key={path} className={s.empty}>
+                  GitHub's file list has no <Visible text={path} />.
+                </p>
               );
             })
           : null}
@@ -255,7 +328,9 @@ export function NotWalked({
             return (
               <li key={i}>
                 <div className={s.skipRow}>
-                  <code>{skip.path}</code>
+                  <code>
+                    <Visible text={skip.path} />
+                  </code>
                   {skip.hunk !== null ? <span className={s.muted}>{`hunk ${skip.hunk + 1}`}</span> : null}
                   <span className={s.muted}>{REASONS[skip.reason] ?? skip.reason}</span>
                   <Button size="sm" variant="ghost" aria-expanded={shown} onClick={() => toggle(i)}>
@@ -267,7 +342,15 @@ export function NotWalked({
                     {file ? (
                       <FileDiff file={file} only={skip.hunk === null ? undefined : [skip.hunk]} layout={layout} />
                     ) : (
-                      <p className={s.empty}>{files === null ? NO_DIFF : `GitHub's file list has no ${skip.path}.`}</p>
+                      <p className={s.empty}>
+                        {files === null ? (
+                          NO_DIFF
+                        ) : (
+                          <>
+                            GitHub's file list has no <Visible text={skip.path} />.
+                          </>
+                        )}
+                      </p>
                     )}
                   </div>
                 ) : null}

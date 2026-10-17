@@ -6,9 +6,9 @@
 // comes from the cache (`GET /prs/…`); opening the tab asks the server to start what the round
 // lacks (`POST /open`), never to load the PR again (M4).
 import type { JesiniaClient } from "@jesinia/client";
-import { Badge, Button, useToast, VisuallyHidden } from "@jesinia/design";
+import { Badge, Button, useToast } from "@jesinia/design";
 import { ChatRail, useClient, type Runners } from "@jesinia/shell";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActionKeys,
   errorCause,
@@ -30,13 +30,14 @@ import { Findings } from "./Findings";
 import { Metrics } from "./Metrics";
 import {
   coverageLine,
-  findingsInStep,
+  findingsByStep,
   outlineOf,
   pending,
   readArtifacts,
   type Artifacts,
   type Depth,
   type Entry,
+  type Finding,
 } from "./model";
 import { Overview } from "./Overview";
 import { PostDialog } from "./Posting";
@@ -44,6 +45,8 @@ import s from "./pr.module.css";
 import { Quick } from "./Quick";
 import { Quiz } from "./Quiz";
 import { Recommendation, verdictWords } from "./Recommendation";
+import { Outline } from "./Outline";
+import { Visible } from "./Visible";
 import { NotWalked, StepPage, type DiffLayout } from "./Walkthrough";
 
 export type PrViewProps = {
@@ -51,6 +54,11 @@ export type PrViewProps = {
   number: number;
   /** Changes whenever the queue was read again (a review's progress): the view is read again. */
   refresh: number;
+  /**
+   * Whether this tab is the one shown. Every opened tab stays mounted (R60): an inactive one
+   * keeps its page and state, and reads the cache again only once it is shown.
+   */
+  active?: boolean;
 };
 
 const GATES_ANYWAY = new Set(["ci_failing", "waiting_ci", "waiting_auto_review"]);
@@ -58,6 +66,12 @@ const READ_KEY = "jesinia.review.read.";
 
 function loadRead(key: string): Set<string> {
   try {
+    // Ticks of the PR's other rounds are dead weight (M14): prune them.
+    const prefix = READ_KEY + key.slice(0, key.lastIndexOf("@") + 1);
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const name = localStorage.key(i);
+      if (name?.startsWith(prefix) && name !== READ_KEY + key) localStorage.removeItem(name);
+    }
     const raw: unknown = JSON.parse(localStorage.getItem(READ_KEY + key) ?? "[]");
     return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : []);
   } catch {
@@ -74,7 +88,7 @@ function saveRead(key: string, read: ReadonlySet<string>): void {
 }
 
 /** What opening (or Review anyway, Retry) said, in words, with the next step it offers. */
-type Notice = { text: string; anyway: boolean; tone: "info" | "problem"; retryOpen?: boolean };
+type Notice = { text: string; anyway: boolean; tone: "info" | "problem"; retryOpen?: boolean; retry?: boolean };
 
 function noticeOf(result: OpenResult): Notice | null {
   if (result.state === "up_to_date") return null;
@@ -86,6 +100,8 @@ function noticeOf(result: OpenResult): Notice | null {
       tone: "info",
     };
   }
+  // A failed round reruns only when the author asks (R60).
+  if (result.state === "failed") return { text: result.reason, anyway: false, tone: "problem", retry: true };
   if (result.state === "running")
     return { text: "This head is being reviewed: pages fill in as they finish.", anyway: false, tone: "info" };
   return { text: result.reason, anyway: GATES_ANYWAY.has(result.state), tone: "problem" };
@@ -120,7 +136,7 @@ async function startChat(client: JesiniaClient, view: PrViewData, a: Artifacts, 
   return id;
 }
 
-export function PrView({ repo, number, refresh }: PrViewProps) {
+export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   const client = useClient();
   const toast = useToast();
   const keys = useRef(new ActionKeys());
@@ -139,9 +155,13 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
   const [runners, setRunners] = useState<Runners | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const focusPage = useRef(false);
+  const outlineId = useId();
 
   const reread = () => setReads((n) => n + 1);
   useEffect(() => {
+    if (!active) return;
     let current = true;
     getPr(client, repo, number).then(
       (v) => {
@@ -156,7 +176,7 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
     return () => {
       current = false;
     };
-  }, [client, repo, number, refresh, reads]);
+  }, [client, repo, number, refresh, reads, active]);
 
   /** Runs a keyed write for `action`: a retry while its outcome is unknown reuses its key. */
   const keyed = useCallback(async <T,>(action: string, work: (key: string) => Promise<T>): Promise<T> => {
@@ -202,11 +222,32 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
   const artifacts = useMemo(() => (shown ? readArtifacts(shown) : null), [shown]);
   const drafts = useDrafts({ client, repo, number, enabled: shown?.round != null, refresh: refresh + reads });
   const readKey = `${repo}#${number}@${shown?.round?.id ?? "none"}`;
+  const draftCount = drafts.set ? drafts.items.length : null;
+  const chosen: Depth | null = shown ? (depth ?? shown.round?.depth ?? shown.pr.depth) : null;
+  // The outline is built once per view and depth (I4), not on every keystroke or render.
+  const entries = useMemo(
+    () => (shown && artifacts && chosen ? outlineOf(chosen, artifacts, shown.files, draftCount) : []),
+    [shown, artifacts, chosen, draftCount],
+  );
+  const perStep = useMemo(
+    () => (shown && artifacts ? findingsByStep(artifacts.steps ?? [], artifacts.findings ?? [], shown.files) : []),
+    [shown, artifacts],
+  );
   const [read, setRead] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => setRead(loadRead(readKey)), [readKey]);
 
-  // ⌘J opens and closes the chat.
+  // Navigating moves focus to the new page's heading (M11), unless something else asked for it.
   useEffect(() => {
+    if (!focusPage.current) return;
+    focusPage.current = false;
+    const heading = scroll.current?.querySelector<HTMLElement>("h2");
+    heading?.setAttribute("tabindex", "-1");
+    heading?.focus({ preventScroll: true });
+  });
+
+  // ⌘J opens and closes the chat (in the tab shown).
+  useEffect(() => {
+    if (!active) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
         e.preventDefault();
@@ -215,7 +256,7 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [active]);
   useEffect(() => {
     if (!chatOpen || runners !== null) return;
     client.GET("/api/agents/runners").then(
@@ -243,9 +284,6 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
 
   const { pr, round } = shown;
   const own = pr.author_kind === "you";
-  const chosen: Depth = depth ?? round?.depth ?? pr.depth;
-  const draftCount = drafts.set ? drafts.items.length : null;
-  const entries = outlineOf(chosen, artifacts, shown.files, draftCount);
   const at = Math.max(
     0,
     entries.findIndex((e) => e.id === entryId),
@@ -258,11 +296,12 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
   const github = safeHttpUrl(pr.url);
   const posted = round?.posted_review_url ? safeHttpUrl(round.posted_review_url) : null;
   const step = entry.kind === "step" && entry.step !== undefined ? artifacts.steps?.[entry.step] : undefined;
-  const stepFindings = step ? findingsInStep(step, artifacts.findings ?? [], shown.files) : [];
+  const stepFindings = step && entry.step !== undefined ? (perStep[entry.step] ?? []) : [];
   const readCount = entries.filter((e) => read.has(e.id)).length;
   const walkLine = coverageLine(artifacts.walk, artifacts.nothingToWalk);
 
-  const goTo = (id: string) => {
+  const goTo = (id: string, focus = true) => {
+    focusPage.current = focus;
     setEntryId(id);
     setOutlineOpen(false);
     scroll.current?.scrollTo?.({ top: 0 });
@@ -355,14 +394,29 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
   };
 
   const commentsId = entries.some((e) => e.kind === "comments") ? "comments" : "recommendation";
-  const draftOnFinding = () => {
-    const finding = stepFindings[0];
+  const draftOn = (finding: Finding | undefined) => {
     if (!finding) return;
     drafts.addOn(finding);
-    goTo(commentsId);
+    goTo(commentsId, false); // the new draft takes focus
   };
+  // Preview only what is saved (R59): the save queue drains first, and a failed save says why.
   const startPost = (event: ReviewEvent) => {
-    void drafts.commit().then(() => setPosting(event));
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    void drafts.commit().then((ok) => {
+      if (ok) setPosting(event);
+      else
+        toast.show({
+          tone: "danger",
+          message: "Nothing was previewed: the drafts couldn't be saved (see Your comments).",
+        });
+    });
+  };
+  const closePosting = () => {
+    setPosting(null);
+    reread(); // M12: a post that landed (or an earlier one found) shows at once
+    const back = opener.current;
+    opener.current = null;
+    setTimeout(() => back?.focus(), 0);
   };
 
   const pendingPage = (label: string): ReactNode => {
@@ -405,6 +459,7 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
             findings={stepFindings}
             files={shown.files ?? null}
             layout={layout}
+            onDraft={round ? draftOn : undefined}
           />
         );
       case "notwalked":
@@ -454,55 +509,24 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
     }
   };
 
-  let lastPart = "";
   return (
     <section className={s.book} data-chat={chatOpen ? "open" : undefined} aria-label={refOf(pr)}>
-      <nav className={s.outline} aria-label="Review outline" data-open={outlineOpen || undefined}>
+      <nav
+        id={outlineId}
+        className={s.outline}
+        aria-label="Review outline"
+        data-open={outlineOpen || undefined}
+        inert={posting !== null || undefined}
+      >
         <div className={s.outlineHead}>
-          <h1 className={s.title}>{pr.title}</h1>
+          <h1 className={s.title}>
+            <Visible text={pr.title} />
+          </h1>
           <p className={s.meta}>
             {`${refOf(pr)} · ${pr.author} · ${pr.size_lines} lines · ${pr.files} files · CI ${pr.ci_state}`}
           </p>
         </div>
-        <ol className={s.entries}>
-          {entries.flatMap((e) => {
-            const items: ReactNode[] = [];
-            if (e.part !== lastPart) {
-              lastPart = e.part;
-              items.push(
-                <li key={`part-${e.part}`} className={s.part}>
-                  {e.part}
-                </li>,
-              );
-            }
-            const isRead = read.has(e.id);
-            const isCurrent = e.id === entry.id;
-            items.push(
-              <li key={e.id}>
-                <a
-                  href={`#${e.id}`}
-                  className={s.entry}
-                  data-sub={e.kind === "step" || e.id === "notwalked" || undefined}
-                  aria-current={isCurrent ? "step" : undefined}
-                  onClick={(ev) => {
-                    ev.preventDefault();
-                    goTo(e.id);
-                  }}
-                >
-                  <span className={s.tick} data-read={isRead || undefined} aria-hidden="true">
-                    {isRead ? "✓" : isCurrent ? "●" : "○"}
-                  </span>
-                  <span>{e.label}</span>
-                  <span className={s.note} data-bad={e.bad || undefined}>
-                    {e.note ? ` ${e.note}` : ""}
-                  </span>
-                  {isRead ? <VisuallyHidden> (read)</VisuallyHidden> : null}
-                </a>
-              </li>,
-            );
-            return items;
-          })}
-        </ol>
+        <Outline entries={entries} current={entry.id} read={read} onGo={goTo} />
         <div className={s.progress}>
           <span>{`Read ${readCount} of ${entries.length} · ${Math.round((readCount / entries.length) * 100)}%`}</span>
           <span className={s.meter} aria-hidden="true">
@@ -510,10 +534,11 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
           </span>
         </div>
       </nav>
-      <section className={s.view} aria-label="Page">
-        <div className={s.toolbar} role="toolbar" aria-label="Review tools">
+      <section className={s.view} aria-label="Page" inert={posting !== null || undefined}>
+        <div className={s.toolbar} role="group" aria-label="Review tools">
           <Button
             className={s.contents}
+            aria-controls={outlineId}
             size="sm"
             variant="ghost"
             aria-expanded={outlineOpen}
@@ -587,6 +612,11 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
                   Review anyway
                 </Button>
               ) : null}
+              {notice.retry ? (
+                <Button size="sm" variant="secondary" onClick={retry}>
+                  Retry
+                </Button>
+              ) : null}
               {notice.retryOpen ? (
                 <Button size="sm" variant="secondary" onClick={retryOpen}>
                   Try again
@@ -611,7 +641,7 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
           ) : null}
           <span className={s.spacer}>
             {stepFindings.length && round ? (
-              <Button size="sm" variant="ghost" onClick={draftOnFinding}>
+              <Button size="sm" variant="ghost" onClick={() => draftOn(stepFindings[0])}>
                 Draft comment on this finding
               </Button>
             ) : null}
@@ -671,18 +701,17 @@ export function PrView({ repo, number, refresh }: PrViewProps) {
           reasons={artifacts.verdict?.reasons ?? []}
           prHead={pr.head_sha}
           keys={keys.current}
-          onClose={() => setPosting(null)}
+          onClose={closePosting}
           onPosted={(url) => {
-            setPosting(null);
+            closePosting();
             toast.show({ tone: "success", message: `Posted to GitHub: ${url}` });
-            reread();
           }}
           onEditDrafts={() => {
             setPosting(null);
             goTo(commentsId);
           }}
           onReviewNewCommits={() => {
-            setPosting(null);
+            closePosting();
             retryOpen();
           }}
         />

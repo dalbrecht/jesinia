@@ -152,12 +152,15 @@ def _status_of(exc: Exception) -> int:
 def _error(exc: Exception) -> JSONResponse:
     warnings = list(exc.warnings) if isinstance(exc, NeedsConfirmation) else None
     earlier = exc if isinstance(exc, EarlierReviewPosted) else None
+    refused = exc if isinstance(exc, InvalidDraftContent) else None
     body = ReviewErrorOut(
         error=type(exc).__name__,
         detail=str(exc),
         warnings=warnings,
         review_url=None if earlier is None else earlier.url,
         event=None if earlier is None else earlier.event,
+        field=None if refused is None else refused.field,
+        draft_index=None if refused is None else refused.draft_index,
         # Transient: the Retry-After header also keeps idempotency from replaying it (R50).
         retry_after=exc.retry_after
         if isinstance(exc, PostingStillUncertain | PostingInProgress)
@@ -297,7 +300,7 @@ def build_router(host: ReviewHost) -> APIRouter:
         owner: Owner, repo: Name, number: Number, idem: IdempotentCall = keyed
     ) -> Response:
         """Run again what failed: a failed round gets a new one, failed jobs run again."""
-        return await _open(idem, lambda ref: host.pipeline.open(ref), owner, repo, number)
+        return await _open(idem, lambda ref: host.pipeline.retry(ref), owner, repo, number)
 
     @r.post(f"{pr_path}/review-anyway", response_model=OpenOut, responses=open_responses)
     async def review_anyway(

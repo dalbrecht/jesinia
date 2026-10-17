@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import cast
 
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 
 from jesinia.apps.review.application.pipeline import OpenResult
 from jesinia.apps.review.application.posting import DraftSet, PostPreview
@@ -252,8 +252,10 @@ class OpenIn(BaseModel):
     """What the author asks of opening (both optional): their ``depth`` in place of
     Jesinia's proposal, or ``walk_everything`` to walk the rest of the change too."""
 
+    model_config = ConfigDict(extra="forbid")
+
     depth: Depth | None = None
-    walk_everything: bool = False
+    walk_everything: StrictBool = False
 
 
 class OpenOut(BaseModel):
@@ -393,6 +395,7 @@ class PreviewOut(BaseModel):
     allowed_events: list[ReviewEvent]
     digest: str
     notes: list[str]
+    pr_head_sha: str = Field(description="The PR's head on GitHub now (newer_head names it)")
 
     @classmethod
     def of(cls, preview: PostPreview) -> PreviewOut:
@@ -406,6 +409,7 @@ class PreviewOut(BaseModel):
             allowed_events=list(preview.allowed_events),
             digest=preview.digest,
             notes=list(preview.notes),
+            pr_head_sha=preview.pr_head_sha,
         )
 
 
@@ -478,6 +482,12 @@ class ReviewErrorOut(BaseModel):
     )
     event: ReviewEvent | None = Field(
         default=None, description="For EarlierReviewPosted: that review's event"
+    )
+    draft_index: int | None = Field(
+        default=None, description="For InvalidDraftContent: the refused draft (0-based)"
+    )
+    field: str | None = Field(
+        default=None, description="For InvalidDraftContent: 'summary' or 'draft'"
     )
     retry_after: int | None = Field(
         default=None,

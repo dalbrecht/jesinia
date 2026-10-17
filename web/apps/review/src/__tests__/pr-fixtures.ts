@@ -259,6 +259,7 @@ export function preview(over: Partial<Preview> = {}): Preview {
     allowed_events: ["APPROVE", "REQUEST_CHANGES", "COMMENT"],
     digest: "digest-1",
     notes: [],
+    pr_head_sha: HEAD,
     ...over,
   };
 }

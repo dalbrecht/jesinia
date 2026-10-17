@@ -127,7 +127,12 @@ describe("drafts", () => {
     setup(reviewed(), {
       [`PUT ${API}/drafts`]: () =>
         Response.json(
-          { error: "InvalidDraftContent", detail: "draft 1 contains Jesinia's posting marker text; remove it" },
+          {
+            error: "InvalidDraftContent",
+            detail: "draft 1 contains Jesinia's posting marker text; remove it",
+            field: "draft",
+            draft_index: 0,
+          },
           { status: 422 },
         ),
     });
@@ -205,7 +210,8 @@ describe("posting", () => {
   it("warns of newer commits, with Review the new commits first", async () => {
     const view = reviewed({ stale: true }, { head_sha: NEWER });
     const { calls } = setup(view, {
-      [`POST ${API}/post/preview`]: () => Response.json(preview({ event: "COMMENT", warnings: ["newer_head"] })),
+      [`POST ${API}/post/preview`]: () =>
+        Response.json(preview({ event: "COMMENT", pr_head_sha: NEWER, warnings: ["newer_head"] })),
     });
     await ready();
     await userEvent.click(within(actions()).getByRole("button", { name: "Comment…" }));

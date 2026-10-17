@@ -822,9 +822,14 @@ async def test_a_failed_open_finishes_its_round_with_the_cause(env: Env) -> None
     assert status[1].error is not None and "Not Found" in status[1].error
     stored = env.store.pr(ref)
     assert stored is not None and stored.state == "failed"
-    # A failed round is retried by opening again: a new round.
+    # R60: opening again (a tab switch, a reload) never reruns it; only Retry does.
     env.github.error = None
-    retry = await env.pipeline.open(ref)
+    again = await env.pipeline.open(ref)
+    assert again.state == "failed" and again.jobs == () and again.round_id == result.round_id
+    assert "Not Found" in again.reason and "Retry" in again.reason
+    await env.pipeline.drain()
+    assert env.store.latest_round_on_head(ref, HEAD) == status
+    retry = await env.pipeline.retry(ref)
     assert retry.state == "started" and retry.round_id != result.round_id
     await env.pipeline.drain()
 
@@ -1348,3 +1353,39 @@ async def test_walk_everything_runs_the_walkthrough_again_for_every_hunk(env: En
     )  # the lockfile stays out
     # A plain open afterwards has nothing to run, and never walks everything again.
     assert (await env.pipeline.open(ref)).state == "up_to_date"
+
+
+async def test_a_chosen_depth_is_stored_and_survives_a_restart(env: Env) -> None:
+    """R57: the author's depth lives in review.sqlite, not in the process."""
+    ref = env.add()
+    await env.pipeline.open(ref, depth="deep")
+    await env.pipeline.drain()
+    assert env.store.chosen_depth(ref, HEAD) == "deep"
+    restarted = Pipeline(
+        github=env.github,
+        files=env.files,
+        workspace=env.workspace,
+        jobs=env.jobs,
+        store=env.store,
+        bus=EventBus(),
+        clock=env.clock,
+    )
+    result = await restarted.open(ref, walk_everything=True)
+    assert result.state == "started"
+    await restarted.drain()
+    assert env.jobs.rounds[-1].depth == "deep"  # prepared again at the author's depth
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.pr.depth == "deep"
+
+
+async def test_a_depth_chosen_while_a_gate_holds_the_pr_is_kept(env: Env) -> None:
+    """M2: the choice is stored before the gate answers, and Review anyway uses it."""
+    ref = env.add(ci="failing")
+    held = await env.pipeline.open(ref, depth="deep")
+    assert held.state == "ci_failing"
+    assert env.store.chosen_depth(ref, HEAD) == "deep"
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.pr.depth == "deep"
+    anyway = await env.pipeline.review_anyway(ref)
+    assert set(ON_OPEN_JOBS["deep"]) <= set(anyway.jobs)
+    await env.pipeline.drain()

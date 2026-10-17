@@ -124,18 +124,27 @@ function dedupe(findings: Finding[]): Finding[] {
 // --- diffs ----------------------------------------------------------------------------------
 
 export type DiffLine = { kind: "+" | "-" | " " | "\\"; text: string; old: number | null; new: number | null };
-export type Hunk = { header: string; oldStart: number; newStart: number; newEnd: number; lines: DiffLine[] };
+export type Hunk = {
+  header: string;
+  oldStart: number;
+  oldEnd: number;
+  newStart: number;
+  newEnd: number;
+  lines: DiffLine[];
+};
 
 /** A hunk header's numbers ("@@ -10,3 +13,4 @@ …"), read without a backtracking regex. */
-function readHeader(raw: string): { oldStart: number; newStart: number; newCount: number } | null {
+function readHeader(raw: string): { oldStart: number; oldCount: number; newStart: number; newCount: number } | null {
   if (!raw.startsWith("@@ -")) return null;
   const end = raw.indexOf(" @@", 4);
   const [before, after] = (end < 0 ? "" : raw.slice(4, end)).split(" +");
   if (before === undefined || after === undefined) return null;
-  const [oldStart, newStart, newCount] = [before.split(",")[0], ...after.split(",")].map(Number);
+  const [oldStart, oldCount] = before.split(",").map(Number);
+  const [newStart, newCount] = after.split(",").map(Number);
   if (!Number.isInteger(oldStart) || !Number.isInteger(newStart)) return null;
   return {
     oldStart: oldStart as number,
+    oldCount: Number.isInteger(oldCount) ? (oldCount as number) : 1,
     newStart: newStart as number,
     newCount: Number.isInteger(newCount) ? (newCount as number) : 1,
   };
@@ -156,6 +165,7 @@ export function parsePatch(patch: string): Hunk[] {
       current = {
         header: raw,
         oldStart: oldLine,
+        oldEnd: oldLine + Math.max(h.oldCount, 1) - 1,
         newStart: newLine,
         newEnd: newLine + Math.max(count, 1) - 1,
         lines: [],
@@ -174,20 +184,133 @@ export function parsePatch(patch: string): Hunk[] {
   return hunks;
 }
 
-export function fileOf(files: PrFile[] | null | undefined, path: string): PrFile | null {
-  return files?.find((f) => f.path === path) ?? null;
+// Parsed once per patch (I4): a patch's hunks are the same whoever asks, and a big PR's
+// outline, steps and diffs ask often. Bounded so a long session doesn't keep every patch.
+const PARSED = new Map<string, Hunk[]>();
+const PARSED_MAX = 500;
+
+/** `parsePatch`, memoised by the patch's text. */
+export function hunksOf(patch: string): Hunk[] {
+  let hunks = PARSED.get(patch);
+  if (!hunks) {
+    hunks = parsePatch(patch);
+    if (PARSED.size >= PARSED_MAX) PARSED.delete(PARSED.keys().next().value as string);
+    PARSED.set(patch, hunks);
+  }
+  return hunks;
 }
+
+const INDEXES = new WeakMap<PrFile[], Map<string, PrFile>>();
+
+/** A file by its path, through an index built once per file list. */
+export function fileOf(files: PrFile[] | null | undefined, path: string): PrFile | null {
+  if (!files) return null;
+  let index = INDEXES.get(files);
+  if (!index) {
+    index = new Map(files.map((f) => [f.path, f]));
+    INDEXES.set(files, index);
+  }
+  return index.get(path) ?? null;
+}
+
+/**
+ * Each step's findings, in one pass (I4): every finding is placed on the hunks of its file whose
+ * lines it overlaps (new lines; old lines on a removed file, M9), then each step gathers its hunks'.
+ */
+export function findingsByStep(steps: Step[], findings: Finding[], files: PrFile[] | null | undefined): Finding[][] {
+  const byHunk = new Map<string, Finding[]>();
+  for (const f of findings) {
+    const file = fileOf(files, f.path);
+    if (!file?.patch) continue;
+    const removed = file.status === "removed";
+    hunksOf(file.patch).forEach((h, i) => {
+      const [start, end] = removed ? [h.oldStart, h.oldEnd] : [h.newStart, h.newEnd];
+      if (f.start_line > end || f.end_line < start) return;
+      const key = `${f.path}\u0000${i}`;
+      byHunk.set(key, [...(byHunk.get(key) ?? []), f]);
+    });
+  }
+  return steps.map((step) => {
+    const mine = new Set<Finding>();
+    for (const ref of step.hunks) for (const f of byHunk.get(`${ref.path}\u0000${ref.hunk}`) ?? []) mine.add(f);
+    return [...mine];
+  });
+}
+
+/** A step's id: its title and hunks (M1), so a read tick stays on the step a rerun keeps. */
+export function stepId(step: Step): string {
+  const text = `${step.title}|${step.hunks.map((h) => `${h.path}#${h.hunk}`).join(",")}`;
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0;
+  return `step-${hash.toString(36)}`;
+}
+
+// --- hidden and direction-changing characters (Trojan Source, I6) ---------------------------
+
+export type Run = { text: string } | { code: string; kind: "bidi" | "invisible" | "control" };
+
+function hiddenKind(cp: number): "bidi" | "invisible" | "control" | null {
+  if (
+    (cp >= 0x202a && cp <= 0x202e) ||
+    (cp >= 0x2066 && cp <= 0x2069) ||
+    cp === 0x200e ||
+    cp === 0x200f ||
+    cp === 0x061c
+  )
+    return "bidi";
+  if (
+    (cp >= 0x200b && cp <= 0x200d) ||
+    (cp >= 0x2060 && cp <= 0x2064) ||
+    [0xfeff, 0x00ad, 0x180e, 0x034f, 0x115f, 0x1160, 0x3164, 0xffa0].includes(cp)
+  )
+    return "invisible";
+  if ((cp < 0x20 && cp !== 0x09) || (cp >= 0x7f && cp <= 0x9f)) return "control";
+  return null;
+}
+
+const code = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
+
+/**
+ * Text split into plain runs and the characters that hide or reorder what is read: bidi
+ * controls, zero-width and invisible characters, and control characters (a tab, and the CR of a
+ * CRLF line ending, are ordinary). Each becomes a token the UI shows visibly.
+ */
+export function revealHidden(text: string): Run[] {
+  const out: Run[] = [];
+  let plain = "";
+  const chars = [...text];
+  chars.forEach((ch, i) => {
+    const cp = ch.codePointAt(0) as number;
+    const kind = cp === 0x0d && i === chars.length - 1 ? null : hiddenKind(cp);
+    if (kind === null) {
+      plain += ch;
+      return;
+    }
+    if (plain) out.push({ text: plain });
+    plain = "";
+    out.push({ code: code(cp), kind });
+  });
+  if (plain || out.length === 0) out.push({ text: plain });
+  return out;
+}
+
+/** Text with each hidden character as its token, for accessible names and plain strings. */
+export function visibleText(text: string): string {
+  return revealHidden(text)
+    .map((r) => ("code" in r ? `⟪${r.code}⟫` : r.text))
+    .join("");
+}
+
+export function hasHidden(text: string): boolean {
+  return revealHidden(text).some((r) => "code" in r);
+}
+
+/** Whether a hunk (or a file's patch) has any hidden or direction-changing character. */
+export const hunkHasHidden = (hunk: Hunk) => hasHidden(hunk.header) || hunk.lines.some((l) => hasHidden(l.text));
 
 /** The findings that fall in a step: on one of its files, within one of its hunks' new lines. */
 export function findingsInStep(step: Step, findings: Finding[], files: PrFile[] | null | undefined): Finding[] {
-  return findings.filter((f) =>
-    step.hunks.some((ref) => {
-      if (ref.path !== f.path) return false;
-      const patch = fileOf(files, ref.path)?.patch;
-      const hunk = patch ? parsePatch(patch)[ref.hunk] : undefined;
-      return hunk ? f.start_line <= hunk.newEnd && f.end_line >= hunk.newStart : false;
-    }),
-  );
+  return findingsByStep([step], findings, files)[0] ?? [];
 }
 
 // --- words ----------------------------------------------------------------------------------
@@ -349,10 +472,15 @@ export function outlineOf(
   } else {
     add({ id: "explanation", kind: "explanation", part: "Before you read", label: "Explanation" });
   }
+  const perStep = findingsByStep(a.steps ?? [], a.findings ?? [], files);
+  const ids = new Set<string>();
   (a.steps ?? []).forEach((step, i) => {
-    const note = findingNote(findingsInStep(step, a.findings ?? [], files));
+    let id = stepId(step);
+    if (ids.has(id)) id = `${id}-${i}`; // two identical steps still get their own entries
+    ids.add(id);
+    const note = findingNote(perStep[i] ?? []);
     out.push({
-      id: `step-${i}`,
+      id,
       kind: "step",
       part: walkPart,
       label: `${i + 1}. ${step.title}`,

@@ -26,7 +26,7 @@ function setup(view: PrView = reviewed(), over: Routes = {}) {
 const sent = (calls: Request[], method: string, path: string) =>
   calls.filter((c) => c.method === method && new URL(c.url).pathname === path);
 const outline = () => screen.getByRole("navigation", { name: "Review outline" });
-const toolbar = () => screen.getByRole("toolbar", { name: "Review tools" });
+const toolbar = () => screen.getByRole("group", { name: "Review tools" });
 const actions = () => screen.getByRole("group", { name: "Page actions" });
 const go = async (name: RegExp | string) => userEvent.click(within(outline()).getByRole("link", { name }));
 
