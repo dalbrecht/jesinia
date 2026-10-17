@@ -69,6 +69,17 @@ describe("Read view", () => {
     }
   });
 
+  it("never shows the page's front matter, and keeps a --- block that is part of the body", async () => {
+    setup(SOURCE_ID, {
+      [`GET /api/kb/pages/${SOURCE_ID}`]: { ...SOURCE, body: `---\nlayout: body-block\n---\n${SOURCE.body}` },
+    });
+    const read = await screen.findByRole("article", { name: "Read view" });
+    expect(read).toHaveTextContent("layout: body-block");
+    expect(read).not.toHaveTextContent("source/rss");
+    expect(read).not.toHaveTextContent("blog.example");
+    expect(read).not.toHaveTextContent(SOURCE_ID);
+  });
+
   it("Edit stays the default for a note", async () => {
     setup(NOTE_ID);
     expect(await screen.findByTestId("editor")).toBeInTheDocument();
@@ -148,8 +159,13 @@ describe("Read view", () => {
     const { EditorView } = await import("@codemirror/view");
     const view = EditorView.findFromDOM(el);
     act(() => view?.dispatch({ changes: { from: view.state.doc.length, insert: "\n\n## Added" } }));
+    // The buffer is the body alone (the API strips front matter), so Read needs no stripping.
+    expect(view?.state.doc.toString()).toBe(`${NOTE.body}\n\n## Added`);
     fireEvent.click(readButton());
     expect(await screen.findByRole("heading", { level: 2, name: "Added" })).toBeInTheDocument();
+    const read = screen.getByRole("article", { name: "Read view" });
+    expect(read).not.toHaveTextContent("kind");
+    expect(read).not.toHaveTextContent(NOTE_ID);
     await waitFor(() => expect(saved.at(-1)).toContain("## Added"));
   });
 

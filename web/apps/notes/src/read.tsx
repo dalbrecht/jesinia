@@ -16,8 +16,6 @@ const PAGE_LINK = new RegExp(`\\[\\[(${UUID})(?:\\|([^\\]]*))?\\]\\]`, "g");
 // tag that doesn't run on into `_` or another word character.
 const TAG =
   /(?<![\p{L}\p{N}\p{M}_/#?=&\\])#[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}]|-(?=[\p{L}\p{N}]))*(?!-?[\p{L}\p{N}\p{M}_])/gu;
-// A front-matter block: `---`, then a `key:` line, up to the closing `---`.
-const FRONT_MATTER = /^---\r?\n(?=["']?[A-Za-z_][^\n]*:)[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/;
 const AI_OPEN = /^<!-- jesinia:ai\b(.*?)-->\s*$/;
 const AI_CLOSE = /^<!-- \/jesinia:ai -->\s*$/;
 // An escaped `\#` is not a tag (kb-format), but the Markdown parser drops the backslash. It is
@@ -25,11 +23,13 @@ const AI_CLOSE = /^<!-- \/jesinia:ai -->\s*$/;
 const ESCAPED_HASH = "";
 const ESCAPED_HASH_ALL = new RegExp(ESCAPED_HASH, "g");
 
-/** The page body as the Read view parses it: no front matter, escaped `\#` marked. */
+/**
+ * The page body as the Read view parses it, escaped `\#` marked. The body is used as given:
+ * the API's `Page.body` and the editor's buffer never hold the front matter, so a leading
+ * `---` block here is the author's own text.
+ */
 export function prepareMarkdown(body: string): string {
-  return body
-    .replace(FRONT_MATTER, "")
-    .replace(/\\([\\#])/g, (escape, c: string) => (c === "#" ? ESCAPED_HASH : escape));
+  return body.replace(/\\([\\#])/g, (escape, c: string) => (c === "#" ? ESCAPED_HASH : escape));
 }
 
 /** The open page, as the Read view needs it. */

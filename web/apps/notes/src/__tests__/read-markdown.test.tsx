@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// The Read view's Markdown (R-REN2): page links, local images, AI blocks, tags, front matter.
+// The Read view's Markdown (R-REN2): page links, local images, AI blocks, tags, titles.
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { kbAssetUrl, prepareMarkdown, ReadView } from "../read";
@@ -54,9 +54,8 @@ describe("kbAssetUrl", () => {
 });
 
 describe("prepareMarkdown", () => {
-  it("hides a front-matter block, and only a real one", () => {
-    expect(prepareMarkdown(`---\nid: ${ID}\ntitle: T\n---\n# Body`)).toBe("# Body");
-    expect(prepareMarkdown("---\n\nNot front matter.\n\n---\nText")).toContain("Not front matter.");
+  it("leaves a leading --- block alone: the API's body has its front matter removed already", () => {
+    expect(prepareMarkdown("---\nkey: value\n---\n# Body")).toBe("---\nkey: value\n---\n# Body");
   });
 });
 
@@ -71,11 +70,10 @@ describe("ReadView", () => {
     expect(root).not.toHaveTextContent("##");
   });
 
-  it("never shows front matter", () => {
-    const { root } = read(`---\nid: ${ID}\njesinia:\n  kind: source/rss\n---\nBody text.`);
+  it("renders a body that begins with a --- block, block included", () => {
+    const { root } = read("---\nkey: value\n---\nBody text.");
+    expect(root).toHaveTextContent("key: value");
     expect(root).toHaveTextContent("Body text.");
-    expect(root).not.toHaveTextContent("kind");
-    expect(root).not.toHaveTextContent(ID);
   });
 
   it("[[id|Title]] and [[id]] open that page in Notes", () => {
