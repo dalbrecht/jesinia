@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from urllib.parse import urlencode
 
 import httpx
@@ -33,6 +34,8 @@ API = "https://api.github.com"
 TIMEOUT = httpx.Timeout(20.0)
 # `gh auth token` costs a process start per call; an inbox sync makes hundreds of requests.
 TOKEN_TTL_SECONDS = 300.0
+
+WriteMethod = Literal["POST", "PATCH", "PUT", "DELETE"]
 
 
 class GitHubError(RuntimeError):
@@ -265,13 +268,29 @@ class GitHubService:
         data = body.get("data")
         return {str(k): v for k, v in data.items()} if isinstance(data, Mapping) else {}
 
-    async def _post(self, path: str, payload: Mapping[str, object]) -> object:
-        """A write: never cached or revalidated, and every failure keeps GitHub's cause."""
-        resp = await self._send("POST", path, self._headers(), payload=payload)
+    async def _write(
+        self, method: WriteMethod, path: str, payload: Mapping[str, object] | None = None
+    ) -> object:
+        """The one write path: never cached or revalidated, sent through ``_send`` (so the
+        token cache, 401 refresh and rate-limit handling apply), and every failure keeps
+        GitHub's cause. An empty answer (a 204) comes back as ``""``."""
+        resp = await self._send(method, path, self._headers(), payload=payload)
         data = _json(resp)
         if not resp.is_success:
             raise GitHubRequestError(resp.status_code, github_error_message(data))
         return data
+
+    async def write(
+        self, method: WriteMethod, path: str, payload: Mapping[str, object] | None = None
+    ) -> object:
+        """A write for this service's typed clients (``IssueClient``); see ``_write``.
+
+        The owner check is the caller's: routes refuse session principals before calling.
+        """
+        return await self._write(method, path, payload)
+
+    async def _post(self, path: str, payload: Mapping[str, object]) -> object:
+        return await self._write("POST", path, payload)
 
     async def create_review(
         self,

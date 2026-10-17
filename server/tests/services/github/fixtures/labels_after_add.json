@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "name": "bug",
+    "color": "d73a4a",
+    "description": null
+  },
+  {
+    "id": 2,
+    "name": "priority: high",
+    "color": "b60205",
+    "description": null
+  }
+]
