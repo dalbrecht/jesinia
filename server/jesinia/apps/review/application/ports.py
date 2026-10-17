@@ -117,6 +117,8 @@ class PullRequests(Protocol):
 
     async def viewer(self) -> str: ...
 
+    async def viewer_orgs(self) -> list[str]: ...
+
     async def inbox_repos(self) -> list[str]: ...
 
     async def list_review_inbox(self, repos: list[str]) -> list[PullRequest]: ...
@@ -141,6 +143,14 @@ class QueueStore(Protocol):
     def seed_repos(self, repos: Iterable[str]) -> list[str]:
         """Watch ``repos`` that have no row yet (a repo the user unwatched keeps its row and
         stays unwatched); return the ones added."""
+
+    def suggest_repos(self, repos: Iterable[str]) -> list[str]:
+        """Record ``repos`` that have no row yet as suggested, not watched; return them."""
+
+    def suggested_repos(self) -> list[str]: ...
+
+    def confirm_repo(self, repo: str) -> None:
+        """The author accepts ``repo``: watched, no longer suggested."""
 
     def repo_configs(self) -> dict[str, RepoConfig]: ...
 

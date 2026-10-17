@@ -247,39 +247,70 @@ class SqliteReviewStore:
     # Repos ------------------------------------------------------------------------------
 
     def watched_repos(self) -> list[str]:
-        rows = self._conn.execute("SELECT repo FROM repos WHERE watched = 1 ORDER BY repo")
+        rows = self._conn.execute(
+            "SELECT repo FROM repos WHERE watched = 1 AND suggested = 0 ORDER BY repo"
+        )
         return [repo for (repo,) in rows]
 
-    def seed_repos(self, repos: Iterable[str]) -> list[str]:
+    def _add_repos(self, repos: Iterable[str], *, watched: bool) -> list[str]:
         added: list[str] = []
         for repo in repos:
             canonical = RepoConfig(repo).repo
             cursor = self._conn.execute(
-                "INSERT INTO repos (repo, watched) VALUES (?, 1) ON CONFLICT (repo) DO NOTHING",
-                (canonical,),
+                "INSERT INTO repos (repo, watched, suggested) VALUES (?, ?, ?) "
+                "ON CONFLICT (repo) DO NOTHING",
+                (canonical, int(watched), int(not watched)),
             )
             if cursor.rowcount:
                 added.append(canonical)
         return added
 
+    def seed_repos(self, repos: Iterable[str]) -> list[str]:
+        return self._add_repos(repos, watched=True)
+
+    def suggest_repos(self, repos: Iterable[str]) -> list[str]:
+        return self._add_repos(repos, watched=False)
+
+    def suggested_repos(self) -> list[str]:
+        rows = self._conn.execute("SELECT repo FROM repos WHERE suggested = 1 ORDER BY repo")
+        return [repo for (repo,) in rows]
+
+    def confirm_repo(self, repo: str) -> None:
+        self._conn.execute(
+            "INSERT INTO repos (repo, watched, suggested) VALUES (?, 1, 0) "
+            "ON CONFLICT (repo) DO UPDATE SET watched = 1, suggested = 0",
+            (RepoConfig(repo).repo,),
+        )
+
     def repo_configs(self) -> dict[str, RepoConfig]:
-        rows = self._conn.execute("SELECT repo, watched, automated_reviewer, prereview FROM repos")
+        rows = self._conn.execute(
+            "SELECT repo, watched, automated_reviewer, prereview, suggested FROM repos"
+        )
         return {
             repo: RepoConfig(
                 repo,
                 watched=bool(watched),
                 automated_reviewer=reviewer,
                 prereview=None if prereview is None else parse_prereview_mode(prereview),
+                suggested=bool(suggested),
             )
-            for repo, watched, reviewer, prereview in rows
+            for repo, watched, reviewer, prereview, suggested in rows
         }
 
     def upsert_repo(self, config: RepoConfig) -> None:
         self._conn.execute(
-            "INSERT INTO repos (repo, watched, automated_reviewer, prereview) VALUES (?, ?, ?, ?) "
+            "INSERT INTO repos (repo, watched, automated_reviewer, prereview, suggested) "
+            "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT (repo) DO UPDATE SET watched = excluded.watched, "
-            "automated_reviewer = excluded.automated_reviewer, prereview = excluded.prereview",
-            (config.repo, int(config.watched), config.automated_reviewer, config.prereview),
+            "automated_reviewer = excluded.automated_reviewer, prereview = excluded.prereview, "
+            "suggested = excluded.suggested",
+            (
+                config.repo,
+                int(config.watched),
+                config.automated_reviewer,
+                config.prereview,
+                int(config.suggested),
+            ),
         )
 
     # PRs --------------------------------------------------------------------------------

@@ -8,7 +8,10 @@ CREATE TABLE repos (
     repo TEXT PRIMARY KEY,
     watched INTEGER NOT NULL DEFAULT 0,
     automated_reviewer TEXT,
-    prereview TEXT CHECK (prereview IN ('triage', 'everything', 'on_open'))
+    prereview TEXT CHECK (prereview IN ('triage', 'everything', 'on_open')),
+    -- Someone else's repo with a review request for the author: listed as a suggestion,
+    -- never watched, mirrored or pre-reviewed until the author confirms it.
+    suggested INTEGER NOT NULL DEFAULT 0
 );
 
 -- One row per PR in the queue. Beyond the planned columns: display_repo, url, base_sha

@@ -107,12 +107,14 @@ def parse_prereview_mode(value: str) -> PreReviewMode:
 
 @dataclass(frozen=True)
 class RepoConfig:
-    """A repo's review settings; ``prereview`` overrides the user's default when set."""
+    """A repo's review settings; ``prereview`` overrides the user's default when set.
+    ``suggested``: not the author's own repo; it waits for the author to confirm it."""
 
     repo: str
     watched: bool = False
     automated_reviewer: str | None = None
     prereview: PreReviewMode | None = None
+    suggested: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "repo", _canonical(self.repo))
@@ -251,6 +253,7 @@ class QueueRow:
     head_sha: str
     fetch_error: str | None
     fetch_error_at: datetime | None
+    suggested: bool = False  # from a suggested repo (only a PR the author loaded)
 
 
 @dataclass(frozen=True)
@@ -269,6 +272,7 @@ class QueueView:
     synced_at: datetime | None
     syncing: bool
     sync_error: str | None
+    suggested_repos: list[str] = field(default_factory=list)
 
 
 def _login(name: str) -> str:
@@ -345,7 +349,14 @@ def queue_order(stored: StoredPr) -> tuple[int, datetime, str, int]:
     return priority, pr.created_at, pr.ref.repo, pr.ref.number
 
 
-def queue_row(stored: StoredPr, latest: RoundSummary | None, viewer: str | None) -> QueueRow:
+def owner_of(repo: str) -> str:
+    """The canonical owner of ``repo``."""
+    return PrRef(repo, 1).repo.partition("/")[0]
+
+
+def queue_row(
+    stored: StoredPr, latest: RoundSummary | None, viewer: str | None, suggested: bool = False
+) -> QueueRow:
     """The row the UI shows. A PR whose last fetch failed says so, whatever state it had."""
     pr = stored.pr
     state, reason = stored.state, stored.state_reason
@@ -381,4 +392,5 @@ def queue_row(stored: StoredPr, latest: RoundSummary | None, viewer: str | None)
         head_sha=pr.head_sha,
         fetch_error=stored.fetch_error,
         fetch_error_at=stored.fetch_error_at,
+        suggested=suggested,
     )

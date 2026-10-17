@@ -357,6 +357,10 @@ class PrClient:
         except (GitHubRequestError, GitHubPayloadError) as exc:
             return _pull_request_from_search(repo, item, str(exc))
 
+    async def viewer_orgs(self) -> list[str]:
+        """Logins of the orgs the viewer belongs to, lowercase (every page)."""
+        return [_text(org, "login").lower() for org in await self._get_pages("/user/orgs")]
+
     async def inbox_repos(self) -> list[str]:
         """Every repo, across GitHub, with an open PR whose review is requested of the viewer
         or that the viewer wrote; lowercase ``owner/name``, sorted. Seeds the watched repos."""

@@ -562,3 +562,22 @@ async def test_module_jobs_are_no_ops_once_stopped(
     await module.stop()
 
     assert "left running by a stop" in caplog.text
+
+
+async def test_only_loaded_prs_of_a_suggested_repo_are_pre_reviewed(
+    queue: QueueService, github: FakePullRequests, store: SqliteReviewStore, clock: FakeClock
+) -> None:
+    github.inbox = [pull(1), pull(2)]
+    await queue.sync()
+    store.upsert_repo(RepoConfig("acme/web", suggested=True))  # demoted after rows were cached
+    await queue.load("acme/web#2")  # the author's own action
+    clock.advance(11)
+    runner = Runner(block=False)
+    scheduler = Scheduler(store, clock, run=runner)
+
+    await scheduler.tick()
+    await scheduler.drain()
+
+    assert runner.numbers == [2]
+    (row,) = [r for r in (await queue.list(QueueFilter())).rows if r.number == 1]
+    assert row.prereview_state == "not_started" and "suggested" in row.prereview_reason

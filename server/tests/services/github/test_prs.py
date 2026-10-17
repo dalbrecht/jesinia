@@ -784,3 +784,16 @@ async def test_inbox_repos_finds_requested_and_authored_prs_anywhere(prs: PrClie
 
     assert await prs.inbox_repos() == ["acme/api", "acme/web"]
     assert requested.called and authored.called
+
+
+@respx.mock
+async def test_viewer_orgs_follow_pages_and_lowercase(prs: PrClient) -> None:
+    first = [{"login": f"Org{i}"} for i in range(100)]
+    route = respx.get(f"{API}/user/orgs").mock(
+        side_effect=[Response(200, json=first), Response(200, json=[{"login": "Acme"}])]
+    )
+
+    orgs = await prs.viewer_orgs()
+
+    assert len(orgs) == 101 and orgs[0] == "org0" and orgs[-1] == "acme"
+    assert [c.request.url.params["page"] for c in route.calls] == ["1", "2"]

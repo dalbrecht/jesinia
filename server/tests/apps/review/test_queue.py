@@ -14,6 +14,7 @@ from typing import cast
 import pytest
 
 from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
+from jesinia.apps.review.application.scheduler import PreReviewRequest, Scheduler
 from jesinia.apps.review.domain.queue import (
     EvidenceSummary,
     InvalidPrRefError,
@@ -615,6 +616,7 @@ async def test_first_sync_watches_repos_with_review_requests(
 ) -> None:
     store = SqliteReviewStore(conn)  # a fresh install: no repo is watched yet
     queue = QueueService(github, store, clock)
+    github.orgs = ["acme"]  # the viewer belongs to acme, so its repos are the viewer's own
     github.inbox = [
         pull(1, "acme/api", requested=True),
         pull(2, "Acme/Web", author="me"),
@@ -731,3 +733,108 @@ async def test_a_slow_sync_never_overwrites_a_newer_load(
     stored = store.pr(PrRef("acme/web", 2))
     assert loaded.head_sha == OTHER_HEAD
     assert stored is not None and stored.pr.head_sha == OTHER_HEAD and stored.loaded
+
+
+@pytest.fixture
+def fresh_queue(
+    conn: sqlite3.Connection, github: FakePullRequests, clock: FakeClock
+) -> tuple[QueueService, SqliteReviewStore]:
+    store = SqliteReviewStore(conn)
+    return QueueService(github, store, clock), store
+
+
+async def test_the_viewers_own_repos_are_auto_watched(
+    fresh_queue: tuple[QueueService, SqliteReviewStore], github: FakePullRequests
+) -> None:
+    queue, store = fresh_queue
+    github.inbox = [pull(1, "Me/Tool", requested=True)]
+
+    await queue.sync()
+
+    assert store.watched_repos() == ["me/tool"]
+    view = await queue.list(QueueFilter())
+    assert [row.repo for row in view.rows] == ["me/tool"] and view.suggested_repos == []
+
+
+async def test_repos_of_the_viewers_orgs_are_auto_watched(
+    fresh_queue: tuple[QueueService, SqliteReviewStore], github: FakePullRequests
+) -> None:
+    queue, store = fresh_queue
+    github.orgs = ["acme"]
+    github.inbox = [pull(2, "Acme/Web", requested=True)]
+
+    await queue.sync()
+
+    assert store.watched_repos() == ["acme/web"]
+
+
+async def test_a_strangers_repo_is_only_suggested_and_never_scheduled(
+    fresh_queue: tuple[QueueService, SqliteReviewStore],
+    github: FakePullRequests,
+    clock: FakeClock,
+) -> None:
+    queue, store = fresh_queue
+    github.inbox = [pull(3, "evil/bait", requested=True)]
+
+    await queue.sync()
+    clock.advance(60)
+    await queue.sync()
+    started: list[PreReviewRequest] = []
+
+    async def run(request: PreReviewRequest) -> None:
+        started.append(request)
+
+    scheduler = Scheduler(store, clock, run=run)
+    await scheduler.tick()
+    await scheduler.drain()
+
+    view = await queue.list(QueueFilter())
+    assert store.watched_repos() == [] and view.suggested_repos == ["evil/bait"]
+    assert view.rows == [] and started == [] and store.keep_shas() == set()
+    assert all("evil" not in repo for call in github.inbox_calls for repo in call)
+
+
+async def test_confirming_a_suggested_repo_watches_it(
+    fresh_queue: tuple[QueueService, SqliteReviewStore], github: FakePullRequests
+) -> None:
+    queue, store = fresh_queue
+    github.inbox = [pull(3, "evil/bait", requested=True)]
+    await queue.sync()
+
+    await queue.confirm_repo("Evil/Bait")
+    await queue.sync()
+
+    view = await queue.list(QueueFilter())
+    assert store.watched_repos() == ["evil/bait"] and view.suggested_repos == []
+    assert [(row.repo, row.suggested) for row in view.rows] == [("evil/bait", False)]
+    store.upsert_repo(RepoConfig("evil/bait", watched=False))  # the author unwatches it again
+    await queue.sync()
+    assert store.watched_repos() == [] and (await queue.list(QueueFilter())).suggested_repos == []
+
+
+async def test_loading_a_strangers_pr_works_without_watching_the_repo(
+    fresh_queue: tuple[QueueService, SqliteReviewStore], github: FakePullRequests
+) -> None:
+    queue, store = fresh_queue
+    github.inbox = [pull(3, "evil/bait", requested=True)]
+    github.others = {("evil/bait", 4): pull(4, "evil/bait")}
+    await queue.sync()
+
+    row = await queue.load("evil/bait#4")
+    await queue.sync()
+
+    assert row.loaded and row.suggested
+    assert store.watched_repos() == []
+    assert [r.number for r in (await queue.list(QueueFilter())).rows] == [4]
+
+
+async def test_the_viewers_orgs_are_fetched_at_most_hourly(
+    queue: QueueService, github: FakePullRequests, clock: FakeClock
+) -> None:
+    await queue.sync()
+    clock.advance(30)
+    await queue.sync()
+    assert github.org_calls == 1
+    clock.advance(31)
+    await queue.sync()
+    assert github.org_calls == 2

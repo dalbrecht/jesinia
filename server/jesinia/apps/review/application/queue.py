@@ -29,6 +29,7 @@ from jesinia.apps.review.domain.queue import (
     QueueView,
     RepoConfig,
     StoredPr,
+    owner_of,
     parse_pr_ref,
     queue_order,
     queue_row,
@@ -50,6 +51,8 @@ from jesinia.services.github.domain.pr import (
 log = logging.getLogger(__name__)
 
 SYNC_INTERVAL = timedelta(minutes=2)
+# How long the viewer's login and orgs (whose repos are auto-watched) are trusted.
+OWNERS_TTL = timedelta(hours=1)
 # Per-PR detail fetches (checks and reviews) in flight at once during a sync.
 DETAIL_CONCURRENCY = 8
 
@@ -102,6 +105,8 @@ class QueueService:
         self._syncing = False
         self._backoff_until: datetime | None = None
         self._fetched_during_sync: set[PrRef] = set()
+        self._owners: set[str] = set()
+        self._owners_at: datetime | None = None
         self._detail_slots = asyncio.Semaphore(DETAIL_CONCURRENCY)
 
     async def list(self, queue_filter: QueueFilter) -> QueueView:
@@ -115,11 +120,16 @@ class QueueService:
         ]
         stored.sort(key=queue_order)
         synced_at, sync_error = self._store.sync_status()
+        suggested = self._store.suggested_repos()
         return QueueView(
-            rows=[queue_row(pr, latest.get(pr.pr.ref), viewer) for pr in stored],
+            rows=[
+                queue_row(pr, latest.get(pr.pr.ref), viewer, pr.pr.ref.repo in suggested)
+                for pr in stored
+            ],
             synced_at=synced_at,
             syncing=self._syncing,
             sync_error=sync_error,
+            suggested_repos=suggested,
         )
 
     async def sync(self) -> None:
@@ -183,8 +193,7 @@ class QueueService:
         refresh = _Refresh()
         viewer = await self._prs.viewer()
         self._store.set_viewer(viewer)
-        if seeded := self._store.seed_repos(await self._prs.inbox_repos()):
-            log.info("review: now watching %s", ", ".join(seeded))
+        await self._seed(viewer)
         watched = self._store.watched_repos()
         if not watched and not cached:
             return refresh  # nothing to list
@@ -204,6 +213,29 @@ class QueueService:
         refresh.removed = [ref for ref in cached if ref not in kept]
         refresh.loaded = {ref for ref, pr in cached.items() if pr.loaded}
         return refresh
+
+    async def _seed(self, viewer: str) -> None:
+        """Watch new inbox repos owned by the viewer or one of their orgs. Anyone can ask
+        for a review on their own repo, so any other repo is only suggested: it is never
+        mirrored or pre-reviewed until the author confirms it (ruling R29a)."""
+        now = self._clock()
+        if self._owners_at is None or now - self._owners_at >= OWNERS_TTL:
+            self._owners = {viewer.lower(), *await self._prs.viewer_orgs()}
+            self._owners_at = now
+        repos = await self._prs.inbox_repos()
+        own = [repo for repo in repos if owner_of(repo) in self._owners]
+        if seeded := self._store.seed_repos(own):
+            log.info("review: now watching %s", ", ".join(seeded))
+        if suggested := self._store.suggest_repos(r for r in repos if r not in own):
+            log.info("review: suggesting %s (not the author's repos)", ", ".join(suggested))
+
+    async def confirm_repo(self, repo: str) -> None:
+        """The author accepts a suggested repo (or any repo): it is watched from now on.
+
+        Raises:
+            InvalidPrRefError: ``repo`` is not ``owner/name``.
+        """
+        self._store.confirm_repo(repo)
 
     async def _loaded_outcome(
         self, stored: StoredPr, viewer: str, configs: dict[str, RepoConfig]
@@ -282,7 +314,8 @@ class QueueService:
             self._fetched_during_sync.add(pr_ref)
         await self._changed()
         latest = self._store.latest_rounds().get(pr_ref)
-        return queue_row(stored, latest, self._store.viewer())
+        suggested = pr_ref.repo in self._store.suggested_repos()
+        return queue_row(stored, latest, self._store.viewer(), suggested)
 
     async def dismiss(self, repo: str, number: int) -> None:
         """Hide a PR from the queue until it is loaded again.

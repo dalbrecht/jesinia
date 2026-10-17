@@ -102,6 +102,8 @@ class FakePullRequests:
         self.error: Exception | None = None
         self.detail_errors: dict[tuple[str, int], Exception] = {}
         self.get_error: Exception | None = None
+        self.orgs: list[str] = []
+        self.org_calls = 0
         # Head SHAs single-PR reads report, one per call, before falling back to the PR's own.
         self.heads_seen_by_get: list[str] = []
         # Checks on these head SHAs park until their event is set.
@@ -117,6 +119,11 @@ class FakePullRequests:
     async def viewer(self) -> str:
         self._fail()
         return "me"
+
+    async def viewer_orgs(self) -> list[str]:
+        self._fail()
+        self.org_calls += 1
+        return list(self.orgs)
 
     async def inbox_repos(self) -> list[str]:
         """Repos with a PR whose review is requested of "me", or that "me" wrote."""

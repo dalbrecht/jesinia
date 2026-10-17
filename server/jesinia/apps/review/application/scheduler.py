@@ -138,6 +138,11 @@ class Scheduler:
         if result.state != "ready":
             self._store.set_state(pr.ref, pr.head_sha, result.state, result.reason)
             return
+        if config is not None and config.suggested and not stored.loaded:
+            # Someone else's repo the author hasn't confirmed: nothing runs on its code.
+            reason = "suggested repo: confirm it to pre-review its PRs"
+            self._store.set_state(pr.ref, pr.head_sha, "not_started", reason)
+            return
         mode = self._mode(config, default_mode)
         if mode == "on_open" and not stored.loaded:
             reason = "pre-review is set to run when you open the PR"
