@@ -8,6 +8,7 @@ import {
   hasHidden,
   notWalkedNote,
   outlineOf,
+  parseStats,
   parsePatch,
   pending,
   readArtifacts,
@@ -190,30 +191,34 @@ describe("big PRs (I4, R61)", () => {
       artifacts: { ...ARTIFACTS, walkthrough: { steps, skipped: [] }, findings: { findings } },
     });
   }
-  const time = (n: number) => {
-    const view = big(n);
-    const start = performance.now();
-    const entries = outlineOf("deep", readArtifacts(view), view.files, 1);
-    const ms = performance.now() - start;
-    return { ms, entries };
-  };
 
-  it("builds the outline in about linear time (n vs 4n), well under the ceiling", () => {
-    // Robust on a loaded CI box (final M2): warm-up runs, the median of 5, a floor on the
-    // small side, a generous ratio and an absolute ceiling, never a tight wall-clock bound.
-    const median = (n: number) => {
-      const runs = Array.from({ length: 5 }, () => time(n));
-      const sorted = runs.map((r) => r.ms).sort((a, b) => a - b);
-      return { ms: sorted[2] as number, entries: (runs[0] as (typeof runs)[number]).entries };
+  it("parses each patch once per round, however often the outline is built (N3: work, not time)", () => {
+    const view = big(1000);
+    const a = readArtifacts(view);
+    const before = parseStats.parses;
+    const entries = outlineOf("deep", a, view.files, 1);
+    outlineOf("deep", a, view.files, 1); // a re-render
+    outlineOf("quick", a, view.files, 2); // a depth switch, a new draft count
+    expect(parseStats.parses - before).toBeLessThanOrEqual(1); // one file: at most one parse
+    expect(entries.filter((e) => e.kind === "step")).toHaveLength(1000);
+    expect(entries.filter((e) => e.bad).length).toBeGreaterThan(20); // findings landed on steps
+  });
+
+  it("builds the outline in about linear time: k builds per sample, n vs 4n, generous ratio", () => {
+    const sample = (n: number) => {
+      const view = big(n);
+      const a = readArtifacts(view);
+      outlineOf("deep", a, view.files, 1); // warm (and parse) once
+      const start = performance.now();
+      for (let k = 0; k < 20; k += 1) outlineOf("deep", a, view.files, k);
+      return performance.now() - start;
     };
-    median(100); // warm up
-    median(500);
-    const small = median(500);
-    const large = median(2000);
-    expect(large.entries.filter((e) => e.kind === "step")).toHaveLength(2000);
-    expect(large.entries.filter((e) => e.bad).length).toBeGreaterThan(20); // findings landed on steps
-    expect(large.ms).toBeLessThan(5000);
-    expect(large.ms / Math.max(small.ms, 5)).toBeLessThan(8 * 1.5);
+    sample(100); // warm up
+    const runs = (n: number) => [sample(n), sample(n), sample(n)].sort((x, y) => x - y)[1] as number;
+    const small = runs(500);
+    const large = runs(2000);
+    expect(large).toBeLessThan(5000);
+    expect(large / Math.max(small, 1)).toBeLessThan(10);
   });
 });
 

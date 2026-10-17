@@ -1439,3 +1439,46 @@ async def test_walk_everything_while_a_walkthrough_runs_says_running(env: Env) -
     assert walk.state == "running" and walk.jobs == ()
     env.jobs.hold.set()
     await env.pipeline.drain()
+
+
+# --- R66: Review anyway is an explicit, persisted override per head ---------------------------
+
+
+async def test_a_background_round_never_lets_a_failing_ci_through(env: Env) -> None:
+    """R66: a round on the head isn't an override. CI turning failing after a background
+    round holds open, Retry and a depth switch at the gate; nothing starts."""
+    ref = env.add()
+    await prereview(env)
+    env.add(ci="failing")  # the same head; CI now fails
+    env.jobs.ran.clear()
+    assert (await env.pipeline.open(ref)).state == "ci_failing"
+    assert (await env.pipeline.retry(ref)).state == "ci_failing"
+    assert (await env.pipeline.open(ref, depth="deep")).state == "ci_failing"
+    assert (await env.pipeline.open(ref, walk_everything=True)).state == "ci_failing"
+    await env.pipeline.drain()
+    assert env.jobs.ran == []
+
+
+async def test_review_anyway_is_kept_across_a_restart_and_not_for_a_new_head(env: Env) -> None:
+    ref = env.add(ci="failing")
+    await env.pipeline.review_anyway(ref)
+    await env.pipeline.drain()
+    assert env.store.gates_overridden(ref, HEAD)
+    restarted = Pipeline(
+        github=env.github,
+        files=env.files,
+        workspace=env.workspace,
+        jobs=env.jobs,
+        store=env.store,
+        bus=EventBus(),
+        clock=env.clock,
+    )
+    walk = await restarted.open(ref, walk_everything=True)
+    assert walk.state == "started" and walk.jobs == (JobKind.WALKTHROUGH,)
+    await restarted.drain()
+    # A new head has no override: the gate holds again.
+    newer = replace(env.github.pr, head_sha=NEW_HEAD)
+    env.github.pr = newer
+    env.add(newer, ci="failing")
+    assert not env.store.gates_overridden(ref, NEW_HEAD)
+    assert (await restarted.open(ref)).state == "ci_failing"

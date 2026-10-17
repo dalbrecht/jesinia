@@ -150,8 +150,12 @@ function readHeader(raw: string): { oldStart: number; oldCount: number; newStart
   };
 }
 
+/** How many patches were parsed: the guard that big PRs parse once per round (N3). */
+export const parseStats = { parses: 0 };
+
 /** A GitHub patch's hunks, numbered as Jesinia cites them (0-based, in order), with line numbers. */
 export function parsePatch(patch: string): Hunk[] {
+  parseStats.parses += 1;
   const hunks: Hunk[] = [];
   let current: Hunk | null = null;
   let oldLine = 0;

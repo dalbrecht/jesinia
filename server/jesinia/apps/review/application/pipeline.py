@@ -412,17 +412,16 @@ class Pipeline:
             raise ReviewNotAllowedError(
                 f"{ref} couldn't be loaded from GitHub ({stored.fetch_error}); reload it first"
             )
+        self._store.override_gates(ref, stored.pr.head_sha)
         return self._start_open(stored, rerun_failed=True)
 
     def _gate_passed(self, stored: StoredPr) -> bool:
-        """Whether this head's CI and automated-review gates were passed or overridden before:
-        a round exists on it (PR 3 final I3), so **Review anyway** sticks for later opens,
-        Retry and Walk everything on the same head. A fetch failure still holds it."""
+        """Whether the author chose **Review anyway** for this head (R66): only then do later
+        opens, Retry, Walk everything and a depth switch go past the CI and automated-review
+        gates. A round on the head is not enough (CI may have turned failing since), a new
+        head has no override, and a fetch failure still holds it."""
         pr = stored.pr
-        return (
-            stored.fetch_error is None
-            and self._store.latest_round_on_head(pr.ref, pr.head_sha) is not None
-        )
+        return stored.fetch_error is None and self._store.gates_overridden(pr.ref, pr.head_sha)
 
     def _consented(self, ref: PrRef) -> StoredPr:
         stored = self._store.pr(ref)

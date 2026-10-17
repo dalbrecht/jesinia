@@ -607,6 +607,20 @@ class SqliteReviewStore:
                 (depth, ref.repo, ref.number, head_sha),
             )
 
+    def override_gates(self, ref: PrRef, head_sha: str) -> None:
+        """Record the author's Review anyway for a head (R66)."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO gate_overrides (repo, number, head_sha) VALUES (?, ?, ?)",
+            (ref.repo, ref.number, head_sha),
+        )
+
+    def gates_overridden(self, ref: PrRef, head_sha: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM gate_overrides WHERE repo = ? AND number = ? AND head_sha = ?",
+            (ref.repo, ref.number, head_sha),
+        ).fetchone()
+        return row is not None
+
     def chosen_depth(self, ref: PrRef, head_sha: str) -> Depth | None:
         row = self._conn.execute(
             "SELECT depth FROM depth_choices WHERE repo = ? AND number = ? AND head_sha = ?",

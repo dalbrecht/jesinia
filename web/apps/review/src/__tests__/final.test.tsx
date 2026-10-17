@@ -166,3 +166,38 @@ describe("the other hunks toggle is per step (M3)", () => {
     expect(within(diff()).getAllByRole("group")).toHaveLength(1);
   });
 });
+
+describe("seeds in a dropped read (N2)", () => {
+  it("a read answered after a keystroke still keeps the drafts the server seeded in it", async () => {
+    let release: (() => void) | null = null;
+    let reads = 0;
+    const seeded = {
+      ...(drafts().drafts[0] as ReturnType<typeof drafts>["drafts"][number]),
+      id: 9,
+      body: "Seeded in the read.",
+    };
+    const { calls } = setup(reviewed(), {
+      [`GET ${API}/drafts`]: async () => {
+        reads += 1;
+        if (reads === 1) return Response.json(drafts());
+        await new Promise<void>((resolve) => (release = resolve));
+        return Response.json(drafts({ drafts: [...drafts().drafts, seeded] }));
+      },
+    });
+    await ready();
+    await go(/Your comments/);
+    await refresh(calls);
+    await waitFor(() => expect(release).not.toBeNull());
+    const box = draftBox();
+    await userEvent.type(box, " typed");
+    await act(async () => release?.());
+    expect(await screen.findByDisplayValue("Seeded in the read.")).toBeInTheDocument();
+    fireEvent.blur(box);
+    await waitFor(() => expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1));
+    const put = (await calls
+      .filter((c) => c.method === "PUT")[0]
+      ?.clone()
+      .json()) as { drafts: { body: string }[] };
+    expect(put.drafts.map((d) => d.body)).toEqual(["Rounding happens once. typed", "Seeded in the read."]);
+  });
+});

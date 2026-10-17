@@ -129,7 +129,15 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
     getDrafts(client, repo, number).then(
       (d) => {
         // Only an answer to the content as it still is replaces it: nothing typed since.
-        if (!current || revision.current !== startedAt || isDirty() || inflight.current) return;
+        if (!current || revision.current !== startedAt || isDirty() || inflight.current) {
+          // Dropped, but the read may have seeded drafts (N2): any id never seen is the
+          // server's addition, kept as a clean item so the next save keeps it.
+          const unseen = d.drafts.filter((x) => x.id !== null && x.id !== undefined && !keyById.current.has(x.id));
+          if (unseen.length) {
+            setItems([...itemsRef.current, ...unseen.map((draft) => ({ key: keyFor(draft), draft, isNew: false }))]);
+          }
+          return;
+        }
         adopt(d);
         setLoadError(null);
       },
