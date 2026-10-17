@@ -48,6 +48,9 @@ export type ChatRailProps = {
   className?: string | undefined;
 };
 
+const causeText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
+
 export function ChatRail(props: ChatRailProps) {
   const { session, runners } = props;
   const client = useClient();
@@ -69,15 +72,30 @@ export function ChatRail(props: ChatRailProps) {
     );
   }, [session]);
 
+  // The draft is cleared only once the server has the message: a refused or unanswered send
+  // (a restart, a dropped connection) keeps it, says why, and Send tries again (§9).
   const send = async (text: string) => {
     const t = text.trim();
     if (!t || !chosen || state.busy) return;
-    const id = session ?? (await props.onSessionNeeded(chosen));
-    if (!id) return;
-    setDraft("");
-    const m = await client.POST("/api/agents/sessions/{id}/messages", { params: { path: { id } }, body: { text: t } });
-    if (!m.response.ok)
-      toast.show({ tone: "danger", message: errorText((m as { error?: unknown }).error, "Couldn't send.") });
+    try {
+      const id = session ?? (await props.onSessionNeeded(chosen));
+      if (!id) return;
+      const m = await client.POST("/api/agents/sessions/{id}/messages", {
+        params: { path: { id } },
+        body: { text: t },
+      });
+      if (m.response.ok) {
+        setDraft((d) => (d === text ? "" : d)); // keep anything typed meanwhile
+        return;
+      }
+      const cause = sentence(errorText((m as { error?: unknown }).error, `HTTP ${m.response.status}`));
+      toast.show({ tone: "danger", message: `Couldn't send: ${cause} Press Send to try again.` });
+    } catch (e) {
+      toast.show({
+        tone: "danger",
+        message: `Couldn't send: ${sentence(causeText(e))} Check that Jesinia is running, then press Send again.`,
+      });
+    }
   };
 
   const decide = async (pid: string, approve: boolean) => {
@@ -86,15 +104,19 @@ export function ChatRail(props: ChatRailProps) {
     const path = approve
       ? "/api/agents/sessions/{id}/pending/{pid}/approve"
       : "/api/agents/sessions/{id}/pending/{pid}/reject";
-    const r = await client.POST(path, { params: { path: { id: session, pid } } });
-    if (r.response.ok) return;
-    // Refused (the write gate, a gone session): say why, and offer the decision again.
-    if (approve) dispatch({ type: "awaiting", id: pid });
     const what = approve ? "approve" : "reject";
-    toast.show({
-      tone: "danger",
-      message: `Couldn't ${what} the change: ${errorText((r as { error?: unknown }).error, `HTTP ${r.response.status}`)}`,
-    });
+    let message: string;
+    try {
+      const r = await client.POST(path, { params: { path: { id: session, pid } } });
+      if (r.response.ok) return;
+      // Refused (the write gate, a gone session): say why, and offer the decision again.
+      message = `Couldn't ${what} the change: ${errorText((r as { error?: unknown }).error, `HTTP ${r.response.status}`)}`;
+    } catch (e) {
+      // No answer at all: the card must not stay on "Approving…".
+      message = `Couldn't ${what} the change: ${sentence(causeText(e))} Check that Jesinia is running, then try again.`;
+    }
+    if (approve) dispatch({ type: "awaiting", id: pid });
+    toast.show({ tone: "danger", message });
   };
 
   const runnerInfo = {

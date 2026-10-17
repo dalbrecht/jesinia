@@ -500,9 +500,13 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     setEngaged({ postId: selected.id, session: null, tried: false, open: true });
   };
   const closeChat = () => setEngaged((e) => (e ? { ...e, open: false } : e));
-  const kept = (result: Kept, since: number) => {
+  /**
+   * A Keep answered. The post takes the answer even if its popover was cancelled meanwhile,
+   * but only the popover that sent it closes: a late answer never closes another one.
+   */
+  const kept = (result: Kept, since: number, openId: number) => {
     replace(freshen(result.post, since));
-    setKeeping(null);
+    setKeeping((k) => (k?.openId === openId ? null : k));
     loadCounts();
     toast.show({ tone: "success", message: `Kept to ${result.path}.` });
   };
@@ -689,7 +693,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
                 initialNote={keeping.note}
                 takeaway={keeping.takeaway}
                 hasAgent={hasAgent}
-                onKept={(result) => kept(result, keeping.since)}
+                onKept={(result) => kept(result, keeping.since, keeping.openId)}
                 onCancel={() => setKeeping(null)}
               />
             ) : null}

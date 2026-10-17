@@ -3,7 +3,7 @@
 // in the book layout (an outline on the left, the view pane on the right).
 import type { components } from "@jesinia/client";
 import { baseRoutes, fakeClient } from "@jesinia/shell";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { App } from "../App";
@@ -184,6 +184,64 @@ describe("Settings → RSS", () => {
     expect(await rss.findByRole("combobox", { name: "Keep unread posts for" })).toHaveValue("30");
     expect(await rss.findByText("4 feeds in 2 folders")).toBeInTheDocument();
     expect(rss.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it("a retention change during a folder save keeps the new folder (writes never race)", async () => {
+    let stored = { ...SETTINGS };
+    const held: (() => void)[] = [];
+    const calls = renderRss({
+      "PUT /api/rss/settings": async (req: Request) => {
+        const body = (await req.clone().json()) as typeof SETTINGS;
+        // The server applies each PUT whole, in the order it receives them.
+        return new Promise<Response>((resolve) =>
+          held.push(() => {
+            stored = body;
+            resolve(Response.json(body));
+          }),
+        );
+      },
+    });
+    const rss = await section();
+    const folder = rss.getByLabelText("Folder for kept posts");
+    await waitFor(() => expect(folder).toHaveValue("Sources"));
+    await userEvent.clear(folder);
+    await userEvent.type(folder, "Reading");
+    await userEvent.click(rss.getByRole("button", { name: "Save folder" }));
+    await waitFor(() => expect(held).toHaveLength(1));
+    await userEvent.selectOptions(rss.getByRole("combobox", { name: "Keep unread posts for" }), "90");
+    expect(sent(calls, "PUT", "/api/rss/settings")).toHaveLength(1); // the retention write waits its turn
+    await act(async () => held[0]?.());
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => held[1]?.());
+    const puts = sent(calls, "PUT", "/api/rss/settings");
+    expect(await puts[1]?.json()).toEqual({ retention: 90, source_folder: "Reading" });
+    expect(stored).toEqual({ retention: 90, source_folder: "Reading" });
+    expect(rss.getByRole("combobox", { name: "Keep unread posts for" })).toHaveValue("90");
+    expect(folder).toHaveValue("Reading");
+  });
+
+  it("a refused folder doesn't ride along with a later retention change", async () => {
+    const calls = renderRss({
+      "PUT /api/rss/settings": async (req: Request) => {
+        const body = (await req.clone().json()) as typeof SETTINGS;
+        return body.source_folder === "Journal"
+          ? Response.json({ error: "InvalidSettings", detail: "Journal is reserved" }, { status: 400 })
+          : Response.json(body);
+      },
+    });
+    const rss = await section();
+    const folder = rss.getByLabelText("Folder for kept posts");
+    await waitFor(() => expect(folder).toHaveValue("Sources"));
+    await userEvent.clear(folder);
+    await userEvent.type(folder, "Journal");
+    await userEvent.click(rss.getByRole("button", { name: "Save folder" }));
+    expect(await rss.findByText("Journal is reserved")).toBeInTheDocument();
+    await userEvent.selectOptions(rss.getByRole("combobox", { name: "Keep unread posts for" }), "14");
+    await waitFor(() => expect(sent(calls, "PUT", "/api/rss/settings")).toHaveLength(2));
+    expect(await sent(calls, "PUT", "/api/rss/settings")[1]?.json()).toEqual({
+      retention: 14,
+      source_folder: "Sources",
+    });
   });
 
   it("reports a failed retention save and keeps the saved value", async () => {

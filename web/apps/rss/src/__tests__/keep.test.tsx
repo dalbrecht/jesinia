@@ -328,6 +328,25 @@ describe("Keep popover", () => {
     expect(within(reader()).getByRole("status")).toHaveTextContent("In KB");
   });
 
+  it("a slow Keep that was cancelled never closes another post's popover", async () => {
+    let answer: (r: Response) => void = () => {};
+    setup({ "POST /api/rss/posts/1/keep": () => new Promise<Response>((resolve) => (answer = resolve)) });
+    await openFirst();
+    press("n");
+    await keepNow(); // slow
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Keep this post" })).toBeNull();
+    await userEvent.click(screen.getByRole("option", { name: /Post 2/ }));
+    await screen.findByRole("heading", { name: "Post 2", level: 1 });
+    press("n");
+    await userEvent.type(within(popover()).getByRole("textbox", { name: "Note" }), "for post two");
+    await act(async () => answer(Response.json(KEPT, { status: 201 }))); // the first Keep lands
+    expect(popover()).toBeInTheDocument();
+    expect(within(popover()).getByRole("textbox", { name: "Note" })).toHaveValue("for post two");
+    // The first post still took the answer: it is kept and archiving.
+    expect(within(screen.getByRole("option", { name: /Post 1/ })).getByText("Archiving…")).toBeInTheDocument();
+  });
+
   it("says suggestions come from the catalog only when no agent is available", async () => {
     setup({ "GET /api/agents/runners": { codex: { available: false, version: null, detail: "x" } } });
     await openFirst();

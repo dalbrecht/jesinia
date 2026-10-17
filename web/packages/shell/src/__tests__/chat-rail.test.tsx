@@ -177,7 +177,7 @@ describe("ChatRail", () => {
     agent("user_message", { text: "hi" });
     agent("error", { message: "Stopped" });
     await userEvent.click(await screen.findByRole("button", { name: "Retry" }));
-    expect((await screen.findAllByText("busy")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Couldn't send: busy. Press Send to try again.")).length).toBeGreaterThan(0);
     const retried = calls.filter((c) => c.url.endsWith("/messages"));
     expect(await retried[0]?.json()).toEqual({ text: "hi" });
   });
@@ -203,6 +203,90 @@ describe("ChatRail", () => {
     await userEvent.click(screen.getByRole("button", { name: "Reject" }));
     expect((await screen.findAllByText("Couldn't reject the change: gone")).length).toBeGreaterThan(0);
     expect(calls.filter((c) => c.url.includes("/pending/"))).toHaveLength(2);
+  });
+
+  it("a send that gets no answer keeps the text and says why", async () => {
+    setup({
+      initial: "s1",
+      routes: { "POST /api/agents/sessions/s1/messages": () => Promise.reject(new TypeError("Failed to fetch")) },
+    });
+    await userEvent.type(message(), "Keep this{Enter}");
+    expect(
+      (
+        await screen.findAllByText(
+          "Couldn't send: Failed to fetch. Check that Jesinia is running, then press Send again.",
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(message()).toHaveValue("Keep this");
+  });
+
+  it("a refused send keeps the text too; an accepted one clears it unless you typed more", async () => {
+    let refuse = true;
+    let answer: (r: Response) => void = () => {};
+    setup({
+      initial: "s1",
+      routes: {
+        "POST /api/agents/sessions/s1/messages": () =>
+          refuse
+            ? Response.json({ detail: "busy" }, { status: 409 })
+            : new Promise<Response>((resolve) => (answer = resolve)),
+      },
+    });
+    await userEvent.type(message(), "First{Enter}");
+    expect((await screen.findAllByText("Couldn't send: busy. Press Send to try again.")).length).toBeGreaterThan(0);
+    expect(message()).toHaveValue("First");
+    refuse = false;
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await userEvent.type(message(), " and more"); // typed while the send is on its way
+    await act(async () => answer(Response.json({ ok: true })));
+    expect(message()).toHaveValue("First and more");
+  });
+
+  it("a session that can't be started for a send says why and keeps the text", async () => {
+    setup({ start: () => Promise.reject(new TypeError("Failed to fetch")) });
+    await userEvent.type(message(), "hello{Enter}");
+    expect(
+      (
+        await screen.findAllByText(
+          "Couldn't send: Failed to fetch. Check that Jesinia is running, then press Send again.",
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(message()).toHaveValue("hello");
+  });
+
+  it("an approval or rejection that gets no answer goes back to awaiting, with the cause", async () => {
+    setup({
+      initial: "s1",
+      routes: {
+        "POST /api/agents/sessions/s1/pending/w1/approve": () => Promise.reject(new TypeError("Failed to fetch")),
+        "POST /api/agents/sessions/s1/pending/w1/reject": () => Promise.reject(new TypeError("Failed to fetch")),
+      },
+    });
+    agent("pending_write", {
+      pending_id: "w1",
+      tool: "kb_write",
+      args: { body: "x" },
+      target: { action: "create", path: "N.md" },
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Approve change" }));
+    expect(
+      (
+        await screen.findAllByText(
+          "Couldn't approve the change: Failed to fetch. Check that Jesinia is running, then try again.",
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Approve change" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+    expect(
+      (
+        await screen.findAllByText(
+          "Couldn't reject the change: Failed to fetch. Check that Jesinia is running, then try again.",
+        )
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   it("explains when no agent is available, and shows the app's own actions", () => {

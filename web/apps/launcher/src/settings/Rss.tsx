@@ -5,7 +5,7 @@
 import { errorText, withIdempotency, type components } from "@jesinia/client";
 import { Button, Input, Panel, useToast } from "@jesinia/design";
 import { useClient } from "@jesinia/shell";
-import { useCallback, useEffect, useId, useState, type ChangeEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import s from "../settings.module.css";
 import { sentence, unreachable } from "./unreachable";
 
@@ -120,16 +120,64 @@ export function RssSection() {
     void loadFeeds();
   }, [client, loadFeeds, attempt]);
 
-  const save = (next: RssSettings) =>
-    client.PUT("/api/rss/settings", { params: { header: withIdempotency() }, body: next });
+  // Both settings share one document, PUT whole. Writes go one at a time, each carrying the
+  // latest intended values (a retention change during a folder save keeps the new folder); a
+  // refused change is taken back out so it never rides along with the next one.
+  const intended = useRef<RssSettings | null>(null);
+  const confirmed = useRef<RssSettings | null>(null);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => {
+    if (settings && confirmed.current === null) confirmed.current = intended.current = settings;
+  }, [settings]);
 
-  const changeRetention = async (current: RssSettings, days: number) => {
-    setSettings({ ...current, retention: days }); // shown at once; put back if it fails
+  const write = (patch: Partial<RssSettings>) => {
+    const base = intended.current ?? (settings as RssSettings);
+    intended.current = { ...base, ...patch };
+    setSettings(intended.current); // shown at once
+    let sent: RssSettings | null = null;
+    const run = () => {
+      sent = intended.current as RssSettings;
+      return client.PUT("/api/rss/settings", { params: { header: withIdempotency() }, body: sent });
+    };
+    const result = queue.current.then(run, run);
+    queue.current = result.catch(() => undefined);
+    return result.then(
+      (r) => {
+        if (r.data) {
+          confirmed.current = r.data;
+          // The server's values, except those changed since this write left (a later write
+          // carries them).
+          intended.current = { ...r.data, ...changedSince(sent as RssSettings) };
+        } else {
+          takeBack(patch);
+        }
+        setSettings(intended.current);
+        return r;
+      },
+      (e: unknown) => {
+        takeBack(patch);
+        setSettings(intended.current);
+        throw e;
+      },
+    );
+  };
+  const changedSince = (sent: RssSettings): Partial<RssSettings> => {
+    const want = intended.current as RssSettings;
+    return Object.fromEntries(
+      (Object.keys(want) as (keyof RssSettings)[]).filter((k) => want[k] !== sent[k]).map((k) => [k, want[k]]),
+    );
+  };
+  const takeBack = (patch: Partial<RssSettings>) => {
+    const back = confirmed.current as RssSettings;
+    const undo = Object.fromEntries((Object.keys(patch) as (keyof RssSettings)[]).map((k) => [k, back[k]]));
+    intended.current = { ...(intended.current as RssSettings), ...undo };
+  };
+
+  const changeRetention = async (days: number) => {
     let message: string;
     try {
-      const r = await save({ ...current, retention: days });
+      const r = await write({ retention: days });
       if (r.data) {
-        setSettings(r.data);
         toast.show({ tone: "success", message: `Unread posts are kept for ${count(r.data.retention, "day")}.` });
         return;
       }
@@ -137,18 +185,16 @@ export function RssSection() {
     } catch (e) {
       message = unreachable(e);
     }
-    setSettings(current);
     toast.show({ tone: "danger", message: `Couldn't save the retention: ${message}` });
   };
 
-  const saveFolder = async (e: FormEvent, current: RssSettings) => {
+  const saveFolder = async (e: FormEvent) => {
     e.preventDefault();
     setSavingFolder(true);
     setFolderError(null);
     try {
-      const r = await save({ ...current, source_folder: folder.trim() });
+      const r = await write({ source_folder: folder.trim() });
       if (r.data) {
-        setSettings(r.data);
         setFolder(r.data.source_folder);
         toast.show({ tone: "success", message: `Kept posts now go to ${r.data.source_folder}/.` });
       } else {
@@ -296,7 +342,7 @@ export function RssSection() {
               id={retentionId}
               className={s.select}
               value={settings.retention}
-              onChange={(e) => void changeRetention(settings, Number(e.target.value))}
+              onChange={(e) => void changeRetention(Number(e.target.value))}
             >
               {retentionChoices.map((days) => (
                 <option key={days} value={days}>
@@ -305,7 +351,7 @@ export function RssSection() {
               ))}
             </select>
           </div>
-          <form className={s.setting} onSubmit={(e) => void saveFolder(e, settings)}>
+          <form className={s.setting} onSubmit={(e) => void saveFolder(e)}>
             <Input
               label="Folder for kept posts"
               variant="path"

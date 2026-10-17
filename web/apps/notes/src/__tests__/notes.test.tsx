@@ -203,7 +203,8 @@ describe("Notes", () => {
     });
     await screen.findByRole("heading", { name: "Topic", level: 1 });
     await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "hi{Enter}");
-    expect((await screen.findAllByText("busy")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Couldn't send: busy. Press Send to try again.")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("hi"); // kept to send again
     agent("text", { text: "ok" });
     agent("turn_done", {});
     await userEvent.click(screen.getByRole("button", { name: "Save note" }));
