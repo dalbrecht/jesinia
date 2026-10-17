@@ -181,6 +181,14 @@ export class ReviewRequestError extends Error {
   }
 
   /**
+   * A newer round is current: the round shown changed (`RoundChanged`), or it was frozen when a
+   * round on the PR's new head took over its drafts (`RoundFrozen`). Nothing was saved or posted.
+   */
+  get roundChanged(): boolean {
+    return this.facts.code === "RoundChanged" || this.facts.code === "RoundFrozen";
+  }
+
+  /**
    * The server couldn't say whether the action happened, or asks to retry it later
    * (`Retry-After`): the retry is the same action, with the same key.
    */

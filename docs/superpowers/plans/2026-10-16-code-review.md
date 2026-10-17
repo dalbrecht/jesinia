@@ -574,16 +574,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **On a head change:** the open round freezes; drafts are copied into the new round,
   re-anchored where their lines are unchanged and `outdated` otherwise.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_pure_rebase_is_still_approved`;
   - `test_conflict_edit_reviews_only_differing_hunks`;
   - `test_github_posted_approval_counts`;
   - `test_drafts_carry_and_reanchor`;
   - `test_post_refuses_when_reviewed_head_is_gone` (Review Focus 1).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): rebases and head changes`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): rebases and head changes`.
 
 ### Task 12: Incremental re-reviews
 

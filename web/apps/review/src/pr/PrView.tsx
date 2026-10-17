@@ -91,8 +91,13 @@ function saveRead(key: string, read: ReadonlySet<string>): void {
 /** What opening (or Review anyway, Retry) said, in words, with the next step it offers. */
 type Notice = { text: string; anyway: boolean; tone: "info" | "problem"; retryOpen?: boolean; retry?: boolean };
 
-function noticeOf(result: OpenResult): Notice | null {
-  if (result.state === "up_to_date") return null;
+/** Said when "Review the new head" finds Jesinia's cached head already reviewed (PR 3 final M7). */
+export const NEW_HEAD_NOT_FETCHED =
+  "This head's review is complete; the newer commits show once Jesinia has fetched them.";
+
+function noticeOf(result: OpenResult, newHead = false): Notice | null {
+  if (result.state === "up_to_date")
+    return newHead ? { text: NEW_HEAD_NOT_FETCHED, anyway: false, tone: "info" } : null;
   if (result.state === "started") {
     const n = result.jobs.length;
     return {
@@ -384,10 +389,11 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       (e: unknown) => fail("retry", e),
     );
   };
-  const retryOpen = () => {
+  /** Open again; `newHead`: the author asked to review the PR's new head (R65). */
+  const retryOpen = (newHead = false) => {
     open("open").then(
       (r) => {
-        setNotice(noticeOf(r));
+        setNotice(noticeOf(r, newHead));
         reread();
       },
       (e: unknown) =>
@@ -406,7 +412,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         reread();
       },
       (e: unknown) => {
-        if (e instanceof ReviewRequestError && e.code === "RoundChanged") {
+        if (e instanceof ReviewRequestError && e.roundChanged) {
           toast.show({ tone: "danger", message: "A new review round started: it wasn't marked done." });
           reread();
         } else fail("mark it done", e);
@@ -614,8 +620,13 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         <div className={s.notices}>
           {shown.stale ? (
             <Badge tone="warn" icon="!">
-              Stale: this PR has newer commits than this review; it refreshes in the background.
+              Stale: this PR has newer commits than this review.
             </Badge>
+          ) : null}
+          {shown.stale ? (
+            <Button size="sm" variant="secondary" onClick={() => retryOpen(true)}>
+              Review the new head
+            </Button>
           ) : null}
           {round?.error ? <p className={s.notice}>{`The last review failed: ${round.error}`}</p> : null}
           {posted ? (
@@ -639,7 +650,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
                 </Button>
               ) : null}
               {notice.retryOpen ? (
-                <Button size="sm" variant="secondary" onClick={retryOpen}>
+                <Button size="sm" variant="secondary" onClick={() => retryOpen()}>
                   Try again
                 </Button>
               ) : null}
@@ -734,7 +745,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
           }}
           onReviewNewCommits={() => {
             closePosting();
-            retryOpen();
+            retryOpen(true);
           }}
         />
       ) : null}

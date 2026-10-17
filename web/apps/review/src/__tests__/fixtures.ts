@@ -39,6 +39,9 @@ export function row(number: number, over: Partial<QueueRow> = {}): QueueRow {
     fetch_error: null,
     fetch_error_at: null,
     suggested: false,
+    followup_kind: null,
+    followup_note: "",
+    differing_paths: [],
     ...over,
   };
 }

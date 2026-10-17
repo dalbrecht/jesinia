@@ -192,7 +192,7 @@ describe("failures", () => {
       "GET /api/review/prs/acme/web/1": () =>
         fail
           ? Response.json({ error: "ReviewError", detail: "locked" }, { status: 500 })
-          : Response.json(prView(row(1), { round: { id: 3, head_sha: "a".repeat(40), base_sha: "b".repeat(40), depth: "quick", started_at: "2026-10-17T10:00:00Z", finished_at: null, verdict: null, error: "the agent timed out", posted_review_url: null, done: false } })),
+          : Response.json(prView(row(1), { round: { id: 3, head_sha: "a".repeat(40), base_sha: "b".repeat(40), depth: "quick", started_at: "2026-10-17T10:00:00Z", finished_at: null, verdict: null, error: "the agent timed out", posted_review_url: null, done: false, frozen: false } })),
     }); // prettier-ignore
     await userEvent.click(
       within(await screen.findByRole("article", { name: /#1/ })).getByRole("button", { name: /^Open / }),

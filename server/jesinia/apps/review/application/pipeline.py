@@ -60,6 +60,7 @@ from jesinia.apps.review.domain.coverage import (
     steps_from_json,
     verified_ranges,
 )
+from jesinia.apps.review.domain.followup import FollowUp, restrict_diff
 from jesinia.apps.review.domain.gates import Depth, GateState, propose_depth
 from jesinia.apps.review.domain.jobs import JobKind, Round, recommend
 from jesinia.apps.review.domain.queue import (
@@ -207,6 +208,15 @@ class PipelineJobs(Protocol):
     async def correctness_depth(self, round: Round) -> Depth: ...
 
 
+class RoundFollowUps(Protocol):
+    """Head changes (``FollowUps``): carried drafts to re-anchor, and what the head needs
+    after the author's previous review."""
+
+    async def reanchor(self, round_id: int, head_sha: str, merge_base: str) -> int: ...
+
+    def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None: ...
+
+
 class RoundSlots(Protocol):
     """The scheduler's slots, which opened rounds share with pre-reviews (R52)."""
 
@@ -294,6 +304,8 @@ class Pipeline:
         knowledge: the author's familiarity with a repo, from the knowledge model.
         slots: the scheduler, whose round slots opens wait for; without it opens run at
             once.
+        followups: head changes: a round re-anchors the drafts it carried over, and a
+            re-review of a changed rebase reviews only the files that differ (spec §4.1).
     """
 
     def __init__(
@@ -308,8 +320,10 @@ class Pipeline:
         clock: Clock,
         knowledge: KnowledgeSource = _nothing_known,
         slots: RoundSlots | None = None,
+        followups: RoundFollowUps | None = None,
     ) -> None:
         self._slots: RoundSlots = _Unlimited() if slots is None else slots
+        self._followups = followups
         self._github = github
         self._files = files
         self._workspace = workspace
@@ -622,7 +636,9 @@ class Pipeline:
                 "the default branch couldn't be refreshed, so the repo's review standards "
                 f"may be out of date: {exc}"
             )
-        diff = await self._diff(ref, pull, base, warnings)
+        diff = await self._follow_up(
+            ref, head, round_id, base, await self._diff(ref, pull, base, warnings), warnings
+        )
         try:
             ci: CheckState | None = await self._github.checks(repo, head)
         except _GITHUB_ERRORS as exc:
@@ -656,6 +672,47 @@ class Pipeline:
         )
         self._store.put_artifact(round_id, "warnings", warnings)
         return _Prepared(ref, round, diff, ci, correctness_depth, tuple(warnings))
+
+    async def _follow_up(
+        self,
+        ref: PrRef,
+        head: str,
+        round_id: int,
+        base: str,
+        diff: ParsedDiff,
+        warnings: list[str],
+    ) -> ParsedDiff:
+        """Re-anchor the drafts the round carried over (best effort: a failure leaves them
+        outdated, with a warning) and, for a rebase that changed some files since the
+        author's approval, keep only those files in the diff the round reviews."""
+        if self._followups is None:
+            return diff
+        try:
+            await self._followups.reanchor(round_id, head, base)
+        except Exception as exc:  # secondary: the drafts stay outdated, the round goes on
+            log.warning("re-anchoring the drafts of %s failed: %s", ref, exc, exc_info=exc)
+            warnings.append(f"drafts from the earlier head couldn't be re-anchored: {exc}")
+        followup = self._followups.followup(ref, head)
+        if followup is None or followup.kind == "new":
+            return diff
+        self._store.put_artifact(
+            round_id,
+            "followup",
+            {
+                "kind": followup.kind,
+                "differing_paths": followup.differing_paths,
+                "note": followup.note,
+                "prev_head": followup.prev_head,
+            },
+        )
+        if followup.kind != "changed_hunks_only" or not diff.complete:
+            return diff
+        count = len(followup.differing_paths)
+        warnings.append(
+            f"a re-review of what changed since your approval: {count} "
+            f"file{'s' if count != 1 else ''} reviewed; the rest matches the approved diff"
+        )
+        return restrict_diff(diff, followup.differing_paths)
 
     async def _files_truncated(self, ref: PrRef, pull: PullRequest, warnings: list[str]) -> bool:
         """Read (and cache) GitHub's file list for the head, and say whether it is short of

@@ -10455,6 +10455,38 @@
           "suggested": {
             "type": "boolean",
             "title": "Suggested"
+          },
+          "followup_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "new",
+                  "still_approved",
+                  "rereview",
+                  "changed_hunks_only"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Followup Kind",
+            "description": "What this head needs after the author's previous review (spec \u00a74.1): still_approved, changed_hunks_only, rereview or new; null until classified"
+          },
+          "followup_note": {
+            "type": "string",
+            "title": "Followup Note",
+            "description": "One line on it, in Jesinia's words",
+            "default": ""
+          },
+          "differing_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Differing Paths",
+            "description": "Files whose changes differ from the previous review's (PR text)"
           }
         },
         "type": "object",
@@ -10732,6 +10764,18 @@
             "title": "Field",
             "description": "For InvalidDraftContent: 'summary' or 'draft'"
           },
+          "successor_round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Round Id",
+            "description": "For RoundFrozen: the round that took over its drafts"
+          },
           "retry_after": {
             "anyOf": [
               {
@@ -10916,6 +10960,23 @@
           "done": {
             "type": "boolean",
             "title": "Done"
+          },
+          "frozen": {
+            "type": "boolean",
+            "title": "Frozen",
+            "description": "Read-only: a round on the PR's new head took over its drafts",
+            "default": false
+          },
+          "successor_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Id"
           }
         },
         "type": "object",

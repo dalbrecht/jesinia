@@ -821,9 +821,12 @@ async def test_saves_previews_and_posts_are_bound_to_the_round_shown(env: Env) -
     assert (await env.client.put(f"{PR}/drafts", json=current, headers=keyed())).status_code == 200
     new = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
     assert new != old
-    stale = await env.client.put(f"{PR}/drafts", json=current, headers=keyed())
+    later = {**current, "summary": "Mine, edited later."}
+    stale = await env.client.put(f"{PR}/drafts", json=later, headers=keyed())
     assert stale.status_code == 409 and stale.json()["error"] == "RoundChanged"
-    assert env.store.review_summary(new) != "Mine."  # never retargeted onto the new round
+    # The new round took over what was saved when it started (Task 11); the stale save is
+    # never retargeted onto it.
+    assert env.store.review_summary(new) == "Mine."
     preview = await env.client.post(
         f"{PR}/post/preview", json={"event": "COMMENT", "round_id": old}
     )

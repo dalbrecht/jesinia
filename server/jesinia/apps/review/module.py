@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from jesinia.apps.review.api.routes import build_router
 from jesinia.apps.review.api.tools import build_review_tools, build_tools
+from jesinia.apps.review.application.followup import FollowUps
 from jesinia.apps.review.application.jobs import JobRunner
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
@@ -78,6 +79,7 @@ class ReviewModule:
         self._posting: PostingService | None = None
         self._reviews: ReviewReads | None = None
         self._idempotency: SqliteIdempotencyStore | None = None
+        self._followups: FollowUps | None = None
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -241,7 +243,18 @@ class ReviewModule:
             )
         if isinstance(github, GitHubService):
             prs = PrClient(github)
-            self._queue = QueueService(prs, store, _utc_now, on_change=self._scheduler.tick)
+            scheduler = self._scheduler
+            followups = FollowUps(
+                github=prs, workspace=self._workspace, store=store, after=scheduler.tick
+            )
+            self._followups = followups
+
+            async def changed() -> None:
+                await scheduler.tick()
+                # New heads are classified in the background (git work), then it ticks again.
+                followups.start_refresh()
+
+            self._queue = QueueService(prs, store, _utc_now, on_change=changed)
             self._reviews = ReviewReads(store, self._queue.status)
             self._posting = PostingService(
                 github=prs, writer=github, files=self._queue, store=store, clock=_utc_now
@@ -260,6 +273,7 @@ class ReviewModule:
                     bus=ctx.bus,
                     clock=_utc_now,
                     slots=self._scheduler,
+                    followups=followups,
                 )
 
     async def stop(self) -> None:
@@ -269,6 +283,9 @@ class ReviewModule:
             await self._pipeline.stop()
         if self._scheduler is not None:
             await self._scheduler.stop()
+        if self._followups is not None:
+            await self._followups.stop()
+            self._followups = None
         self._pipeline = None
         self._posting = None
         self._reviews = None

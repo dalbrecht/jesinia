@@ -114,6 +114,7 @@ class QueueService:
         """The cached queue in priority order; never awaits GitHub or a running sync."""
         viewer = self._store.viewer()
         latest = self._store.latest_rounds()
+        followups = self._store.current_followups()
         stored = [
             pr
             for pr in self._store.prs(include_dismissed=queue_filter.include_dismissed)
@@ -124,7 +125,13 @@ class QueueService:
         suggested = self._store.suggested_repos()
         return QueueView(
             rows=[
-                queue_row(pr, latest.get(pr.pr.ref), viewer, pr.pr.ref.repo in suggested)
+                queue_row(
+                    pr,
+                    latest.get(pr.pr.ref),
+                    viewer,
+                    pr.pr.ref.repo in suggested,
+                    followups.get(pr.pr.ref),
+                )
                 for pr in stored
             ],
             synced_at=synced_at,
@@ -321,7 +328,8 @@ class QueueService:
         await self._changed()
         latest = self._store.latest_rounds().get(pr_ref)
         suggested = pr_ref.repo in self._store.suggested_repos()
-        return queue_row(stored, latest, self._store.viewer(), suggested)
+        followup = self._store.current_followups().get(pr_ref)
+        return queue_row(stored, latest, self._store.viewer(), suggested, followup)
 
     async def dismiss(self, repo: str, number: int) -> None:
         """Hide a PR from the queue until it is loaded again.

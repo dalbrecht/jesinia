@@ -205,7 +205,7 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
       return true;
     } catch (e) {
       keys.current.settle(action, e);
-      if (e instanceof ReviewRequestError && e.code === "RoundChanged") {
+      if (e instanceof ReviewRequestError && e.roundChanged) {
         // The author's text stays here, unsaved, until they copy it or discard it.
         stale.current = true;
         setStatus({ kind: "stale" });
@@ -415,11 +415,15 @@ export function DraftsEditor({ drafts }: { drafts: DraftsState }) {
             </label>
             <div className={s.row}>
               {item.draft.outdated ? (
-                <Badge tone="warn" icon="!">
-                  Outdated
-                </Badge>
-              ) : null}
-              {placed === true ? (
+                <>
+                  <Badge tone="warn" icon="!">
+                    Outdated
+                  </Badge>
+                  <span className={s.muted}>
+                    Written on an earlier head whose lines changed since: it posts in the review body, not inline.
+                  </span>
+                </>
+              ) : placed === true ? (
                 <span className={s.muted}>Posts in the review body: GitHub can't anchor it inline.</span>
               ) : placed === false ? (
                 <span className={s.muted}>Posts inline.</span>

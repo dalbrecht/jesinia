@@ -885,9 +885,10 @@ async def test_background_reconcile_survives_github_failures(
 async def test_one_unexpected_reconcile_error_does_not_stop_the_others(
     env: Env, caplog: pytest.LogCaptureFixture
 ) -> None:
+    # Recorded before the next round starts: a replaced (frozen) round takes no posting.
+    env.store.start_posting(env.round_id, "COMMENT", "k1", "d", "body", [], env.clock())
     other = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
-    for round_id in (env.round_id, other):
-        env.store.start_posting(round_id, "COMMENT", "k1", "d", "body", [], env.clock())
+    env.store.start_posting(other, "COMMENT", "k1", "d", "body", [], env.clock())
     env.clock.advance(4)
     real = env.github.reviews
     calls = 0

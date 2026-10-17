@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 from jesinia.apps.review.application.pipeline import OpenResult
 from jesinia.apps.review.application.posting import DraftSet, PostPreview
 from jesinia.apps.review.application.reviews import PrView, ReviewSettings
+from jesinia.apps.review.domain.followup import FollowUpKind
 from jesinia.apps.review.domain.gates import CiState, Depth
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
@@ -87,6 +88,16 @@ class QueueRowOut(BaseModel):
     fetch_error: str | None
     fetch_error_at: datetime | None
     suggested: bool
+    followup_kind: FollowUpKind | None = Field(
+        default=None,
+        description="What this head needs after the author's previous review (spec §4.1): "
+        "still_approved, changed_hunks_only, rereview or new; null until classified",
+    )
+    followup_note: str = Field(default="", description="One line on it, in Jesinia's words")
+    differing_paths: list[str] = Field(
+        default_factory=list,
+        description="Files whose changes differ from the previous review's (PR text)",
+    )
 
     @classmethod
     def of(cls, row: QueueRow) -> QueueRowOut:
@@ -122,6 +133,9 @@ class QueueRowOut(BaseModel):
             fetch_error=row.fetch_error,
             fetch_error_at=row.fetch_error_at,
             suggested=row.suggested,
+            followup_kind=row.followup_kind,
+            followup_note=row.followup_note,
+            differing_paths=list(row.differing_paths),
         )
 
 
@@ -174,6 +188,11 @@ class RoundOut(BaseModel):
     error: str | None
     posted_review_url: str | None
     done: bool
+    frozen: bool = Field(
+        default=False,
+        description="Read-only: a round on the PR's new head took over its drafts",
+    )
+    successor_id: int | None = None
 
     @classmethod
     def of(cls, rnd: RoundRecord) -> RoundOut:
@@ -188,6 +207,8 @@ class RoundOut(BaseModel):
             error=rnd.error,
             posted_review_url=rnd.posted_review_url,
             done=rnd.done,
+            frozen=rnd.frozen_at is not None,
+            successor_id=rnd.successor_id,
         )
 
 
@@ -324,6 +345,7 @@ class DraftBody(BaseModel):
     def draft(self) -> Draft:
         """Raises: InvalidDraftError: GitHub would reject it."""
         return Draft(
+            id=self.id,
             path=self.path,
             body=self.body,
             line=self.line,
@@ -517,6 +539,9 @@ class ReviewErrorOut(BaseModel):
     )
     field: str | None = Field(
         default=None, description="For InvalidDraftContent: 'summary' or 'draft'"
+    )
+    successor_round_id: int | None = Field(
+        default=None, description="For RoundFrozen: the round that took over its drafts"
     )
     retry_after: int | None = Field(
         default=None,

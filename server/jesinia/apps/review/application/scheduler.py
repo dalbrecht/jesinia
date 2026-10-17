@@ -51,6 +51,8 @@ MAX_INTERRUPTIONS = 3
 # Loaded PRs are reviewed at once: no debounce, but CI and automated reviews still gate them.
 _LOADED_GATES = GateSettings(debounce=timedelta(0))
 _STOPPED = "Jesinia stopped during this pre-review"
+# Spec §4.1: a rebase of an approved PR with the same changes needs no action.
+STILL_APPROVED = "still approved: a rebase with the same changes; nothing to review"
 _INTERRUPTED = "Jesinia stopped during this pre-review (it was restarted or crashed)"
 
 
@@ -141,6 +143,7 @@ class Scheduler:
         configs = self._store.repo_configs()
         default_mode = self._store.prereview_default()
         rounds = self._store.rounds_for_heads()
+        followups = self._store.current_followups()
         self._pending = {}
         with self._store.atomic():  # one write per tick, and none for unchanged states
             for stored in self._store.prs():
@@ -148,7 +151,16 @@ class Scheduler:
                 if ref in self._running:
                     continue
                 status = rounds.get((ref, head))
-                if status is None or _retryable(status):
+                followup = followups.get(ref)
+                if (
+                    status is None
+                    and not stored.loaded
+                    and followup is not None
+                    and followup.kind == "still_approved"
+                ):
+                    # A loaded PR is the author asking for a review now: it still runs.
+                    self._store.set_state(ref, head, "not_started", STILL_APPROVED)
+                elif status is None or _retryable(status):
                     self._consider(stored, now, configs.get(ref.repo), default_mode)
                 elif status.finished:
                     # This head had its pre-review; show how it ended.

@@ -123,6 +123,7 @@ export function RowCard({ row, actions }: { row: QueueRow; actions?: RowActions 
   const evidence = evidenceOf(row);
   const author = row.author_kind === "developer" ? row.author : `${row.author} (${row.author_kind})`;
   const reason = row.prereview_reason.trim();
+  const paths = row.differing_paths ?? [];
   const showReason = (row.prereview_state === "ci_failing" || row.prereview_state === "failed") && reason !== "";
   return (
     <article className={s.card} aria-labelledby={titleId}>
@@ -184,6 +185,25 @@ export function RowCard({ row, actions }: { row: QueueRow; actions?: RowActions 
         ) : null}
       </div>
       {showReason ? <p className={s.reason}>{reason}</p> : null}
+      {row.followup_note ? (
+        <p className={s.reason}>
+          {row.followup_note}
+          {paths.length ? (
+            <>
+              {": "}
+              {paths.slice(0, 5).map((path, i) => (
+                <span key={path}>
+                  {i ? ", " : ""}
+                  <code>
+                    <Visible text={path} />
+                  </code>
+                </span>
+              ))}
+              {paths.length > 5 ? ` +${paths.length - 5} more` : ""}
+            </>
+          ) : null}
+        </p>
+      ) : null}
       {actions ? (
         <div className={s.cardActions}>
           {offersReviewAnyway(row) ? (

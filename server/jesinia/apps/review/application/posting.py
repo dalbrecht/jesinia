@@ -60,6 +60,7 @@ from jesinia.apps.review.domain.posting import (
     PreviewOutdated,
     Review,
     ReviewedHeadGone,
+    RoundFrozen,
     check_body_length,
     check_review_text,
     commentable_lines,
@@ -276,6 +277,18 @@ class PostingService:
             raise NoReviewRound(f"no review round {round_id}")
         return found
 
+    def _open_round(self, round_id: int) -> RoundRecord:
+        """The round, if it can still be edited and posted.
+
+        Raises:
+            NoReviewRound: no such round.
+            RoundFrozen: a round on the PR's new head took it over (spec §7).
+        """
+        found = self._round(round_id)
+        if found.frozen_at is not None:
+            raise RoundFrozen(round_id, found.successor_id)
+        return found
+
     # --- drafts ---------------------------------------------------------------------------
 
     async def drafts(self, round_id: int) -> DraftSet:
@@ -293,8 +306,9 @@ class PostingService:
         Raises:
             NoReviewRound: no such round.
             InvalidDraftError: too many drafts, or a summary over the body limit.
+            RoundFrozen: a newer round took it over.
         """
-        rnd = self._round(round_id)
+        rnd = self._open_round(round_id)
         if len(drafts) > DRAFTS_MAX:
             raise InvalidDraftError(f"a review takes at most {DRAFTS_MAX} drafts")
         if len(summary) > BODY_MAX:
@@ -383,9 +397,10 @@ class PostingService:
             NoReviewRound: no such round.
             ReviewBodyTooLong: the composed body would be over GitHub's limit.
             ReviewedHeadGone: the reviewed commit is no longer on the PR.
+            RoundFrozen: a newer round took it over: nothing can be posted from it.
             GitHubError: GitHub couldn't be read.
         """
-        rnd = self._round(round_id)
+        rnd = self._open_round(round_id)
         settled = self._seed(rnd)
         commentable, notes = await self._commentable(rnd)
         if not settled:
@@ -397,9 +412,14 @@ class PostingService:
         newer_head = await self._newer_head(rnd, live)
         viewer = self._store.viewer() or await self._github.viewer()
         own_pr = live.author.lower() == viewer.lower()
-        review = compose_review(
-            self._store.review_summary(round_id), self._store.drafts(round_id), commentable
-        )
+        drafts = self._store.drafts(round_id)
+        review = compose_review(self._store.review_summary(round_id), drafts, commentable)
+        if outdated := sum(draft.outdated for draft in drafts):
+            notes.append(
+                f"{outdated} outdated draft{'s' if outdated != 1 else ''} (written on an earlier "
+                "head, whose lines changed since) post in the review body, not inline: edit "
+                "or delete them first if that isn't what you want"
+            )
         check_body_length(review)
         if needs_body(event, review):
             what = event.lower().replace("_", " ")
@@ -491,9 +511,10 @@ class PostingService:
                 this digest and event; nothing was sent.
             ReviewedHeadGone: the reviewed commit is no longer on the PR.
             PostingFailed: GitHub didn't confirm the review (with ``maybe_posted``).
+            RoundFrozen: a newer round took it over: nothing is posted from it.
             GitHubError: GitHub couldn't be read.
         """
-        rnd = self._round(round_id)
+        rnd = self._open_round(round_id)
         # One post per round at a time: two clicks with different keys can't both post.
         async with self._round_lock(round_id):
             return await self._post(rnd, event, confirm, key, digest)

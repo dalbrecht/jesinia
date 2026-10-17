@@ -2559,6 +2559,22 @@ export interface components {
             fetch_error_at: string | null;
             /** Suggested */
             suggested: boolean;
+            /**
+             * Followup Kind
+             * @description What this head needs after the author's previous review (spec §4.1): still_approved, changed_hunks_only, rereview or new; null until classified
+             */
+            followup_kind?: ("new" | "still_approved" | "rereview" | "changed_hunks_only") | null;
+            /**
+             * Followup Note
+             * @description One line on it, in Jesinia's words
+             * @default
+             */
+            followup_note: string;
+            /**
+             * Differing Paths
+             * @description Files whose changes differ from the previous review's (PR text)
+             */
+            differing_paths?: string[];
         };
         /** ReadAboveIn */
         ReadAboveIn: {
@@ -2649,6 +2665,11 @@ export interface components {
              */
             field?: string | null;
             /**
+             * Successor Round Id
+             * @description For RoundFrozen: the round that took over its drafts
+             */
+            successor_round_id?: number | null;
+            /**
              * Retry After
              * @description For PostingStillUncertain and PostingInProgress: seconds before retrying (also the Retry-After header)
              */
@@ -2716,6 +2737,14 @@ export interface components {
             posted_review_url: string | null;
             /** Done */
             done: boolean;
+            /**
+             * Frozen
+             * @description Read-only: a round on the PR's new head took over its drafts
+             * @default false
+             */
+            frozen: boolean;
+            /** Successor Id */
+            successor_id?: number | null;
         };
         /** RssErrorOut */
         RssErrorOut: {

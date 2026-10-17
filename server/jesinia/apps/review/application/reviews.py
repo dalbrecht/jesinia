@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Protocol
 
+from jesinia.apps.review.domain.followup import FollowUp
 from jesinia.apps.review.domain.posting import Draft, NoReviewRound, RoundChanged
 from jesinia.apps.review.domain.queue import (
     InvalidSettingError,
@@ -43,6 +44,8 @@ class ReviewReadStore(Protocol):
     def viewer(self) -> str | None: ...
 
     def latest_rounds(self) -> dict[PrRef, RoundSummary]: ...
+
+    def current_followups(self) -> dict[PrRef, FollowUp]: ...
 
     def suggested_repos(self) -> list[str]: ...
 
@@ -137,7 +140,8 @@ class ReviewReads:
         stored = self._stored(ref)
         latest = self._store.latest_rounds().get(ref)
         suggested = ref.repo in self._store.suggested_repos()
-        row = queue_row(stored, latest, self._store.viewer(), suggested)
+        followup = self._store.current_followups().get(ref)
+        row = queue_row(stored, latest, self._store.viewer(), suggested, followup)
         found = self._store.latest_round(ref)
         artifacts = {} if found is None else self._store.artifacts(found.id)
         files = None if found is None else self._store.pr_files(ref, found.head_sha)
@@ -170,6 +174,7 @@ class ReviewReads:
         Raises:
             NoReviewRound: the PR has no round.
             RoundChanged: ``round_id`` isn't the latest round.
+            RoundFrozen: a newer round took it over (a ``RoundChanged``).
         """
         found = self._store.latest_round(ref)
         if found is None:

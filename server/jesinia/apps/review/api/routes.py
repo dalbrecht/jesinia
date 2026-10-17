@@ -58,6 +58,7 @@ from jesinia.apps.review.domain.posting import (
     ReviewBodyTooLong,
     ReviewedHeadGone,
     RoundChanged,
+    RoundFrozen,
 )
 from jesinia.apps.review.domain.queue import (
     InvalidPrRefError,
@@ -156,6 +157,7 @@ def _error(exc: Exception) -> JSONResponse:
     warnings = list(exc.warnings) if isinstance(exc, NeedsConfirmation) else None
     earlier = exc if isinstance(exc, EarlierReviewPosted) else None
     refused = exc if isinstance(exc, InvalidDraftContent) else None
+    frozen = exc if isinstance(exc, RoundFrozen) else None
     body = ReviewErrorOut(
         error=type(exc).__name__,
         detail=str(exc),
@@ -164,6 +166,7 @@ def _error(exc: Exception) -> JSONResponse:
         event=None if earlier is None else earlier.event,
         field=None if refused is None else refused.field,
         draft_index=None if refused is None else refused.draft_index,
+        successor_round_id=None if frozen is None else frozen.successor_id,
         # Transient: the Retry-After header also keeps idempotency from replaying it (R50).
         retry_after=exc.retry_after
         if isinstance(exc, PostingStillUncertain | PostingInProgress)

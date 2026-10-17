@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
+from jesinia.apps.review.domain.followup import FollowUp
 from jesinia.apps.review.domain.gates import Depth
 from jesinia.apps.review.domain.queue import (
     PreReviewMode,
@@ -251,6 +252,9 @@ class QueueStore(Protocol):
 
     def latest_rounds(self) -> dict[PrRef, RoundSummary]:
         """Each PR's latest successfully finished round."""
+
+    def current_followups(self) -> dict[PrRef, FollowUp]:
+        """Each queued PR's follow-up for its current head, where it is classified."""
 
     def put_artifact(self, round_id: int, kind: str, data: object) -> None: ...
 

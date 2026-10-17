@@ -13,9 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
+from jesinia.apps.review.domain.followup import FollowUp, FollowUpKind, PrevSource
 from jesinia.apps.review.domain.gates import CiState, Depth
 from jesinia.apps.review.domain.jobs import DEFAULT_RUNNER
-from jesinia.apps.review.domain.posting import Draft, Posting, PostingState
+from jesinia.apps.review.domain.posting import Draft, Posting, PostingState, RoundFrozen
 from jesinia.apps.review.domain.queue import (
     DEFAULT_PREREVIEW,
     AutoReviewState,
@@ -204,7 +205,7 @@ def _file(data: object) -> PrFile:
 
 _ROUND_COLUMNS = (
     "id, repo, number, head_sha, base_sha, depth, started_at, finished_at, verdict, error, "
-    "posted_review_url, done"
+    "posted_review_url, done, frozen_at, successor_id"
 )
 _DRAFT_COLUMNS = (
     "id, path, line, side, start_line, start_side, body, origin_finding, outdated, outside_diff"
@@ -213,7 +214,8 @@ _POSTING_COLUMNS = "id, round_id, event, key, digest, body, started_at, state, r
 
 
 def _round(row: tuple[object, ...]) -> RoundRecord:
-    (round_id, repo, number, head, base, depth, started, finished, verdict, error, url, done) = row
+    (round_id, repo, number, head, base, depth, started, finished, verdict, error, url, done,
+     frozen, successor) = row  # fmt: skip
     return RoundRecord(
         id=cast(int, round_id),
         ref=PrRef(cast(str, repo), cast(int, number)),
@@ -226,6 +228,8 @@ def _round(row: tuple[object, ...]) -> RoundRecord:
         error=cast(str | None, error),
         posted_review_url=cast(str | None, url),
         done=bool(done),
+        frozen_at=_optional_time(cast(str | None, frozen)),
+        successor_id=cast(int | None, successor),
     )
 
 
@@ -258,6 +262,17 @@ def _posting(row: tuple[object, ...]) -> Posting:
         state=cast(PostingState, state),
         review_url=cast(str | None, url),
         error=cast(str | None, error),
+    )
+
+
+def _followup(row: tuple[object, ...]) -> FollowUp:
+    kind, paths, note, prev_head, prev_source = row
+    return FollowUp(
+        kind=cast(FollowUpKind, kind),
+        differing_paths=list(json.loads(cast(str, paths))),
+        note=cast(str, note),
+        prev_head=cast(str | None, prev_head),
+        prev_source=cast(PrevSource | None, prev_source),
     )
 
 
@@ -496,12 +511,68 @@ class SqliteReviewStore:
     def start_round(
         self, ref: PrRef, head_sha: str, base_sha: str, depth: Depth, started_at: datetime
     ) -> int:
-        cursor = self._conn.execute(
-            "INSERT INTO rounds (repo, number, head_sha, base_sha, depth, started_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (ref.repo, ref.number, head_sha, base_sha, depth, _time(started_at)),
+        """Start a round; in the same transaction the PR's latest round is frozen and its
+        summary and unposted drafts move to the new one (spec §7), so no save can fall
+        between the two."""
+        with transaction(self._conn):
+            row = self._conn.execute(
+                f"SELECT {_ROUND_COLUMNS} FROM rounds WHERE repo = ? AND number = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (ref.repo, ref.number),
+            ).fetchone()
+            cursor = self._conn.execute(
+                "INSERT INTO rounds (repo, number, head_sha, base_sha, depth, started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (ref.repo, ref.number, head_sha, base_sha, depth, _time(started_at)),
+            )
+            round_id = cast(int, cursor.lastrowid)
+            if row is not None:
+                self._replace(_round(row), round_id, head_sha, started_at)
+        return round_id
+
+    def _replace(self, old: RoundRecord, new_id: int, head_sha: str, at: datetime) -> None:
+        """Freeze ``old`` for round ``new_id`` and carry its summary and drafts over, unless
+        a review of it was posted or may have been (a lost response): never posted twice.
+        On the same head the drafts move as they are; on a new head every anchored draft is
+        ``outdated``, remembering the head its lines refer to, until it is re-anchored.
+        (The latest round is never frozen: only a newer round freezes one.)"""
+        self._conn.execute(
+            "UPDATE rounds SET frozen_at = ?, successor_id = ? WHERE id = ?",
+            (_time(at), new_id, old.id),
         )
-        return cast(int, cursor.lastrowid)
+        posted = self._conn.execute(
+            "SELECT 1 FROM postings WHERE round_id = ? "
+            "AND state IN ('started', 'uncertain', 'posted') LIMIT 1",
+            (old.id,),
+        ).fetchone()
+        if old.posted_review_url is not None or posted is not None:
+            return
+        self._conn.execute(
+            "UPDATE rounds SET summary = (SELECT summary FROM rounds WHERE id = ?) WHERE id = ?",
+            (old.id, new_id),
+        )
+        same = old.head_sha == head_sha
+        # An anchored draft becomes outdated; one already outdated by the author's own save
+        # (no carried head) stays so, with nothing to re-anchor from.
+        self._conn.execute(
+            "INSERT INTO drafts (round_id, path, line, side, start_line, start_side, body, "
+            "origin_finding, outdated, outside_diff, carried_head, carried_base) "
+            "SELECT ?, path, line, side, start_line, start_side, body, origin_finding, "
+            "CASE WHEN ? OR line IS NULL THEN outdated ELSE 1 END, outside_diff, "
+            "CASE WHEN ? OR line IS NULL OR (outdated = 1 AND carried_head IS NULL) "
+            "THEN carried_head ELSE COALESCE(carried_head, ?) END, "
+            "CASE WHEN ? OR line IS NULL OR (outdated = 1 AND carried_head IS NULL) "
+            "THEN carried_base ELSE COALESCE(carried_base, ?) END "
+            "FROM drafts WHERE round_id = ? ORDER BY id",
+            (new_id, same, same, old.head_sha, same, old.base_sha, old.id),
+        )
+
+    def _refuse_frozen(self, round_id: int) -> None:
+        row = self._conn.execute(
+            "SELECT frozen_at, successor_id FROM rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            raise RoundFrozen(round_id, cast(int | None, row[1]))
 
     def finish_round(
         self,
@@ -534,7 +605,10 @@ class SqliteReviewStore:
         return cursor.rowcount == 1
 
     def mark_round_done(self, round_id: int) -> None:
-        self._conn.execute("UPDATE rounds SET done = 1 WHERE id = ?", (round_id,))
+        """Raises: RoundFrozen: a newer round replaced it."""
+        with transaction(self._conn):
+            self._refuse_frozen(round_id)
+            self._conn.execute("UPDATE rounds SET done = 1 WHERE id = ?", (round_id,))
 
     def interrupt_unfinished_rounds(self, at: datetime, cause: str) -> int:
         cursor = self._conn.execute(
@@ -665,10 +739,17 @@ class SqliteReviewStore:
         row = self._conn.execute("SELECT summary FROM rounds WHERE id = ?", (round_id,)).fetchone()
         return "" if row is None else cast(str, row[0])
 
-    def _insert_drafts(self, round_id: int, drafts: Sequence[Draft]) -> None:
+    def _insert_drafts(
+        self,
+        round_id: int,
+        drafts: Sequence[Draft],
+        carried: Sequence[tuple[str | None, str | None]] | None = None,
+    ) -> None:
+        origins = carried if carried is not None else [(None, None)] * len(drafts)
         self._conn.executemany(
             "INSERT INTO drafts (round_id, path, line, side, start_line, start_side, body, "
-            "origin_finding, outdated, outside_diff) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "origin_finding, outdated, outside_diff, carried_head, carried_base) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     round_id,
@@ -681,31 +762,90 @@ class SqliteReviewStore:
                     d.origin_finding,
                     int(d.outdated),
                     int(d.outside_diff),
+                    head,
+                    base,
                 )
-                for d in drafts
+                for d, (head, base) in zip(drafts, origins, strict=True)
             ],
         )
 
+    def carried_drafts(self, round_id: int) -> list[tuple[Draft, str, str]]:
+        """The round's drafts still to re-anchor, each with the head and base its lines
+        refer to."""
+        rows = self._conn.execute(
+            f"SELECT {_DRAFT_COLUMNS}, carried_head, carried_base FROM drafts "
+            "WHERE round_id = ? AND carried_head IS NOT NULL ORDER BY id",
+            (round_id,),
+        )
+        return [(_draft(row[:-2]), cast(str, row[-2]), cast(str, row[-1])) for row in rows]
+
+    def reanchor_drafts(self, round_id: int, drafts: Sequence[Draft]) -> int:
+        """Store re-anchored drafts (by id: new lines, or outdated) and clear their carried
+        head; a draft the author saved since (no longer pending) is left as they saved it.
+        Returns how many were updated."""
+        updated = 0
+        with transaction(self._conn):
+            for d in drafts:
+                cursor = self._conn.execute(
+                    "UPDATE drafts SET line = ?, start_line = ?, outdated = ?, "
+                    "carried_head = NULL, carried_base = NULL "
+                    "WHERE id = ? AND round_id = ? AND carried_head IS NOT NULL",
+                    (d.line, d.start_line, int(d.outdated), d.id, round_id),
+                )
+                updated += cursor.rowcount
+        return updated
+
     def seed_drafts(self, round_id: int, drafts: Sequence[Draft]) -> bool:
-        """Add a round's generated drafts, once, after any the author already wrote: False
-        (and nothing written) if it was seeded before."""
+        """Add a round's generated drafts, once, after any the author already wrote (or
+        that were carried over: a finding repeating one, same file and text, is left out).
+        False (and nothing written) if it was seeded before or the round is frozen."""
         with transaction(self._conn):
             claimed = self._conn.execute(
-                "UPDATE rounds SET drafts_seeded = 1 WHERE id = ? AND drafts_seeded = 0",
+                "UPDATE rounds SET drafts_seeded = 1 "
+                "WHERE id = ? AND drafts_seeded = 0 AND frozen_at IS NULL",
                 (round_id,),
             )
             if not claimed.rowcount:
                 return False
-            self._insert_drafts(round_id, drafts)
+            have = set(
+                self._conn.execute(
+                    "SELECT path, body FROM drafts WHERE round_id = ?", (round_id,)
+                ).fetchall()
+            )
+            self._insert_drafts(round_id, [d for d in drafts if (d.path, d.body) not in have])
         return True
 
     def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> None:
         """Replace a round's summary and drafts (the author's edit) in one transaction. It
-        doesn't count as seeding: findings arriving later still add their drafts."""
+        doesn't count as seeding: findings arriving later still add their drafts. A carried
+        draft whose anchor the edit left as it was (same id, file, lines, sides and flag)
+        stays pending re-anchoring; any other is the author's choice and is kept as given.
+
+        Raises:
+            RoundFrozen: a newer round replaced it (its drafts are there).
+        """
         with transaction(self._conn):
+            self._refuse_frozen(round_id)
+            pending = {
+                row[0]: row[1:]
+                for row in self._conn.execute(
+                    "SELECT id, path, line, side, start_line, start_side, outdated, "
+                    "carried_head, carried_base FROM drafts "
+                    "WHERE round_id = ? AND carried_head IS NOT NULL",
+                    (round_id,),
+                )
+            }
             self._conn.execute("UPDATE rounds SET summary = ? WHERE id = ?", (summary, round_id))
             self._conn.execute("DELETE FROM drafts WHERE round_id = ?", (round_id,))
-            self._insert_drafts(round_id, drafts)
+            carried: list[tuple[str | None, str | None]] = []
+            for d in drafts:
+                was = pending.get(d.id)
+                anchor = (d.path, d.line, d.side, d.start_line, d.start_side, int(d.outdated))
+                if was is not None and tuple(was[:6]) == anchor:
+                    carried.append((cast(str, was[6]), cast(str, was[7])))
+                else:
+                    carried.append((None, None))
+            self._insert_drafts(round_id, drafts, carried)
 
     def postings(self, round_id: int) -> list[Posting]:
         rows = self._conn.execute(
@@ -737,7 +877,22 @@ class SqliteReviewStore:
 
         Raises:
             sqlite3.IntegrityError: another attempt of the round is still in flight.
+            RoundFrozen: a newer round replaced it: nothing is posted from it.
         """
+        with transaction(self._conn):
+            self._refuse_frozen(round_id)
+            return self._start_posting(round_id, event, key, digest, body, comments, started_at)
+
+    def _start_posting(
+        self,
+        round_id: int,
+        event: ReviewEvent,
+        key: str,
+        digest: str,
+        body: str,
+        comments: object,
+        started_at: datetime,
+    ) -> Posting:
         self._conn.execute(
             "INSERT INTO postings (round_id, event, key, digest, body, comments, started_at, "
             "state) VALUES (?, ?, ?, ?, ?, ?, ?, 'started') "
@@ -772,6 +927,54 @@ class SqliteReviewStore:
         self._conn.execute(
             "UPDATE postings SET state = ?, error = ? WHERE id = ?", (state, error, posting_id)
         )
+
+    def posted_rounds(self, ref: PrRef) -> list[tuple[RoundRecord, Posting]]:
+        """The PR's rounds with a review posted, each with that posting, oldest first."""
+        columns = ", ".join(f"r.{c.strip()}" for c in _ROUND_COLUMNS.split(","))
+        posting = ", ".join(f"p.{c.strip()}" for c in _POSTING_COLUMNS.split(","))
+        rows = self._conn.execute(
+            f"SELECT {columns}, {posting} FROM rounds r JOIN postings p ON p.round_id = r.id "
+            "WHERE r.repo = ? AND r.number = ? AND p.state = 'posted' ORDER BY p.id",
+            (ref.repo, ref.number),
+        )
+        width = len(_ROUND_COLUMNS.split(","))
+        return [(_round(row[:width]), _posting(row[width:])) for row in rows]
+
+    def put_followup(self, ref: PrRef, head_sha: str, followup: FollowUp) -> None:
+        self._conn.execute(
+            "INSERT INTO followups (repo, number, head_sha, kind, differing_paths, note, "
+            "prev_head, prev_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (repo, number, head_sha) DO UPDATE SET kind = excluded.kind, "
+            "differing_paths = excluded.differing_paths, note = excluded.note, "
+            "prev_head = excluded.prev_head, prev_source = excluded.prev_source",
+            (
+                ref.repo,
+                ref.number,
+                head_sha,
+                followup.kind,
+                json.dumps(followup.differing_paths),
+                followup.note,
+                followup.prev_head,
+                followup.prev_source,
+            ),
+        )
+
+    def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
+        row = self._conn.execute(
+            "SELECT kind, differing_paths, note, prev_head, prev_source FROM followups "
+            "WHERE repo = ? AND number = ? AND head_sha = ?",
+            (ref.repo, ref.number, head_sha),
+        ).fetchone()
+        return None if row is None else _followup(row)
+
+    def current_followups(self) -> dict[PrRef, FollowUp]:
+        """Each queued PR's follow-up for its current head, where it is known."""
+        rows = self._conn.execute(
+            "SELECT f.repo, f.number, f.kind, f.differing_paths, f.note, f.prev_head, "
+            "f.prev_source FROM followups f JOIN prs p ON p.repo = f.repo "
+            "AND p.number = f.number AND p.head_sha = f.head_sha"
+        )
+        return {PrRef(row[0], row[1]): _followup(row[2:]) for row in rows}
 
     def set_verdict(self, round_id: int, verdict: str) -> None:
         self._conn.execute("UPDATE rounds SET verdict = ? WHERE id = ?", (verdict, round_id))

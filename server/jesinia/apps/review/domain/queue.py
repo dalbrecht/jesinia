@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Literal
 
 from jesinia.apps.review.domain.errors import ReviewError
+from jesinia.apps.review.domain.followup import FollowUp, FollowUpKind, pr_kind
 from jesinia.apps.review.domain.gates import CiState, Depth, GateState, propose_depth
 from jesinia.apps.review.domain.workspace import InvalidRepoError, canonical_repo
 from jesinia.services.github.domain.pr import PullRequest, ReviewSummary
@@ -196,6 +197,9 @@ class RoundRecord:
     error: str | None
     posted_review_url: str | None
     done: bool
+    # Read-only once a newer round replaced it (spec §7): ``successor_id`` has its drafts.
+    frozen_at: datetime | None = None
+    successor_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +290,10 @@ class QueueRow:
     suggested: bool = False  # from a suggested repo (only a PR the author loaded)
     # The latest review's diff changes no line: the UI says so instead of showing 100% (M3).
     nothing_to_walk: bool = False
+    # What this head needs after the author's previous review (spec §4.1), once known.
+    followup_kind: FollowUpKind | None = None
+    followup_note: str = ""
+    differing_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -396,9 +404,15 @@ def owner_of(repo: str) -> str:
 
 
 def queue_row(
-    stored: StoredPr, latest: RoundSummary | None, viewer: str | None, suggested: bool = False
+    stored: StoredPr,
+    latest: RoundSummary | None,
+    viewer: str | None,
+    suggested: bool = False,
+    followup: FollowUp | None = None,
 ) -> QueueRow:
-    """The row the UI shows. A PR whose last fetch failed says so, whatever state it had."""
+    """The row the UI shows. A PR whose last fetch failed says so, whatever state it had.
+    ``followup``: what the PR's current head needs after the author's previous review; its
+    kind is the row's (a still-approved rebase files under Still approved)."""
     pr = stored.pr
     state, reason = stored.state, stored.state_reason
     if stored.fetch_error is not None:
@@ -414,7 +428,7 @@ def queue_row(
         created_at=pr.created_at,
         size_lines=pr.size_lines,
         files=pr.files,
-        kind=stored.kind,
+        kind=pr_kind(followup) if followup is not None else stored.kind,
         depth=pr.depth,
         ci_state=pr.ci_state,
         auto_review_state=pr.auto_review_state,
@@ -435,4 +449,7 @@ def queue_row(
         fetch_error_at=stored.fetch_error_at,
         suggested=suggested,
         nothing_to_walk=latest is not None and latest.nothing_to_walk,
+        followup_kind=None if followup is None else followup.kind,
+        followup_note="" if followup is None else followup.note,
+        differing_paths=() if followup is None else tuple(followup.differing_paths),
     )
