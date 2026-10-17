@@ -681,6 +681,14 @@ class SqliteReviewStore:
         )
         return [_posting(row) for row in rows]
 
+    def unsettled_posting_rounds(self) -> list[int]:
+        """Rounds with an attempt whose outcome isn't known (``started`` or ``uncertain``)."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT round_id FROM postings "
+            "WHERE state IN ('started', 'uncertain') ORDER BY round_id"
+        )
+        return [round_id for (round_id,) in rows]
+
     def start_posting(
         self,
         round_id: int,

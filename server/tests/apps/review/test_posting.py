@@ -815,3 +815,59 @@ async def test_saving_drafts_is_bounded(env: Env) -> None:
         await env.service.save_drafts(env.round_id, "x" * 70_000, [])
     with pytest.raises(InvalidDraftError):
         Draft("a.py", "x", outside_diff=True).comment()
+
+
+# --- PR 2 fix wave: settling unsettled postings in the background (M3) -------------------------
+
+
+async def test_a_lost_response_is_settled_in_the_background(env: Env) -> None:
+    """M3: an ``uncertain`` attempt whose review is on GitHub is adopted by the job (never
+    by a GET): the round shows posted without the author posting again."""
+    env.github.error = GitHubRequestError(None, "ReadTimeout")
+    env.github.lose_response = True
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error, env.github.lose_response = None, False
+    (attempt,) = env.store.postings(env.round_id)
+    assert attempt.state == "uncertain"
+
+    assert await env.service.reconcile_unsettled() == 1
+    stored = env.store.round(env.round_id)
+    assert stored is not None and stored.done and stored.posted_review_url == URL
+    assert len(env.github.posted) == 1
+    assert await env.service.reconcile_unsettled() == 0  # nothing left
+
+
+async def test_a_crash_left_attempt_never_on_github_becomes_not_posted(env: Env) -> None:
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    env.store.start_posting(
+        env.round_id, "COMMENT", "k1", preview.digest, preview.body, [], env.clock()
+    )  # then the server died before calling GitHub
+    assert await env.service.reconcile_unsettled() == 0  # within the grace (R49): left alone
+    assert env.store.postings(env.round_id)[0].state == "started"
+    env.clock.advance(4)
+    assert await env.service.reconcile_unsettled() == 1
+    (attempt,) = env.store.postings(env.round_id)
+    assert attempt.state == "not_posted"
+    stored = env.store.round(env.round_id)
+    assert stored is not None and not stored.done
+    assert await env.post("COMMENT") == URL  # the author can post it now
+
+
+async def test_background_reconcile_survives_github_failures(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    env.store.start_posting(
+        env.round_id, "COMMENT", "k1", preview.digest, preview.body, [], env.clock()
+    )
+    env.clock.advance(4)
+
+    async def failing(repo: str, number: int) -> list[ReviewSummary]:
+        raise GitHubRequestError(502, "Bad Gateway")
+
+    env.github.reviews = failing  # type: ignore[method-assign]
+    assert await env.service.reconcile_unsettled() == 0
+    (attempt,) = env.store.postings(env.round_id)
+    assert attempt.state == "started"  # kept: nothing is posted until it can be settled
+    assert "Bad Gateway" in caplog.text

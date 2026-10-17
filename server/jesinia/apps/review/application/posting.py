@@ -28,10 +28,11 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import contextlib
 import logging
 import math
 import sqlite3
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -166,6 +167,8 @@ class PostingStore(Protocol):
     def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> None: ...
 
     def postings(self, round_id: int) -> builtins.list[Posting]: ...
+
+    def unsettled_posting_rounds(self) -> builtins.list[int]: ...
 
     def start_posting(
         self,
@@ -404,10 +407,36 @@ class PostingService:
         """
         rnd = self._round(round_id)
         # One post per round at a time: two clicks with different keys can't both post.
+        async with self._round_lock(round_id):
+            return await self._post(rnd, event, confirm, key, digest)
+
+    async def reconcile_unsettled(self) -> int:
+        """Settle every attempt left ``started`` (a crash) or ``uncertain`` (a lost
+        response) once its grace period is over (M3), so a round shows as posted without
+        the author posting again. Run by a background job, never by a read. A round whose
+        attempt is still within its grace, or whose reviews GitHub can't list now, is left
+        for the next run (logged, never raised). Returns how many rounds were settled."""
+        settled = 0
+        for round_id in self._store.unsettled_posting_rounds():
+            rnd = self._round(round_id)
+            try:
+                async with self._round_lock(round_id):
+                    await self._reconcile(rnd)
+            except PostingStillUncertain:
+                continue
+            except (GitHubError, GitHubPayloadError) as exc:
+                log.warning("review.reconcile round=%d left unsettled: %s", round_id, exc)
+                continue
+            settled += 1
+        return settled
+
+    @contextlib.asynccontextmanager
+    async def _round_lock(self, round_id: int) -> AsyncIterator[None]:
+        """The round's posting lock, dropped once nobody holds or waits for it."""
         self._lock_users[round_id] = self._lock_users.get(round_id, 0) + 1
         try:
             async with self._locks.setdefault(round_id, asyncio.Lock()):
-                return await self._post(rnd, event, confirm, key, digest)
+                yield
         finally:
             self._lock_users[round_id] -= 1
             if not self._lock_users[round_id]:  # nobody holds or waits for it

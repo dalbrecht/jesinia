@@ -25,7 +25,13 @@ from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.domain.gates import DEBOUNCE
 from jesinia.apps.review.domain.queue import PrRef, QueueFilter, RepoConfig
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
-from jesinia.apps.review.module import PRUNE_JOB, REVIEW_DB, SYNC_JOB, ReviewModule
+from jesinia.apps.review.module import (
+    PRUNE_JOB,
+    RECONCILE_JOB,
+    REVIEW_DB,
+    SYNC_JOB,
+    ReviewModule,
+)
 from jesinia.core.config import Config
 from jesinia.core.db import open_db
 from jesinia.core.events import EventBus
@@ -492,6 +498,7 @@ async def test_module_schedules_sync_and_prune(cfg: Config) -> None:
         assert view.rows == [] and view.sync_error is not None
         assert "gh auth login" in view.sync_error
         await jobs.run_now(PRUNE_JOB)
+        await jobs.run_now(RECONCILE_JOB)  # M3: nothing unsettled, nothing asked of GitHub
         assert isinstance(module.scheduler, Scheduler)
     finally:
         await module.stop()
@@ -555,6 +562,7 @@ async def test_module_jobs_are_no_ops_once_stopped(
         _ = module.queue
     await module.sync_queue()
     await module.prune_workspace()
+    await module.reconcile_postings()
     conn = open_db(cfg.data_dir, REVIEW_DB)
     SqliteReviewStore(conn).start_round(PrRef("acme/web", 1), HEAD, BASE, "quick", START)
     conn.close()

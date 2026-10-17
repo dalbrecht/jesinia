@@ -47,6 +47,9 @@ REVIEW_DB = ModuleDb("review", DbClass.HISTORY, files("jesinia.apps.review.migra
 SYNC_JOB = "review.sync"
 PRUNE_JOB = "review.prune"
 IDEMPOTENCY_PRUNE_JOB = "review.idempotency-prune"
+RECONCILE_JOB = "review.reconcile-postings"
+# How often postings a crash or a lost response left unsettled are checked against GitHub.
+RECONCILE_INTERVAL = timedelta(minutes=5)
 
 
 def _not_started() -> HTTPException:
@@ -172,6 +175,14 @@ class ReviewModule:
         if self._pruner is not None:
             await self._pruner.run()
 
+    async def reconcile_postings(self) -> None:
+        """Settle postings left ``started`` or ``uncertain`` (the ``review.reconcile-postings``
+        job, also at start: M3)."""
+        if self._posting is not None:
+            settled = await self._posting.reconcile_unsettled()
+            if settled:
+                log.info("settled %d review postings left unsettled", settled)
+
     def router(self) -> APIRouter | None:
         return build_router(self)
 
@@ -231,6 +242,9 @@ class ReviewModule:
                 github=prs, writer=github, files=self._queue, store=store, clock=_utc_now
             )
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_queue, at_start=True)
+            ctx.scheduler.every(
+                RECONCILE_JOB, RECONCILE_INTERVAL, self.reconcile_postings, at_start=True
+            )
             if self._jobs is not None:
                 self._pipeline = Pipeline(
                     github=prs,
