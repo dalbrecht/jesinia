@@ -17,6 +17,7 @@ from jesinia.apps.issues.application.ports import (
     RunStatus,
     SuggestionRun,
 )
+from jesinia.apps.issues.domain.similarity import BODY_CHARS
 from jesinia.apps.issues.domain.suggestions import (
     ISSUE_KINDS,
     Suggestion,
@@ -27,7 +28,10 @@ from jesinia.apps.issues.domain.suggestions import (
 )
 from jesinia.core.db import transaction
 
-_COLUMNS = "id, repo, n, scope, kind, payload_json, reason, state, created_at, updated_at"
+_COLUMNS = (
+    "id, repo, n, scope, kind, payload_json, reason, state, created_at, updated_at, "
+    "origin_json, basis"
+)
 _RUN_COLUMNS = "repo, n, status, source, due_at, cause, updated_at"
 _STATUSES: tuple[RunStatus, ...] = ("queued", "running", "done", "skipped", "waiting", "failed")
 _SOURCES: tuple[RunSource, ...] = ("inbox", "demand")
@@ -38,7 +42,7 @@ def _time(value: datetime) -> str:
 
 
 def _suggestion(row: tuple[object, ...]) -> Suggestion:
-    sid, repo, n, scope, kind, payload, reason, state, created, updated = row
+    sid, repo, n, scope, kind, payload, reason, state, created, updated, origin, basis = row
     return Suggestion(
         id=str(sid),
         repo=cast(str | None, repo),
@@ -50,7 +54,13 @@ def _suggestion(row: tuple[object, ...]) -> Suggestion:
         state=parse_state(str(state)),
         created_at=datetime.fromisoformat(str(created)),
         updated_at=datetime.fromisoformat(str(updated)),
+        origin=None if origin is None else tuple(json.loads(str(origin))),
+        basis=cast(str | None, basis),
     )
+
+
+def _origin_json(origin: tuple[object, ...] | None) -> str | None:
+    return None if origin is None else json.dumps(list(origin), ensure_ascii=False)
 
 
 def _run(row: tuple[object, ...]) -> SuggestionRun:
@@ -74,7 +84,7 @@ class SqliteSuggestionStore:
 
     # Suggestions ------------------------------------------------------------------------
 
-    def suggestions(self, filters: SuggestionFilters) -> list[Suggestion]:
+    def suggestions(self, filters: SuggestionFilters, limit: int | None = None) -> list[Suggestion]:
         where: list[str] = []
         params: list[object] = []
         if filters.repo is not None:
@@ -90,8 +100,12 @@ class SqliteSuggestionStore:
             where.append("kind = ?")
             params.append(filters.kind)
         clause = f"WHERE {' AND '.join(where)} " if where else ""
+        bound = ""
+        if limit is not None:
+            bound = " LIMIT ?"
+            params.append(limit)
         rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM suggestions {clause}ORDER BY created_at, rowid", params
+            f"SELECT {_COLUMNS} FROM suggestions {clause}ORDER BY created_at, rowid{bound}", params
         )
         return [_suggestion(row) for row in rows]
 
@@ -110,7 +124,7 @@ class SqliteSuggestionStore:
                 (repo, n, *ISSUE_KINDS),
             )
             self._conn.executemany(
-                f"INSERT INTO suggestions ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO suggestions ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         s.id,
@@ -123,6 +137,8 @@ class SqliteSuggestionStore:
                         s.state,
                         _time(s.created_at),
                         _time(s.updated_at),
+                        _origin_json(s.origin),
+                        s.basis,
                     )
                     for s in drafts
                 ],
@@ -131,15 +147,23 @@ class SqliteSuggestionStore:
     def save(self, suggestion: Suggestion) -> None:
         self._conn.execute(
             "UPDATE suggestions SET kind = ?, payload_json = ?, reason = ?, state = ?, "
-            "updated_at = ? WHERE id = ?",
+            "updated_at = ?, origin_json = ?, basis = ? WHERE id = ?",
             (
                 suggestion.kind,
                 payload_json(suggestion.payload),
                 suggestion.reason,
                 suggestion.state,
                 _time(suggestion.updated_at),
+                _origin_json(suggestion.origin),
+                suggestion.basis,
                 suggestion.id,
             ),
+        )
+
+    def retire(self, suggestion_ids: Sequence[str]) -> None:
+        self._conn.executemany(
+            "DELETE FROM suggestions WHERE id = ? AND state = 'draft'",
+            [(sid,) for sid in suggestion_ids],
         )
 
     # Runs -------------------------------------------------------------------------------
@@ -199,9 +223,10 @@ class SqliteSuggestionStore:
     def corpus(self) -> list[CorpusEntry]:
         rows = self._conn.execute(
             "SELECT issues.repo, issues.number, json_extract(issues.json, '$.title'), "
-            "json_extract(issues.json, '$.body'), issues.state, issues.is_epic FROM issues "
-            "JOIN repos ON repos.repo = issues.repo WHERE repos.watched = 1 "
-            "ORDER BY issues.updated_at DESC, issues.repo, issues.number"
+            "substr(json_extract(issues.json, '$.body'), 1, ?), issues.state, issues.is_epic "
+            "FROM issues JOIN repos ON repos.repo = issues.repo WHERE repos.watched = 1 "
+            "ORDER BY issues.updated_at DESC, issues.repo, issues.number",
+            (BODY_CHARS,),
         )
         return [
             CorpusEntry(str(repo), int(n), str(title), str(body), state == "open", bool(epic))

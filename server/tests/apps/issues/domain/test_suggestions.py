@@ -33,6 +33,7 @@ from jesinia.apps.issues.domain.suggestions import (
     one_line,
     parse_kind,
     parse_state,
+    stale,
     triage_drafts,
 )
 from jesinia.apps.issues.domain.triage import triage
@@ -174,6 +175,8 @@ def test_areas_known_new_prefixed_and_refused() -> None:
                 LabelProposal("area", "area:a,b", "a comma can't be listed by"),
                 LabelProposal("area", "area:" + "x" * 60, "too long"),
                 LabelProposal("area", "area:", "empty"),
+                LabelProposal("area", "area:bill\u202eing", "a bidi control"),
+                LabelProposal("area", "area:zero\u200bwidth", "a zero-width space"),
             )
         ),
         ctx,
@@ -272,16 +275,66 @@ def test_identity_and_fresh_drafts_skip_what_the_author_already_handled() -> Non
     assert identity("readiness_gap", {"ready": True, "missing": []}) == ("readiness_gap",)
     assert identity("brief", {"text": "x"}) == ("brief",)
     kept = [
-        suggestion(state="dismissed"),  # priority dismissed: no more priority drafts
+        # Priority dismissed while the issue read "h1": no more priority drafts while it does.
+        replace(suggestion(state="dismissed"), basis="h1"),
         suggestion("duplicate", "edited", repo="acme/web", n=3),
+        # Approved advice never suppresses (ruling IR38a): what it set may be gone again.
+        suggestion("label", "approved", dimension="type", value="bug"),
+        suggestion("parent", "approved", repo="acme/web", n=40),
     ]
     drafts = [
         Draft("label", {"dimension": "priority", "value": "priority: low"}, "r"),
         Draft("label", {"dimension": "type", "value": "bug"}, "r"),
         Draft("duplicate", {"repo": "acme/web", "n": 3, "similarity": 0.5}, "r"),
         Draft("duplicate", {"repo": "acme/web", "n": 4, "similarity": 0.5}, "r"),
+        Draft("parent", {"repo": "acme/web", "n": 40}, "r"),
     ]
-    assert fresh_drafts(drafts, kept) == [drafts[1], drafts[3]]
+    assert fresh_drafts(drafts, kept, "h1") == [drafts[1], drafts[3], drafts[4]]
+    # Once the issue's title, body or labels change, the dismissal no longer holds.
+    assert fresh_drafts(drafts, kept, "h2") == [drafts[0], drafts[1], drafts[3], drafts[4]]
+
+
+def test_an_edited_area_keeps_the_identity_it_was_proposed_with() -> None:
+    area = suggestion(dimension="area", value="area:web")
+    edited = edit(area, {"dimension": "area", "value": "billing"}, None, SCHEMA, T0)
+    assert edited.origin == ("label", "area", "area:web")
+    again = edit(edited, {"dimension": "area", "value": "area:apple"}, None, SCHEMA, T0)
+    assert again.origin == ("label", "area", "area:web")
+    rerun = [
+        Draft("label", {"dimension": "area", "value": "area:web"}, "r"),
+        Draft("label", {"dimension": "area", "value": "area:apple"}, "r"),
+        Draft("label", {"dimension": "area", "value": "area:docs"}, "r"),
+    ]
+    assert fresh_drafts(rerun, [again], None) == [rerun[2]]
+
+
+def test_stale_drafts_lose_their_premise() -> None:
+    open_issue = triage(("bug",), 0, SCHEMA)  # readiness, priority and area missing
+    priority = suggestion()
+    assert not stale(priority, open_issue, has_parent=False, is_open=True)
+    filled = triage(("bug", "priority: low"), 0, SCHEMA)
+    assert stale(priority, filled, has_parent=False, is_open=True)
+    assert stale(priority, open_issue, has_parent=False, is_open=False)
+    parent = suggestion("parent", repo="acme/web", n=40)
+    assert not stale(parent, open_issue, has_parent=False, is_open=True)
+    assert stale(parent, open_issue, has_parent=True, is_open=True)
+    assert stale(parent, triage(("epic",), 0, SCHEMA), has_parent=False, is_open=True)
+    duplicate = suggestion("duplicate", repo="acme/web", n=3)
+    assert not stale(duplicate, filled, has_parent=True, is_open=True)
+    could_be_ready = suggestion("readiness_gap", ready=True, missing=[])
+    assert not stale(
+        could_be_ready, triage(("human-needed",), 0, SCHEMA), has_parent=False, is_open=True
+    )
+    assert stale(
+        could_be_ready, triage(("agent-ready",), 0, SCHEMA), has_parent=False, is_open=True
+    )
+    gap = suggestion("readiness_gap", ready=False, missing=["tests"])
+    assert not stale(gap, open_issue, has_parent=False, is_open=True)
+    assert not stale(gap, triage(("agent-ready",), 0, SCHEMA), has_parent=False, is_open=True)
+    assert stale(gap, triage(("blocked",), 0, SCHEMA), has_parent=False, is_open=True)
+    assert not stale(suggestion("brief", text="x"), open_issue, has_parent=False, is_open=False)
+    edited = suggestion(state="edited")
+    assert not stale(edited, filled, has_parent=False, is_open=False)  # the author's now
 
 
 def test_edit_label_keeps_dimension_and_resolves_the_value() -> None:
@@ -323,6 +376,9 @@ def test_edit_refs_readiness_and_later_kinds() -> None:
     }
     parent = suggestion("parent", repo="acme/web", n=40)
     for bad in (
+        {"repo": "acme/web", "n": 7},  # the issue itself
+        {"repo": "ACME/web", "n": 7},
+        {"repo": "other/web", "n": 40},  # GitHub's sub-issues need the same owner
         {"repo": "nope", "n": 1},
         {"repo": "a/b", "n": 0},
         {"repo": "a/b", "n": True},
@@ -344,14 +400,16 @@ def test_edit_refs_readiness_and_later_kinds() -> None:
     ):
         with pytest.raises(InvalidSuggestionEditError):
             edit(gap, bad_gap, None, SCHEMA, T0)
+    with pytest.raises(InvalidSuggestionEditError):
+        edit(dup, {"repo": "acme/web", "n": 7}, None, SCHEMA, T0)
     with pytest.raises(InvalidSuggestionEditError, match="can't be edited yet"):
         edit(suggestion("brief", text="x"), {"text": "y"}, None, SCHEMA, T0)
 
 
 def test_only_open_drafts_can_be_edited_and_dismiss_is_idempotent() -> None:
-    dismissed = dismiss(suggestion(), T0)
-    assert dismissed.state == "dismissed"
-    assert dismiss(dismissed, T0) is dismissed
+    dismissed = dismiss(suggestion(), T0, "h1")
+    assert dismissed.state == "dismissed" and dismissed.basis == "h1"
+    assert dismiss(dismissed, T0, "h2") is dismissed
     with pytest.raises(SuggestionStateError):
         edit(dismissed, {"dimension": "priority", "value": "p1"}, None, SCHEMA, T0)
     approved = suggestion(state="approved")

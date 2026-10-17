@@ -52,6 +52,8 @@ from jesinia.apps.issues.domain.triage import (
     IssueNotCachedError,
     RepoMovedError,
     RepoNotWatchedError,
+    Triage,
+    content_hash,
     is_inbox,
     triage,
 )
@@ -72,6 +74,9 @@ Clock = Callable[[], datetime]
 # Told which issues just entered the Inbox view, or changed while in it (Task 5 queues
 # suggestion runs from them).
 OnInbox = Callable[[str, Sequence[int]], Awaitable[None]]
+# Told each issue's triage whenever it is stored (a sync page or a recompute), so drafts that
+# lost their premise can be retired (Task 5).
+OnTriaged = Callable[[str, Sequence[tuple[Issue, Triage]]], None]
 
 
 def _key(repo: str) -> str:
@@ -123,8 +128,11 @@ class SyncService:
         clock: the current UTC time.
         on_inbox: awaited with the issues that just entered the Inbox view; best effort, its
             failure is logged and never breaks a sync.
-        on_inbox_edit: awaited with the issues already in the Inbox view that changed on
-            GitHub (its text or labels); best effort, like ``on_inbox``.
+        on_inbox_edit: awaited with the issues already in the Inbox view whose title, body or
+            labels changed on GitHub (``content_hash``; a comment alone is no edit); best
+            effort, like ``on_inbox``.
+        on_triaged: called with each issue's triage whenever a sync page or a recompute stores
+            it; best effort, like ``on_inbox``.
     """
 
     def __init__(
@@ -135,12 +143,14 @@ class SyncService:
         *,
         on_inbox: OnInbox | None = None,
         on_inbox_edit: OnInbox | None = None,
+        on_triaged: OnTriaged | None = None,
     ) -> None:
         self._github = github
         self._store = store
         self._clock = clock
         self._on_inbox = on_inbox
         self._on_inbox_edit = on_inbox_edit
+        self._on_triaged = on_triaged
         self._locks: dict[str, asyncio.Lock] = {}
         self._syncing: set[str] = set()
         self._backoff_until: datetime | None = None
@@ -294,6 +304,7 @@ class SyncService:
                 [(i.updated_at, i.id) for i in page.items], page.next_token
             )
             self._store.save_page(repo, stored, links, cursor, self._clock())
+            self._triaged_listener(repo, [(item.issue, item.triage) for item in stored])
             if entered:
                 await self._notify(self._on_inbox, repo, entered)
             if edited:
@@ -336,8 +347,21 @@ class SyncService:
                 before is not None and before.inbox and not before.complete and before.is_open
             )
             if inbox and not result.complete and issue.state == "open":
-                (edited if was_shown else entered).append(issue.number)
+                if not was_shown:
+                    entered.append(issue.number)
+                elif before is not None and before.content != content_hash(
+                    issue.title, issue.body, issue.labels
+                ):
+                    edited.append(issue.number)
         return stored, entered, edited
+
+    def _triaged_listener(self, repo: str, triaged: Sequence[tuple[Issue, Triage]]) -> None:
+        if self._on_triaged is None or not triaged:
+            return
+        try:
+            self._on_triaged(repo, triaged)
+        except Exception:  # best effort: a failing listener never breaks a sync
+            log.exception("issues: the triage listener failed for %s", repo)
 
     async def _notify(self, listener: OnInbox | None, repo: str, numbers: Sequence[int]) -> None:
         if listener is None:
@@ -406,13 +430,11 @@ class SyncService:
             self._retriage(current.repo, current.schema)
 
     def _retriage(self, repo: str, schema: LabelSchema) -> None:
-        self._store.update_triage(
-            repo,
-            [
-                (i.number, triage(i.labels, i.sub_issue_count, schema))
-                for i in self._store.issues(repo)
-            ],
-        )
+        triaged = [
+            (i, triage(i.labels, i.sub_issue_count, schema)) for i in self._store.issues(repo)
+        ]
+        self._store.update_triage(repo, [(i.number, result) for i, result in triaged])
+        self._triaged_listener(repo, triaged)
 
     # Details --------------------------------------------------------------------------
 

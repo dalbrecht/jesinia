@@ -36,6 +36,7 @@ from jesinia.apps.issues.domain.triage import (
     SyncCursor,
     Triage,
     ViewName,
+    content_hash,
     stale_before,
 )
 from jesinia.core.db import transaction
@@ -408,14 +409,20 @@ class SqliteIssuesStore:
             return {}
         marks = ", ".join("?" for _ in numbers)
         rows = self._conn.execute(
-            "SELECT number, complete, inbox, state FROM issues "
+            "SELECT number, complete, inbox, state, json FROM issues "
             f"WHERE repo = ? AND number IN ({marks})",
             (repo, *numbers),
         )
-        return {
-            number: PreviousTriage(bool(complete), bool(inbox), is_open=state == "open")
-            for number, complete, inbox, state in rows
-        }
+        found: dict[int, PreviousTriage] = {}
+        for number, complete, inbox, state, text in rows:
+            cached = _issue(text)
+            found[number] = PreviousTriage(
+                bool(complete),
+                bool(inbox),
+                is_open=state == "open",
+                content=content_hash(cached.title, cached.body, cached.labels),
+            )
+        return found
 
     def is_unchanged(self, repo: str, issue: Issue) -> bool:
         row = self._conn.execute(

@@ -1190,7 +1190,8 @@ export interface paths {
         /**
          * Get Suggestions
          * @description Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
-         *     repo, or all. ``state`` may repeat (default: the open ones, ``draft`` and ``edited``).
+         *     repo, or all, oldest first and at most ``limit``. ``state`` may repeat (default: the
+         *     open ones, ``draft`` and ``edited``).
          */
         get: operations["get_suggestions_api_issues_suggestions_get"];
         put?: never;
@@ -6977,6 +6978,7 @@ export interface operations {
                 n?: number | null;
                 state?: string[] | null;
                 kind?: string | null;
+                limit?: number;
             };
             header?: never;
             path?: never;

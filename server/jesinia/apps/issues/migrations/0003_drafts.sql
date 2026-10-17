@@ -6,6 +6,8 @@
 -- Suggestions are drafts until the author approves or dismisses them (domain/suggestions.py).
 -- One about a single issue has `repo` and `n`; one about several issues or a queue (later
 -- tasks) has `scope` instead. `payload_json` is Jesinia's own JSON, shaped per kind.
+-- `origin_json` is the advice it was proposed as (kept through edits); `basis` is the issue's
+-- content hash when it was dismissed (a dismissal holds only while that is unchanged, IR38a).
 CREATE TABLE suggestions (
     id TEXT PRIMARY KEY,
     repo TEXT COLLATE NOCASE,
@@ -20,6 +22,8 @@ CREATE TABLE suggestions (
     state TEXT NOT NULL CHECK (state IN ('draft', 'edited', 'approved', 'dismissed')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    origin_json TEXT,
+    basis TEXT,
     CHECK ((repo IS NULL) = (n IS NULL)),
     CHECK (repo IS NOT NULL OR scope IS NOT NULL)
 );

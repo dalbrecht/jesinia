@@ -5306,7 +5306,7 @@
           "issues"
         ],
         "summary": "Get Suggestions",
-        "description": "Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one\nrepo, or all. ``state`` may repeat (default: the open ones, ``draft`` and ``edited``).",
+        "description": "Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one\nrepo, or all, oldest first and at most ``limit``. ``state`` may repeat (default: the\nopen ones, ``draft`` and ``edited``).",
         "operationId": "get_suggestions_api_issues_suggestions_get",
         "parameters": [
           {
@@ -5379,6 +5379,18 @@
                 }
               ],
               "title": "Kind"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
             }
           }
         ],

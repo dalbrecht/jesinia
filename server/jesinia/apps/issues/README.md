@@ -90,8 +90,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `issues.suggest` runs every minute, and once at start. It starts the suggestion runs that are
   due, two at a time.
   - Sync queues a run when an issue enters the Inbox (due at once). It queues one again when an
-    Inbox issue changes, due five minutes after the last change, so a burst of edits costs one
-    run.
+    Inbox issue's title, body or labels change, due five minutes after the last change, so a
+    burst of edits costs one run. A comment alone queues nothing.
   - A queued issue that left the Inbox before its turn is skipped.
   - Backlog issues are never run in the background, only on demand, so a big first sync costs
     no agent time.
@@ -187,8 +187,14 @@ Issue titles and bodies are written by whoever can open an issue, so they are un
   - duplicates only among the candidates the local TF-IDF found;
   - a parent only among the open epics listed;
   - every reason on one line.
-- **Reruns:** a rerun replaces untouched drafts. It never brings back advice the author
-  dismissed, and never doubles advice they edited.
+- **Reruns:** a rerun replaces untouched drafts. It never doubles advice the author edited. Advice
+  they dismissed stays away only while the issue's title, body and labels are unchanged (a
+  content hash). Approved advice never holds anything back, since what it set may be undone
+  later (ruling IR38a).
+- **Retiring:** whenever sync or a schema recompute stores an issue's triage, untouched drafts
+  that lost their premise are deleted: a label for a dimension no longer missing, a parent for
+  an issue that now has one, a readiness gap whose readiness changed, and every draft of a
+  closed issue. Edited drafts are the author's; Task 6's approval re-checks them.
 
 ## Development
 

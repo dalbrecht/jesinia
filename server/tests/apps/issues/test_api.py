@@ -131,7 +131,12 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
         SqliteSuggestionStore(conn), store, lambda: agent, lambda: "claude-code", clock
     )
     sync = SyncService(
-        github, store, clock, on_inbox=suggest.queue_new, on_inbox_edit=suggest.queue_edited
+        github,
+        store,
+        clock,
+        on_inbox=suggest.queue_new,
+        on_inbox_edit=suggest.queue_edited,
+        on_triaged=suggest.retire_stale,
     )
     labels = LabelSetupService(github, store, clock, on_rate_limit=sync.back_off, pause=Pauses())
     queries = IssueQueries(store, clock, sync.is_syncing)
@@ -767,3 +772,37 @@ async def test_suggestion_routes_refuse_bad_requests(env: Env) -> None:
     for method, path, params, body, code in cases:
         response = await env.client.request(method, path, params=params, json=body, headers=keyed())
         assert response.status_code == code, (method, path, params, body, response.text)
+
+
+async def test_suggestion_run_and_dismiss_replayed_with_their_keys_act_once(env: Env) -> None:
+    await env.watch_and_sync()
+    env.agent.answer = lambda pack: triage_reply(labels=[("priority", "priority: high")])
+    key = keyed()
+    body = {"refs": [{"repo": REPO, "n": 1}]}
+    first = await env.client.post(f"{SUGGESTIONS}/run", json=body, headers=key)
+    await env.host.suggest.drain()
+    run = env.host.suggest.run_state(REPO, 1)
+    again = await env.client.post(f"{SUGGESTIONS}/run", json=body, headers=key)
+    await env.host.suggest.drain()
+    assert again.status_code == 202 and again.json() == first.json()
+    assert len(env.agent.asks) == 1
+    assert env.host.suggest.run_state(REPO, 1) == run
+
+    sid = env.host.suggest.suggestions(SuggestionFilters())[0].id
+    key = keyed()
+    dismissed = await env.client.post(f"{SUGGESTIONS}/{sid}/dismiss", headers=key)
+    env.clock.now += timedelta(minutes=1)
+    replay = await env.client.post(f"{SUGGESTIONS}/{sid}/dismiss", headers=key)
+    assert replay.json() == dismissed.json()
+
+
+async def test_suggestion_lists_are_bounded(env: Env) -> None:
+    await env.watch_and_sync()
+    env.agent.answer = lambda pack: triage_reply(
+        labels=[("priority", "priority: high"), ("area", "web")]
+    )
+    await env.host.suggest.triage(REPO, 1)
+    limited = (await env.client.get(SUGGESTIONS, params={"limit": 1})).json()
+    assert len(limited["suggestions"]) == 1
+    assert (await env.client.get(SUGGESTIONS, params={"limit": 0})).status_code == 422
+    assert (await env.client.get(SUGGESTIONS, params={"limit": 1001})).status_code == 422

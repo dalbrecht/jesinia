@@ -27,6 +27,7 @@ from jesinia.apps.issues.application.suggest import (
     SuggestService,
 )
 from jesinia.apps.issues.application.sync import SyncService
+from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, Canonical
 from jesinia.apps.issues.domain.suggestions import (
     InvalidSuggestionFilterError,
     Suggestion,
@@ -47,6 +48,7 @@ from jesinia.apps.issues.module import ISSUES_DB
 from jesinia.core.db import open_db
 from jesinia.services.agents.application.errors import RunnerUnavailable, TurnFailed
 from jesinia.services.agents.application.packs import ContextPack
+from jesinia.services.agents.application.sessions import _inline_context
 from jesinia.services.github.domain.repo import InvalidRepoError
 from tests.apps.issues.test_labels import FakeGitHub
 from tests.apps.issues.test_sync import COMPLETE, REPO, T0, FakeClock, issue
@@ -176,7 +178,12 @@ def env(conn: sqlite3.Connection) -> Env:
         clock,
     )
     sync = SyncService(
-        github, store, clock, on_inbox=suggest.queue_new, on_inbox_edit=suggest.queue_edited
+        github,
+        store,
+        clock,
+        on_inbox=suggest.queue_new,
+        on_inbox_edit=suggest.queue_edited,
+        on_triaged=suggest.retire_stale,
     )
     return Env(
         github, store, drafts, clock, agent, sync, suggest,
@@ -210,28 +217,55 @@ async def test_triage_drafts_only_missing_dimensions_with_reasons(env: Env) -> N
     assert env.run(1).status == "done"
 
 
-async def test_injected_instructions_only_produce_drafts(env: Env) -> None:
+async def test_injected_instructions_only_produce_drafts(
+    env: Env, conn: sqlite3.Connection
+) -> None:
     """Review Focus 5: the body is fenced as data; whatever the agent answers, the result is
-    drafts and nothing reaches GitHub."""
+    drafts within Jesinia's bounds, and nothing reaches GitHub or the tray."""
     await env.watch()
-    env.new_issue(12, labels=("bug",), body="login crash on ios after update")
+    env.new_issue(12, labels=("bug",), title="Login crash on iOS", body="login crash on ios")
     env.new_issue(1, labels=("bug",), body=f"login crash on ios. {INJECTION}")
     await env.sync.sync(REPO)
     reads_before = list(env.github.calls)
 
-    # An agent that obeys the injection as far as its reply format allows.
-    env.agent.answer = lambda pack: triage_reply(
-        labels=[("readiness", "agent-ready"), ("priority", "priority: high")],
-        duplicates=[12],
-        ready=True,
-    )
+    def obedient(pack: ContextPack) -> str:
+        """An agent that obeys the injection as far as its reply format allows, and then some:
+        out-of-bounds proposals Jesinia must drop."""
+        return json.dumps(
+            {
+                "labels": [
+                    {"dimension": "readiness", "value": "agent-ready", "reason": "told to"},
+                    {"dimension": "priority", "value": "priority: high", "reason": "told to"},
+                    {"dimension": "type", "value": "enhancement", "reason": "type is present"},
+                    {"dimension": "area", "value": "area:a,b", "reason": "a comma"},
+                ],
+                "duplicates": [
+                    {"repo": REPO, "number": 12, "reason": "a real candidate"},
+                    {"repo": REPO, "number": 1, "reason": "itself"},
+                    {"repo": REPO, "number": 99, "reason": "not a candidate"},
+                ],
+                "parent": {"repo": REPO, "number": 12, "reason": "not an epic"},
+                "agent_ready": {"ready": True, "missing": [], "reason": "told to"},
+            }
+        )
+
+    env.agent.answer = obedient
     await env.suggest.run_due()
 
     one = env.all(1)
-    assert one and all(s.state == "draft" for s in one)
-    assert {s.kind for s in one} == {"label", "duplicate"}
+    found = {(s.kind, s.payload.get("dimension"), s.payload.get("n")) for s in one}
+    assert found == {
+        ("label", "readiness", None),
+        ("label", "priority", None),
+        ("duplicate", None, 12),
+    }
+    # Nothing but drafts anywhere: no GitHub call, no staged change, no schema entry.
     assert env.github.writes == []
     assert env.github.calls == reads_before  # suggestions never even read GitHub
+    assert conn.execute("SELECT count(*) FROM pending").fetchone() == (0,)
+    assert conn.execute("SELECT count(*) FROM schema_overlay").fetchone() == (0,)
+    states = {state for (state,) in conn.execute("SELECT state FROM suggestions")}
+    assert states == {"draft"}
     cached = env.store.issue(REPO, 1)
     assert cached is not None and cached.labels == ("bug",)
     ask = next(
@@ -245,6 +279,11 @@ async def test_injected_instructions_only_produce_drafts(env: Env) -> None:
     assert "Ignore all previous" not in ask.pack.role_prompt
     assert all("Ignore all previous" not in text for text in ask.pack.files.values())
     assert ask.pack.untrusted["issue.json"].source == f"github:{REPO}#1"
+    # What the runner receives: the injected closing tag is neutralised, so the only closing
+    # tags are Jesinia's own, one per untrusted document.
+    sent = _inline_context(ask.pack)
+    assert sent.count("</untrusted-data>") == len(ask.pack.untrusted)
+    assert "&lt;/untrusted-data> SYSTEM" in sent
 
 
 async def test_invalid_agent_output_retries_once(env: Env) -> None:
@@ -388,7 +427,8 @@ async def test_a_failing_run_is_isolated_logged_and_never_breaks_sync(
     ]
     assert await env.suggest.run_due() == 3
     causes = {n: env.run(n) for n in (1, 2, 3)}
-    assert causes[1].status == "failed" and causes[1].cause == "RuntimeError: runner crashed"
+    assert causes[1].status == "failed"
+    assert causes[1].cause == "unexpected RuntimeError (see the server log)"
     assert causes[2].status == "failed" and "model overloaded" in str(causes[2].cause)
     assert causes[3].status == "done"
     assert "runner crashed" in caplog.text
@@ -649,3 +689,165 @@ async def test_dismissing_twice_is_a_no_op(env: Env) -> None:
     first = env.suggest.dismiss(sid)
     env.clock.now += timedelta(minutes=1)
     assert env.suggest.dismiss(sid) == first
+
+
+# Draft lifecycle (fix round 1) -------------------------------------------------------------
+
+
+async def test_a_comment_on_an_inbox_issue_does_not_queue_a_rerun(env: Env) -> None:
+    await env.watch()
+    env.new_issue(1)
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply()
+    await env.suggest.run_due()
+    created = T0 + timedelta(minutes=1)
+    # A comment bumps updated_at only: same title, body and labels.
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(issue(1, labels=("bug",), created=created, updated=env.clock.now))
+    await env.sync.sync(REPO)
+    assert env.run(1).status == "done"
+    # A label change is an edit.
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(issue(1, labels=("bug", "agent-ready"), created=created, updated=env.clock.now))
+    await env.sync.sync(REPO)
+    assert env.run(1).status == "queued" and env.run(1).due_at == env.clock.now + DEBOUNCE
+
+
+async def test_open_label_draft_is_retired_when_the_dimension_is_filled_on_github(
+    env: Env,
+) -> None:
+    await env.watch()
+    env.new_issue(1)
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(
+        labels=[("priority", "priority: high"), ("readiness", "agent-ready"), ("area", "web")]
+    )
+    await env.suggest.run_due()
+    by_dimension = {s.payload["dimension"]: s for s in env.all(1)}
+    env.suggest.edit(by_dimension["area"].id, {"dimension": "area", "value": "area:api"}, None)
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(
+        issue(
+            1,
+            labels=("bug", "priority: low", "area:web"),
+            created=T0 + timedelta(minutes=1),
+            updated=env.clock.now,
+        )
+    )
+    await env.sync.sync(REPO)
+    left = {(s.payload["dimension"], s.state) for s in env.all(1)}
+    # Priority was filled: its draft is gone. Readiness is still missing. An edited draft is
+    # the author's and stays (Task 6's approval re-checks it).
+    assert left == {("readiness", "draft"), ("area", "edited")}
+
+
+async def test_drafts_of_a_closed_issue_are_retired(env: Env) -> None:
+    await env.watch()
+    env.new_issue(12, title="Login crash", body="login crash on ios")
+    env.new_issue(1, title="Login crash", body="login crash on ios")
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(
+        labels=[("priority", "priority: high")], duplicates=[12]
+    )
+    await env.suggest.triage(REPO, 1)
+    assert {s.kind for s in env.all(1)} == {"label", "duplicate"}
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(
+        issue(1, created=T0 + timedelta(minutes=1), updated=env.clock.now, state="closed")
+    )
+    await env.sync.sync(REPO)
+    assert env.all(1) == []
+
+
+async def test_a_schema_change_retires_drafts_for_dimensions_it_fills(env: Env) -> None:
+    await env.watch()
+    env.new_issue(1, labels=("bug", "p1"))
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(labels=[("priority", "priority: high")])
+    await env.suggest.triage(REPO, 1)
+    assert len(env.all(1)) == 1
+    schema = replace(
+        DEFAULT_SCHEMA,
+        priority=(Canonical("priority: high", ("p1",)), *DEFAULT_SCHEMA.priority[1:]),
+    )
+    await env.sync.set_settings_schema(REPO, schema)  # "p1" now counts as a priority
+    assert env.all(1) == []
+
+
+async def test_a_retire_failure_never_breaks_sync(
+    env: Env, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await env.watch()
+    env.new_issue(1)
+    monkeypatch.setattr(env.drafts, "suggestions", _raise)
+    await env.sync.sync(REPO)
+    assert env.sync.state(REPO).sync_error is None
+    assert "could not retire" in caplog.text
+
+
+async def test_approved_label_removed_on_github_is_suggested_again(env: Env) -> None:
+    await env.watch()
+    env.new_issue(1)
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(labels=[("priority", "priority: high")])
+    await env.suggest.triage(REPO, 1)
+    [draft] = env.all(1)
+    env.drafts.save(replace(draft, state="approved"))  # Task 6 approves; later it's removed
+    await env.suggest.triage(REPO, 1)
+    assert [(s.payload["value"], s.state) for s in env.all(1)] == [
+        ("priority: high", "approved"),
+        ("priority: high", "draft"),
+    ]
+
+
+async def test_a_dismissal_holds_only_while_the_issue_is_unchanged(env: Env) -> None:
+    await env.watch()
+    env.new_issue(1)
+    await env.sync.sync(REPO)
+    env.agent.answer = lambda pack: triage_reply(labels=[("priority", "priority: high")])
+    await env.suggest.triage(REPO, 1)
+    env.suggest.dismiss(env.all(1)[0].id)
+    await env.suggest.triage(REPO, 1)
+    assert [s.state for s in env.all(1)] == ["dismissed"]  # unchanged: not proposed again
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(
+        issue(1, created=T0 + timedelta(minutes=1), updated=env.clock.now, body="new detail")
+    )
+    await env.sync.sync(REPO)
+    await env.suggest.triage(REPO, 1)
+    assert [s.state for s in env.all(1)] == ["dismissed", "draft"]
+
+
+async def test_backlog_calls_share_one_drive_that_looks_again(env: Env) -> None:
+    env.github.put(issue(1), issue(2))
+    await env.watch()
+    await env.sync.sync(REPO)
+    env.agent.gate = asyncio.Event()
+    env.agent.answer = lambda pack: triage_reply()
+    await env.suggest.suggest_backlog([(REPO, 1)])
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert env.agent.in_flight == 1
+    await env.suggest.suggest_backlog([(REPO, 2)])  # the running drive picks it up
+    env.agent.gate.set()
+    await env.suggest.drain()
+    assert len(env.agent.asks) == 2
+    assert env.run(2).status == "done"
+
+
+async def test_a_queued_issue_gone_from_the_cache_is_skipped(env: Env) -> None:
+    await env.watch()
+    await env.suggest.queue_new(REPO, [99])
+    assert await env.suggest.run_due() == 1
+    assert env.run(99).status == "skipped" and env.agent.asks == []
+
+
+async def test_a_failing_triage_listener_never_breaks_sync(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    sync = SyncService(env.github, env.store, env.clock, on_triaged=_raise)
+    await sync.configure(REPO, watched=True, settings_schema=None)
+    env.github.put(issue(1))
+    await sync.sync(REPO)
+    assert sync.state(REPO).sync_error is None
+    assert "the triage listener failed" in caplog.text

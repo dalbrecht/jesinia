@@ -18,7 +18,7 @@ from jesinia.apps.issues.application.agent_output import (
     parse_agent_json,
     schema_for,
 )
-from jesinia.apps.issues.domain.suggestions import InvalidAgentOutputError
+from jesinia.apps.issues.domain.suggestions import InvalidAgentOutputError, UnknownAgentSchemaError
 
 SCHEMA: dict[str, object] = {
     "type": "object",
@@ -45,7 +45,7 @@ def test_every_schema_is_valid_draft_2020_12_with_its_licence() -> None:
         assert schema["$comment"] == "SPDX-License-Identifier: AGPL-3.0-or-later"
         assert schema["title"] == name
     assert schema_for("triage") is not schema_for("triage")  # a fresh copy each call
-    with pytest.raises(ValueError, match="no issues schema"):
+    with pytest.raises(UnknownAgentSchemaError, match="no issues schema"):
         schema_for("../review/findings")
 
 

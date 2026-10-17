@@ -24,6 +24,7 @@ carry a ``scope`` instead of ``repo`` and ``n``.
 from __future__ import annotations
 
 import json
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -112,6 +113,10 @@ class InvalidAgentOutputError(SuggestionRunError):
     """The agent's reply isn't one JSON object valid against the job's schema."""
 
 
+class UnknownAgentSchemaError(SuggestionRunError):
+    """No agent job schema by that name (a programming error, typed all the same)."""
+
+
 class SuggestionJobFailedError(SuggestionRunError):
     """The run failed: an invalid reply after its one retry, a timeout, or the runner's own
     error (the message says which)."""
@@ -140,7 +145,11 @@ def one_line(text: str, limit: int = REASON_MAX) -> str:
 class Suggestion:
     """A stored draft. ``repo`` and ``n`` name the issue it is about; a draft about several
     issues or a queue (later tasks) has ``scope`` instead. ``payload`` is Jesinia's own JSON,
-    shaped per kind (see ``triage_drafts``)."""
+    shaped per kind (see ``triage_drafts``).
+
+    ``origin`` is the ``identity`` it was proposed with (kept through edits, so an edited area
+    still answers for the area first proposed); ``basis`` is the issue's ``content_hash`` when
+    it was dismissed (a dismissal holds only while the issue still says the same)."""
 
     id: str
     repo: str | None
@@ -152,6 +161,8 @@ class Suggestion:
     state: SuggestionState
     created_at: datetime
     updated_at: datetime
+    origin: tuple[object, ...] | None = None
+    basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -289,6 +300,9 @@ def _area(schema: LabelSchema, value: str) -> tuple[SuggestionKind, str] | None:
     if known is not None:
         return "label", known
     name = value.strip()
+    # Format characters (bidi overrides, zero-width spaces) would render deceptively.
+    if any(unicodedata.category(char) == "Cf" for char in name):
+        return None
     if not label_key(name).startswith(label_key(schema.area_prefix)):
         name = f"{schema.area_prefix}{name}"
     if len(label_key(name)) <= len(label_key(schema.area_prefix)):
@@ -407,11 +421,47 @@ def identity(kind: SuggestionKind, payload: Mapping[str, object]) -> tuple[objec
     return (kind,)
 
 
-def fresh_drafts(drafts: Sequence[Draft], kept: Sequence[Suggestion]) -> list[Draft]:
-    """``drafts`` without the advice the author already handled (edited, approved or
-    dismissed): a rerun never brings back what was dismissed nor doubles what was edited."""
-    handled = {identity(s.kind, s.payload) for s in kept}
+def fresh_drafts(
+    drafts: Sequence[Draft], kept: Sequence[Suggestion], content: str | None
+) -> list[Draft]:
+    """``drafts`` without advice the author is already handling (ruling IR38a):
+
+    - an **edited** suggestion answers for the advice it was proposed as and what it says now,
+      so a rerun never doubles it;
+    - a **dismissed** one holds only while the issue's ``content`` (its ``content_hash``) is
+      what it was at the dismissal: once the title, body or labels change, it may come back;
+    - an **approved** one never suppresses anything: what it set may have been undone since,
+      and a label draft is only made for a dimension missing now.
+    """
+    handled: set[tuple[object, ...]] = set()
+    for suggestion in kept:
+        current = identity(suggestion.kind, suggestion.payload)
+        if suggestion.state == "edited":
+            handled.update({suggestion.origin or current, current})
+        elif suggestion.state == "dismissed" and suggestion.basis == content:
+            handled.add(suggestion.origin or current)
     return [d for d in drafts if identity(d.kind, d.payload) not in handled]
+
+
+def stale(suggestion: Suggestion, triaged: Triage, *, has_parent: bool, is_open: bool) -> bool:
+    """Whether an untouched draft lost its premise and should be retired: its issue closed, the
+    dimension it fills isn't missing any more, the issue got a parent (or became an epic), or
+    the readiness it was about changed. Only ``draft`` suggestions of the per-issue kinds are
+    ever stale; an edited one is the author's (the approval re-checks it)."""
+    if suggestion.state != "draft" or suggestion.kind not in ISSUE_KINDS:
+        return False
+    if not is_open:
+        return True
+    kind, payload = suggestion.kind, suggestion.payload
+    if kind in ("label", "new_area"):
+        return payload["dimension"] not in triaged.missing
+    if kind == "parent":
+        return has_parent or triaged.is_epic
+    if kind == "readiness_gap":
+        if payload["ready"]:
+            return triaged.readiness != HUMAN_NEEDED
+        return triaged.readiness not in (AGENT_READY, None)
+    return False
 
 
 def _require_open(suggestion: Suggestion) -> None:
@@ -436,6 +486,7 @@ def edit(
     """
     _require_open(suggestion)
     kind, checked = _edited(suggestion, payload, schema)
+    origin = suggestion.origin or identity(suggestion.kind, suggestion.payload)
     new_reason = suggestion.reason
     if reason is not None:
         new_reason = one_line(reason)
@@ -448,6 +499,7 @@ def edit(
         reason=new_reason,
         state="edited",
         updated_at=now,
+        origin=origin,
     )
 
 
@@ -471,6 +523,13 @@ def _edited(
             validate_repo(repo)
         except InvalidRepoError as exc:
             raise InvalidSuggestionEditError(str(exc)) from exc
+        own = (str(suggestion.repo).casefold(), suggestion.n)
+        if (repo.casefold(), n) == own:
+            raise InvalidSuggestionEditError("an issue can't be its own duplicate or parent")
+        if kind == "parent" and repo.split("/")[0].casefold() != own[0].split("/")[0]:
+            raise InvalidSuggestionEditError(
+                "a parent epic must be under the same owner (GitHub's sub-issues require it)"
+            )
         return kind, {"repo": repo, "n": n}
     if kind == "readiness_gap":
         return kind, _edited_gap(payload)
@@ -503,8 +562,9 @@ def _edited_gap(payload: Mapping[str, object]) -> dict[str, object]:
     return {"ready": ready, "missing": gaps}
 
 
-def dismiss(suggestion: Suggestion, now: datetime) -> Suggestion:
-    """``suggestion`` dismissed; dismissing it again changes nothing.
+def dismiss(suggestion: Suggestion, now: datetime, basis: str | None = None) -> Suggestion:
+    """``suggestion`` dismissed while its issue's ``content_hash`` is ``basis``; dismissing it
+    again changes nothing.
 
     Raises:
         SuggestionStateError: it was approved already.
@@ -512,7 +572,7 @@ def dismiss(suggestion: Suggestion, now: datetime) -> Suggestion:
     if suggestion.state == "dismissed":
         return suggestion
     _require_open(suggestion)
-    return replace(suggestion, state="dismissed", updated_at=now)
+    return replace(suggestion, state="dismissed", updated_at=now, basis=basis)
 
 
 def payload_json(payload: Mapping[str, object]) -> str:

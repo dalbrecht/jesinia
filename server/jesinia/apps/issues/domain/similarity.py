@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A small local TF-IDF over issue titles and bodies (plan Task 5): it pre-filters the
 duplicate candidates an agent may pick from, so a suggested duplicate is always an issue whose
-text really overlaps. Pure, no I/O, no third-party code: a few thousand cached issues index in
-milliseconds.
+text really overlaps. Pure, no I/O, no third-party code. Indexing is linear in the text: about
+0.2 s for 1,000 issues with 4k-character bodies, so callers run it off the event loop.
 
 Weights are smoothed ``idf = ln((1 + N) / (1 + df)) + 1`` times raw term counts, compared by
 cosine similarity, so a score is in ``[0, 1]``.

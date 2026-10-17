@@ -18,6 +18,7 @@ from jesinia.apps.issues.domain.triage import (
     PreviousTriage,
     SavedFilter,
     SyncCursor,
+    content_hash,
     in_view,
     is_inbox,
     parse_saved_filter,
@@ -158,3 +159,11 @@ def test_alias_schema_completes_via_triage() -> None:
         type=DEFAULT_SCHEMA.type,
     )
     assert triage(("design needed", "priority: low", "bug", "area:x"), 0, schema).complete
+
+
+def test_content_hash_covers_title_body_and_labels_only() -> None:
+    base = content_hash("Crash", "on login", ["bug", "area:web"])
+    assert base == content_hash("Crash", "on login", ["Area:Web ", "bug"])  # order, case
+    assert base != content_hash("Crash!", "on login", ["bug", "area:web"])
+    assert base != content_hash("Crash", "on login.", ["bug", "area:web"])
+    assert base != content_hash("Crash", "on login", ["bug"])

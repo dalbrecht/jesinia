@@ -174,6 +174,7 @@ class IssuesModule:
                 _utc_now,
                 on_inbox=suggest.queue_new,
                 on_inbox_edit=suggest.queue_edited,
+                on_triaged=suggest.retire_stale,
             )
             self._queries = IssueQueries(store, _utc_now, self._sync.is_syncing)
             self._labels = LabelSetupService(

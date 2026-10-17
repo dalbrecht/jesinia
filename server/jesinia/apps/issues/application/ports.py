@@ -298,8 +298,8 @@ class CorpusEntry:
 class SuggestionStore(Protocol):
     """Suggestions and their runs in ``issues.sqlite``."""
 
-    def suggestions(self, filters: SuggestionFilters) -> list[Suggestion]:
-        """Matching suggestions, oldest first."""
+    def suggestions(self, filters: SuggestionFilters, limit: int | None = None) -> list[Suggestion]:
+        """Matching suggestions, oldest first (at most ``limit``)."""
 
     def suggestion(self, suggestion_id: str) -> Suggestion | None: ...
 
@@ -308,7 +308,11 @@ class SuggestionStore(Protocol):
         ``drafts`` instead, in one transaction; edited, approved and dismissed ones stay."""
 
     def save(self, suggestion: Suggestion) -> None:
-        """Store an edited or dismissed suggestion (its kind, payload, reason, state, time)."""
+        """Store an edited or dismissed suggestion (its kind, payload, reason, state, time,
+        origin and basis)."""
+
+    def retire(self, suggestion_ids: Sequence[str]) -> None:
+        """Delete these suggestions if they are still untouched drafts."""
 
     def queue_run(
         self, repo: str, n: int, due_at: datetime, source: RunSource, now: datetime
@@ -337,7 +341,8 @@ class SuggestionStore(Protocol):
         """Queue again the runs a stop interrupted (at start nothing runs yet)."""
 
     def corpus(self) -> list[CorpusEntry]:
-        """Every cached issue of a watched repo, open or closed."""
+        """Every cached issue of a watched repo, open or closed; bodies cut at the length the
+        similarity search indexes."""
 
 
 class SuggestionCache(Protocol):

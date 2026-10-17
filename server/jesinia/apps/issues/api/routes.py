@@ -308,9 +308,11 @@ def build_router(host: IssuesHost) -> APIRouter:
         n: Annotated[int | None, Query(ge=1, le=999_999_999)] = None,
         state: Annotated[list[str] | None, Query(max_length=4)] = None,
         kind: Annotated[str | None, Query(max_length=32)] = None,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     ) -> Response:
         """Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
-        repo, or all. ``state`` may repeat (default: the open ones, ``draft`` and ``edited``)."""
+        repo, or all, oldest first and at most ``limit``. ``state`` may repeat (default: the
+        open ones, ``draft`` and ``edited``)."""
 
         async def run() -> IssueSuggestionsOut:
             states = OPEN_STATES if not state else tuple(parse_state(s) for s in state)
@@ -320,7 +322,9 @@ def build_router(host: IssuesHost) -> APIRouter:
                 found = host.suggest.run_state(repo, n)
                 latest = None if found is None else IssueSuggestionRunOut.of(found)
             return IssueSuggestionsOut(
-                suggestions=[IssueSuggestionOut.of(s) for s in host.suggest.suggestions(filters)],
+                suggestions=[
+                    IssueSuggestionOut.of(s) for s in host.suggest.suggestions(filters, limit)
+                ],
                 run=latest,
             )
 

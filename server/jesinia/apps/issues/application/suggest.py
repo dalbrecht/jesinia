@@ -32,7 +32,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 
 from jesinia.apps.issues.application.agent_output import parse_agent_json, schema_for
@@ -63,9 +63,11 @@ from jesinia.apps.issues.domain.suggestions import (
     dismiss,
     edit,
     fresh_drafts,
+    identity,
+    stale,
     triage_drafts,
 )
-from jesinia.apps.issues.domain.triage import IssueNotCachedError
+from jesinia.apps.issues.domain.triage import IssueNotCachedError, Triage, content_hash
 from jesinia.services.agents.application.errors import (
     RunnerUnavailable,
     SessionBusy,
@@ -74,6 +76,7 @@ from jesinia.services.agents.application.errors import (
     TurnFailed,
 )
 from jesinia.services.agents.application.packs import ContextPack, UntrustedDoc
+from jesinia.services.github.domain.issue import Issue
 from jesinia.services.github.domain.repo import validate_repo
 
 log = logging.getLogger(__name__)
@@ -186,8 +189,8 @@ class SuggestService:
         self._new_id = new_id
         self._timeout = timeout
         self._tick = asyncio.Lock()
-        self._running: set[Ref] = set()
         self._tasks: set[asyncio.Task[None]] = set()
+        self._drive_wanted = False
 
     # Queueing ---------------------------------------------------------------------------
 
@@ -222,20 +225,27 @@ class SuggestService:
         queued = list(dict.fromkeys((issue.repo, issue.number) for issue in found))
         for repo, n in queued:
             self._store.queue_run(repo, n, now, "demand", now)
-        self._start(self._drive())
+        self._start_drive()
         runs = [self._store.run(repo, n) for repo, n in queued]
         return [run for run in runs if run is not None]
 
-    def _start(self, work: Coroutine[object, object, None]) -> None:
-        task = asyncio.create_task(work)
+    def _start_drive(self) -> None:
+        """Start the on-demand drive, unless one is pending: then it is told to look again
+        before it stops, so calls never stack up tasks."""
+        self._drive_wanted = True
+        if self._tasks:
+            return
+        task = asyncio.create_task(self._drive())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
     async def _drive(self) -> None:
-        """Run what's due now, batch after batch, waiting for a running tick to finish."""
+        """Run what's due now, batch after batch, waiting for a running tick to finish; at
+        most ``_DRIVE_PASSES`` batches, so runs that only wait can't spin it."""
         try:
             for _ in range(_DRIVE_PASSES):
-                if not await self._run_batch():
+                self._drive_wanted = False
+                if not await self._run_batch() and not self._drive_wanted:
                     return
         except Exception:  # best effort: an on-demand drive never raises into the loop
             log.exception("issues: an on-demand suggestion drive failed")
@@ -263,11 +273,8 @@ class SuggestService:
 
     async def _run_batch(self) -> int:
         async with self._tick:
-            due = [
-                run
-                for run in self._store.due_runs(self._clock(), RUNS_PER_TICK)
-                if _key(run.repo, run.n) not in self._running
-            ]
+            # Batches never overlap (this lock), so no run is due twice at once.
+            due = self._store.due_runs(self._clock(), RUNS_PER_TICK)
             gate = asyncio.Semaphore(CONCURRENCY)
 
             async def one(run: SuggestionRun) -> None:
@@ -278,11 +285,10 @@ class SuggestService:
             return len(due)
 
     async def _run_one(self, run: SuggestionRun) -> None:
-        key = _key(run.repo, run.n)
-        self._running.add(key)
         try:
             if run.source == "inbox" and not self._in_inbox(run):
                 self._record(run, "skipped", "it left the Inbox before its turn", guard=False)
+                self._retire_issue(run.repo, run.n)
                 return
             self._store.set_run(run.repo, run.n, "running", None, self._clock())
             await self.triage(run.repo, run.n)
@@ -293,11 +299,40 @@ class SuggestService:
             self._record(run, "failed", f"{type(exc).__name__}: {exc}")
         except Exception as exc:  # error isolation: one run never stops the others
             log.exception("issues: suggestions for %s#%d failed unexpectedly", run.repo, run.n)
-            self._record(run, "failed", f"{type(exc).__name__}: {exc}")
+            # The message may be internal (a database error): it stays in the log.
+            self._record(run, "failed", f"unexpected {type(exc).__name__} (see the server log)")
         else:
             self._record(run, "done", None)
-        finally:
-            self._running.discard(key)
+
+    # Retiring ---------------------------------------------------------------------------
+
+    def retire_stale(self, repo: str, triaged: Sequence[tuple[Issue, Triage]]) -> None:
+        """Sync's ``on_triaged``: delete the untouched drafts of these issues that lost their
+        premise (``domain.suggestions.stale``). Best effort: a failure is logged, never
+        raised."""
+        try:
+            numbers = {issue.number: (issue, result) for issue, result in triaged}
+            drafts = self._store.suggestions(SuggestionFilters(repo, states=("draft",)))
+            gone = [
+                s.id
+                for s in drafts
+                if s.n in numbers
+                and stale(
+                    s,
+                    numbers[s.n][1],
+                    has_parent=numbers[s.n][0].parent is not None,
+                    is_open=numbers[s.n][0].state == "open",
+                )
+            ]
+            if gone:
+                self._store.retire(gone)
+        except Exception:
+            log.exception("issues: could not retire stale suggestion drafts of %s", repo)
+
+    def _retire_issue(self, repo: str, n: int) -> None:
+        cached = self._cache.cached_issue(repo, n)
+        if cached is not None:
+            self.retire_stale(cached.issue.repo, [(cached.issue, cached.triage)])
 
     def _in_inbox(self, run: SuggestionRun) -> bool:
         cached = self._cache.cached_issue(run.repo, run.n)
@@ -337,7 +372,8 @@ class SuggestService:
     async def triage(self, repo: str, n: int) -> list[Suggestion]:
         """Ask the agent to triage ``repo#n`` and store the drafts its reply may produce;
         returns the issue's open suggestions. Untouched drafts from an earlier run are
-        replaced; what the author edited, approved or dismissed stays and isn't proposed again.
+        replaced. What the author edited stays and isn't proposed again; what they dismissed
+        isn't either, while the issue's title, body and labels are unchanged (ruling IR38a).
 
         Raises:
             InvalidRepoError: ``repo`` isn't ``owner/name``.
@@ -355,16 +391,28 @@ class SuggestService:
         issue = cached.issue
         state = self._cache.repo(issue.repo)
         schema = DEFAULT_SCHEMA if state is None else state.schema
-        ctx, pack = self._prepare(cached, schema, self._store.corpus())
+        # Off the loop: indexing a few thousand issues takes a noticeable fraction of a second.
+        ctx, pack = await asyncio.to_thread(self._prepare, cached, schema, self._store.corpus())
         data = await self._ask(asker, runner, pack, schema_for("triage"))
         drafts = triage_drafts(TriageReply.from_json(data), ctx)
         kept = self._store.suggestions(SuggestionFilters(issue.repo, n, states=_KEPT_STATES))
+        content = content_hash(issue.title, issue.body, issue.labels)
         now = self._clock()
         fresh = [
             Suggestion(
-                self._new_id(), issue.repo, n, None, d.kind, d.payload, d.reason, "draft", now, now
+                self._new_id(),
+                issue.repo,
+                n,
+                None,
+                d.kind,
+                d.payload,
+                d.reason,
+                "draft",
+                now,
+                now,
+                origin=identity(d.kind, d.payload),
             )
-            for d in fresh_drafts(drafts, kept)
+            for d in fresh_drafts(drafts, kept, content)
         ]
         self._store.replace_drafts(issue.repo, n, fresh)
         return self._store.suggestions(SuggestionFilters(issue.repo, n))
@@ -476,8 +524,8 @@ class SuggestService:
 
     # The author's side ------------------------------------------------------------------
 
-    def suggestions(self, filters: SuggestionFilters) -> list[Suggestion]:
-        return self._store.suggestions(filters)
+    def suggestions(self, filters: SuggestionFilters, limit: int | None = None) -> list[Suggestion]:
+        return self._store.suggestions(filters, limit)
 
     def suggestion(self, suggestion_id: str) -> Suggestion:
         """Raises: SuggestionNotFoundError."""
@@ -512,7 +560,17 @@ class SuggestService:
             SuggestionNotFoundError, SuggestionStateError (it was approved).
         """
         current = self.suggestion(suggestion_id)
-        dismissed = dismiss(current, self._clock())
+        cached = (
+            None
+            if current.repo is None or current.n is None
+            else self._cache.cached_issue(current.repo, current.n)
+        )
+        basis = (
+            None
+            if cached is None
+            else content_hash(cached.issue.title, cached.issue.body, cached.issue.labels)
+        )
+        dismissed = dismiss(current, self._clock(), basis)
         if dismissed is not current:
             self._store.save(dismissed)
         return dismissed

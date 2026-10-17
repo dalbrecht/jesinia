@@ -18,7 +18,7 @@ from importlib.resources import files
 
 from jsonschema import Draft202012Validator, ValidationError, validators
 
-from jesinia.apps.issues.domain.suggestions import InvalidAgentOutputError
+from jesinia.apps.issues.domain.suggestions import InvalidAgentOutputError, UnknownAgentSchemaError
 
 MAX_REPLY_CHARS = 200_000
 MAX_REPLY_DEPTH = 32
@@ -50,10 +50,10 @@ def schema_for(name: str) -> dict[str, object]:
     """The JSON schema ``schemas/<name>.json`` (a fresh copy each call).
 
     Raises:
-        ValueError: ``name`` isn't one of ``SCHEMA_NAMES``.
+        UnknownAgentSchemaError: ``name`` isn't one of ``SCHEMA_NAMES``.
     """
     if name not in SCHEMA_NAMES:
-        raise ValueError(f"no issues schema named {name!r}")
+        raise UnknownAgentSchemaError(f"no issues schema named {name!r}")
     schema: dict[str, object] = json.loads(_schema_text(name))
     return schema
 
