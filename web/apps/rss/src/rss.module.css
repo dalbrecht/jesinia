@@ -630,3 +630,19 @@
   padding: 2px var(--jx-space-1);
   min-height: 24px;
 }
+
+/* `/`: feeds whose names match, above the matching headlines. */
+.feedMatches {
+  display: flex;
+  flex-direction: column;
+  padding: var(--jx-space-1) 0;
+  border-bottom: 1px solid var(--jx-border);
+}
+.feedMatchesTitle {
+  padding: 0 var(--jx-space-3);
+  font-size: var(--jx-text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--jx-fg-muted);
+  font-weight: var(--jx-weight-semibold);
+}

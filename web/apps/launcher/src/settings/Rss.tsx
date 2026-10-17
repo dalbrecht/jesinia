@@ -7,6 +7,7 @@ import { Button, Input, Panel, useToast } from "@jesinia/design";
 import { useClient } from "@jesinia/shell";
 import { useCallback, useEffect, useId, useState, type ChangeEvent, type FormEvent } from "react";
 import s from "../settings.module.css";
+import { sentence, unreachable } from "./unreachable";
 
 type Feed = components["schemas"]["FeedOut"];
 type RssSettings = components["schemas"]["SettingsBody"];
@@ -19,13 +20,7 @@ export const RETENTION_CHOICES = [7, 14, 30, 90, 180, 365] as const;
 /** The server's cap on an OPML document (`OPML_MAX`, 5 MB): checked before reading the file. */
 export const OPML_MAX_BYTES = 5_000_000;
 const OPML_MAX_MB = OPML_MAX_BYTES / 1_000_000;
-/** The next step when a request never got an answer (§9: the cause, then the fix). */
-const UNREACHABLE = "Check that Jesinia is running, then try again.";
 const SPLIT = "Export again with fewer feeds, or split the file.";
-
-const failure = (e: unknown) => (e instanceof Error ? e.message : String(e));
-/** "cause." with a sentence's full stop, so the next step can follow it. */
-const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -88,7 +83,8 @@ export function RssSection() {
   const retentionId = useId();
   const [feeds, setFeeds] = useState<Feed[] | null>(null);
   const [settings, setSettings] = useState<RssSettings | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  /** Why the settings didn't load: the server's refusal, or no answer at all. */
+  const [loadError, setLoadError] = useState<{ cause: string; answered: boolean } | null>(null);
   const [folder, setFolder] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [savingFolder, setSavingFolder] = useState(false);
@@ -97,21 +93,32 @@ export function RssSection() {
   const [refreshing, setRefreshing] = useState(false);
 
   const loadFeeds = useCallback(async () => {
-    const r = await client.GET("/api/rss/feeds");
-    if (r.data) setFeeds(r.data);
+    try {
+      const r = await client.GET("/api/rss/feeds");
+      if (r.data) setFeeds(r.data);
+    } catch {
+      // Only the "N feeds in M folders" summary: the settings' own load says why it failed.
+    }
   }, [client]);
 
+  /** Bumped by Try again: the load runs again. */
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    void client.GET("/api/rss/settings").then((r) => {
-      if (r.data) {
-        setSettings(r.data);
-        setFolder(r.data.source_folder);
-      } else {
-        setLoadError(errorText(r.error, `HTTP ${r.response.status}`));
-      }
-    });
+    setLoadError(null);
+    client.GET("/api/rss/settings").then(
+      (r) => {
+        if (r.data) {
+          setSettings(r.data);
+          setFolder(r.data.source_folder);
+        } else {
+          setLoadError({ cause: errorText(r.error, `HTTP ${r.response.status}`), answered: true });
+        }
+      },
+      // No answer (a restart, say): not stuck on Loading…, the cause and the fix instead.
+      (e: unknown) => setLoadError({ cause: unreachable(e), answered: false }),
+    );
     void loadFeeds();
-  }, [client, loadFeeds]);
+  }, [client, loadFeeds, attempt]);
 
   const save = (next: RssSettings) =>
     client.PUT("/api/rss/settings", { params: { header: withIdempotency() }, body: next });
@@ -128,7 +135,7 @@ export function RssSection() {
       }
       message = errorText(r.error);
     } catch (e) {
-      message = `${sentence(failure(e))} ${UNREACHABLE}`;
+      message = unreachable(e);
     }
     setSettings(current);
     toast.show({ tone: "danger", message: `Couldn't save the retention: ${message}` });
@@ -150,7 +157,7 @@ export function RssSection() {
         );
       }
     } catch (err) {
-      setFolderError(`Couldn't save the folder: ${sentence(failure(err))} ${UNREACHABLE}`);
+      setFolderError(`Couldn't save the folder: ${unreachable(err)}`);
     } finally {
       setSavingFolder(false);
     }
@@ -178,7 +185,9 @@ export function RssSection() {
       try {
         opml = await file.text();
       } catch (err) {
-        setImported({ error: `Couldn't read ${file.name}: ${sentence(failure(err))} Choose the file again.` });
+        setImported({
+          error: `Couldn't read ${file.name}: ${sentence(err instanceof Error ? err.message : String(err))} Choose the file again.`,
+        });
         return;
       }
       const r = await client.POST("/api/rss/opml", { params: { header: withIdempotency() }, body: { opml } });
@@ -189,7 +198,7 @@ export function RssSection() {
         setImported({ error: refusal(file.name, r.response.status, r.error) });
       }
     } catch (err) {
-      setImported({ error: `Couldn't import ${file.name}: ${sentence(failure(err))} ${UNREACHABLE}` });
+      setImported({ error: `Couldn't import ${file.name}: ${unreachable(err)}` });
     } finally {
       setImporting(false);
     }
@@ -202,7 +211,7 @@ export function RssSection() {
       if (r.data) toast.show({ message: pollSummary(r.data) });
       else toast.show({ tone: "danger", message: `Couldn't refresh: ${errorText(r.error)}` });
     } catch (e) {
-      toast.show({ tone: "danger", message: `Couldn't refresh: ${sentence(failure(e))} ${UNREACHABLE}` });
+      toast.show({ tone: "danger", message: `Couldn't refresh: ${unreachable(e)}` });
     } finally {
       setRefreshing(false);
     }
@@ -228,9 +237,22 @@ export function RssSection() {
       }
     >
       {loadError ? (
-        <p className={s.muted}>
-          Couldn't load the RSS settings: {sentence(loadError)} Restart Jesinia; <code>jesinia status</code> shows why.
-        </p>
+        <div className={s.form}>
+          <p className={s.muted}>
+            Couldn't load the RSS settings: {sentence(loadError.cause)}
+            {loadError.answered ? (
+              <>
+                {" "}
+                Restart Jesinia; <code>jesinia status</code> shows why.
+              </>
+            ) : null}
+          </p>
+          <div className={s.actions}>
+            <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>
+              Try again
+            </Button>
+          </div>
+        </div>
       ) : !settings ? (
         <p className={s.muted}>Loading…</p>
       ) : (

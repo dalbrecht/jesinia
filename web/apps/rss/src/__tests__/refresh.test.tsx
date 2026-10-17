@@ -229,3 +229,29 @@ describe("Error copy (§9)", () => {
     ).toBeGreaterThan(0);
   });
 });
+
+describe("/ searches feed names too", () => {
+  it("finds a feed by name even when no headline matches, and opens it", async () => {
+    setup({ "GET /api/rss/posts/search": [] });
+    await screen.findByRole("option", { name: /Post 1/ });
+    // No group while nothing is typed.
+    expect(screen.queryByRole("group", { name: "Matching feeds" })).toBeNull();
+    await userEvent.keyboard("/");
+    await userEvent.keyboard("LOOSE");
+    const feeds = within(await screen.findByRole("group", { name: "Matching feeds" }));
+    expect(await screen.findByText("No headlines match “LOOSE”.")).toBeInTheDocument();
+    expect(feeds.getAllByRole("button").map((b) => b.textContent)).toEqual(["Loose feed"]);
+    await userEvent.click(feeds.getByRole("button", { name: "Loose feed" }));
+    expect(await screen.findByRole("heading", { name: "Loose feed", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "Search headlines" })).toHaveValue("");
+    expect(screen.queryByRole("group", { name: "Matching feeds" })).toBeNull();
+  });
+
+  it("shows no feed group when no feed name matches", async () => {
+    setup({ "GET /api/rss/posts/search": [post(2)] });
+    await screen.findByRole("option", { name: /Post 1/ });
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search headlines" }), "zzz");
+    expect(await screen.findByRole("heading", { name: "Results for “zzz”", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Matching feeds" })).toBeNull();
+  });
+});

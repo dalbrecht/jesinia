@@ -165,6 +165,27 @@ describe("Settings → RSS", () => {
     expect(rss.queryByRole("combobox", { name: "Keep unread posts for" })).toBeNull();
   });
 
+  it("a load that gets no answer (a restart) says so, and Try again reloads", async () => {
+    let down = true;
+    renderRss({
+      "GET /api/rss/settings": () =>
+        down ? Promise.reject(new TypeError("Failed to fetch")) : Response.json(SETTINGS),
+      "GET /api/rss/feeds": () => (down ? Promise.reject(new TypeError("Failed to fetch")) : Response.json(FEEDS)),
+    });
+    const rss = await section();
+    expect(
+      await rss.findByText(
+        "Couldn't load the RSS settings: Failed to fetch. Check that Jesinia is running, then try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(rss.queryByText("Loading…")).toBeNull();
+    down = false;
+    await userEvent.click(rss.getByRole("button", { name: "Try again" }));
+    expect(await rss.findByRole("combobox", { name: "Keep unread posts for" })).toHaveValue("30");
+    expect(await rss.findByText("4 feeds in 2 folders")).toBeInTheDocument();
+    expect(rss.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
   it("reports a failed retention save and keeps the saved value", async () => {
     renderRss({
       "PUT /api/rss/settings": () =>

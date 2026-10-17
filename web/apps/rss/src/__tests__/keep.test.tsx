@@ -379,6 +379,44 @@ describe("Engage", () => {
     expect(writes(calls, "/api/rss/posts/1/engage")).toHaveLength(1);
   });
 
+  it("a message sent while the session is still being created goes to that one session", async () => {
+    let created: (r: Response) => void = () => {};
+    const { calls } = setup({
+      "POST /api/rss/posts/1/engage": () => new Promise<Response>((resolve) => (created = resolve)),
+    });
+    await openFirst();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Engage" })).toBeEnabled());
+    press("e");
+    const rail = await screen.findByRole("complementary", { name: "Chat about this post" });
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/1/engage")).toHaveLength(1));
+    await userEvent.type(within(rail).getByRole("textbox", { name: "Message" }), "Quick question{Enter}");
+    expect(writes(calls, "/api/rss/posts/1/engage")).toHaveLength(1); // the send waits for it
+    await act(async () => created(Response.json(SESSION, { status: 201 })));
+    await waitFor(() => expect(writes(calls, "/api/agents/sessions/s9/messages")).toHaveLength(1));
+    expect(writes(calls, "/api/rss/posts/1/engage")).toHaveLength(1);
+    await waitFor(() =>
+      expect(FakeSource.all.some((s) => s.url.includes("/api/agents/sessions/s9/events"))).toBe(true),
+    );
+  });
+
+  it("a failed session start is tried again by the next message", async () => {
+    let fail = true;
+    const { calls } = setup({
+      "POST /api/rss/posts/1/engage": () =>
+        fail ? Response.json({ detail: "runner busy" }, { status: 409 }) : Response.json(SESSION, { status: 201 }),
+    });
+    await openFirst();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Engage" })).toBeEnabled());
+    press("e");
+    const rail = await screen.findByRole("complementary", { name: "Chat about this post" });
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/1/engage")).toHaveLength(1));
+    await toast(/Couldn't start the chat/);
+    fail = false;
+    await userEvent.type(within(rail).getByRole("textbox", { name: "Message" }), "Again{Enter}");
+    await waitFor(() => expect(writes(calls, "/api/agents/sessions/s9/messages")).toHaveLength(1));
+    expect(writes(calls, "/api/rss/posts/1/engage")).toHaveLength(2);
+  });
+
   it("Keep with this conversation shows an editable takeaway", async () => {
     const { calls } = setup();
     await openFirst();

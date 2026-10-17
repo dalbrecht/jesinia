@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { clock, MODE_LABEL } from "./format";
 import { RssSection } from "./settings/Rss";
 import { TagsSection } from "./settings/Tags";
+import { unreachable } from "./settings/unreachable";
 import s from "./settings.module.css";
 
 /** The outline, in the design pass's order (Review joins when it ships). */
@@ -43,23 +44,34 @@ function KbSection({ status }: { status: ServerStatus }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** No answer while loading (a restart, say): the cause, with Try again. */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    void client.GET("/api/kb/path").then((r) => {
-      const data = r.data as KbPathInfo | undefined;
-      if (data) {
-        setInfo(data);
-        setValue(data.path ?? "");
-      }
-    });
-  }, [client]);
+    setLoadError(null);
+    client.GET("/api/kb/path").then(
+      (r) => {
+        const data = r.data as KbPathInfo | undefined;
+        if (data) {
+          setInfo(data);
+          setValue(data.path ?? "");
+        }
+      },
+      (e: unknown) => setLoadError(`Couldn't load the KB folder: ${unreachable(e)}`),
+    );
+  }, [client, attempt]);
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
-    const r = await client.PUT("/api/kb/path", { body: { path: value.trim() } });
+    const r = await client.PUT("/api/kb/path", { body: { path: value.trim() } }).catch((err: unknown) => {
+      setError(`Couldn't save the KB folder: ${unreachable(err)}`);
+      return null;
+    });
     setSaving(false);
+    if (r === null) return;
     if (r.error) {
       setError(errorText(r.error, "Couldn't use that folder."));
       return;
@@ -89,6 +101,14 @@ function KbSection({ status }: { status: ServerStatus }) {
             Save
           </Button>
         </div>
+        {loadError ? (
+          <div className={s.actions}>
+            <p className={s.muted}>{loadError}</p>
+            <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>
+              Try again
+            </Button>
+          </div>
+        ) : null}
       </form>
     </Panel>
   );
@@ -102,8 +122,12 @@ function SyncSection({ status }: { status: ServerStatus }) {
 
   const act = async (name: string, path: "/api/kbsync/run" | "/api/kbsync/resume" | "/api/kbsync/init") => {
     setBusy(name);
-    const r = await client.POST(path);
+    const r = await client.POST(path).catch((e: unknown) => {
+      toast.show({ tone: "danger", message: `Couldn't sync: ${unreachable(e)}` });
+      return null;
+    });
     setBusy(null);
+    if (r === null) return;
     if (!r.response.ok) {
       toast.show({ tone: "danger", message: errorText((r as { error?: unknown }).error) });
       return;

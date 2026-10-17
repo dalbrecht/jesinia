@@ -446,17 +446,29 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     if (engagedPost.current !== selectedId) engagedPost.current = null;
   }, [selectedId]);
 
+  /** The session being created for a post: a send meanwhile waits for it, never makes a second. */
+  const creating = useRef<{ postId: number; session: Promise<string | null> } | null>(null);
   const startSession = useCallback(
-    async (postId: number, chosen: string): Promise<string | null> => {
-      try {
-        const session = await engagePost(client, postId, chosen);
-        if (engagedPost.current !== postId) return null; // another post opened meanwhile
-        setEngaged((e) => (e && e.postId === postId ? { ...e, session: session.id } : e));
-        return session.id;
-      } catch (e) {
-        if (engagedPost.current === postId) fail("start the chat", e, "Send a message to try again.");
-        return null;
-      }
+    (postId: number, chosen: string): Promise<string | null> => {
+      if (creating.current?.postId === postId) return creating.current.session;
+      const create = async (): Promise<string | null> => {
+        try {
+          const created = await engagePost(client, postId, chosen);
+          if (engagedPost.current !== postId) return null; // another post opened meanwhile
+          setEngaged((e) => (e && e.postId === postId ? { ...e, session: created.id } : e));
+          return created.id;
+        } catch (e) {
+          if (engagedPost.current === postId) fail("start the chat", e, "Send a message to try again.");
+          return null;
+        }
+      };
+      const entry = { postId, session: create() };
+      creating.current = entry;
+      // Settled: the session is installed, or the next message tries again.
+      void entry.session.then(() => {
+        if (creating.current === entry) creating.current = null;
+      });
+      return entry.session;
     },
     [client, fail],
   );
@@ -549,6 +561,10 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   }); // prettier-ignore
 
   const title = titleOf(scope, feeds, search);
+  // `/` searches the feed list as well as headlines (spec §2.2): feeds are all loaded, so their
+  // names are matched here.
+  const needle = search.toLowerCase();
+  const matchingFeeds = needle ? feeds.filter((f) => f.title.toLowerCase().includes(needle)) : [];
   const chat =
     selected !== undefined && engaged !== null && engaged.postId === selected.id
       ? { post: selected, session: engaged.session, open: engaged.open }
@@ -593,11 +609,26 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
           label="Search headlines"
           hideLabel
           variant="search"
-          placeholder="Search headlines"
+          placeholder="Search feeds and headlines"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
       </div>
+      {matchingFeeds.length ? (
+        <div className={s.feedMatches} role="group" aria-label="Matching feeds">
+          <h3 className={s.feedMatchesTitle}>Feeds</h3>
+          {matchingFeeds.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              className={s.feed}
+              onClick={() => goTo({ view: "unread", feed: f.id, folder: null })}
+            >
+              {f.title}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {listError ? (
         <div className={s.listError} role="alert">
           <span>Couldn't load posts: {listError}</span>

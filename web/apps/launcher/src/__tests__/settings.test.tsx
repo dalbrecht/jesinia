@@ -133,6 +133,48 @@ describe("Settings", () => {
     expect(await screen.findByText(/Token rotated/)).toBeInTheDocument();
   });
 
+  it("a KB folder load that gets no answer says so, and Try again reloads it", async () => {
+    let down = true;
+    renderSettings({
+      "GET /api/kb/path": () =>
+        down
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : Response.json({ path: "/Users/me/kb", problem: null, pages: 1 }),
+    });
+    const kb = within(await screen.findByRole("region", { name: "Knowledge base" }));
+    expect(
+      await kb.findByText(
+        "Couldn't load the KB folder: Failed to fetch. Check that Jesinia is running, then try again.",
+      ),
+    ).toBeInTheDocument();
+    down = false;
+    await userEvent.click(kb.getByRole("button", { name: "Try again" }));
+    expect(await kb.findByDisplayValue("/Users/me/kb")).toBeInTheDocument();
+    expect(kb.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it("a KB folder save that gets no answer says so and can be sent again", async () => {
+    renderSettings({ "PUT /api/kb/path": () => Promise.reject(new TypeError("Failed to fetch")) });
+    await screen.findByDisplayValue("/Users/me/kb");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(
+      await screen.findByText(
+        "Couldn't save the KB folder: Failed to fetch. Check that Jesinia is running, then try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).not.toHaveAttribute("aria-busy");
+  });
+
+  it("a sync action that gets no answer says so and frees its button", async () => {
+    renderSettings({ "POST /api/kbsync/run": () => Promise.reject(new TypeError("Failed to fetch")) }, "#sync");
+    await userEvent.click(await screen.findByRole("button", { name: "Sync now" }));
+    expect(
+      (await screen.findAllByText("Couldn't sync: Failed to fetch. Check that Jesinia is running, then try again."))
+        .length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Sync now" })).not.toHaveAttribute("aria-busy");
+  });
+
   it("shows the KB problem the server reports, and clears it after a successful save", async () => {
     let configured = false;
     renderSettings({
