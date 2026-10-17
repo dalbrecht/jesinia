@@ -1,0 +1,41 @@
+{
+  "url": "https://api.github.com/repos/acme/api/issues/13",
+  "repository_url": "https://api.github.com/repos/acme/api",
+  "html_url": "https://github.com/acme/api/issues/13",
+  "id": 2013,
+  "node_id": "I_kw2013",
+  "number": 13,
+  "title": "New thing",
+  "user": {
+    "login": "octo",
+    "id": 1,
+    "type": "User"
+  },
+  "labels": [
+    {
+      "id": 100,
+      "name": "enhancement",
+      "color": "ededed",
+      "description": null,
+      "default": false
+    }
+  ],
+  "state": "open",
+  "state_reason": null,
+  "locked": false,
+  "assignee": null,
+  "assignees": [],
+  "milestone": null,
+  "comments": 0,
+  "created_at": "2026-10-01T10:00:00Z",
+  "updated_at": "2026-10-02T11:30:00Z",
+  "closed_at": null,
+  "author_association": "OWNER",
+  "body": "Details",
+  "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+  },
+  "parent_issue_url": null
+}

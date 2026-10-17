@@ -4468,6 +4468,966 @@
         }
       }
     },
+    "/api/issues/repos": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Repos",
+        "description": "Every repo added in Settings \u2192 Issues, with its schema and sync state.",
+        "operationId": "get_repos_api_issues_repos_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesReposOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/repos/{owner}/{repo}": {
+      "put": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Put Repo",
+        "description": "Watch or unwatch a repo and keep (or clear) its Settings schema. A new repo's\nexisting issues land in the Backlog on its first sync.",
+        "operationId": "put_repo_api_issues_repos__owner___repo__put",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssuesRepoIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesRepoOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/repos/{owner}/{repo}/sync": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Sync Repo",
+        "description": "Sync a watched repo now; a failure is recorded in ``sync_error``, not raised.",
+        "operationId": "sync_repo_api_issues_repos__owner___repo__sync_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesRepoOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/item/{owner}/{repo}/{n}": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Item",
+        "description": "One issue from the cache, with the comments and timeline last fetched.",
+        "operationId": "get_item_api_issues_item__owner___repo___n__get",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "n",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "N"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDetailOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/item/{owner}/{repo}/{n}/refresh": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Refresh Item",
+        "description": "Fetch the issue's comments, timeline and (for an epic) children from GitHub.",
+        "operationId": "refresh_item_api_issues_item__owner___repo___n__refresh_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "n",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "N"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDetailOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/labels/{owner}/{repo}/preview": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Preview Labels",
+        "description": "What the setup or migration batch would do, from a fresh read of the repo's labels\n(and, for a migration, each old label's issues listed live); nothing is written to\nGitHub. Apply it with its ``plan_id``.\n\nDeliberately not keyed, unlike the other POSTs: it changes nothing on GitHub, and the\nplan row each call keeps is harmless (plans expire and are pruned).",
+        "operationId": "preview_labels_api_issues_labels__owner___repo__preview_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LabelPlanIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelPlanOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/labels/{owner}/{repo}/apply": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Apply Labels",
+        "description": "Apply a previewed batch (an approval; owner only). Refused with a 409 when the\nrepo's labels or schema changed since the preview. When GitHub stops the batch (a rate\nlimit, with ``Retry-After``, or a rejected token) the answer is a 503 with the steps so\nfar.",
+        "operationId": "apply_labels_api_issues_labels__owner___repo__apply_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LabelApplyIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelApplyOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "description": "GitHub's rate limit stopped the batch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelApplyOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{view}": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get View",
+        "description": "The cached Inbox or Backlog, at once, even without the github service;\n``syncing`` and ``sync_error`` report GitHub. ``filter`` is a saved filter\n(``incomplete``, ``stale_90d``).",
+        "operationId": "get_view_api_issues__view__get",
+        "parameters": [
+          {
+            "name": "view",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 32,
+              "title": "View"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 140
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueViewOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/queue": {
       "get": {
         "tags": [
@@ -7036,6 +7996,715 @@
         ],
         "title": "ImportResultOut"
       },
+      "IssueCommentOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "author": {
+            "type": "string",
+            "title": "Author"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "author",
+          "body",
+          "created_at",
+          "url"
+        ],
+        "title": "IssueCommentOut"
+      },
+      "IssueDetailOut": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "author": {
+            "type": "string",
+            "title": "Author"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "state_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Reason"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labels"
+          },
+          "milestone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Milestone"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "readiness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readiness"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
+          "areas": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Areas"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing"
+          },
+          "conflicts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Conflicts"
+          },
+          "is_epic": {
+            "type": "boolean",
+            "title": "Is Epic"
+          },
+          "inbox": {
+            "type": "boolean",
+            "title": "Inbox"
+          },
+          "sub_issue_count": {
+            "type": "integer",
+            "title": "Sub Issue Count"
+          },
+          "children": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Children"
+          },
+          "comments": {
+            "items": {
+              "$ref": "#/components/schemas/IssueCommentOut"
+            },
+            "type": "array",
+            "title": "Comments"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/IssueEventOut"
+            },
+            "type": "array",
+            "title": "Timeline"
+          },
+          "details_synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details Synced At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "number",
+          "title",
+          "body",
+          "url",
+          "author",
+          "state",
+          "state_reason",
+          "labels",
+          "milestone",
+          "parent",
+          "created_at",
+          "updated_at",
+          "readiness",
+          "priority",
+          "type",
+          "areas",
+          "complete",
+          "missing",
+          "conflicts",
+          "is_epic",
+          "inbox",
+          "sub_issue_count",
+          "children",
+          "comments",
+          "timeline",
+          "details_synced_at"
+        ],
+        "title": "IssueDetailOut",
+        "description": "One cached issue for the book layout. ``comments`` and ``timeline`` are what the last\nrefresh fetched (``details_synced_at``; ``None``: never); ``children`` is ``None`` while an\nepic's sub-issues were never fetched."
+      },
+      "IssueEventOut": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "event": {
+            "type": "string",
+            "title": "Event"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "state_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Reason"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "commit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "event",
+          "actor",
+          "created_at",
+          "label",
+          "state_reason",
+          "source",
+          "commit_id"
+        ],
+        "title": "IssueEventOut",
+        "description": "A timeline event; ``source`` is the referencing issue or PR as ``owner/name#n``."
+      },
+      "IssueRowOut": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "author": {
+            "type": "string",
+            "title": "Author"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labels"
+          },
+          "readiness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readiness"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
+          "areas": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Areas"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing"
+          },
+          "conflicts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Conflicts"
+          },
+          "is_epic": {
+            "type": "boolean",
+            "title": "Is Epic"
+          },
+          "sub_issue_count": {
+            "type": "integer",
+            "title": "Sub Issue Count"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "milestone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Milestone"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "number",
+          "title",
+          "url",
+          "author",
+          "labels",
+          "readiness",
+          "priority",
+          "type",
+          "areas",
+          "complete",
+          "missing",
+          "conflicts",
+          "is_epic",
+          "sub_issue_count",
+          "parent",
+          "milestone",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "IssueRowOut",
+        "description": "An Inbox or Backlog row with its triage against the repo's schema."
+      },
+      "IssueViewOut": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/IssueRowOut"
+            },
+            "type": "array",
+            "title": "Rows"
+          },
+          "synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synced At"
+          },
+          "syncing": {
+            "type": "boolean",
+            "title": "Syncing"
+          },
+          "sync_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows",
+          "synced_at",
+          "syncing",
+          "sync_error"
+        ],
+        "title": "IssueViewOut",
+        "description": "A list served from the cache at once; the sync's state is reported, never awaited."
+      },
+      "IssuesErrorOut": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "detail"
+        ],
+        "title": "IssuesErrorOut",
+        "description": "A typed error: its class name, the cause, and (when GitHub rate limited the request)\nthe seconds to wait, also sent as ``Retry-After``."
+      },
+      "IssuesRepoIn": {
+        "properties": {
+          "watched": {
+            "type": "boolean",
+            "title": "Watched"
+          },
+          "settings_schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LabelSchemaBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "watched",
+          "settings_schema"
+        ],
+        "title": "IssuesRepoIn",
+        "description": "Settings \u2192 Issues for one repo. PUT replaces, so ``settings_schema`` is required: send\nthe schema to keep, or an explicit ``null`` to clear it (the default then applies when there\nis no labels.yml). Leaving it out is a 422, never a silent wipe of the author's schema."
+      },
+      "IssuesRepoOut": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "watched": {
+            "type": "boolean",
+            "title": "Watched"
+          },
+          "added_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Added At"
+          },
+          "schema_source": {
+            "type": "string",
+            "enum": [
+              "default",
+              "repo",
+              "settings"
+            ],
+            "title": "Schema Source"
+          },
+          "label_schema": {
+            "$ref": "#/components/schemas/LabelSchemaBody"
+          },
+          "schema_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Schema Errors"
+          },
+          "settings_schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LabelSchemaBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "migrated": {
+            "type": "boolean",
+            "title": "Migrated"
+          },
+          "synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synced At"
+          },
+          "sync_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "watched",
+          "added_at",
+          "schema_source",
+          "label_schema",
+          "schema_errors",
+          "settings_schema",
+          "migrated",
+          "synced_at",
+          "sync_error"
+        ],
+        "title": "IssuesRepoOut",
+        "description": "A repo the author added. ``label_schema`` is the effective one and ``schema_source`` where\nit came from: ``repo`` (its ``.jesinia/labels.yml``, which wins while it exists),\n``settings`` (``settings_schema``) or ``default``. ``schema_errors`` lists what labels.yml\ncouldn't use."
+      },
+      "IssuesReposOut": {
+        "properties": {
+          "repos": {
+            "items": {
+              "$ref": "#/components/schemas/IssuesRepoOut"
+            },
+            "type": "array",
+            "title": "Repos"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repos"
+        ],
+        "title": "IssuesReposOut"
+      },
       "JsonValue": {},
       "KeepIn": {
         "properties": {
@@ -7098,6 +8767,376 @@
           "post"
         ],
         "title": "KeepOut"
+      },
+      "LabelApplyIn": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "setup",
+              "migrate"
+            ],
+            "title": "Kind"
+          },
+          "plan_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Plan Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "plan_id"
+        ],
+        "title": "LabelApplyIn",
+        "description": "Apply a previewed plan (an approval). ``plan_id`` is the preview's."
+      },
+      "LabelApplyOut": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "setup",
+              "migrate"
+            ],
+            "title": "Kind"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/LabelStepOut"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          },
+          "rate_limited": {
+            "type": "boolean",
+            "title": "Rate Limited"
+          },
+          "rate_limited_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Limited Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "kind",
+          "complete",
+          "steps",
+          "note",
+          "stopped",
+          "rate_limited",
+          "rate_limited_until"
+        ],
+        "title": "LabelApplyOut",
+        "description": "What an apply did, step by step. ``note`` says why old labels were kept;\n``stopped`` is set when GitHub stopped the batch (a rate limit, with\n``rate_limited_until`` and ``Retry-After``, or a rejected token): the response is then a 503.\nAnything left needs a fresh preview."
+      },
+      "LabelCanonicalBody": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "aliases": {
+            "items": {
+              "type": "string",
+              "maxLength": 50,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Aliases"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "LabelCanonicalBody",
+        "description": "A canonical label value and the existing labels that mean the same thing."
+      },
+      "LabelOpOut": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": [
+              "create",
+              "delete"
+            ],
+            "title": "Op"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "replacement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement"
+          },
+          "members": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Members"
+          },
+          "skip_cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skip Cause"
+          }
+        },
+        "type": "object",
+        "required": [
+          "op",
+          "name",
+          "color",
+          "description",
+          "replacement",
+          "members",
+          "skip_cause"
+        ],
+        "title": "LabelOpOut",
+        "description": "One step: ``create`` (``name``, ``color``, ``description``) or ``delete`` (``name``).\nA delete with a ``replacement`` first moves every issue and pull request carrying the label\nto it (listed live at apply time); ``members`` is what the preview listed. ``skip_cause``\nsays why the step will be skipped whatever happens (a name GitHub can't list by)."
+      },
+      "LabelPlanIn": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "setup",
+              "migrate"
+            ],
+            "title": "Kind"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "LabelPlanIn"
+      },
+      "LabelPlanOut": {
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "title": "Plan Id"
+          },
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "setup",
+              "migrate"
+            ],
+            "title": "Kind"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "ops": {
+            "items": {
+              "$ref": "#/components/schemas/LabelOpOut"
+            },
+            "type": "array",
+            "title": "Ops"
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan_id",
+          "repo",
+          "kind",
+          "expires_at",
+          "ops"
+        ],
+        "title": "LabelPlanOut",
+        "description": "A previewed batch: apply it with ``plan_id`` before ``expires_at``."
+      },
+      "LabelSchemaBody": {
+        "properties": {
+          "readiness": {
+            "items": {
+              "$ref": "#/components/schemas/LabelCanonicalBody"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Readiness"
+          },
+          "priority": {
+            "items": {
+              "$ref": "#/components/schemas/LabelCanonicalBody"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Priority"
+          },
+          "type": {
+            "items": {
+              "$ref": "#/components/schemas/LabelCanonicalBody"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Type"
+          },
+          "areas": {
+            "items": {
+              "$ref": "#/components/schemas/LabelCanonicalBody"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Areas"
+          },
+          "epic": {
+            "$ref": "#/components/schemas/LabelCanonicalBody"
+          },
+          "initiative": {
+            "$ref": "#/components/schemas/LabelCanonicalBody"
+          },
+          "free_prefixes": {
+            "items": {
+              "type": "string",
+              "maxLength": 50,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Free Prefixes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "readiness",
+          "priority",
+          "type"
+        ],
+        "title": "LabelSchemaBody",
+        "description": "A label schema in ``.jesinia/labels.yml``'s shape (spec \u00a72)."
+      },
+      "LabelStepOut": {
+        "properties": {
+          "op": {
+            "$ref": "#/components/schemas/LabelOpOut"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "skipped"
+            ],
+            "title": "State"
+          },
+          "cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause"
+          },
+          "failed_issues": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Failed Issues"
+          }
+        },
+        "type": "object",
+        "required": [
+          "op",
+          "state",
+          "cause",
+          "failed_issues"
+        ],
+        "title": "LabelStepOut",
+        "description": "A step's outcome; ``failed_issues`` are the issues a delete's moves failed on."
       },
       "LoadIn": {
         "properties": {

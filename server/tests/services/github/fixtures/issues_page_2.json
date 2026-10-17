@@ -1,0 +1,35 @@
+[
+  {
+    "url": "https://api.github.com/repos/acme/api/issues/3",
+    "repository_url": "https://api.github.com/repos/acme/api",
+    "html_url": "https://github.com/acme/api/issues/3",
+    "id": 2003,
+    "node_id": "I_kw2003",
+    "number": 3,
+    "title": "Old idea",
+    "user": {
+      "login": "octo",
+      "id": 1,
+      "type": "User"
+    },
+    "labels": [],
+    "state": "closed",
+    "state_reason": "not_planned",
+    "locked": false,
+    "assignee": null,
+    "assignees": [],
+    "milestone": null,
+    "comments": 0,
+    "created_at": "2026-10-01T10:00:00Z",
+    "updated_at": "2026-10-02T11:30:00Z",
+    "closed_at": null,
+    "author_association": "OWNER",
+    "body": "Body text",
+    "sub_issues_summary": {
+      "total": 0,
+      "completed": 0,
+      "percent_completed": 0
+    },
+    "parent_issue_url": null
+  }
+]

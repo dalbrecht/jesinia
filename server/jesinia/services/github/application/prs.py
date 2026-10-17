@@ -14,13 +14,27 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from jesinia.services.github.application.payload import GHOST as _GHOST
+from jesinia.services.github.application.payload import PER_PAGE as PER_PAGE
+from jesinia.services.github.application.payload import (
+    GitHubPayloadError as GitHubPayloadError,
+)
+from jesinia.services.github.application.payload import account as _account
+from jesinia.services.github.application.payload import flag as _flag
+from jesinia.services.github.application.payload import get_json, get_pages
+from jesinia.services.github.application.payload import list_of as _list
+from jesinia.services.github.application.payload import mapping as _mapping
+from jesinia.services.github.application.payload import number as _number
+from jesinia.services.github.application.payload import optional_mapping as _optional_mapping
+from jesinia.services.github.application.payload import optional_number as _optional_number
+from jesinia.services.github.application.payload import optional_text as _optional_text
+from jesinia.services.github.application.payload import optional_time as _optional_time
+from jesinia.services.github.application.payload import text as _text
 from jesinia.services.github.application.service import (
     API,
-    GitHubError,
     GitHubRateLimitedError,
     GitHubRequestError,
     GitHubService,
-    github_error_message,
 )
 from jesinia.services.github.domain.pr import (
     Check,
@@ -33,7 +47,6 @@ from jesinia.services.github.domain.pr import (
     ReviewThread,
     check_status_from_commit_status,
     check_status_from_run,
-    is_bot_account,
     rollup_checks,
     validate_pull_number,
     validate_repo,
@@ -42,7 +55,6 @@ from jesinia.services.github.domain.pr import (
 
 log = logging.getLogger(__name__)
 
-PER_PAGE = 100
 # GitHub's search rejects queries longer than 256 characters.
 SEARCH_QUERY_LIMIT = 256
 # Search returns at most 1000 results (10 pages of 100); asking for page 11 is a 422.
@@ -52,8 +64,6 @@ INBOX_CONCURRENCY = 8
 # Who-qualifiers in inbox priority order: requested reviews first (spec §2 "Order").
 _REQUESTED = "review-requested:@me"
 _INBOX_QUALIFIERS = (_REQUESTED, "author:@me", "reviewed-by:@me")
-# A deleted account shows up as an empty author; GitHub itself renders it as "ghost".
-_GHOST = "ghost"
 
 _THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -75,72 +85,6 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 
 
 _SearchHit = tuple[tuple[str, int], Mapping[str, object]]
-
-
-class GitHubPayloadError(GitHubError):
-    """GitHub answered with a shape this client does not understand."""
-
-
-def _mapping(value: object, what: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise GitHubPayloadError(f"expected an object for {what}, got {type(value).__name__}")
-    return value
-
-
-def _list(value: object, what: str) -> list[object]:
-    if not isinstance(value, list):
-        raise GitHubPayloadError(f"expected a list for {what}, got {type(value).__name__}")
-    return value
-
-
-def _text(data: Mapping[str, object], key: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str):
-        raise GitHubPayloadError(f"expected text for {key!r}, got {type(value).__name__}")
-    return value
-
-
-def _optional_text(data: Mapping[str, object], key: str) -> str | None:
-    value = data.get(key)
-    return value if isinstance(value, str) else None
-
-
-def _number(data: Mapping[str, object], key: str) -> int:
-    value = data.get(key)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise GitHubPayloadError(f"expected a number for {key!r}, got {type(value).__name__}")
-    return value
-
-
-def _optional_number(data: Mapping[str, object], key: str) -> int | None:
-    value = data.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _flag(data: Mapping[str, object], key: str) -> bool:
-    value = data.get(key)
-    if not isinstance(value, bool):
-        raise GitHubPayloadError(f"expected true/false for {key!r}, got {type(value).__name__}")
-    return value
-
-
-def _optional_mapping(data: Mapping[str, object], key: str) -> Mapping[str, object] | None:
-    value = data.get(key)
-    return value if isinstance(value, Mapping) else None
-
-
-def _optional_time(data: Mapping[str, object], key: str) -> datetime | None:
-    value = _optional_text(data, key)
-    return datetime.fromisoformat(value) if value else None
-
-
-def _account(data: Mapping[str, object], key: str) -> tuple[str, bool]:
-    """(login, is_bot) of a ``user``-shaped field; a deleted account is ``ghost``."""
-    account = _optional_mapping(data, key)
-    if account is None:
-        return _GHOST, False
-    login = _text(account, "login")
-    return login, is_bot_account(login, _optional_text(account, "type"))
 
 
 def _search_queries(qualifier: str, repos: Sequence[str]) -> list[str]:
@@ -290,10 +234,7 @@ class PrClient:
         self._github = github
 
     async def _get_json(self, path: str, params: Mapping[str, str] | None = None) -> object:
-        response = await self._github.get(path, params)
-        if not 200 <= response.status < 300:
-            raise GitHubRequestError(response.status, github_error_message(response.data))
-        return response.data
+        return await get_json(self._github, path, params)
 
     async def _get_pages(
         self,
@@ -302,20 +243,7 @@ class PrClient:
         items_key: str | None = None,
         max_pages: int | None = None,
     ) -> list[Mapping[str, object]]:
-        """Follow ``page`` until a short page, or ``max_pages``; GitHub caps these lists
-        (3000 files, 250 commits, 1000 search results), so the loop always ends."""
-        items: list[Mapping[str, object]] = []
-        page = 1
-        while True:
-            query = {**(params or {}), "per_page": str(PER_PAGE), "page": str(page)}
-            data = await self._get_json(path, query)
-            if items_key is not None:
-                data = _mapping(data, path).get(items_key)
-            batch = _list(data, path)
-            items.extend(_mapping(item, path) for item in batch)
-            if len(batch) < PER_PAGE or page == max_pages:
-                return items
-            page += 1
+        return await get_pages(self._github, path, params, items_key, max_pages)
 
     async def viewer(self) -> str:
         """The login the token belongs to."""

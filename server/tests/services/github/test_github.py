@@ -23,6 +23,8 @@ from jesinia.services.github.application.service import (
     GitHubRequestError,
     GitHubService,
     GitHubUnavailable,
+    UnsafeGitHubPathError,
+    WriteMethod,
 )
 from jesinia.services.github.infrastructure.auth import github_token
 from jesinia.services.github.infrastructure.cache import SqliteGitHubCache
@@ -374,3 +376,60 @@ async def test_a_plain_403_is_not_a_rate_limit(gh: GitHubService) -> None:
     )
     response = await gh.get("/secret")
     assert response.status == 403
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH", "PUT", "DELETE"])
+@respx.mock
+async def test_every_write_method_is_rate_limited_like_a_post(
+    cache: SqliteGitHubCache, method: WriteMethod
+) -> None:
+    async def token() -> str | None:
+        return "gho_test"
+
+    gh = GitHubService(token, cache, wall_clock=_fixed_wall_clock)
+    respx.route(method=method, url="https://api.github.com/repos/o/r/issues/1").mock(
+        return_value=Response(
+            403,
+            headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1793534400"},
+            json={"message": "API rate limit exceeded"},
+        )
+    )
+    with pytest.raises(GitHubRateLimitedError, match="rate limit exceeded") as caught:
+        await gh.write(method, "/repos/o/r/issues/1", {"state": "closed"})
+    assert caught.value.reset_at == datetime.fromtimestamp(1793534400, UTC)
+    await gh.aclose()
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH", "PUT", "DELETE"])
+@respx.mock
+async def test_every_write_method_retries_once_on_a_401_with_a_fresh_token(
+    cache: SqliteGitHubCache, method: WriteMethod
+) -> None:
+    tokens = _Tokens()
+    gh = GitHubService(tokens, cache)
+    route = respx.route(method=method, url="https://api.github.com/repos/o/r/issues/1").mock(
+        side_effect=[Response(401, json={"message": "Bad credentials"}), Response(200, json={})]
+    )
+    assert await gh.write(method, "/repos/o/r/issues/1") == {}
+    assert tokens.calls == 2 and route.call_count == 2
+    assert route.calls[1].request.headers["Authorization"] == "Bearer gho_secret_2"
+    route.side_effect = [Response(401, json={}), Response(401, json={})]
+    with pytest.raises(GitHubUnavailable):
+        await gh.write(method, "/repos/o/r/issues/1")
+    assert route.call_count == 4  # one retry, never a loop
+    await gh.aclose()
+
+
+@respx.mock
+async def test_paths_that_normalise_elsewhere_are_refused_before_sending(
+    gh: GitHubService,
+) -> None:
+    anything = respx.route(host="api.github.com").mock(return_value=Response(200, json={}))
+    for path in ("/repos/o/r/labels/..", "/repos/o/r/labels/.", "/repos/o/r/x/../y", "/a b"):
+        with pytest.raises(UnsafeGitHubPathError):
+            await gh.write("DELETE", path)
+        with pytest.raises(UnsafeGitHubPathError):
+            await gh.get(path)
+    with pytest.raises(UnsafeGitHubPathError, match="/repos/"):
+        await gh.write("POST", "/user/repos", {"name": "x"})
+    assert not anything.called
