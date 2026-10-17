@@ -67,9 +67,15 @@ async def test_startup_reindex_does_not_block_healthz(
         await original(self, id)
 
     monkeypatch.setattr(SearchService, "_index_page", held)
-    async with lifespan_client(create_app(kb_cfg, [KbModule(), SearchModule()])) as c:
-        body = (await asyncio.wait_for(c.get("/healthz"), timeout=10)).json()
-        assert body["modules"]["search"] == {"ok": True, "detail": "indexing"}
+
+    async def search_health_at_startup() -> object:
+        # Startup is inside the timeout too: a regression that awaited the held reindex
+        # during startup would otherwise hang instead of failing.
+        async with lifespan_client(create_app(kb_cfg, [KbModule(), SearchModule()])) as c:
+            return (await c.get("/healthz")).json()["modules"]["search"]
+
+    health = await asyncio.wait_for(search_health_at_startup(), timeout=10)
+    assert health == {"ok": True, "detail": "indexing"}
     # Never released: leaving the app cancels the held reindex, which must shut down cleanly.
     assert not release.is_set()
 
