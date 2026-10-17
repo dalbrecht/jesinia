@@ -95,6 +95,12 @@ class MissingLabelError(ChangeDomainError):
         )
 
 
+class ChangedOnGitHubError(ChangeDomainError):
+    """The fresh read contradicts what the change was approved or staged against (a dimension
+    filled, a parent changed, the issue closed on GitHub since): applying it would overwrite
+    someone's change, so the step fails and nothing is written (spec §6.1, §6.2)."""
+
+
 class NothingPendingError(ChangeDomainError):
     """Apply was asked for, but no pending change matches."""
 
@@ -170,10 +176,12 @@ def _owner(repo: str) -> str:
 @dataclass(frozen=True)
 class SetDimension:
     """Set a single-value dimension (readiness, priority or type) to a schema value, removing
-    the dimension's other values."""
+    the dimension's other values. ``only_if_missing`` (an approval, which only promised to fill a
+    gap) refuses when GitHub already has another value."""
 
     dimension: SingleDimension
     value: str
+    only_if_missing: bool = False
 
     def __post_init__(self) -> None:
         if self.dimension not in SINGLE_DIMENSIONS:
@@ -206,9 +214,19 @@ class RemoveArea:
 
 @dataclass(frozen=True)
 class SetParent:
-    """Make ``parent`` the issue's epic (moving it from another), or remove its parent."""
+    """Make ``parent`` the issue's epic (moving it from another), or remove its parent.
+
+    With ``expects_parent`` the change was made against ``expected_parent`` (the parent the cache
+    showed when it was staged or approved, ``None`` for none): when GitHub's parent differs at
+    apply time, the step fails as a conflict and nothing moves (IR39)."""
 
     parent: Target | None
+    expects_parent: bool = False
+    expected_parent: Existing | None = None
+
+    def __post_init__(self) -> None:
+        if self.expected_parent is not None and not self.expects_parent:
+            raise InvalidChangeError("an expected parent needs expects_parent")
 
 
 @dataclass(frozen=True)
@@ -223,12 +241,14 @@ class ReorderChild:
 class Close:
     """Close the issue. A duplicate carries the original's GitHub database id (sent as
     ``duplicate_issue_id``) and its reference (``duplicate_of_ref``); ``comment`` is posted
-    after the close, in the comment step."""
+    after the close, in the comment step (and only if the close itself happened).
+    ``only_if_open`` (an approval) refuses when GitHub already closed the issue."""
 
     reason: CloseReason
     duplicate_of_id: int | None = None
     duplicate_of_ref: Existing | None = None
     comment: str | None = None
+    only_if_open: bool = False
 
     def __post_init__(self) -> None:
         with _checked():
@@ -237,11 +257,17 @@ class Close:
                 validate_comment_body(self.comment)
         if (self.duplicate_of_id is None) != (self.duplicate_of_ref is None):
             raise InvalidChangeError("a duplicate close names the original's id and reference")
+        if self.reason == "duplicate" and self.duplicate_of_id is None:
+            raise InvalidChangeError("a duplicate close names the issue it duplicates")
 
 
 @dataclass(frozen=True)
 class Comment:
+    """A comment. ``from_close`` marks a close's own comment (made by ``series``), posted only
+    when that close happened."""
+
     body: str
+    from_close: bool = False
 
     def __post_init__(self) -> None:
         with _checked():
@@ -346,6 +372,12 @@ class ChangeBatch:
                 raise InvalidChangeError(
                     "a parent epic must be under the same owner (GitHub's sub-issues require it)"
                 )
+        if (
+            isinstance(change, Close)
+            and change.duplicate_of_ref is not None
+            and change.duplicate_of_ref.key == target.key
+        ):
+            raise InvalidChangeError(f"{target} can't be a duplicate of itself")
         if isinstance(change, ReorderChild) and (
             change.child.key == target.key
             or (change.after is not None and change.after.key == change.child.key)
@@ -434,7 +466,9 @@ def series(batch: ChangeBatch) -> list[Step]:
         for change in normalized(changes):
             groups[_step_kind(change)].append(change)
         closes = [c for c in groups["close"] if isinstance(c, Close) and c.comment is not None]
-        groups["comment"] = [Comment(cast(str, c.comment)) for c in closes] + groups["comment"]
+        groups["comment"] = [
+            Comment(cast(str, c.comment), from_close=True) for c in closes
+        ] + groups["comment"]
         repo = batch.repo_of(target)
         steps += [
             Step(kind, repo, target, tuple(groups[kind])) for kind in ISSUE_STEPS if groups[kind]
@@ -442,9 +476,12 @@ def series(batch: ChangeBatch) -> list[Step]:
     return steps
 
 
-def comment_body(step: Step) -> str:
-    """The one comment a comment step posts: its bodies in order, a blank line apart."""
-    return COMMENT_JOIN.join(c.body for c in step.changes if isinstance(c, Comment))
+def comment_body(step: Step, *, with_close: bool = True) -> str:
+    """The one comment a comment step posts: its bodies in order, a blank line apart; without
+    the close's own comment when ``with_close`` is off (the close didn't happen)."""
+    return COMMENT_JOIN.join(
+        c.body for c in step.changes if isinstance(c, Comment) and (with_close or not c.from_close)
+    )
 
 
 # Label edits --------------------------------------------------------------------------------
@@ -530,6 +567,7 @@ def label_edit(
 
     Raises:
         InvalidChangeError: a value outside the schema.
+        ChangedOnGitHubError: an ``only_if_missing`` dimension GitHub already has a value for.
         MissingLabelError: labels to add that GitHub doesn't have (every one of them listed).
     """
     present = {label_key(label): label.strip() for label in current if label.strip()}
@@ -553,6 +591,12 @@ def label_edit(
         if isinstance(change, SetDimension):
             canonical = dimension_value(schema, change)
             values = _single(schema, change.dimension)
+            others = [p for p in present.values() if (_find(values, p) or canonical) != canonical]
+            if change.only_if_missing and others:
+                raise ChangedOnGitHubError(
+                    f"changed on GitHub since the last sync: {change.dimension} is now "
+                    f"{', '.join(repr(o) for o in others)}, so {canonical.name!r} isn't set"
+                )
             drop(lambda label: (_find(values, label) or canonical) == canonical)
             add(canonical)
         elif isinstance(change, AddArea):
@@ -591,11 +635,13 @@ def labels_needed(changes: Sequence[Change], schema: LabelSchema) -> set[str]:
 
 @dataclass(frozen=True)
 class StepResult:
-    """A step's outcome; ``cause`` says why it failed or was skipped (or a no-op's reason)."""
+    """A step's outcome; ``cause`` says why it failed or was skipped (or a no-op's reason).
+    ``is_conflict``: it failed because GitHub changed underneath it (``ChangedOnGitHubError``)."""
 
     step: Step
     state: StepState
     cause: str | None = None
+    is_conflict: bool = False
 
 
 @dataclass(frozen=True)
@@ -701,7 +747,8 @@ def approval_batch(suggestion: Suggestion, duplicate_of_id: int | None = None) -
         value = str(payload["value"])
         if payload["dimension"] != AREA:
             dimension = cast(SingleDimension, payload["dimension"])
-            return ChangeBatch.of({target: [SetDimension(dimension, value)]})
+            fill = SetDimension(dimension, value, only_if_missing=True)
+            return ChangeBatch.of({target: [fill]})
         repo: list[RepoChange] = []
         if kind == "new_area":
             op = create_label_op(AREA, Canonical(value))
@@ -711,12 +758,13 @@ def approval_batch(suggestion: Suggestion, duplicate_of_id: int | None = None) -
     if kind in ("duplicate", "parent"):
         ref = Existing(str(payload["repo"]), cast(int, payload["n"]))
         if kind == "parent":
-            return ChangeBatch.of({target: [SetParent(ref)]})
+            return ChangeBatch.of({target: [SetParent(ref, expects_parent=True)]})
         if duplicate_of_id is None:
             raise InvalidChangeError("a duplicate close needs the original's database id")
-        close = Close("duplicate", duplicate_of_id, ref, f"Duplicate of {ref}")
+        close = Close("duplicate", duplicate_of_id, ref, f"Duplicate of {ref}", only_if_open=True)
         return ChangeBatch.of({target: [close]})
     if kind == "readiness_gap" and payload["ready"]:
+        # The premise is human-needed, not a missing dimension: a staged-like set.
         return ChangeBatch.of({target: [SetDimension("readiness", AGENT_READY)]})
     if kind == "readiness_gap":
         return ChangeBatch()
@@ -755,13 +803,24 @@ def _is_int(value: object) -> bool:
 def change_json(change: Change) -> Json:
     """``change`` as stored (and as ``parse_change`` reads it back)."""
     if isinstance(change, SetDimension):
-        return {"kind": "set_dimension", "dimension": change.dimension, "value": change.value}
+        return {
+            "kind": "set_dimension",
+            "dimension": change.dimension,
+            "value": change.value,
+            "only_if_missing": change.only_if_missing,
+        }
     if isinstance(change, AddArea | RemoveArea):
         kind = "add_area" if isinstance(change, AddArea) else "remove_area"
         return {"kind": kind, "value": change.value}
     if isinstance(change, SetParent):
         parent = None if change.parent is None else target_json(change.parent)
-        return {"kind": "set_parent", "parent": parent}
+        expected = change.expected_parent
+        return {
+            "kind": "set_parent",
+            "parent": parent,
+            "expects_parent": change.expects_parent,
+            "expected_parent": None if expected is None else target_json(expected),
+        }
     if isinstance(change, ReorderChild):
         after = None if change.after is None else target_json(change.after)
         return {"kind": "reorder_child", "child": target_json(change.child), "after": after}
@@ -773,6 +832,7 @@ def change_json(change: Change) -> Json:
             "duplicate_of_id": change.duplicate_of_id,
             "duplicate_of_ref": None if ref is None else target_json(ref),
             "comment": change.comment,
+            "only_if_open": change.only_if_open,
         }
     if isinstance(change, Comment):
         return {"kind": "comment", "body": change.body}
@@ -827,6 +887,13 @@ def _entry(data: object) -> SchemaEntry | None:
     return SchemaEntry(dimension, _text(data, "canonical"), tuple(aliases))
 
 
+def _flag(data: Mapping[str, object], key: str) -> bool:
+    value = data.get(key, False)
+    if not isinstance(value, bool):
+        raise InvalidChangeError(f"{key} must be true or false")
+    return value
+
+
 def _reason(value: object) -> CloseReason:
     found = next((r for r in _CLOSE_REASONS if r == value), None)
     if found is None:
@@ -844,13 +911,18 @@ def _dimension(value: object) -> SingleDimension:
 def _parse(data: Mapping[str, object]) -> Change:
     kind = data["kind"]
     if kind == "set_dimension":
-        return SetDimension(_dimension(data["dimension"]), _text(data, "value"))
+        return SetDimension(
+            _dimension(data["dimension"]), _text(data, "value"), _flag(data, "only_if_missing")
+        )
     if kind == "add_area":
         return AddArea(_text(data, "value"))
     if kind == "remove_area":
         return RemoveArea(_text(data, "value"))
     if kind == "set_parent":
-        return SetParent(_optional_target(data["parent"]))
+        expected = _optional_target(data.get("expected_parent"))
+        if expected is not None and not isinstance(expected, Existing):
+            raise InvalidChangeError("an expected parent is an existing issue")
+        return SetParent(_optional_target(data["parent"]), _flag(data, "expects_parent"), expected)
     if kind == "reorder_child":
         return ReorderChild(_target(data["child"]), _optional_target(data["after"]))
     if kind == "close":
@@ -866,6 +938,7 @@ def _parse(data: Mapping[str, object]) -> Change:
             cast(int | None, duplicate_id),
             duplicate,
             _optional_text(data, "comment"),
+            _flag(data, "only_if_open"),
         )
     if kind == "comment":
         return Comment(_text(data, "body"))
@@ -951,9 +1024,20 @@ def parse_batch(data: Mapping[str, object]) -> ChangeBatch:
         raise InvalidChangeError(f"a batch is missing or mistypes {exc}") from exc
 
 
+def parse_step_state(value: object) -> StepState:
+    """Raises: InvalidChangeError: not a step state."""
+    for state in STEP_STATES:
+        if value == state:
+            return state
+    raise InvalidChangeError(f"a step state is one of {', '.join(STEP_STATES)}")
+
+
 def result_json(result: BatchResult) -> Json:
     return {
-        "results": [{"state": r.state, "cause": r.cause} for r in result.results],
+        "results": [
+            {"state": r.state, "cause": r.cause, "is_conflict": r.is_conflict}
+            for r in result.results
+        ],
         "created": {
             temp: {"repo": c.repo, "n": c.n, "id": c.id} for temp, c in result.created.items()
         },
@@ -978,8 +1062,9 @@ def parse_result(batch: ChangeBatch, data: Mapping[str, object]) -> BatchResult:
     results = tuple(
         StepResult(
             step,
-            next(s for s in STEP_STATES if s == row["state"]),
+            parse_step_state(row["state"]),
             cast(str | None, row["cause"]),
+            bool(row.get("is_conflict", False)),
         )
         for step, row in zip(steps, rows, strict=True)
     )

@@ -19,6 +19,7 @@ from jesinia.apps.issues.application.ports import (
     SchemaSource,
     StoredIssue,
 )
+from jesinia.apps.issues.domain.changes import InvalidChangeError
 from jesinia.apps.issues.domain.labels import (
     PLAN_TTL,
     CreateLabel,
@@ -32,6 +33,7 @@ from jesinia.apps.issues.domain.schema import (
     OVERLAY_DIMENSIONS,
     Canonical,
     LabelSchema,
+    OverlayDimension,
     SchemaEntry,
     with_overlay,
 )
@@ -206,6 +208,14 @@ def _repo_state(row: tuple[object, ...]) -> RepoState:
     )
 
 
+def _overlay_dimension(value: object) -> OverlayDimension:
+    """Raises: InvalidChangeError: a stored overlay row with an unknown dimension."""
+    for dimension in OVERLAY_DIMENSIONS:
+        if value == dimension:
+            return dimension
+    raise InvalidChangeError(f"schema_overlay holds an unknown dimension {value!r}")
+
+
 def _source(value: str) -> SchemaSource:
     return next(source for source in _SOURCES if source == value)
 
@@ -344,11 +354,7 @@ class SqliteIssuesStore:
             (state.repo,),
         )
         entries = tuple(
-            SchemaEntry(
-                next(d for d in OVERLAY_DIMENSIONS if d == dimension),
-                str(canonical),
-                tuple(json.loads(str(aliases))),
-            )
+            SchemaEntry(_overlay_dimension(dimension), str(canonical), tuple(json.loads(aliases)))
             for dimension, canonical, aliases in rows
         )
         if not entries:

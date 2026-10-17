@@ -72,6 +72,21 @@ async def test_start_opens_the_db_and_wires_idempotency(cfg: Config) -> None:
     assert module.idempotency.reserve("k", "POST /x", datetime.now(UTC)) is None
     await module.stop()
 
+    # So would a suggestion an approval claimed when a stop cut it off (IR40).
+    conn = open_db(cfg.data_dir, ISSUES_DB)
+    conn.execute(
+        "INSERT INTO suggestions (id, repo, n, kind, payload_json, reason, state, created_at, "
+        "updated_at, claimed_at) VALUES ('s', 'acme/web', 1, 'label', '{}', 'r', 'draft', "
+        "'2026-10-16', '2026-10-16', '2026-10-16')"
+    )
+    conn.commit()
+    conn.close()
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    conn = open_db(cfg.data_dir, ISSUES_DB)
+    assert conn.execute("SELECT claimed_at FROM suggestions").fetchone() == (None,)
+    conn.close()
+    await module.stop()
+
 
 class _NoCache:
     def get(self, key: str) -> None:

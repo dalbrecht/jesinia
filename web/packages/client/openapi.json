@@ -8782,7 +8782,7 @@
           "rate_limited_until"
         ],
         "title": "ApplyBatchOut",
-        "description": "An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,\nwith ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a\n503. Retry it with ``POST /pending/{id}/retry``."
+        "description": "An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,\nwith ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a\n503 whose ``Location`` is its retry route, ``POST /pending/{id}/retry`` (the only way to\nresume it: its changes already left the tray)."
       },
       "ApplyCreatedOut": {
         "properties": {
@@ -8895,6 +8895,11 @@
             ],
             "title": "Cause"
           },
+          "conflict": {
+            "type": "boolean",
+            "title": "Conflict",
+            "default": false
+          },
           "repo": {
             "type": "string",
             "title": "Repo"
@@ -8968,6 +8973,11 @@
               }
             ],
             "title": "Cause"
+          },
+          "conflict": {
+            "type": "boolean",
+            "title": "Conflict",
+            "default": false
           }
         },
         "type": "object",
@@ -8977,7 +8987,7 @@
           "cause"
         ],
         "title": "ApplyStepOut",
-        "description": "One step: ``done`` (``cause`` may say it was already so), ``failed`` or ``skipped``\n(``cause`` says why)."
+        "description": "One step: ``done`` (``cause`` may say it was already so), ``failed`` or ``skipped``\n(``cause`` says why). ``conflict``: it failed because GitHub changed underneath it (a parent\nmoved, a dimension filled, the issue closed), shown as a conflict, not overwritten."
       },
       "ArticleOut": {
         "properties": {

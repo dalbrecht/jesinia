@@ -710,15 +710,22 @@ class PendingApplyIn(BaseModel):
 
 class ApplyStepOut(BaseModel):
     """One step: ``done`` (``cause`` may say it was already so), ``failed`` or ``skipped``
-    (``cause`` says why)."""
+    (``cause`` says why). ``conflict``: it failed because GitHub changed underneath it (a parent
+    moved, a dimension filled, the issue closed), shown as a conflict, not overwritten."""
 
     kind: StepKind
     state: StepState
     cause: str | None
+    conflict: bool = False
 
     @classmethod
     def of(cls, result: StepResult) -> ApplyStepOut:
-        return cls(kind=result.step.kind, state=result.state, cause=result.cause)
+        return cls(
+            kind=result.step.kind,
+            state=result.state,
+            cause=result.cause,
+            conflict=result.is_conflict,
+        )
 
 
 class ApplyIssueOut(BaseModel):
@@ -748,7 +755,8 @@ class ApplyCreatedOut(BaseModel):
 class ApplyBatchOut(BaseModel):
     """An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,
     with ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a
-    503. Retry it with ``POST /pending/{id}/retry``."""
+    503 whose ``Location`` is its retry route, ``POST /pending/{id}/retry`` (the only way to
+    resume it: its changes already left the tray)."""
 
     id: str
     origin: ApplyOrigin

@@ -154,7 +154,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     change (201). `DELETE /pending/{id}` undoes one, `DELETE /pending` all (204).
   - `POST /pending/apply` with `{ids?}` applies the tray (or those ids) as one batch.
     `GET /pending/{batch}` reads a batch's result, and `POST /pending/{batch}/retry` resumes it.
-    A batch GitHub stopped is a 503, with `Retry-After` for a rate limit.
+    A batch GitHub stopped is a 503 whose `Location` is its retry route (its changes already
+    left the tray), with `Retry-After` for a rate limit. An empty tray is a 409.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
     `possible_duplicates`. The last two read the open suggestions.
   - Typed errors come back as `{error, detail}`. A GitHub rate limit is a 503 with
@@ -205,18 +206,31 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   to be added (to an issue, or to a new issue) is read again live right before the write. A
   missing label fails the step, and nothing is added or created. `EnsureLabel` reuses the label
   setup's executor (ruling IR12).
+- **Conflicts:** a staged parent move records the parent the author saw. If GitHub's parent
+  differs at apply time, the step fails as a conflict (`conflict: true`, "moved on GitHub") and
+  nothing moves (ruling IR39). A reorder whose child has left the epic is skipped with a cause,
+  never sent to GitHub (IR41).
+- **Close comments:** a close's own comment is posted only when the close happened. A staged
+  comment is always posted.
 - **Failures:** an issue stops at its first failed step, and its other steps are skipped. Other
   issues carry on. A failed `EnsureLabel` skips the issues that need its label, with the cause. A
   failed `CreateIssue` skips every step that names its temp id.
 - **Rate limits:** a rate limit or a rejected token stops the whole batch. The step at hand and
-  all the rest are failed with the cause and GitHub's reset time, and syncs back off. Writes are
-  spaced 1 second apart.
-- **Approvals:** the premise is re-checked first, so an edited draft whose dimension was filled
-  since is refused. A duplicate takes the original's database id from the cache. A complete apply
-  marks the suggestion approved. A failed one leaves it approvable, with the cause.
+  all the rest are failed with the cause and GitHub's reset time, and syncs back off. While that
+  back-off lasts, a new batch asks GitHub nothing. Writes are spaced 1 second apart.
+- **Approvals:**
+  - The premise is checked twice: against the cache first, then against the apply's fresh read.
+    An approval only fills a gap, so a dimension filled on GitHub since the last sync, a parent
+    set there, or an issue closed there makes it a 409 (`SuggestionStaleError`), and nothing of
+    it is written.
+  - A duplicate takes the original's database id from the cache, and can't name itself.
+  - While an approval applies, its draft is claimed, so retiring and reruns leave it (IR40).
+    Claims a stop cut off are released at start.
+  - A complete apply marks the suggestion approved. A failed one leaves it approvable, with the
+    cause.
 - **Cache:** afterwards the touched issues, the labels and (for a new area) the recomputed triage
-  are written to the cache, best effort. A failure there is logged with its cause and never fails
-  the writes.
+  are written to the cache, best effort. A failure there, or in storing the batch, is logged with
+  its cause and never fails the writes. Issues the batch created arrive with the next sync.
 
 ## How suggestions stay safe
 

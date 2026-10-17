@@ -60,6 +60,7 @@ from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.domain.changes import (
     BatchNotFoundError,
     ChangeDomainError,
+    NothingPendingError,
     PendingNotFoundError,
 )
 from jesinia.apps.issues.domain.labels import (
@@ -142,6 +143,7 @@ _STATUS: dict[type[Exception], int] = {
     SuggestionStaleError: status.HTTP_409_CONFLICT,
     DuplicateNotCachedError: status.HTTP_409_CONFLICT,
     PendingNotFoundError: status.HTTP_404_NOT_FOUND,
+    NothingPendingError: status.HTTP_409_CONFLICT,
     BatchNotFoundError: status.HTTP_404_NOT_FOUND,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -220,17 +222,17 @@ def _repo(owner: str, repo: str) -> str:
 def _batch_response(
     applied: AppliedBatch, now: Callable[[], datetime], out: BaseModel | None = None
 ) -> Response:
-    """A batch's answer: 200, or a 503 when GitHub stopped it (with ``Retry-After`` for a rate
-    limit), so the response is never stored under the idempotency key and the client retries."""
+    """A batch's answer: 200, or a 503 when GitHub stopped it, so the response is never stored
+    under the idempotency key. A stopped batch is resumed only through its retry route, which
+    ``Location`` names (its changes already left the tray); ``Retry-After`` says when, for a
+    rate limit."""
     body = jsonable_encoder(out or ApplyBatchOut.of(applied))
     result = applied.result
     if result.stopped is None:
         return JSONResponse(body)
-    headers = (
-        {"Retry-After": str(retry_after(result.rate_limited_until, now()))}
-        if result.is_rate_limited
-        else None
-    )
+    headers = {"Location": f"/api/issues/pending/{applied.id}/retry"}
+    if result.is_rate_limited:
+        headers["Retry-After"] = str(retry_after(result.rate_limited_until, now()))
     return JSONResponse(body, status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers=headers)
 
 

@@ -33,7 +33,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
 from typing import cast
@@ -51,6 +51,7 @@ from jesinia.apps.issues.domain.changes import (
     BatchResult,
     ChangeBatch,
     ChangeDomainError,
+    ChangedOnGitHubError,
     Close,
     CreatedIssue,
     CreateIssue,
@@ -99,6 +100,11 @@ class _StepFailedError(Exception):
     """A step that can't run (internal), with the cause to report."""
 
 
+class _StepSkippedError(Exception):
+    """A step with nothing it can do now (internal), with the cause to report; unlike a
+    failure, the issue's later steps still run."""
+
+
 class _BatchStoppedError(Exception):
     """GitHub stopped the batch (internal): a rate limit or a rejected token."""
 
@@ -134,6 +140,7 @@ class _Run:
     issue_failed: set[tuple[str, int]]
     overlay_repos: set[str]
     ensured: dict[str, str]
+    closed_before: set[tuple[str, int]] = field(default_factory=set)
     has_written: bool = False
 
 
@@ -148,6 +155,8 @@ class ApplyEngine:
         on_rate_limit: told GitHub's reset time when a rate limit stops a batch.
         on_schema_changed: awaited with each repo whose overlay changed (best effort).
         on_triaged: told the touched issues' triage after a batch (best effort).
+        blocked_until: GitHub's reset time while a rate limit is known (``SyncService``'s
+            back-off); a batch started before it asks GitHub nothing and stops at once.
     """
 
     def __init__(
@@ -160,6 +169,7 @@ class ApplyEngine:
         on_rate_limit: OnRateLimit | None = None,
         on_schema_changed: OnSchemaChanged | None = None,
         on_triaged: OnTriaged | None = None,
+        blocked_until: Callable[[], datetime | None] | None = None,
     ) -> None:
         self._github = github
         self._cache = cache
@@ -169,6 +179,7 @@ class ApplyEngine:
         self._on_rate_limit = on_rate_limit
         self._on_schema_changed = on_schema_changed
         self._on_triaged = on_triaged
+        self._blocked_until = blocked_until or (lambda: None)
         self._lock = asyncio.Lock()
 
     async def apply(self, batch: ChangeBatch, *, on_result: OnResult | None = None) -> BatchResult:
@@ -205,6 +216,11 @@ class ApplyEngine:
             kept = previous.results if previous else ()
             results: list[StepResult] = []
             stopped: _BatchStoppedError | None = None
+            until = self._blocked_until()
+            if until is not None and self._clock() < until:
+                stopped = _BatchStoppedError(
+                    f"GitHub is rate limiting until {until.isoformat()}", until, True
+                )
             for index, step in enumerate(steps):
                 if index < len(kept) and kept[index].state == "done":
                     results.append(kept[index])
@@ -246,6 +262,10 @@ class ApplyEngine:
                     run.issue_failed.add(target.key)
                     return StepResult(step, "skipped", skipped)
             cause = await self._do(run, step)
+        except _StepSkippedError as exc:
+            return StepResult(step, "skipped", str(exc))
+        except ChangedOnGitHubError as exc:
+            return replace(self._failed(run, step, str(exc)), is_conflict=True)
         except _StepFailedError as exc:
             return self._failed(run, step, str(exc))
         except _STEP_ERRORS as exc:
@@ -386,7 +406,14 @@ class ApplyEngine:
         run.labels[change.repo.casefold()] = list(outcome.labels)
         run.ensured[change.repo.casefold()] = change.repo
         if change.schema_entry is not None:
-            self._cache.add_overlay(change.repo, change.schema_entry, self._clock())
+            try:
+                self._cache.add_overlay(change.repo, change.schema_entry, self._clock())
+            except Exception as exc:  # the label exists; the approval's schema entry didn't land
+                log.exception("issues.apply: recording %s in the schema overlay", change.name)
+                raise _StepFailedError(
+                    f"{change.name!r} exists on GitHub, but recording it in the schema failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
             run.overlay_repos.add(change.repo)
         return result.cause
 
@@ -426,12 +453,12 @@ class ApplyEngine:
         if edit.is_empty:
             return "already so on GitHub"
         await self._confirm_live(run, repo, edit.add)
-        now = issue.labels
         if edit.add:
             now = await self._write(run, lambda: self._github.add_labels(repo, n, edit.add))
+            run.fresh[target.key] = replace(run.fresh[target.key], labels=tuple(now))
         for name in edit.remove:
             now = await self._write(run, partial(self._github.remove_label, repo, n, name))
-        run.fresh[target.key] = replace(issue, labels=tuple(now))
+            run.fresh[target.key] = replace(run.fresh[target.key], labels=tuple(now))
         return None
 
     async def _parent(self, run: _Run, step: Step) -> str | None:
@@ -440,6 +467,8 @@ class ApplyEngine:
         issue = await self._fresh(run, target)
         repo, n = self._where(run, target)
         current = await self._read(lambda: self._github.parent(repo, n))
+        if change.expects_parent:
+            self._check_parent(change.expected_parent, current)
         if change.parent is None:
             if current is None:
                 return "already has no parent"
@@ -460,13 +489,38 @@ class ApplyEngine:
             ),
         )
         run.fresh[target.key] = replace(issue, parent=IssueRef(parent_repo, parent_n, wanted))
+        if isinstance(change.parent, Existing) and change.parent.key in run.fresh:
+            epic = run.fresh[change.parent.key]  # linking may make it an epic
+            run.fresh[change.parent.key] = replace(epic, sub_issue_count=epic.sub_issue_count + 1)
         return None
+
+    @staticmethod
+    def _check_parent(expected: Existing | None, current: Issue | None) -> None:
+        """Raises: ChangedOnGitHubError: GitHub's parent isn't the one the change expected."""
+        now = None if current is None else (_repo_of(current).casefold(), current.number)
+        if now == (None if expected is None else expected.key):
+            return
+        shown = "no parent" if current is None else f"{_repo_of(current)}#{current.number}"
+        before = "no parent" if expected is None else str(expected)
+        raise ChangedOnGitHubError(
+            f"moved on GitHub since it was staged: it is under {shown} now, not {before}; "
+            "nothing was changed"
+        )
 
     async def _order(self, run: _Run, step: Step) -> str | None:
         target = cast(Target, step.target)  # an issue step always has its issue
-        await self._fresh(run, target)
         repo, n = self._where(run, target)
-        for change in cast(tuple[ReorderChild, ...], step.changes):
+        epic = await self._id(run, target)
+        changes = cast(tuple[ReorderChild, ...], step.changes)
+        for change in changes:  # every child first: GitHub refuses one that left (a 422)
+            child_repo, child_n = self._where(run, change.child)
+            parent = await self._read(partial(self._github.parent, child_repo, child_n))
+            if parent is None or parent.id != epic:
+                raise _StepSkippedError(
+                    f"not run: {child_repo}#{child_n} isn't a sub-issue of {repo}#{n} on GitHub "
+                    "any more, so there is nothing to reorder"
+                )
+        for change in changes:
             child = await self._id(run, change.child)
             after = None if change.after is None else await self._id(run, change.after)
             await self._write(
@@ -479,6 +533,12 @@ class ApplyEngine:
         change = cast(Close, step.changes[-1])
         issue = await self._fresh(run, target)
         if issue.state == "closed":
+            if change.only_if_open:
+                raise ChangedOnGitHubError(
+                    "changed on GitHub since the last sync: it was closed already "
+                    f"({issue.state_reason or 'no reason'}), so it isn't closed again"
+                )
+            run.closed_before.add(target.key)
             return "already closed"
         repo, n = self._where(run, target)
         closed = await self._write(
@@ -490,7 +550,10 @@ class ApplyEngine:
     async def _comment(self, run: _Run, step: Step) -> str | None:
         target = cast(Target, step.target)  # an issue step always has its issue
         await self._fresh(run, target)
-        body = validate_comment_body(comment_body(step))
+        text = comment_body(step, with_close=target.key not in run.closed_before)
+        if not text:
+            return "nothing to post: it was already closed"
+        body = validate_comment_body(text)
         repo, n = self._where(run, target)
         await self._write(run, lambda: self._github.comment(repo, n, body))
         return None

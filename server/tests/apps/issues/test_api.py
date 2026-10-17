@@ -923,7 +923,7 @@ async def test_pending_changes_round_trip(env: Env) -> None:
     assert cleared.status_code == 204
     assert (await env.client.get(PENDING)).json()["changes"] == []
     nothing = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
-    assert nothing.status_code == 400 and nothing.json()["error"] == "NothingPendingError"
+    assert nothing.status_code == 409 and nothing.json()["error"] == "NothingPendingError"
     assert env.github.writes == []
 
 
@@ -955,9 +955,11 @@ async def test_a_rate_limited_batch_says_retry_after_is_not_stored_and_retries(e
     assert limited.status_code == 503 and limited.headers["Retry-After"] == "30"
     assert limited.json()["rate_limited"] and not limited.json()["complete"]
     batch = limited.json()["id"]
+    # A stopped batch is resumed through its retry route, which the answer points at.
+    assert limited.headers["Location"] == f"{PENDING}/{batch}/retry"
     # Not stored under the key: the same key runs again (and finds nothing left to stage).
     again = await env.client.post(f"{PENDING}/apply", json={}, headers=key)
-    assert again.status_code == 400
+    assert again.status_code == 409
 
     env.github.fail.clear()
     key = keyed()
@@ -984,12 +986,16 @@ async def test_apply_routes_refuse_bad_requests(env: Env) -> None:
     await env.client.post(f"{SUGGESTIONS}/{sid}/dismiss", headers=keyed())
     bad_value = {"kind": "set_dimension", "dimension": "priority", "value": "urgent"}
     uncached = {"kind": "close", "reason": "duplicate", "duplicate_of": {"repo": REPO, "n": 77}}
+    no_original = {"kind": "close", "reason": "duplicate"}
+    itself = {"kind": "close", "reason": "duplicate", "duplicate_of": {"repo": REPO, "n": 1}}
     cases: list[tuple[str, str, dict[str, object] | None, int, str | None]] = [
         ("POST", PENDING, _staged(1, bad_value), 400, "InvalidChangeError"),
         ("POST", PENDING, _staged(1, {"kind": "teleport"}), 422, None),
         ("POST", PENDING, _staged(1, PRIORITY_HIGH, "telepathy"), 422, None),
         ("POST", PENDING, _staged(99, PRIORITY_HIGH), 404, "IssueNotCachedError"),
         ("POST", PENDING, _staged(1, uncached), 409, "DuplicateNotCachedError"),
+        ("POST", PENDING, _staged(1, no_original), 400, "InvalidChangeError"),
+        ("POST", PENDING, _staged(1, itself), 400, "InvalidChangeError"),
         ("GET", f"{PENDING}/missing", None, 404, "BatchNotFoundError"),
         ("POST", f"{PENDING}/missing/retry", None, 404, "BatchNotFoundError"),
         ("POST", f"{SUGGESTIONS}/missing/approve", None, 404, "SuggestionNotFoundError"),
@@ -1044,3 +1050,12 @@ async def test_a_batch_names_the_issues_it_created(env: Env) -> None:
         ("b", "failed"),
     ]
     assert out["created"] == [{"temp_id": "a", "repo": REPO, "n": 3}]
+
+
+async def test_a_batch_stopped_by_a_rejected_token_points_at_its_retry(env: Env) -> None:
+    await env.watch_and_sync()
+    await env.client.post(PENDING, json=_staged(1, PRIORITY_HIGH), headers=keyed())
+    env.github.fail["get:1"] = GitHubUnavailable("token rejected")
+    stopped = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
+    assert stopped.status_code == 503 and "Retry-After" not in stopped.headers
+    assert stopped.headers["Location"].endswith(f"/{stopped.json()['id']}/retry")

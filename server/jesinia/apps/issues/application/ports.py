@@ -310,14 +310,15 @@ class SuggestionStore(Protocol):
 
     def replace_drafts(self, repo: str, n: int, drafts: Sequence[Suggestion]) -> None:
         """Drop the issue's untouched (``draft``) suggestions of the per-issue kinds and store
-        ``drafts`` instead, in one transaction; edited, approved and dismissed ones stay."""
+        ``drafts`` instead, in one transaction; edited, approved and dismissed ones stay, and so
+        does a draft an approval in flight claims (IR40)."""
 
     def save(self, suggestion: Suggestion) -> None:
         """Store an edited or dismissed suggestion (its kind, payload, reason, state, time,
         origin and basis)."""
 
     def retire(self, suggestion_ids: Sequence[str]) -> None:
-        """Delete these suggestions if they are still untouched drafts."""
+        """Delete these suggestions if they are still untouched drafts no approval claims."""
 
     def queue_run(
         self, repo: str, n: int, due_at: datetime, source: RunSource, now: datetime

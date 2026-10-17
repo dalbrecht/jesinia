@@ -10,6 +10,7 @@ before it is added. A rate limit stops the batch (IR5).
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
@@ -31,6 +32,7 @@ from jesinia.apps.issues.domain.changes import (
     CreateIssue,
     EnsureLabel,
     Existing,
+    InvalidChangeError,
     New,
     NothingPendingError,
     RemoveArea,
@@ -38,7 +40,7 @@ from jesinia.apps.issues.domain.changes import (
     SetDimension,
     SetParent,
 )
-from jesinia.apps.issues.domain.schema import SchemaEntry
+from jesinia.apps.issues.domain.schema import SchemaEntry, parse_labels_yml
 from jesinia.apps.issues.domain.suggestions import (
     DuplicateNotCachedError,
     Suggestion,
@@ -48,6 +50,7 @@ from jesinia.apps.issues.domain.suggestions import (
     parse_kind,
     parse_state,
 )
+from jesinia.apps.issues.domain.triage import triage
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
@@ -58,11 +61,12 @@ from jesinia.services.github.application.service import (
     GitHubRequestError,
     GitHubUnavailable,
 )
-from jesinia.services.github.domain.issue import CloseReason, CommentRef, Issue
+from jesinia.services.github.domain.issue import CloseReason, CommentRef, Issue, IssueRef
 from tests.apps.issues.test_labels import AMICUS_YML, BackOff, FakeGitHub, Pauses
 from tests.apps.issues.test_sync import REPO, FakeClock, issue
 
 RESET = datetime(2026, 10, 1, 13, 0).astimezone()
+AMICUS = parse_labels_yml(AMICUS_YML)
 LABELS = (
     "agent-ready",
     "human-needed",
@@ -326,6 +330,7 @@ async def test_series_order_is_labels_parent_order_close_comment(world: World) -
     epic = issue(5, labels=("epic", "priority: high"), sub_issue_count=2)
     await world.synced(issue(1), issue(2), epic, issue(6, labels=("epic",)))
     world.github.parents[(REPO, 1)] = (REPO, 6)
+    world.github.parents[(REPO, 2)] = (REPO, 5)
     batch = ChangeBatch.of(
         {
             E1: [
@@ -831,3 +836,258 @@ async def test_removing_a_label_alone_makes_no_add(world: World) -> None:
 
 def test_deleting_no_pending_changes_deletes_nothing(world: World) -> None:
     assert world.applied.delete_pending([]) == 0
+
+
+# --- fix round 1: conflicts, claims and fresh-read premises (IR39–IR41, I1, I2) ---------------
+
+
+class Held(FakeWrites):
+    """``FakeWrites`` whose ``add_labels`` waits for ``release`` (an approval held mid-flight)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def add_labels(self, repo: str, n: int, names: Sequence[str]) -> tuple[str, ...]:
+        self.entered.set()
+        await self.release.wait()
+        return await super().add_labels(repo, n, names)
+
+
+async def test_a_staged_parent_move_refuses_when_github_moved_it(world: World) -> None:
+    await world.synced(issue(1), issue(5, labels=("epic",)), issue(6, labels=("epic",)))
+    staged = world.pending.stage(REPO, 1, SetParent(Existing(REPO, 5)), "drag")
+    assert staged.change == SetParent(Existing(REPO, 5), expects_parent=True)
+    world.github.parents[(REPO, 1)] = (REPO, 6)  # someone moved it on GitHub since
+
+    applied = await world.service.apply_pending(None)
+
+    (step,) = applied.result.per_issue[E1].steps
+    assert step.state == "failed" and step.is_conflict
+    assert "moved on GitHub" in (step.cause or "") and f"{REPO}#6" in (step.cause or "")
+    assert world.write_names() == []
+
+
+async def test_a_staged_parent_move_applies_when_github_agrees(world: World) -> None:
+    await world.synced(issue(1, parent=IssueRef(REPO, 6, 1006)), issue(5), issue(6))
+    world.github.parents[(REPO, 1)] = (REPO, 6)
+    staged = world.pending.stage(REPO, 1, SetParent(None), "menu")
+    assert staged.change == SetParent(None, expects_parent=True, expected_parent=Existing(REPO, 6))
+    applied = await world.service.apply_pending(None)
+    assert applied.result.complete
+    assert world.github.writes == [("remove_sub_issue", (6, 1001))]
+
+
+async def test_a_reorder_whose_child_left_the_epic_is_skipped_with_a_cause(world: World) -> None:
+    await world.synced(issue(1), issue(2), issue(5, labels=("epic",), sub_issue_count=2))
+    world.github.parents[(REPO, 2)] = (REPO, 5)
+    batch = ChangeBatch.of(
+        {Existing(REPO, 5): [ReorderChild(E1, after=E2), Comment("reordered")]}
+    )  # issue 1 isn't (or is no longer) a child of #5
+    result = await world.engine.apply(batch)
+    order, comment = result.per_issue[Existing(REPO, 5)].steps
+    assert order.state == "skipped" and f"{REPO}#1" in (order.cause or "")
+    assert "isn't a sub-issue" in (order.cause or "")
+    assert comment.state == "done"  # a skipped reorder doesn't stop the epic's series
+    assert "reprioritize_sub_issue" not in world.write_names()
+
+
+async def test_an_approval_in_flight_survives_retiring_and_reruns(conn: sqlite3.Connection) -> None:
+    world = World(conn)
+    held = Held()
+    held.files, held.repo_labels = world.github.files, world.github.repo_labels
+    world.github = held
+    world.engine = ApplyEngine(held, world.store, world.clock, pause=world.pauses)
+    world.service = ApplyService(
+        world.engine, world.applied, world.drafts, world.store, world.clock
+    )
+    world.sync = SyncService(held, world.store, world.clock)
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+
+    approving = asyncio.create_task(world.service.approve(sid))
+    await held.entered.wait()
+    # Meanwhile a sync retires drafts whose premise went, and a rerun replaces untouched ones.
+    filled = replace(held.issues[(REPO, 1)], labels=("bug", "priority: high"))
+    world.suggest.retire_stale(REPO, [(filled, triage(filled.labels, 0, AMICUS))])
+    world.drafts.replace_drafts(REPO, 1, [])
+    held.release.set()
+    approval = await approving
+
+    assert approval.suggestion.state == "approved"
+    found = world.drafts.suggestion(sid)
+    assert found is not None and found.state == "approved"
+
+
+async def test_approval_refuses_when_github_filled_the_dimension_since_sync(world: World) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    github_now = replace(world.github.issues[(REPO, 1)], labels=("bug", "priority: medium"))
+    world.github.put(github_now)  # not synced yet
+
+    with pytest.raises(SuggestionStaleError) as raised:
+        await world.service.approve(sid)
+
+    assert "changed on GitHub" in str(raised.value)
+    assert world.write_names() == []
+    assert world.labels_of(1) == ("bug", "priority: medium")
+    found = world.drafts.suggestion(sid)
+    assert found is not None and found.state == "draft" and found.apply_error
+
+
+async def test_approval_refuses_when_github_gave_it_a_parent_since_sync(world: World) -> None:
+    await world.synced(issue(1), issue(5, labels=("epic",)), issue(6, labels=("epic",)))
+    sid = world.draft(1, "parent", {"repo": REPO, "n": 5})
+    world.github.parents[(REPO, 1)] = (REPO, 6)
+    with pytest.raises(SuggestionStaleError):
+        await world.service.approve(sid)
+    assert world.write_names() == []
+
+
+async def test_approval_refuses_when_github_closed_it_since_sync(world: World) -> None:
+    await world.synced(issue(1), issue(2))
+    sid = world.draft(1, "duplicate", {"repo": REPO, "n": 2, "similarity": 0.9})
+    world.github.put(replace(world.github.issues[(REPO, 1)], state="closed"))
+    with pytest.raises(SuggestionStaleError):
+        await world.service.approve(sid)
+    assert world.write_names() == []  # no "Duplicate of" comment on an issue closed otherwise
+
+
+async def test_a_duplicate_of_itself_is_refused(world: World) -> None:
+    await world.synced(issue(1))
+    with pytest.raises(InvalidChangeError):
+        world.pending.stage(REPO, 1, Close("duplicate", 1001, E1), "menu")
+    sid = world.draft(1, "duplicate", {"repo": REPO, "n": 1, "similarity": 1.0})
+    with pytest.raises(InvalidChangeError):
+        await world.service.approve(sid)
+    assert world.write_names() == []
+
+
+async def test_a_close_comment_is_not_posted_when_the_close_was_a_no_op(world: World) -> None:
+    await world.synced(issue(1))
+    world.github.put(replace(world.github.issues[(REPO, 1)], state="closed"))
+    result = await world.engine.apply(
+        one(E1, Close("not_planned", comment="won't do"), Comment("noted"))
+    )
+    assert result.complete
+    assert world.github.comments_posted == [(1, "noted")]
+    only_close = await world.engine.apply(one(E1, Close("not_planned", comment="won't do")))
+    assert only_close.per_issue[E1].steps[1].cause == "nothing to post: it was already closed"
+
+
+async def test_an_apply_waits_out_a_known_rate_limit(world: World) -> None:
+    await world.synced(issue(1))
+    engine = ApplyEngine(world.github, world.store, world.clock, blocked_until=lambda: RESET)
+    world.clock.now = RESET - timedelta(minutes=1)
+    result = await engine.apply(one(E1, Comment("x")))
+    assert result.is_rate_limited and result.rate_limited_until == RESET
+    assert world.github.calls[-1][0] != "get" and world.write_names() == []
+
+
+async def test_a_partly_applied_labels_step_caches_what_landed(world: World) -> None:
+    await world.synced(issue(1, labels=("bug", "priority: medium")))
+    world.github.fail["remove_label:1"] = GitHubRequestError(403, "nope")
+    result = await world.engine.apply(one(E1, SetDimension("priority", "priority: high")))
+    assert not result.complete
+    cached = world.store.cached_issue(REPO, 1)
+    assert cached is not None and "priority: high" in cached.issue.labels
+
+
+async def test_a_failing_overlay_write_fails_the_ensure_step(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await world.synced(issue(1))
+
+    def broken(*args: object) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(world.store, "add_overlay", broken)
+    entry = SchemaEntry("area", "area:x")
+    batch = ChangeBatch.of(
+        {E1: [AddArea("area:x")]}, repo=[EnsureLabel(REPO, "area:x", "c5def5", "Area", entry)]
+    )
+    result = await world.engine.apply(batch)
+    ensure = result.repo_steps[0]
+    assert ensure.state == "failed" and "database is locked" in (ensure.cause or "")
+    assert result.per_issue[E1].steps[0].state == "skipped"
+
+
+async def test_a_failing_batch_store_still_returns_the_result(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, Comment("x"), "menu")
+
+    def broken(*args: object) -> None:
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(world.applied, "save_batch", broken)
+    applied = await world.service.apply_pending(None)
+    assert applied.result.complete and "disk full" in caplog.text
+    assert world.pending.pending() == []  # the writes happened: never re-applied
+
+
+async def test_approving_a_suggestion_without_an_issue_says_it_cant_be_yet(
+    world: World, conn: sqlite3.Connection
+) -> None:
+    conn.execute(
+        "INSERT INTO suggestions (id, scope, kind, payload_json, reason, state, created_at, "
+        "updated_at) VALUES ('g1', 'queue:mine', 'group', '{}', 'r', 'draft', ?, ?)",
+        (world.clock().isoformat(), world.clock().isoformat()),
+    )
+    with pytest.raises(InvalidChangeError):
+        await world.service.approve("g1")
+
+
+async def test_claims_are_released_and_only_open_drafts_are_claimed(world: World) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    assert world.drafts.claim(sid, world.clock())
+    assert not world.drafts.claim(sid, world.clock())  # one approval at a time
+    assert world.drafts.release_all() == 1
+    world.suggest.dismiss(sid)
+    assert not world.drafts.claim(sid, world.clock())
+
+
+async def test_a_stale_claim_blocks_a_second_approval(world: World) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    assert world.drafts.claim(sid, world.clock())
+    with pytest.raises(SuggestionStateError, match="being approved"):
+        await world.service.approve(sid)
+    assert world.write_names() == []
+
+
+async def test_a_failing_store_on_retry_still_returns_the_result(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    await world.synced(issue(1))
+    world.github.fail["comment:1"] = GitHubRequestError(500, "boom")
+    applied = await world.service.apply(one(E1, Comment("x")), origin="pending")
+    world.github.fail.clear()
+
+    def broken(*args: object) -> None:
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(world.applied, "save_batch", broken)
+    retried = await world.service.retry(applied.id)
+    assert retried.result.complete and "disk full" in caplog.text
+
+
+async def test_the_engine_reads_the_sync_back_off(world: World) -> None:
+    await world.synced(issue(1))
+    assert world.sync.backoff_until() is None
+    world.sync.back_off(RESET)
+    assert world.sync.backoff_until() == RESET
+
+
+def test_a_corrupt_overlay_row_is_a_typed_error(world: World, conn: sqlite3.Connection) -> None:
+    world.store.watch(REPO, world.clock())
+    conn.execute(
+        "INSERT INTO schema_overlay (repo, dimension, canonical, approved_at) "
+        "VALUES (?, 'mood', 'x', '2026-10-01')",
+        (REPO,),
+    )
+    with pytest.raises(InvalidChangeError):
+        world.store.repo(REPO)

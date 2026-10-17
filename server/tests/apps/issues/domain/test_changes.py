@@ -11,7 +11,9 @@ import pytest
 from jesinia.apps.issues.domain.changes import (
     AddArea,
     BatchResult,
+    Change,
     ChangeBatch,
+    ChangedOnGitHubError,
     Close,
     Comment,
     CreatedIssue,
@@ -249,6 +251,9 @@ def _suggestion(kind: str, payload: dict[str, object], *, repo: str | None = REP
         lambda: Close("completed", 5, E2),
         lambda: Close("duplicate", 5, None),
         lambda: Close("duplicate", None, E2),
+        lambda: Close("duplicate"),
+        lambda: ChangeBatch.of({E1: [Close("duplicate", 1001, E1)]}),
+        lambda: SetParent(E5, expected_parent=E2),
         lambda: Close("not_planned", comment="  "),
         lambda: Comment(""),
         lambda: EnsureLabel(REPO, "area:x", "red", "Area"),
@@ -294,7 +299,7 @@ def test_approval_batches_by_kind() -> None:
     with pytest.raises(InvalidChangeError):
         approval_batch(dup)
     assert approval_batch(dup, 1002) == ChangeBatch.of(
-        {E1: [Close("duplicate", 1002, E2, "Duplicate of acme/web#2")]}
+        {E1: [Close("duplicate", 1002, E2, "Duplicate of acme/web#2", only_if_open=True)]}
     )
     with pytest.raises(InvalidChangeError):
         approval_batch(_suggestion("priority", {}))
@@ -327,6 +332,13 @@ CHANGE = {"kind": "set_dimension", "dimension": "priority", "value": "priority: 
         {"kind": "set_dimension"},
         {"kind": "set_parent", "parent": "acme/web#1"},
         {"kind": "set_parent", "parent": {"repo": REPO}},
+        {"kind": "set_parent", "parent": None, "expects_parent": "yes"},
+        {
+            "kind": "set_parent",
+            "parent": None,
+            "expects_parent": True,
+            "expected_parent": {"temp_id": "t"},
+        },
         {"kind": "reorder_child", "child": {"repo": REPO, "n": True}, "after": None},
         {
             "kind": "close",
@@ -416,3 +428,47 @@ def test_overlay_dimensions_merge_into_their_own_dimension() -> None:
     assert merged.readiness[-1] == Canonical("waiting")
     assert merged.priority[-1] == Canonical("priority: urgent")
     assert merged.type[-1] == Canonical("chore")
+
+
+def test_an_approval_only_fills_a_dimension_github_left_missing() -> None:
+    change = SetDimension("priority", "priority: high", only_if_missing=True)
+    with pytest.raises(ChangedOnGitHubError) as raised:
+        label_edit([change], ("priority: low",), ON_GITHUB, AMICUS)
+    assert "changed on GitHub" in str(raised.value) and "priority: low" in str(raised.value)
+    # Already the value it would set: nothing to do, no conflict.
+    assert label_edit([change], ("priority: high",), ON_GITHUB, AMICUS).is_empty
+    assert label_edit([change], (), ON_GITHUB, AMICUS).add == ("priority: high",)
+
+
+def test_approval_batches_carry_their_fresh_read_preconditions() -> None:
+    label = approval_batch(_suggestion("label", {"dimension": "type", "value": "bug"}))
+    assert label == ChangeBatch.of({E1: [SetDimension("type", "bug", only_if_missing=True)]})
+    parent = approval_batch(_suggestion("parent", {"repo": REPO, "n": 5}))
+    assert parent == ChangeBatch.of({E1: [SetParent(E5, expects_parent=True)]})
+    dup = approval_batch(_suggestion("duplicate", {"repo": REPO, "n": 2}), 1002)
+    ((_, (close,)),) = dup.issues
+    assert isinstance(close, Close) and close.only_if_open
+
+
+def test_preconditions_and_conflicts_round_trip() -> None:
+    changes: list[Change] = [
+        SetDimension("type", "bug", only_if_missing=True),
+        SetParent(None, expects_parent=True, expected_parent=E5),
+        Close("completed", only_if_open=True),
+    ]
+    for change in changes:
+        assert parse_change(change_json(change)) == change
+    batch = ChangeBatch.of({E1: [Comment("a")]})
+    (step,) = series(batch)
+    result = BatchResult((StepResult(step, "failed", "moved", is_conflict=True),))
+    assert parse_result(batch, result_json(result)) == result
+    with pytest.raises(InvalidChangeError):
+        parse_result(
+            batch,
+            {**result_json(result), "results": [{"state": "exploded", "cause": None}]},
+        )
+
+
+def test_a_close_comment_is_marked_as_the_closes() -> None:
+    (_, comment) = series(ChangeBatch.of({E1: [Close("completed", comment="bye"), Comment("x")]}))
+    assert comment.changes == (Comment("bye", from_close=True), Comment("x"))

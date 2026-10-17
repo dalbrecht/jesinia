@@ -153,6 +153,9 @@ class IssuesModule:
             return chosen if isinstance(chosen, str) else None
 
         drafts = SqliteSuggestionStore(conn)
+        # Nothing applies yet: a claim was left by an approval a stop cut off (IR40).
+        if released := drafts.release_all():
+            log.info("released %d issues suggestion claims after an unclean stop", released)
         # Single process and nothing runs yet: a run marked running was cut off by a stop.
         if requeued := drafts.requeue_running(_utc_now()):
             log.info("queued %d issues suggestion runs again after an unclean stop", requeued)
@@ -215,6 +218,7 @@ class IssuesModule:
                 on_rate_limit=self._sync.back_off,
                 on_schema_changed=self._sync.recompute,
                 on_triaged=suggest.retire_stale,
+                blocked_until=self._sync.backoff_until,
             )
             self._apply = ApplyService(
                 engine, applied, SqliteSuggestionStore(self._conn), store, _utc_now

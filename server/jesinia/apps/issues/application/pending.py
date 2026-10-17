@@ -21,9 +21,11 @@ Every batch is stored with its result, so ``retry`` re-runs only the steps that 
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Protocol
 
 from jesinia.apps.issues.application.apply import ApplyEngine
@@ -40,10 +42,12 @@ from jesinia.apps.issues.domain.changes import (
     BatchResult,
     ChangeBatch,
     Existing,
+    InvalidChangeError,
     IssueChange,
     NothingPendingError,
     PendingChange,
     PendingNotFoundError,
+    SetParent,
     approval_batch,
     check_change,
     parse_source,
@@ -64,6 +68,8 @@ from jesinia.apps.issues.domain.suggestions import (
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.services.github.domain.repo import validate_repo
 
+log = logging.getLogger(__name__)
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex
@@ -83,6 +89,11 @@ class ApprovalStore(Protocol):
     def suggestion(self, suggestion_id: str) -> Suggestion | None: ...
 
     def save(self, suggestion: Suggestion) -> None: ...
+
+    def claim(self, suggestion_id: str, now: datetime) -> bool:
+        """Claim an open suggestion for an approval, so retiring and reruns leave it."""
+
+    def release(self, suggestion_id: str) -> None: ...
 
 
 def _cached(cache: PendingCache, repo: str, n: int) -> CachedIssue:
@@ -151,6 +162,11 @@ class PendingService:
         target = Existing(cached.issue.repo, n)
         state = self._cache.repo(target.repo)
         check_change(change, DEFAULT_SCHEMA if state is None else state.schema)
+        if isinstance(change, SetParent):
+            # Staged against the parent the author saw: a move on GitHub since is a conflict.
+            seen = cached.issue.parent
+            expected = None if seen is None else Existing(seen.repo, seen.number)
+            change = replace(change, expects_parent=True, expected_parent=expected)
         ChangeBatch.of({target: [change]})  # the batch rules (no self-parent, same owner)
         staged = PendingChange(self._new_id(), target, change, self._clock(), where)
         self._store.add_pending(staged)
@@ -241,8 +257,11 @@ class ApplyService:
             now = self._clock()
             sid = None if suggestion is None else suggestion.id
             applied = AppliedBatch(batch_id, origin, sid, batch, result, now, now)
-            self._store.save_batch(applied)
             stored.append(applied)
+            try:
+                self._store.save_batch(applied)
+            except Exception:  # the writes happened: report them; only Retry is lost
+                log.exception("issues.apply: storing batch %s failed", batch_id)
             if suggestion is not None:
                 settled.append(self._settle(suggestion, result))
 
@@ -276,12 +295,15 @@ class ApplyService:
 
             def keep(result: BatchResult) -> None:
                 retried = replace(stored, result=result, updated_at=self._clock())
-                self._store.save_batch(retried)
+                kept.append(retried)
+                try:
+                    self._store.save_batch(retried)
+                except Exception:  # the writes happened: report them
+                    log.exception("issues.apply: storing batch %s failed", batch_id)
                 if stored.suggestion_id is not None:
                     found = self._suggestions.suggestion(stored.suggestion_id)
                     if found is not None and found.state in OPEN_STATES:
                         self._settle(found, result)
-                kept.append(retried)
 
             await self._engine.retry(stored.batch, stored.result, on_result=keep)
             return kept[0]
@@ -293,7 +315,8 @@ class ApplyService:
             SuggestionNotFoundError: no such suggestion.
             SuggestionStateError: it was approved or dismissed already.
             IssueNotCachedError: its issue isn't cached.
-            SuggestionStaleError: its premise is gone; nothing was applied.
+            SuggestionStaleError: its premise is gone, in the cache or on GitHub now (the
+                apply's fresh read); nothing of it was written.
             DuplicateNotCachedError: a duplicate whose original isn't cached.
             InvalidChangeError: a kind that can't be approved yet.
         """
@@ -301,8 +324,10 @@ class ApplyService:
             found = self._suggestions.suggestion(suggestion_id)
             if found is None:
                 raise SuggestionNotFoundError(f"no suggestion {suggestion_id}")
-            if found.state not in OPEN_STATES or found.repo is None or found.n is None:
+            if found.state not in OPEN_STATES:
                 raise SuggestionStateError(f"suggestion {found.id} is {found.state} already")
+            if found.repo is None or found.n is None:
+                raise InvalidChangeError(f"a {found.kind} suggestion can't be approved yet")
             cached = _cached(self._cache, found.repo, found.n)
             issue = cached.issue
             if not premise_holds(
@@ -321,7 +346,18 @@ class ApplyService:
                     self._cache, str(found.payload["repo"]), int(str(found.payload["n"]))
                 )
             batch = approval_batch(found, duplicate_id)
-            applied, settled = await self._apply(batch, "suggestion", found)
+            if not self._suggestions.claim(found.id, self._clock()):
+                raise SuggestionStateError(f"suggestion {found.id} is being approved already")
+            try:
+                applied, settled = await self._apply(batch, "suggestion", found)
+            finally:
+                self._suggestions.release(found.id)
+            conflict = next((r for r in applied.result.results if r.is_conflict), None)
+            if conflict is not None:
+                # The fresh read contradicts the premise (I1): nothing of it was written.
+                raise SuggestionStaleError(
+                    f"suggestion {found.id} no longer fits: {conflict.cause}"
+                )
             return Approval(settled or found, applied)
 
     def _settle(self, suggestion: Suggestion, result: BatchResult) -> Suggestion:

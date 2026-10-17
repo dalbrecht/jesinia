@@ -120,7 +120,7 @@ class SqliteSuggestionStore:
         with transaction(self._conn):
             self._conn.execute(
                 f"DELETE FROM suggestions WHERE repo = ? AND n = ? AND state = 'draft' "
-                f"AND kind IN ({kinds})",
+                f"AND claimed_at IS NULL AND kind IN ({kinds})",
                 (repo, n, *ISSUE_KINDS),
             )
             self._conn.executemany(
@@ -163,9 +163,30 @@ class SqliteSuggestionStore:
             ),
         )
 
+    def claim(self, suggestion_id: str, now: datetime) -> bool:
+        """Claim an open, unclaimed suggestion for an approval; whether it was claimed."""
+        return bool(
+            self._conn.execute(
+                "UPDATE suggestions SET claimed_at = ? WHERE id = ? "
+                "AND state IN ('draft', 'edited') AND claimed_at IS NULL",
+                (_time(now), suggestion_id),
+            ).rowcount
+        )
+
+    def release(self, suggestion_id: str) -> None:
+        self._conn.execute(
+            "UPDATE suggestions SET claimed_at = NULL WHERE id = ?", (suggestion_id,)
+        )
+
+    def release_all(self) -> int:
+        """Release every claim (at start nothing is applying: a claim is left by a stop)."""
+        return self._conn.execute(
+            "UPDATE suggestions SET claimed_at = NULL WHERE claimed_at IS NOT NULL"
+        ).rowcount
+
     def retire(self, suggestion_ids: Sequence[str]) -> None:
         self._conn.executemany(
-            "DELETE FROM suggestions WHERE id = ? AND state = 'draft'",
+            "DELETE FROM suggestions WHERE id = ? AND state = 'draft' AND claimed_at IS NULL",
             [(sid,) for sid in suggestion_ids],
         )
 

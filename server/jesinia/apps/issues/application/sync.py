@@ -423,6 +423,10 @@ class SyncService:
         if self._backoff_until is None or resume > self._backoff_until:
             self._backoff_until = resume
 
+    def backoff_until(self) -> datetime | None:
+        """GitHub's reset time while a rate limit is known (writes wait it out too)."""
+        return self._backoff_until
+
     async def recompute(self, repo: str) -> None:
         """Re-triage every cached issue of ``repo`` against its stored schema (IR18): call it
         after the schema or its overlay changes (an approved new area writes the overlay, which
