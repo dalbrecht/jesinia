@@ -88,6 +88,38 @@ describe("TagPicker", () => {
     expect(changes).toHaveBeenLastCalledWith(["wal-mode"]);
   });
 
+  it("keeps focus inside the picker after a suggestion is picked", async () => {
+    setup({
+      "POST /api/kb/tags/suggest": [
+        { tag: "alpha", new: false },
+        { tag: "beta", new: false },
+      ],
+    });
+    await suggestNow();
+    await userEvent.click(await screen.findByRole("button", { name: "#alpha" }));
+    expect(screen.getByRole("button", { name: "#beta" })).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "#beta" }));
+    expect(screen.getByRole("textbox", { name: "Add a tag" })).toHaveFocus();
+  });
+
+  it("focuses the near-match offer when a picked new suggestion has one", async () => {
+    setup({
+      "POST /api/kb/tags/suggest": [{ tag: "sqlites", new: true }],
+      "GET /api/kb/tags/check": check({ sqlites: { normalised: "sqlites", ...NOT_FOUND, near: ["sqlite"] } }),
+    });
+    await suggestNow();
+    await userEvent.click(await screen.findByRole("button", { name: "#sqlites new" }));
+    expect(await screen.findByRole("button", { name: "Use #sqlite" })).toHaveFocus();
+  });
+
+  it("keeps focus inside the picker after a chip is removed", async () => {
+    setup({}, { initial: ["one", "two"] });
+    await userEvent.click(screen.getByRole("button", { name: "Remove #one" }));
+    expect(screen.getByRole("button", { name: "Remove #two" })).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Remove #two" }));
+    expect(screen.getByRole("textbox", { name: "Add a tag" })).toHaveFocus();
+  });
+
   it("offers the existing tag for a near-match, and uses it when accepted", async () => {
     const { changes } = setup({
       "POST /api/kb/tags/suggest": [],

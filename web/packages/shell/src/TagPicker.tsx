@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { errorText, type components } from "@jesinia/client";
 import { Badge, Button, Input, toneFor } from "@jesinia/design";
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useLayoutEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { useClient } from "./context";
 import s from "./TagPicker.module.css";
 
@@ -34,6 +42,12 @@ export type TagPickerHandle = {
    */
   commitDraft: () => Promise<string[] | null>;
 };
+
+/**
+ * Where focus goes once the control that had it unmounts (a picked suggestion, a removed
+ * chip): the item that slides into the same position, else the box, or the offer if one shows.
+ */
+type FocusRequest = { from: "suggestions" | "chips"; index: number };
 
 /** A near-match the user can take instead of the tag they typed. */
 type Offer = { typed: string; tag: string };
@@ -69,6 +83,8 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
   const scope = useRef(0);
   const suggestionsFor = useRef(0);
   const latest = useRef(value);
+  const root = useRef<HTMLDivElement>(null);
+  const focusRequest = useRef<FocusRequest | null>(null);
 
   useEffect(() => {
     latest.current = value;
@@ -89,6 +105,18 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
       suggestionsFor.current += 1;
     };
   }, [text]);
+
+  // Runs after the render that removed the focused control, so the DOM is already settled.
+  useLayoutEffect(() => {
+    const request = focusRequest.current;
+    if (!request || !root.current) return;
+    focusRequest.current = null;
+    const container = root.current;
+    const offerButton = container.querySelector<HTMLElement>(`.${s.offer} button`);
+    const group = request.from === "chips" ? `.${s.chips} button` : `.${s.suggestions} button`;
+    const sibling = container.querySelectorAll<HTMLElement>(group)[request.index];
+    (offerButton ?? sibling ?? container.querySelector<HTMLElement>("input"))?.focus();
+  });
 
   const suggest = async () => {
     const wanted = text.trim();
@@ -126,7 +154,7 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
     return next;
   };
 
-  const choose = async (raw: string): Promise<string[] | null> => {
+  const choose = async (raw: string, refocus?: FocusRequest): Promise<string[] | null> => {
     const typed = raw.trim().replace(/^#/, "");
     if (!typed) return latest.current;
     setError(null);
@@ -140,6 +168,7 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
         setError(errorText(r.error, "Couldn't check that tag."));
         return null;
       }
+      if (refocus) focusRequest.current = refocus;
       setDraft("");
       const { normalised, canonical, near, same_meaning: sameMeaning } = r.data;
       const closest = sameMeaning ?? near[0];
@@ -166,10 +195,14 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
 
   useImperativeHandle(ref, () => ({ commitDraft: () => choose(draft) }), [draft]);
 
-  const pick = (suggestion: Suggestion) => {
+  const pick = (suggestion: Suggestion, index: number) => {
+    const refocus: FocusRequest = { from: "suggestions", index };
     // A new suggestion is checked like a typed tag: it may be a near-duplicate.
-    if (suggestion.new) void choose(suggestion.tag);
-    else add(suggestion.tag, false);
+    if (suggestion.new) void choose(suggestion.tag, refocus);
+    else {
+      focusRequest.current = refocus;
+      add(suggestion.tag, false);
+    }
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -180,10 +213,10 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
 
   const offered = suggestions.filter((suggestion) => !value.includes(suggestion.tag));
   return (
-    <div className={s.picker}>
+    <div ref={root} className={s.picker}>
       {value.length > 0 ? (
         <ul className={s.chips} aria-label="Tags">
-          {value.map((tag) => (
+          {value.map((tag, index) => (
             <li key={tag} className={s.chip}>
               <Badge tone={toneFor(tag)}>#{tag}</Badge>
               {fresh.has(tag) ? <Badge>new</Badge> : null}
@@ -192,7 +225,10 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
                 variant="ghost"
                 icon="×"
                 aria-label={`Remove #${tag}`}
-                onClick={() => onChange(value.filter((other) => other !== tag))}
+                onClick={() => {
+                  focusRequest.current = { from: "chips", index };
+                  onChange(value.filter((other) => other !== tag));
+                }}
               />
             </li>
           ))}
@@ -200,8 +236,8 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
       ) : null}
       {offered.length > 0 ? (
         <div className={s.suggestions} role="group" aria-label="Suggested tags">
-          {offered.map((suggestion) => (
-            <Button key={suggestion.tag} size="sm" onClick={() => pick(suggestion)}>
+          {offered.map((suggestion, index) => (
+            <Button key={suggestion.tag} size="sm" onClick={() => pick(suggestion, index)}>
               #{suggestion.tag}
               {suggestion.new ? (
                 <>
