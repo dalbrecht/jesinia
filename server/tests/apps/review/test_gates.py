@@ -48,7 +48,10 @@ def _pr(
     [
         # CI pending / failing / passing, with no automated reviewer, after the debounce.
         (_pr("pending"), "waiting_ci"),
-        (_pr("none"), "waiting_ci"),
+        # No checks at all: wait 10 minutes for CI to show up, then treat it as no CI (R28).
+        (_pr("none", head_changed=RECENT), "waiting_ci"),
+        (_pr("none"), "ready"),
+        (_pr("none", REVIEWER, head_changed=QUIET), "waiting_auto_review"),
         (_pr("failing"), "ci_failing"),
         (_pr("passing"), "ready"),
         # × an automated reviewer configured: not landed, landed, timed out.
@@ -77,7 +80,8 @@ def test_gate_reasons_say_why() -> None:
     assert "couldn't load" in gate(_pr("passing", fetch_error="boom"), NOW).reason
     assert "boom" in gate(_pr("passing", fetch_error="boom"), NOW).reason
     assert "Review anyway" in gate(_pr("failing"), NOW).reason
-    assert "no CI" in gate(_pr("none"), NOW).reason
+    assert "no CI checks" in gate(_pr("none", head_changed=RECENT), NOW).reason
+    assert "No CI configured" in gate(_pr("none"), NOW).reason
     assert REVIEWER in gate(_pr("passing", REVIEWER), NOW).reason
     timed_out = gate(_pr("passing", REVIEWER, head_changed=LONG_AGO), NOW)
     assert "timed out" in timed_out.reason and REVIEWER in timed_out.reason
@@ -91,6 +95,21 @@ def test_gate_settings_can_skip_the_debounce() -> None:
         GateSettings(debounce=timedelta(seconds=-1))
     with pytest.raises(GateInputError):
         GateSettings(auto_review_timeout=timedelta(seconds=-1))
+    with pytest.raises(GateInputError):
+        GateSettings(no_ci_grace=timedelta(seconds=-1))
+
+
+def test_a_loaded_pr_still_waits_for_ci_to_appear() -> None:
+    immediate = GateSettings(debounce=timedelta(0))
+    assert gate(_pr("none", head_changed=RECENT), NOW, immediate).state == "waiting_ci"
+    assert gate(_pr("none", head_changed=QUIET), NOW, immediate).state == "ready"
+
+
+def test_gate_refuses_naive_times() -> None:
+    with pytest.raises(GateInputError, match="timezone"):
+        gate(_pr("passing"), NOW.replace(tzinfo=None))
+    with pytest.raises(GateInputError, match="timezone"):
+        gate(_pr("passing", head_changed=QUIET.replace(tzinfo=None)), NOW)
 
 
 def test_gate_rejects_an_unknown_ci_state() -> None:

@@ -20,6 +20,8 @@ Depth = Literal["quick", "deep"]
 DEBOUNCE = timedelta(minutes=10)
 # How long to wait for a configured automated reviewer to land on the head.
 AUTO_REVIEW_TIMEOUT = timedelta(minutes=30)
+# A head with no checks or statuses this long after it moved has no CI (ruling R28).
+NO_CI_GRACE = timedelta(minutes=10)
 # Deep when a PR changes at least this much, or the author knows the area this little.
 DEEP_LINES = 200
 DEEP_FILES = 10
@@ -38,9 +40,11 @@ class GateSettings:
 
     debounce: timedelta = DEBOUNCE
     auto_review_timeout: timedelta = AUTO_REVIEW_TIMEOUT
+    no_ci_grace: timedelta = NO_CI_GRACE
 
     def __post_init__(self) -> None:
-        if self.debounce < timedelta(0) or self.auto_review_timeout < timedelta(0):
+        waits = (self.debounce, self.auto_review_timeout, self.no_ci_grace)
+        if any(wait < timedelta(0) for wait in waits):
             raise GateInputError("gate waits can't be negative")
 
 
@@ -75,25 +79,28 @@ def _minutes(span: timedelta) -> int:
 def gate(pr: PrState, now: datetime, setting: GateSettings = DEFAULT_GATES) -> GateResult:
     """Decide whether a pre-review may start on ``pr``'s head at ``now``.
 
-    In order: the PR must have loaded, CI on the head must pass (a head with no checks yet
-    waits too), a configured automated reviewer must have reviewed the head or timed out,
-    and the head must have been quiet for the debounce.
+    In order: the PR must have loaded, CI on the head must pass (a head with no checks
+    waits ``no_ci_grace`` for them, then counts as having no CI), a configured automated
+    reviewer must have reviewed the head or timed out, and the head must have been quiet for
+    the debounce.
 
     Raises:
-        GateInputError: ``pr.ci_state`` is not a known CI state.
+        GateInputError: ``pr.ci_state`` is not a known CI state, or a time has no timezone.
     """
     if pr.ci_state not in _CI_STATES:
         raise GateInputError(f"unknown CI state {pr.ci_state!r}")
+    if now.tzinfo is None or pr.last_head_change_at.tzinfo is None:
+        raise GateInputError("gate times need a timezone")
     if pr.fetch_error is not None:
         return GateResult("fetch_failed", f"couldn't load: {pr.fetch_error}")
     if pr.ci_state == "failing":
         return GateResult("ci_failing", "CI is failing on this head; Review anyway to go ahead")
     if pr.ci_state == "pending":
         return GateResult("waiting_ci", "waiting for CI on this head")
-    if pr.ci_state == "none":
-        return GateResult("waiting_ci", "no CI checks reported on this head yet")
     since_push = now - pr.last_head_change_at
-    reviewed = "CI passing"
+    if pr.ci_state == "none" and since_push < setting.no_ci_grace:
+        return GateResult("waiting_ci", "no CI checks reported on this head yet")
+    reviewed = "No CI configured" if pr.ci_state == "none" else "CI passing"
     if pr.automated_reviewer is not None:
         if pr.auto_review_landed:
             reviewed += f"; {pr.automated_reviewer} reviewed this head"

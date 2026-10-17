@@ -108,12 +108,13 @@ class ReviewModule:
             self.sessions.allowance,
             git_slots=self.sessions.git_slot,
         )
+        self.sessions.use_tree_locks(self._workspace.tree_lock)
         store = SqliteReviewStore(self._conn)
         # The review pipeline (plan Task 6) supplies the pre-review runner; until then the
         # gates are applied and ready PRs show as queued.
         self._scheduler = Scheduler(store, _utc_now)
-        if failed := self._scheduler.recover():
-            log.info("marked %d review rounds left running by a stop as failed", failed)
+        if interrupted := self._scheduler.recover():
+            log.info("re-queued %d review rounds left running by a stop", interrupted)
         self._pruner = WorkspacePruner(store, self._workspace, self.sessions.bound_trees)
         ctx.scheduler.every(PRUNE_JOB, PRUNE_INTERVAL, self.prune_workspace, at_start=True)
         github = ctx.services.get("github")

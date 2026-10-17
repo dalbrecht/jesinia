@@ -759,3 +759,28 @@ async def test_inbox_reraises_a_rate_limit_instead_of_degrading_the_pr(prs: PrCl
     with pytest.raises(GitHubRateLimitedError) as caught:
         await prs.list_review_inbox(["acme/api", "acme/web"])
     assert caught.value.reset_at is not None
+
+
+def _items(name: str) -> list[dict[str, object]]:
+    data = fixture(name)
+    assert isinstance(data, dict) and isinstance(data["items"], list)
+    return [item for item in data["items"] if isinstance(item, dict)]
+
+
+@respx.mock
+async def test_inbox_repos_finds_requested_and_authored_prs_anywhere(prs: PrClient) -> None:
+    requested = respx.get(
+        f"{API}/search/issues",
+        params__contains={"q": "is:pr is:open review-requested:@me archived:false"},
+    ).mock(return_value=Response(200, json=fixture("search_review_requested")))
+    shouty = {**_items("search_reviewed")[0], "repository_url": f"{API}/repos/ACME/Api"}
+    authored = respx.get(
+        f"{API}/search/issues", params__contains={"q": "is:pr is:open author:@me archived:false"}
+    ).mock(
+        return_value=Response(
+            200, json={"total_count": 2, "items": [*_items("search_authored"), shouty]}
+        )
+    )
+
+    assert await prs.inbox_repos() == ["acme/api", "acme/web"]
+    assert requested.called and authored.called

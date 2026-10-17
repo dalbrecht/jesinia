@@ -13,12 +13,13 @@ from typing import cast
 
 import pytest
 
-from jesinia.apps.review.application.queue import QueueService
+from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
 from jesinia.apps.review.domain.queue import (
     EvidenceSummary,
     InvalidPrRefError,
     InvalidSettingError,
     PreReviewMode,
+    PrHeadMovedError,
     PrNotInQueueError,
     PrNotOpenError,
     PrRef,
@@ -28,6 +29,7 @@ from jesinia.apps.review.domain.queue import (
     evidence_from_json,
     parse_pr_ref,
 )
+from jesinia.apps.review.domain.workspace import InvalidShaError
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.module import REVIEW_DB
 from jesinia.core.db import open_db
@@ -495,6 +497,7 @@ async def test_rows_carry_the_latest_round_recommendation_evidence_and_coverage(
 async def test_files_are_served_from_the_cache_after_the_first_fetch(
     queue: QueueService, github: FakePullRequests, conn: sqlite3.Connection
 ) -> None:
+    github.inbox = [pull(1)]
     first = await queue.files("Acme/Web", 1, HEAD)
     github.error = GitHubRequestError(None, "offline")
     second = await queue.files("acme/web", 1, HEAD)
@@ -528,8 +531,8 @@ async def test_sync_and_load_notify_the_scheduler(
     await queue.sync()
     await queue.load("acme/web#1")
     github.error = GitHubRequestError(None, "offline")
-    await queue.sync()  # a failed sync changes nothing, so it needs no tick
-    assert calls == ["tick", "tick"]
+    await queue.sync()  # a failed sync still ticks: debounces advance on cached data
+    assert calls == ["tick", "tick", "tick"]
 
 
 def test_repo_config_validates_its_values() -> None:
@@ -605,3 +608,126 @@ async def test_a_pr_loaded_during_a_sync_survives_leaving_the_inbox(
 
     rows = (await queue.list(QueueFilter())).rows
     assert [(row.number, row.loaded) for row in rows] == [(2, True), (1, False)]
+
+
+async def test_first_sync_watches_repos_with_review_requests(
+    conn: sqlite3.Connection, github: FakePullRequests, clock: FakeClock
+) -> None:
+    store = SqliteReviewStore(conn)  # a fresh install: no repo is watched yet
+    queue = QueueService(github, store, clock)
+    github.inbox = [
+        pull(1, "acme/api", requested=True),
+        pull(2, "Acme/Web", author="me"),
+        pull(3, "acme/old"),  # only reviewed before: not a reason to watch the repo
+    ]
+
+    await queue.sync()
+
+    assert store.watched_repos() == ["acme/api", "acme/web"]
+    rows = (await queue.list(QueueFilter())).rows
+    assert sorted((row.repo, row.number) for row in rows) == [("acme/api", 1), ("acme/web", 2)]
+
+
+async def test_an_unwatched_repo_is_never_reseeded(
+    queue: QueueService, github: FakePullRequests, store: SqliteReviewStore
+) -> None:
+    store.upsert_repo(RepoConfig("acme/web", watched=False))
+    github.inbox = [pull(1, requested=True)]
+
+    await queue.sync()
+    await queue.sync()
+
+    assert store.watched_repos() == []
+    assert store.repo_configs()["acme/web"].watched is False
+    assert (await queue.list(QueueFilter())).rows == []
+
+
+async def test_a_stale_head_never_caches_the_current_heads_files(
+    queue: QueueService, github: FakePullRequests, conn: sqlite3.Connection
+) -> None:
+    github.inbox = [pull(1, head=OTHER_HEAD)]  # the PR has moved on from HEAD
+
+    with pytest.raises(PrHeadMovedError, match=OTHER_HEAD):
+        await queue.files("acme/web", 1, HEAD)
+
+    cached = conn.execute("SELECT head_sha FROM pr_files").fetchall()
+    assert cached == [(OTHER_HEAD,)]
+    assert await queue.files("acme/web", 1, OTHER_HEAD) and github.file_calls == 1
+    with pytest.raises(InvalidShaError):
+        await queue.files("acme/web", 1, "HEAD")
+
+
+async def test_files_fetched_while_the_head_moves_are_not_cached(
+    queue: QueueService, github: FakePullRequests, conn: sqlite3.Connection
+) -> None:
+    github.inbox = [pull(1)]
+    github.heads_seen_by_get = [HEAD, OTHER_HEAD]  # a push lands between the two reads
+
+    with pytest.raises(PrHeadMovedError):
+        await queue.files("acme/web", 1, HEAD)
+
+    assert conn.execute("SELECT COUNT(*) FROM pr_files").fetchone() == (0,)
+
+
+async def test_files_leave_the_cache_with_their_pr(
+    queue: QueueService, github: FakePullRequests, conn: sqlite3.Connection
+) -> None:
+    github.inbox = [pull(1)]
+    await queue.sync()
+    await queue.files("acme/web", 1, HEAD)
+    github.inbox = []
+
+    await queue.sync()
+
+    assert conn.execute("SELECT COUNT(*) FROM pr_files").fetchone() == (0,)
+
+
+async def test_a_rate_limit_without_a_reset_time_still_backs_off(
+    queue: QueueService, github: FakePullRequests, clock: FakeClock
+) -> None:
+    github.inbox = [pull(1)]
+    github.error = GitHubRateLimitedError(403, "secondary rate limit", None)
+    await queue.sync()
+    calls = len(github.inbox_calls)
+    github.error = None
+
+    clock.advance(1)
+    await queue.sync()
+    assert len(github.inbox_calls) == calls
+    clock.advance(SYNC_INTERVAL.total_seconds() / 60)
+    await queue.sync()
+    assert len(github.inbox_calls) == calls + 1
+
+
+async def test_a_domain_error_during_sync_is_reported_not_raised(
+    queue: QueueService, github: FakePullRequests
+) -> None:
+    github.inbox = [pull(1)]
+    await queue.sync()
+    github.inbox = [pull(1, additions=-50)]  # GitHub can't send this, but nothing may crash
+
+    await queue.sync()
+
+    view = await queue.list(QueueFilter())
+    assert [row.number for row in view.rows] == [1]
+    assert view.sync_error is not None and "negative" in view.sync_error
+
+
+async def test_a_slow_sync_never_overwrites_a_newer_load(
+    queue: QueueService, github: FakePullRequests, store: SqliteReviewStore
+) -> None:
+    github.inbox = [pull(2, head=HEAD)]
+    github.detail_holds = {HEAD: asyncio.Event()}
+    syncing = asyncio.create_task(queue.sync())
+    while not github.inbox_calls:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    github.inbox = [pull(2, head=OTHER_HEAD)]  # pushed: the load reads the new head
+    loaded = await queue.load("acme/web#2")
+    github.detail_holds[HEAD].set()
+    await syncing
+
+    stored = store.pr(PrRef("acme/web", 2))
+    assert loaded.head_sha == OTHER_HEAD
+    assert stored is not None and stored.pr.head_sha == OTHER_HEAD and stored.loaded

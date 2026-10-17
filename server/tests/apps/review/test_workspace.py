@@ -14,7 +14,8 @@ from typing import Any
 
 import pytest
 
-from jesinia.apps.review.application.ports import Workspace
+from jesinia.apps.review.application.ports import KeepProvider, Workspace
+from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.domain.workspace import (
     GitCommandError,
     GitOutputError,
@@ -126,6 +127,16 @@ def fixture(tmp_path: Path) -> Fixture:
     return Fixture(remote, base, head, rebased_base, rebased_head, conflict_base, conflict_head)
 
 
+def keeping(*pairs: tuple[str, str]) -> KeepProvider:
+    """A keep provider for ``prune`` from fixed ``(repo, sha)`` pairs."""
+    wanted = {(canonical_repo(repo), sha) for repo, sha in pairs}
+
+    async def keep(repo: str) -> set[str]:
+        return {sha for name, sha in wanted if name == repo}
+
+    return keep
+
+
 def make_workspace(tmp_path: Path, fixture: Fixture) -> GitWorkspace:
     return GitWorkspace(tmp_path / "data" / "review" / "repos", lambda repo: str(fixture.remote))
 
@@ -194,15 +205,15 @@ async def test_prune_removes_unkept_worktrees(tmp_path: Path, fixture: Fixture) 
     dropped = await ws.worktree(REPO, fixture.rebased_head)
     also_dropped = await ws.worktree(REPO, fixture.conflict_head)
 
-    assert await ws.prune({(REPO, fixture.head)}) == 2
+    assert await ws.prune(keeping((REPO, fixture.head))) == 2
     assert kept.is_dir() and not dropped.exists() and not also_dropped.exists()
     listed = git(kept, "worktree", "list", "--porcelain")
     assert str(dropped) not in listed and str(kept) in listed
-    assert await ws.prune({(REPO, fixture.head)}) == 0
+    assert await ws.prune(keeping((REPO, fixture.head))) == 0
 
 
 async def test_prune_with_nothing_on_disk_is_a_no_op(tmp_path: Path, fixture: Fixture) -> None:
-    assert await make_workspace(tmp_path, fixture).prune(set()) == 0
+    assert await make_workspace(tmp_path, fixture).prune(keeping()) == 0
 
 
 async def test_prune_skips_entries_it_did_not_create(tmp_path: Path, fixture: Fixture) -> None:
@@ -212,7 +223,7 @@ async def test_prune_skips_entries_it_did_not_create(tmp_path: Path, fixture: Fi
     (root / "acme" / "stray-file").write_text("x")
     (root / "acme" / "widget" / "trees" / "not-a-sha").mkdir(parents=True)
     (root / ".hidden" / "x" / "trees" / ("a" * 40)).mkdir(parents=True)
-    assert await ws.prune(set()) == 0
+    assert await ws.prune(keeping()) == 0
     assert (root / "acme" / "widget" / "trees" / "not-a-sha").is_dir()
     assert (root / ".hidden" / "x" / "trees" / ("a" * 40)).is_dir()
 
@@ -233,7 +244,7 @@ async def test_never_pushes(
     await ws.diff(REPO, fixture.base, fixture.head)
     await ws.merge_base(REPO, fixture.base, fixture.head)
     await ws.patch_ids(REPO, fixture.base, fixture.head)
-    await ws.prune(set())
+    await ws.prune(keeping())
 
     assert recorded, "the workspace ran no git commands"
     assert all(argv[0] == "git" for argv in recorded)
@@ -302,7 +313,7 @@ async def test_repo_names_are_case_insensitive(tmp_path: Path, fixture: Fixture)
     kept = await ws.worktree(REPO, fixture.head)
     assert await ws.worktree("Acme/Widget", fixture.head) == kept
     assert ws._lock("Acme/Widget") is ws._lock(REPO)
-    assert await ws.prune({("Acme/Widget", fixture.head)}) == 0
+    assert await ws.prune(keeping(("Acme/Widget", fixture.head))) == 0
     assert kept.is_dir()
 
 
@@ -450,7 +461,7 @@ async def test_prune_never_follows_symlinks(tmp_path: Path, fixture: Fixture) ->
     (ws.root / "evil").symlink_to(outside, target_is_directory=True)
     (trees / f".tmp-{fixture.conflict_head}-stale").mkdir()
 
-    assert await ws.prune({(REPO, fixture.head)}) == 1
+    assert await ws.prune(keeping((REPO, fixture.head))) == 1
     assert not link.is_symlink() and kept.is_dir() and (kept / "c.txt").exists()
     assert (outside / "x" / "trees" / fixture.head).is_dir()
     assert not (trees / f".tmp-{fixture.conflict_head}-stale").exists()
@@ -505,8 +516,6 @@ async def test_inputs_are_validated_before_git_runs(tmp_path: Path, fixture: Fix
         await ws.diff(REPO, "--output=/tmp/x", "a" * 40)
     with pytest.raises(InvalidRefError):
         await ws.fetch(REPO, ["--upload-pack=touch /tmp/pwned"])
-    with pytest.raises(InvalidRepoError):
-        await ws.prune({("not a repo", "a" * 40)})
     assert not (tmp_path / "data").exists()
 
 
@@ -780,7 +789,7 @@ async def test_prune_drops_keep_refs_outside_the_keep_set(tmp_path: Path, fixtur
     await ws.fetch(REPO, [fixture.base, fixture.head, fixture.conflict_head])
     mirror = ws.root.resolve() / "acme" / "widget" / "mirror.git"
     assert not (mirror.parent / "trees").exists()  # a repo with no worktrees yet
-    assert await ws.prune({(REPO, fixture.head)}) == 0
+    assert await ws.prune(keeping((REPO, fixture.head))) == 0
     assert _keep_refs(mirror) == {f"refs/jesinia/keep/{fixture.head}"}
 
 
@@ -812,7 +821,7 @@ async def test_prune_skips_a_broken_mirror_and_prunes_the_other_repos(
     # before acme/widget, so a prune that stopped at it would never reach the real repo.
     (ws.root / "aaa" / "broken" / "mirror.git").mkdir(parents=True)
 
-    assert await ws.prune({(REPO, fixture.head)}) == 1
+    assert await ws.prune(keeping((REPO, fixture.head))) == 1
 
     assert not stale.exists()
     assert "aaa/broken" in caplog.text
@@ -833,3 +842,71 @@ async def test_tree_key_names_the_repo_and_sha_of_a_worktree(
     assert ws.tree_key(ws.root / "acme" / "widget" / "other" / fixture.head) is None
     assert ws.tree_key(ws.root / "-x" / "widget" / "trees" / fixture.head) is None
     assert ws.tree_key(tmp_path / "elsewhere" / "trees" / fixture.head) is None
+
+
+async def test_a_tree_created_or_bound_during_a_prune_survives(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    (ws.root / "aaa" / "first" / "trees").mkdir(parents=True)  # pruned before acme/widget
+    unkept = await ws.worktree(REPO, fixture.rebased_head)  # bound while the prune runs
+    sessions = ReviewSessionRegistry()
+    sessions.use_tree_locks(ws.tree_lock)
+    started: set[str] = set()  # rounds started while the prune runs
+    paused, resume = asyncio.Event(), asyncio.Event()
+
+    async def keep(repo: str) -> set[str]:
+        if repo == "aaa/first":
+            paused.set()
+            await resume.wait()
+            return set()
+        bound = (ws.tree_key(tree) for tree in sessions.bound_trees())
+        return started | {key[1] for key in bound if key is not None}
+
+    pruning = asyncio.create_task(ws.prune(keep))
+    await paused.wait()
+    started.add(fixture.head)
+    created = await ws.worktree(REPO, fixture.head)
+    await sessions.attach("agent", unkept)
+    resume.set()
+
+    assert await pruning == 0
+    assert created.is_dir() and unkept.is_dir()
+
+
+async def test_binding_a_tree_waits_for_its_repos_lock(tmp_path: Path, fixture: Fixture) -> None:
+    ws = await fetched(tmp_path, fixture)
+    tree = await ws.worktree(REPO, fixture.head)
+    sessions = ReviewSessionRegistry()
+    sessions.use_tree_locks(ws.tree_lock)
+    lock = ws.tree_lock(tree)
+    assert lock is not None and ws.tree_lock(tmp_path / "elsewhere") is None
+
+    async with lock:
+        binding = asyncio.create_task(sessions.attach("s", tree))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert sessions.worktree_for("s") is None
+    await binding
+
+    assert sessions.worktree_for("s") == tree
+    await sessions.attach("t", tmp_path / "elsewhere")  # not a workspace tree: no lock
+    assert sessions.worktree_for("t") == tmp_path / "elsewhere"
+
+
+async def test_attach_without_tree_locks_just_binds(tmp_path: Path) -> None:
+    sessions = ReviewSessionRegistry()
+    await sessions.attach("s", tmp_path)
+    assert sessions.worktree_for("s") == tmp_path
+
+
+async def test_prune_ignores_keep_entries_that_are_not_full_shas(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    await ws.worktree(REPO, fixture.head)
+
+    async def keep(repo: str) -> set[str]:
+        return {fixture.head, "HEAD", ""}
+
+    assert await ws.prune(keep) == 0

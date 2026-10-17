@@ -49,7 +49,8 @@ CREATE TABLE prs (
     PRIMARY KEY (repo, number)
 );
 
--- One review pass over one head. `error` (beyond the plan) keeps why a pre-review failed.
+-- One review pass over one head. Beyond the plan: `error` keeps why a pre-review failed, and
+-- `interrupted` marks one a stop or restart cut short (re-queued, up to 3 times per head).
 CREATE TABLE rounds (
     id INTEGER PRIMARY KEY,
     repo TEXT NOT NULL,
@@ -62,7 +63,8 @@ CREATE TABLE rounds (
     verdict TEXT,
     posted_review_url TEXT,
     done INTEGER NOT NULL DEFAULT 0,
-    error TEXT
+    error TEXT,
+    interrupted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX rounds_pr_head ON rounds (repo, number, head_sha);
 

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -21,6 +23,10 @@ from jesinia.apps.review.domain.queue import (
 )
 from jesinia.apps.review.domain.repo_access import CappedOutput, RegexDialect
 from jesinia.services.github.domain.pr import CheckState, PrFile, PullRequest, ReviewSummary
+
+# Given a canonical repo, the SHAs whose worktrees and kept commits must survive a prune.
+# The workspace asks inside that repo's lock, so the answer can't go stale mid-prune.
+KeepProvider = Callable[[str], Awaitable[Iterable[str]]]
 
 
 class Workspace(Protocol):
@@ -50,19 +56,24 @@ class Workspace(Protocol):
         """Each changed path mapped to the ``git patch-id --stable`` of its own diff, so a
         pure rebase compares equal file by file and a conflict resolution does not."""
 
-    async def prune(self, keep: set[tuple[str, str]]) -> int:
-        """Remove every worktree whose ``(repo, sha)`` is not in ``keep``; return how many.
-        A repo whose mirror is broken is logged and skipped; the others are still pruned."""
+    async def prune(self, keep: KeepProvider) -> int:
+        """Remove every worktree (and kept commit) whose SHA ``keep(repo)`` doesn't name,
+        one repo at a time under that repo's lock; return how many worktrees went. A repo
+        whose mirror is broken is logged and skipped; the others are still pruned."""
 
     def tree_key(self, path: Path) -> tuple[str, str] | None:
         """The canonical ``(repo, sha)`` of a worktree path, or ``None`` if ``path`` is not
         one of this workspace's worktrees."""
 
+    def tree_lock(self, path: Path) -> asyncio.Lock | None:
+        """The lock that ``worktree`` and ``prune`` take for the repo of the worktree at
+        ``path``; ``None`` if ``path`` is not one of this workspace's worktrees."""
+
 
 class PrunableWorkspace(Protocol):
     """The part of ``Workspace`` the prune job uses."""
 
-    async def prune(self, keep: set[tuple[str, str]]) -> int: ...
+    async def prune(self, keep: KeepProvider) -> int: ...
 
     def tree_key(self, path: Path) -> tuple[str, str] | None: ...
 
@@ -106,6 +117,8 @@ class PullRequests(Protocol):
 
     async def viewer(self) -> str: ...
 
+    async def inbox_repos(self) -> list[str]: ...
+
     async def list_review_inbox(self, repos: list[str]) -> list[PullRequest]: ...
 
     async def get(self, repo: str, number: int) -> PullRequest: ...
@@ -120,7 +133,14 @@ class PullRequests(Protocol):
 class QueueStore(Protocol):
     """The queue's rows, rounds and settings in ``review.sqlite``. Repos are canonical."""
 
+    def atomic(self) -> AbstractContextManager[object]:
+        """One transaction around several writes."""
+
     def watched_repos(self) -> list[str]: ...
+
+    def seed_repos(self, repos: Iterable[str]) -> list[str]:
+        """Watch ``repos`` that have no row yet (a repo the user unwatched keeps its row and
+        stays unwatched); return the ones added."""
 
     def repo_configs(self) -> dict[str, RepoConfig]: ...
 
@@ -165,22 +185,31 @@ class QueueStore(Protocol):
         """Mark dismissed (and no longer loaded); False if the PR isn't cached."""
 
     def set_state(self, ref: PrRef, head_sha: str, state: PreReviewState, reason: str) -> None:
-        """Record the pre-review state, only while the PR's head is still ``head_sha``."""
+        """Record the pre-review state, only while the PR's head is still ``head_sha`` (and
+        writing nothing when it is unchanged)."""
 
     def start_round(
         self, ref: PrRef, head_sha: str, base_sha: str, depth: Depth, started_at: datetime
     ) -> int: ...
 
     def finish_round(
-        self, round_id: int, finished_at: datetime, error: str | None, verdict: str | None = None
-    ) -> None: ...
+        self,
+        round_id: int,
+        finished_at: datetime,
+        error: str | None,
+        verdict: str | None = None,
+        *,
+        interrupted: bool = False,
+    ) -> None:
+        """``interrupted``: a stop cut the round short; it isn't the PR's failure."""
 
     def mark_round_done(self, round_id: int) -> None: ...
 
-    def fail_unfinished_rounds(self, at: datetime, cause: str) -> int: ...
+    def interrupt_unfinished_rounds(self, at: datetime, cause: str) -> int:
+        """Mark rounds a stop or crash left running as interrupted; return how many."""
 
     def rounds_for_heads(self) -> dict[tuple[PrRef, str], RoundStatus]:
-        """The latest round on each (PR, head)."""
+        """The latest round on each (PR, head), with how many rounds on it were interrupted."""
 
     def latest_rounds(self) -> dict[PrRef, RoundSummary]:
         """Each PR's latest successfully finished round."""
@@ -192,4 +221,5 @@ class QueueStore(Protocol):
     def put_pr_files(self, ref: PrRef, head_sha: str, files: Sequence[PrFile]) -> None: ...
 
     def keep_shas(self) -> set[tuple[str, str]]:
-        """(repo, sha) of the head and base of every queued PR and of rounds still in review."""
+        """(repo, sha) of the head and base of every queued PR, of rounds still running, and
+        of each queued PR's latest finished round unless it is done."""

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from jesinia.services.github.application.service import GitHubRequestError
@@ -101,6 +102,10 @@ class FakePullRequests:
         self.error: Exception | None = None
         self.detail_errors: dict[tuple[str, int], Exception] = {}
         self.get_error: Exception | None = None
+        # Head SHAs single-PR reads report, one per call, before falling back to the PR's own.
+        self.heads_seen_by_get: list[str] = []
+        # Checks on these head SHAs park until their event is set.
+        self.detail_holds: dict[str, asyncio.Event] = {}
         self.hold: asyncio.Event | None = None
         self.inbox_calls: list[list[str]] = []
         self.file_calls = 0
@@ -112,6 +117,12 @@ class FakePullRequests:
     async def viewer(self) -> str:
         self._fail()
         return "me"
+
+    async def inbox_repos(self) -> list[str]:
+        """Repos with a PR whose review is requested of "me", or that "me" wrote."""
+        self._fail()
+        mine = {pr.repo.lower() for pr in self.inbox if pr.review_requested or pr.author == "me"}
+        return sorted(mine)
 
     async def list_review_inbox(self, repos: list[str]) -> list[PullRequest]:
         self.inbox_calls.append(list(repos))
@@ -126,11 +137,15 @@ class FakePullRequests:
             raise self.get_error
         for pr in [*self.inbox, *self.others.values()]:
             if _key(pr.repo, pr.number) == _key(repo, number):
+                if self.heads_seen_by_get:
+                    return replace(pr, head_sha=self.heads_seen_by_get.pop(0))
                 return pr
         raise GitHubRequestError(404, "Not Found")
 
     async def checks(self, repo: str, sha: str) -> CheckState:
         self._fail()
+        if sha in self.detail_holds:
+            await self.detail_holds[sha].wait()
         for (failing_repo, number), exc in self.detail_errors.items():
             pr = await self.get(repo, number)
             if failing_repo == repo.lower() and pr.head_sha == sha:

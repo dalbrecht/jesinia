@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import asdict
 from datetime import datetime
 from typing import cast
@@ -196,6 +197,9 @@ class SqliteReviewStore:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
+    def atomic(self) -> AbstractContextManager[sqlite3.Connection]:
+        return transaction(self._conn)
+
     # Settings ---------------------------------------------------------------------------
 
     def _setting(self, key: str) -> object:
@@ -246,6 +250,18 @@ class SqliteReviewStore:
         rows = self._conn.execute("SELECT repo FROM repos WHERE watched = 1 ORDER BY repo")
         return [repo for (repo,) in rows]
 
+    def seed_repos(self, repos: Iterable[str]) -> list[str]:
+        added: list[str] = []
+        for repo in repos:
+            canonical = RepoConfig(repo).repo
+            cursor = self._conn.execute(
+                "INSERT INTO repos (repo, watched) VALUES (?, 1) ON CONFLICT (repo) DO NOTHING",
+                (canonical,),
+            )
+            if cursor.rowcount:
+                added.append(canonical)
+        return added
+
     def repo_configs(self) -> dict[str, RepoConfig]:
         rows = self._conn.execute("SELECT repo, watched, automated_reviewer, prereview FROM repos")
         return {
@@ -292,9 +308,11 @@ class SqliteReviewStore:
                 values = (*_snapshot_values(pr), _time(now), error, _time(now))
                 self._conn.execute(_UPSERT_FAILED, values)
             for ref in removed:
-                self._conn.execute(
-                    "DELETE FROM prs WHERE repo = ? AND number = ?", (ref.repo, ref.number)
-                )
+                for table in ("prs", "pr_files"):
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE repo = ? AND number = ?",
+                        (ref.repo, ref.number),
+                    )
 
     def _flag(self, ref: PrRef, loaded: bool) -> bool:
         cursor = self._conn.execute(
@@ -322,8 +340,9 @@ class SqliteReviewStore:
     def set_state(self, ref: PrRef, head_sha: str, state: PreReviewState, reason: str) -> None:
         self._conn.execute(
             "UPDATE prs SET state = ?, state_reason = ? "
-            "WHERE repo = ? AND number = ? AND head_sha = ?",
-            (state, reason, ref.repo, ref.number, head_sha),
+            "WHERE repo = ? AND number = ? AND head_sha = ? "
+            "AND (state IS NOT ? OR state_reason IS NOT ?)",
+            (state, reason, ref.repo, ref.number, head_sha, state, reason),
         )
 
     # Rounds -----------------------------------------------------------------------------
@@ -339,32 +358,43 @@ class SqliteReviewStore:
         return cast(int, cursor.lastrowid)
 
     def finish_round(
-        self, round_id: int, finished_at: datetime, error: str | None, verdict: str | None = None
+        self,
+        round_id: int,
+        finished_at: datetime,
+        error: str | None,
+        verdict: str | None = None,
+        *,
+        interrupted: bool = False,
     ) -> None:
         self._conn.execute(
-            "UPDATE rounds SET finished_at = ?, error = ?, verdict = COALESCE(?, verdict) "
-            "WHERE id = ?",
-            (_time(finished_at), error, verdict, round_id),
+            "UPDATE rounds SET finished_at = ?, error = ?, verdict = COALESCE(?, verdict), "
+            "interrupted = ? WHERE id = ?",
+            (_time(finished_at), error, verdict, int(interrupted), round_id),
         )
 
     def mark_round_done(self, round_id: int) -> None:
         self._conn.execute("UPDATE rounds SET done = 1 WHERE id = ?", (round_id,))
 
-    def fail_unfinished_rounds(self, at: datetime, cause: str) -> int:
+    def interrupt_unfinished_rounds(self, at: datetime, cause: str) -> int:
         cursor = self._conn.execute(
-            "UPDATE rounds SET finished_at = ?, error = ? WHERE finished_at IS NULL",
+            "UPDATE rounds SET finished_at = ?, error = ?, interrupted = 1 "
+            "WHERE finished_at IS NULL",
             (_time(at), cause),
         )
         return cursor.rowcount
 
     def rounds_for_heads(self) -> dict[tuple[PrRef, str], RoundStatus]:
         rows = self._conn.execute(
-            "SELECT repo, number, head_sha, finished_at IS NOT NULL, error FROM rounds "
-            "WHERE id IN (SELECT MAX(id) FROM rounds GROUP BY repo, number, head_sha)"
+            "SELECT r.repo, r.number, r.head_sha, r.finished_at IS NOT NULL, r.error, "
+            "r.interrupted, c.interruptions FROM rounds r JOIN ("
+            "SELECT MAX(id) AS id, SUM(interrupted) AS interruptions FROM rounds "
+            "GROUP BY repo, number, head_sha) c ON c.id = r.id"
         )
         return {
-            (PrRef(repo, number), head): RoundStatus(bool(finished), error)
-            for repo, number, head, finished, error in rows
+            (PrRef(repo, number), head): RoundStatus(
+                bool(finished), error, bool(interrupted), interruptions
+            )
+            for repo, number, head, finished, error, interrupted, interruptions in rows
         }
 
     def latest_rounds(self) -> dict[PrRef, RoundSummary]:
@@ -414,6 +444,7 @@ class SqliteReviewStore:
             "UNION ALL "
             "SELECT r.repo, r.head_sha, r.base_sha FROM rounds r "
             "JOIN prs p ON p.repo = r.repo AND p.number = r.number "
-            "WHERE r.done = 0 AND p.dismissed = 0"
+            "WHERE p.dismissed = 0 AND (r.finished_at IS NULL OR (r.done = 0 AND r.id IN ("
+            "SELECT MAX(id) FROM rounds WHERE finished_at IS NOT NULL GROUP BY repo, number)))"
         )
         return {(repo, sha) for repo, head, base in rows for sha in (head, base) if sha}

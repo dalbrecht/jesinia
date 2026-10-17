@@ -357,6 +357,13 @@ class PrClient:
         except (GitHubRequestError, GitHubPayloadError) as exc:
             return _pull_request_from_search(repo, item, str(exc))
 
+    async def inbox_repos(self) -> list[str]:
+        """Every repo, across GitHub, with an open PR whose review is requested of the viewer
+        or that the viewer wrote; lowercase ``owner/name``, sorted. Seeds the watched repos."""
+        qualifiers = (f"{_REQUESTED} archived:false", "author:@me archived:false")
+        found = await asyncio.gather(*(self._search(q, []) for q in qualifiers))
+        return sorted({repo.lower() for hits in found for (repo, _), _ in hits})
+
     async def list_review_inbox(self, repos: list[str]) -> list[PullRequest]:
         """Open PRs in ``repos`` whose review is requested of the viewer (directly or via a
         team), that they authored, or that they reviewed; requested ones first, no repeats."""

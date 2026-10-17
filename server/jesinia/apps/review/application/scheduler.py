@@ -5,7 +5,8 @@
 records the pre-review state, and starts the ready ones in priority order (loaded, then
 requested, then agent-authored, then the rest), at most ``CONCURRENCY`` at a time. Each run
 is a round on the PR's current head, so a head is pre-reviewed once: rapid pushes restart
-the debounce and only the head that settles is reviewed.
+the debounce and only the head that settles is reviewed. A round a stop or restart cut short
+is not the PR's failure: its head is queued again, up to ``MAX_INTERRUPTIONS`` times.
 """
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ from jesinia.apps.review.application.ports import PrunableWorkspace, QueueStore
 from jesinia.apps.review.domain.gates import DEFAULT_GATES, Depth, GateSettings, PrState, gate
 from jesinia.apps.review.domain.queue import (
     PreReviewMode,
+    PreReviewState,
     PrRef,
     RepoConfig,
+    RoundStatus,
     StoredPr,
     queue_order,
 )
@@ -32,10 +35,17 @@ log = logging.getLogger(__name__)
 
 CONCURRENCY = 2
 PRUNE_INTERVAL = timedelta(days=1)
+# Interrupted rounds on one head before it counts as failed (so a run that crashes the
+# server can't loop forever).
+MAX_INTERRUPTIONS = 3
 # Loaded PRs are reviewed at once: no debounce, but CI and automated reviews still gate them.
 _LOADED_GATES = GateSettings(debounce=timedelta(0))
-_STOPPED = "stopped: Jesinia shut down during this pre-review; retry it"
-_INTERRUPTED = "interrupted: Jesinia stopped during this pre-review; retry it"
+_STOPPED = "Jesinia stopped during this pre-review"
+_INTERRUPTED = "Jesinia stopped during this pre-review (it was restarted or crashed)"
+
+
+class SchedulerConfigError(ValueError):
+    """The scheduler was configured with impossible values."""
 
 
 @dataclass(frozen=True)
@@ -76,7 +86,7 @@ class Scheduler:
         concurrency: int = CONCURRENCY,
     ) -> None:
         if concurrency < 1:
-            raise ValueError(f"concurrency must be at least 1, got {concurrency}")
+            raise SchedulerConfigError(f"concurrency must be at least 1, got {concurrency}")
         self._store = store
         self._clock = clock
         self._run = run
@@ -85,8 +95,9 @@ class Scheduler:
         self._running: dict[PrRef, asyncio.Task[None]] = {}
 
     def recover(self) -> int:
-        """Fail rounds a stop left unfinished (call once at start, before any tick)."""
-        return self._store.fail_unfinished_rounds(self._clock(), _INTERRUPTED)
+        """Mark rounds a crash left unfinished as interrupted, so the next tick queues their
+        heads again (call once at start, before any tick)."""
+        return self._store.interrupt_unfinished_rounds(self._clock(), _INTERRUPTED)
 
     async def tick(self) -> None:
         """Apply the gates to every queued PR and start what is ready and has a free slot."""
@@ -95,19 +106,17 @@ class Scheduler:
         default_mode = self._store.prereview_default()
         rounds = self._store.rounds_for_heads()
         self._pending = {}
-        for stored in self._store.prs():
-            ref, head = stored.pr.ref, stored.pr.head_sha
-            if ref in self._running:
-                continue
-            status = rounds.get((ref, head))
-            if status is not None:
-                # This head had its pre-review; show how it ended (it may have been cut short).
-                if status.finished and status.error is None:
-                    self._store.set_state(ref, head, "ready", "pre-review finished")
+        with self._store.atomic():  # one write per tick, and none for unchanged states
+            for stored in self._store.prs():
+                ref, head = stored.pr.ref, stored.pr.head_sha
+                if ref in self._running:
+                    continue
+                status = rounds.get((ref, head))
+                if status is None or _retryable(status):
+                    self._consider(stored, now, configs.get(ref.repo), default_mode)
                 elif status.finished:
-                    self._store.set_state(ref, head, "failed", f"pre-review failed: {status.error}")
-                continue
-            self._consider(stored, now, configs.get(ref.repo), default_mode)
+                    # This head had its pre-review; show how it ended.
+                    self._store.set_state(ref, head, *_outcome(status))
         self._dispatch()
 
     def _consider(
@@ -153,14 +162,16 @@ class Scheduler:
                 self._start(stored, mode, self._run)
 
     def _still_queued(self, stored: StoredPr) -> bool:
-        """A PR queued at the last tick may since have moved, failed to load or been
-        dismissed; the next tick decides about it then."""
+        """A PR queued at the last tick may since have moved, failed to load, been dismissed
+        or been opened (a round now on its head); the next tick decides about it then."""
         now = self._store.pr(stored.pr.ref)
+        status = self._store.rounds_for_heads().get((stored.pr.ref, stored.pr.head_sha))
         return (
             now is not None
             and not now.dismissed
             and now.fetch_error is None
             and now.pr.head_sha == stored.pr.head_sha
+            and (status is None or _retryable(status))
         )
 
     def _start(self, stored: StoredPr, mode: PreReviewMode, run: PreReviewRunner) -> None:
@@ -187,8 +198,8 @@ class Scheduler:
         try:
             await run(request)
         except asyncio.CancelledError:
-            self._store.finish_round(request.round_id, self._clock(), _STOPPED)
-            self._store.set_state(ref, head, "failed", f"pre-review failed: {_STOPPED}")
+            self._store.finish_round(request.round_id, self._clock(), _STOPPED, interrupted=True)
+            self._store.set_state(ref, head, "queued", "interrupted by a stop; it runs again")
             raise
         except Exception as exc:  # one PR's failure must not stop the queue; its cause is kept
             cause = str(exc) or type(exc).__name__
@@ -216,6 +227,20 @@ class Scheduler:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _retryable(status: RoundStatus) -> bool:
+    """A round a stop cut short leaves its head to be queued again, a few times."""
+    return status.interrupted and status.interruptions < MAX_INTERRUPTIONS
+
+
+def _outcome(status: RoundStatus) -> tuple[PreReviewState, str]:
+    if status.error is None:
+        return "ready", "pre-review finished"
+    if status.interrupted:
+        cause = f"interrupted {status.interruptions} times: {status.error}"
+        return "failed", f"pre-review failed: {cause}"
+    return "failed", f"pre-review failed: {status.error}"
+
+
 class WorkspacePruner:
     """The daily ``review.prune`` job: drop worktrees and kept commits nothing needs.
 
@@ -234,14 +259,18 @@ class WorkspacePruner:
         self._bound_trees = bound_trees
 
     async def run(self) -> int:
-        keep = {(repo, sha) for repo, sha in self._store.keep_shas() if _is_sha(sha)}
-        for tree in self._bound_trees():
-            key = self._workspace.tree_key(tree)
-            if key is not None:
-                keep.add(key)
-        removed = await self._workspace.prune(keep)
+        removed = await self._workspace.prune(self._keep)
         log.info("review.prune removed %d worktrees", removed)
         return removed
+
+    async def _keep(self, repo: str) -> set[str]:
+        """``repo``'s keep set, read fresh: the workspace asks inside the repo's lock."""
+        keep = {sha for name, sha in self._store.keep_shas() if name == repo and _is_sha(sha)}
+        for tree in self._bound_trees():
+            key = self._workspace.tree_key(tree)
+            if key is not None and key[0] == repo:
+                keep.add(key[1])
+        return keep
 
 
 def _is_sha(sha: str) -> bool:

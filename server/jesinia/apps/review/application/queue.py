@@ -16,11 +16,14 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 
 from jesinia.apps.review.application.ports import PullRequests, QueueStore
+from jesinia.apps.review.domain.gates import GateInputError
 from jesinia.apps.review.domain.queue import (
+    PrHeadMovedError,
     PrNotInQueueError,
     PrNotOpenError,
     PrRef,
     PrSnapshot,
+    QueueDomainError,
     QueueFilter,
     QueueRow,
     QueueView,
@@ -31,6 +34,7 @@ from jesinia.apps.review.domain.queue import (
     queue_row,
     snapshot_of,
 )
+from jesinia.apps.review.domain.workspace import check_sha
 from jesinia.services.github.application.prs import GitHubPayloadError
 from jesinia.services.github.application.service import (
     GitHubError,
@@ -97,6 +101,7 @@ class QueueService:
         self._sync_lock = asyncio.Lock()
         self._syncing = False
         self._backoff_until: datetime | None = None
+        self._fetched_during_sync: set[PrRef] = set()
         self._detail_slots = asyncio.Semaphore(DETAIL_CONCURRENCY)
 
     async def list(self, queue_filter: QueueFilter) -> QueueView:
@@ -120,37 +125,53 @@ class QueueService:
     async def sync(self) -> None:
         """Refresh the queue from GitHub (the ``review.sync`` job, every ``SYNC_INTERVAL``).
 
-        Never raises a GitHub failure: it is recorded as the view's ``sync_error`` and the
-        cache is left as it was. While GitHub's rate limit is in force, nothing is asked.
-        A sync already running makes this one a no-op.
+        First it watches every repo with a PR awaiting the author's review or written by
+        them, unless the user unwatched it. A failure is never raised: it is recorded as the
+        view's ``sync_error`` and the cache is left as it was. After a rate limit nothing is
+        asked until it resets (or for ``SYNC_INTERVAL`` when GitHub gave no reset time). A
+        sync already running makes this one a no-op. The scheduler ticks after every sync,
+        failed or not, so debounces still run out on cached data.
         """
         if self._sync_lock.locked():
             return
         async with self._sync_lock:
-            now = self._clock()
-            if self._backoff_until is not None and now < self._backoff_until:
-                return
-            self._syncing = True
-            try:
-                refresh = await self._fetch()
-            except GitHubRateLimitedError as exc:
-                self._backoff_until = exc.reset_at
-                self._record_failure(exc)
-                return
-            except (GitHubError, InvalidPullRequestReferenceError) as exc:
-                self._record_failure(exc)
-                return
-            finally:
-                self._syncing = False
-            self._backoff_until = None
-            # A PR loaded while GitHub was being read stays: the next sync refreshes it.
-            loaded_since = {
-                pr.pr.ref for pr in self._store.prs(include_dismissed=True) if pr.loaded
-            }
-            removed = [ref for ref in refresh.removed if ref not in loaded_since - refresh.loaded]
-            self._store.apply_sync(refresh.fresh, refresh.failed, removed, now)
-            self._store.record_sync(now, None)
+            await self._sync_once(self._clock())
         await self._changed()
+
+    async def _sync_once(self, now: datetime) -> None:
+        if self._backoff_until is not None and now < self._backoff_until:
+            return
+        self._syncing = True
+        self._fetched_during_sync = set()
+        try:
+            refresh = await self._fetch()
+        except GitHubRateLimitedError as exc:
+            self._backoff_until = exc.reset_at or now + SYNC_INTERVAL
+            self._record_failure(exc)
+            return
+        except (
+            GitHubError,
+            InvalidPullRequestReferenceError,
+            QueueDomainError,
+            GateInputError,
+        ) as exc:
+            self._record_failure(exc)
+            return
+        finally:
+            self._syncing = False
+        self._backoff_until = None
+        # A PR loaded while GitHub was being read was fetched later than this sync's data:
+        # keep the newer row, and keep it even if it left the inbox meanwhile.
+        newer = self._fetched_during_sync
+        loaded_since = {pr.pr.ref for pr in self._store.prs(include_dismissed=True) if pr.loaded}
+        removed = [ref for ref in refresh.removed if ref not in loaded_since - refresh.loaded]
+        self._store.apply_sync(
+            [pr for pr in refresh.fresh if pr.ref not in newer],
+            [(pr, error) for pr, error in refresh.failed if pr.ref not in newer],
+            removed,
+            now,
+        )
+        self._store.record_sync(now, None)
 
     def _record_failure(self, exc: Exception) -> None:
         cause = f"GitHub rate limit: {exc}" if isinstance(exc, GitHubRateLimitedError) else str(exc)
@@ -159,12 +180,14 @@ class QueueService:
 
     async def _fetch(self) -> _Refresh:
         cached = {pr.pr.ref: pr for pr in self._store.prs(include_dismissed=True)}
-        watched = self._store.watched_repos()
         refresh = _Refresh()
-        if not watched and not cached:
-            return refresh  # nothing to ask GitHub about
         viewer = await self._prs.viewer()
         self._store.set_viewer(viewer)
+        if seeded := self._store.seed_repos(await self._prs.inbox_repos()):
+            log.info("review: now watching %s", ", ".join(seeded))
+        watched = self._store.watched_repos()
+        if not watched and not cached:
+            return refresh  # nothing to list
         configs = self._store.repo_configs()
         inbox = await self._prs.list_review_inbox(watched) if watched else []
         listed = {PrRef(pr.repo, pr.number) for pr in inbox}
@@ -256,6 +279,7 @@ class QueueService:
             viewer = await self._prs.viewer()
             snapshot = await self._details(pull, viewer, self._store.repo_configs())
             stored = self._store.add_loaded(snapshot, self._clock())
+            self._fetched_during_sync.add(pr_ref)
         await self._changed()
         latest = self._store.latest_rounds().get(pr_ref)
         return queue_row(stored, latest, self._store.viewer())
@@ -274,15 +298,27 @@ class QueueService:
     async def files(self, repo: str, number: int, head_sha: str) -> builtins.list[PrFile]:
         """The PR's files at ``head_sha``: from the cache, else fetched once and cached.
 
+        GitHub only lists the files of the PR's current head, so the head is read before
+        and after the fetch: the files are cached only under a head both reads agree on,
+        never under a SHA they weren't fetched for.
+
         Raises:
+            InvalidShaError: ``head_sha`` is not a full commit SHA.
+            PrHeadMovedError: the PR's head is no longer ``head_sha`` (or moved mid-fetch).
             GitHubError: not cached and GitHub couldn't be read.
         """
         ref = PrRef(repo, number)
-        cached = self._store.pr_files(ref, head_sha)
+        cached = self._store.pr_files(ref, check_sha(head_sha))
         if cached is not None:
             return cached
+        before = await self._prs.get(ref.repo, ref.number)
         files = await self._prs.files(ref.repo, ref.number)
-        self._store.put_pr_files(ref, head_sha, files)
+        after = await self._prs.get(ref.repo, ref.number)
+        if before.head_sha != after.head_sha:
+            raise PrHeadMovedError(f"{ref} was pushed to while its files were read; retry")
+        self._store.put_pr_files(ref, after.head_sha, files)
+        if after.head_sha != head_sha:
+            raise PrHeadMovedError(f"{ref} is now at {after.head_sha}, not {head_sha}")
         return files
 
     async def _changed(self) -> None:

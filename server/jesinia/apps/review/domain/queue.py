@@ -56,6 +56,10 @@ class PrNotOpenError(QueueDomainError):
     """Only open PRs can be loaded for review."""
 
 
+class PrHeadMovedError(QueueDomainError):
+    """The PR's head is no longer the commit asked for (it was pushed to since)."""
+
+
 def _canonical(repo: str) -> str:
     try:
         return canonical_repo(repo)
@@ -160,10 +164,13 @@ class StoredPr:
 
 @dataclass(frozen=True)
 class RoundStatus:
-    """Whether a pre-review round on one head has finished, and why it failed if it did."""
+    """The latest round on one head: whether it finished, why it failed if it did, whether a
+    stop cut it short, and how many rounds on the head a stop has cut short so far."""
 
     finished: bool
     error: str | None
+    interrupted: bool = False
+    interruptions: int = 0
 
 
 @dataclass(frozen=True)

@@ -12,10 +12,13 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
+from jesinia.apps.review.application.ports import KeepProvider
 from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.scheduler import (
+    MAX_INTERRUPTIONS,
     PreReviewRequest,
     Scheduler,
+    SchedulerConfigError,
     WorkspacePruner,
 )
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
@@ -187,7 +190,7 @@ async def test_the_ci_gate_holds_back_pre_reviews(
     github.ci = {HEAD: "pending", HEAD_B: "failing", HEAD_C: "none"}
     await queue.sync()
     await queue.load("acme/web#1")  # loaded PRs still respect the CI gate
-    clock.advance(11)
+    clock.advance(5)  # within the 10 minutes a head without checks waits for CI
     runner = Runner(block=False)
     scheduler = Scheduler(store, clock, run=runner)
 
@@ -195,6 +198,11 @@ async def test_the_ci_gate_holds_back_pre_reviews(
 
     assert runner.started == []
     assert (await states(queue)) == {1: "waiting_ci", 2: "ci_failing", 3: "waiting_ci"}
+
+    clock.advance(5)  # still no checks on PR 3 ten minutes on: it has no CI (R28)
+    await scheduler.tick()
+    await scheduler.drain()
+    assert runner.numbers == [3]
 
 
 async def test_pre_review_setting_and_per_repo_override(
@@ -301,7 +309,7 @@ async def test_a_head_change_mid_run_leaves_the_new_head_to_its_own_gate(
     assert [request.head_sha for request in runner.started] == [HEAD, HEAD_B]
 
 
-async def test_rounds_left_running_by_a_stop_fail_on_recovery(
+async def test_a_pre_review_cut_short_by_a_stop_runs_again(
     queue: QueueService, github: FakePullRequests, store: SqliteReviewStore, clock: FakeClock
 ) -> None:
     github.inbox = [pull(1)]
@@ -311,32 +319,98 @@ async def test_rounds_left_running_by_a_stop_fail_on_recovery(
     scheduler = Scheduler(store, clock, run=runner)
     await scheduler.tick()
     await until(lambda: len(runner.started) == 1)
-    store.start_round(PrRef("acme/web", 2), HEAD, BASE, "quick", clock.now)  # a crash's leftover
 
     await scheduler.stop()
+    assert (await states(queue)) == {1: "queued"}
     restarted = Scheduler(store, clock, run=runner)
-    assert restarted.recover() == 1
+    assert restarted.recover() == 0  # the stop already recorded the interruption
     await restarted.tick()
+    await until(lambda: len(runner.started) == 2)
+    runner.release(1)
+    await restarted.drain()
 
+    assert (await states(queue)) == {1: "ready"}
+    assert [r.head_sha for r in runner.started] == [HEAD, HEAD]
+
+
+async def test_a_crash_mid_review_is_retried_until_three_interruptions(
+    queue: QueueService, github: FakePullRequests, store: SqliteReviewStore, clock: FakeClock
+) -> None:
+    github.inbox = [pull(1)]
+    await queue.sync()
+    clock.advance(11)
+    runner = Runner(block=False)
+    for attempt in range(1, MAX_INTERRUPTIONS + 1):
+        store.start_round(PrRef("acme/web", 1), HEAD, BASE, "quick", clock.now)  # then a crash
+        scheduler = Scheduler(store, clock)  # no runner: watch the state only
+        assert scheduler.recover() == 1
+        await scheduler.tick()
+        expected = "queued" if attempt < MAX_INTERRUPTIONS else "failed"
+        assert (await states(queue)) == {1: expected}
+
+    scheduler = Scheduler(store, clock, run=runner)
+    await scheduler.tick()
+    await scheduler.drain()
+
+    assert runner.started == []
     (row,) = (await queue.list(QueueFilter())).rows
-    assert row.prereview_state == "failed" and "stopped" in row.prereview_reason
-    assert len(runner.started) == 1
-    statuses = store.rounds_for_heads()
-    assert statuses[(PrRef("acme/web", 2), HEAD)].error is not None
+    assert "interrupted 3 times" in row.prereview_reason
+    assert "Jesinia stopped" in row.prereview_reason  # the original cause is kept
+
+
+async def test_a_round_opened_after_the_tick_is_not_duplicated(
+    queue: QueueService, github: FakePullRequests, store: SqliteReviewStore, clock: FakeClock
+) -> None:
+    github.inbox = [pull(1, requested=True), pull(2)]
+    await queue.sync()
+    clock.advance(11)
+    runner = Runner()
+    scheduler = Scheduler(store, clock, run=runner, concurrency=1)
+    await scheduler.tick()
+    await until(lambda: len(runner.started) == 1)
+
+    store.start_round(PrRef("acme/web", 2), HEAD, BASE, "deep", clock.now)  # the user opened it
+    runner.release(1)
+    await scheduler.drain()
+
+    assert runner.numbers == [1]
+
+
+async def test_a_tick_that_changes_nothing_writes_nothing(
+    queue: QueueService,
+    github: FakePullRequests,
+    store: SqliteReviewStore,
+    clock: FakeClock,
+    conn: sqlite3.Connection,
+) -> None:
+    github.inbox = [pull(1), pull(2, head=HEAD_B)]
+    github.ci = {HEAD_B: "pending"}
+    await queue.sync()
+    scheduler = Scheduler(store, clock)
+    await scheduler.tick()
+    before = conn.total_changes
+
+    await scheduler.tick()
+
+    assert conn.total_changes == before
 
 
 def test_concurrency_must_be_positive(store: SqliteReviewStore, clock: FakeClock) -> None:
-    with pytest.raises(ValueError, match="concurrency"):
+    with pytest.raises(SchedulerConfigError, match="concurrency"):
         Scheduler(store, clock, concurrency=0)
 
 
 class FakeWorkspace:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.kept: set[tuple[str, str]] | None = None
+    """Prunes the given repos in order, asking for each one's keep set as it goes."""
 
-    async def prune(self, keep: set[tuple[str, str]]) -> int:
-        self.kept = keep
+    def __init__(self, root: Path, repos: tuple[str, ...] = ("acme/web",)) -> None:
+        self.root = root
+        self.repos = repos
+        self.kept: dict[str, set[str]] = {}
+
+    async def prune(self, keep: KeepProvider) -> int:
+        for repo in self.repos:
+            self.kept[repo] = set(await keep(repo))
         return 3
 
     def tree_key(self, path: Path) -> tuple[str, str] | None:
@@ -351,18 +425,22 @@ async def test_prune_keeps_queued_and_in_review_heads_and_bound_trees(
     clock: FakeClock,
     tmp_path: Path,
 ) -> None:
-    old_head, old_base, done_head = "1" * 40, "2" * 40, "3" * 40
-    bound_sha = "4" * 40
+    older, latest, running, done = ("1" * 40, "2" * 40), "3" * 40, "4" * 40, "6" * 40
+    bound_sha = "5" * 40
     github.inbox = [pull(1), pull(2, head=HEAD_B), pull(3, "Acme/Web", head=HEAD_C)]
     await queue.sync()
     await queue.dismiss("acme/web", 2)
-    in_review = store.start_round(PrRef("acme/web", 1), old_head, old_base, "deep", clock.now)
-    store.finish_round(in_review, clock.now, None, verdict="approve")
-    finished = store.start_round(PrRef("acme/web", 1), done_head, BASE, "deep", clock.now)
-    store.mark_round_done(finished)
-    gone = store.start_round(PrRef("acme/gone", 9), "5" * 40, BASE, "deep", clock.now)
-    assert gone
-    workspace = FakeWorkspace(tmp_path)
+    one = PrRef("acme/web", 1)
+    superseded = store.start_round(one, *older, "deep", clock.now)
+    store.finish_round(superseded, clock.now, None, verdict="request_changes")
+    reviewed = store.start_round(one, latest, BASE, "deep", clock.now)
+    store.finish_round(reviewed, clock.now, None, verdict="approve")
+    store.start_round(one, running, BASE, "deep", clock.now)  # still running
+    posted = store.start_round(PrRef("acme/web", 3), done, BASE, "deep", clock.now)
+    store.finish_round(posted, clock.now, None, verdict="approve")
+    store.mark_round_done(posted)
+    store.start_round(PrRef("acme/gone", 9), "7" * 40, BASE, "deep", clock.now)
+    workspace = FakeWorkspace(tmp_path, ("acme/web", "acme/gone"))
     sessions = ReviewSessionRegistry()
     sessions.bind("job-1", tmp_path / "acme" / "web" / "trees" / bound_sha)
     sessions.bind("job-2", tmp_path / "stray")
@@ -371,13 +449,21 @@ async def test_prune_keeps_queued_and_in_review_heads_and_bound_trees(
 
     assert removed == 3
     assert workspace.kept == {
-        ("acme/web", HEAD),
-        ("acme/web", BASE),
-        ("acme/web", HEAD_C),
-        ("acme/web", old_head),
-        ("acme/web", old_base),
-        ("acme/web", bound_sha),
+        "acme/web": {HEAD, BASE, HEAD_C, latest, running, bound_sha},
+        "acme/gone": set(),
     }
+
+
+async def test_prune_skips_shas_that_are_not_full_commit_ids(
+    queue: QueueService, github: FakePullRequests, store: SqliteReviewStore, tmp_path: Path
+) -> None:
+    github.inbox = [pull(1, head="abc1234")]
+    await queue.sync()
+    workspace = FakeWorkspace(tmp_path)
+
+    await WorkspacePruner(store, workspace, list).run()
+
+    assert workspace.kept == {"acme/web": {BASE}}
 
 
 async def test_module_schedules_sync_and_prune(cfg: Config) -> None:
@@ -399,9 +485,10 @@ async def test_module_schedules_sync_and_prune(cfg: Config) -> None:
     module = ReviewModule()
     await module.start(ctx)
     try:
-        await jobs.run_now(SYNC_JOB)
+        await jobs.run_now(SYNC_JOB)  # no token: the failure is reported, nothing raised
         view = await module.queue.list(QueueFilter())
-        assert view.rows == [] and view.sync_error is None  # nothing watched: GitHub not asked
+        assert view.rows == [] and view.sync_error is not None
+        assert "gh auth login" in view.sync_error
         await jobs.run_now(PRUNE_JOB)
         assert isinstance(module.scheduler, Scheduler)
     finally:
@@ -456,18 +543,6 @@ async def test_a_pr_dismissed_while_waiting_for_a_slot_is_not_started(
     await scheduler.drain()
 
     assert runner.numbers == [1]
-
-
-async def test_prune_skips_shas_that_are_not_full_commit_ids(
-    queue: QueueService, github: FakePullRequests, store: SqliteReviewStore, tmp_path: Path
-) -> None:
-    github.inbox = [pull(1, head="abc1234")]
-    await queue.sync()
-    workspace = FakeWorkspace(tmp_path)
-
-    await WorkspacePruner(store, workspace, list).run()
-
-    assert workspace.kept == {("acme/web", BASE)}
 
 
 async def test_module_jobs_are_no_ops_once_stopped(
