@@ -28,6 +28,7 @@ const APPS = new Map([
 const SHIPPED = {
   "web/apps/launcher/public/icons": { app: "launcher", glyphs: ["settings"] },
   "web/apps/notes/public/icons": { app: "notes", glyphs: [] },
+  "web/apps/rss/public/icons": { app: "rss", glyphs: [] },
 };
 
 /** The photo exports; `inset` is the symbol's margin (17% ≈ 66% of the tile, 26% keeps it in the maskable zone). */

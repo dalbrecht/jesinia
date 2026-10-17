@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Shapes and calls the RSS PWA uses (`/api/rss`, spec §2).
+import { errorText, withIdempotency, type components, type JesiniaClient } from "@jesinia/client";
+
+export type Post = components["schemas"]["PostOut"];
+export type Feed = components["schemas"]["FeedOut"];
+export type Counts = components["schemas"]["CountsOut"];
+export type PostPage = components["schemas"]["PostPageOut"];
+export type View = "unread" | "kept" | "all";
+
+/** Which posts the list shows: a view, optionally narrowed to one feed or one folder. */
+export type Scope = { view: View; feed: number | null; folder: number | null };
+
+export const PAGE_SIZE = 100;
+/** Feed content shorter than this is probably a teaser: offer the full article. */
+export const SHORT_CONTENT_CHARS = 1500;
+const WORDS_PER_MINUTE = 230;
+const COUNT_CAP = 999;
+
+/** A failed RSS request, carrying the server's cause (`detail`) as its message. */
+export class RssRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "RssRequestError";
+  }
+}
+
+type Result<T> = { data?: T; error?: unknown; response: Response };
+
+function unwrap<T>(r: Result<T>): T {
+  if (!r.response.ok) {
+    throw new RssRequestError(errorText(r.error, `HTTP ${r.response.status}`), r.response.status);
+  }
+  return r.data as T;
+}
+
+export async function listFeeds(client: JesiniaClient): Promise<Feed[]> {
+  return unwrap(await client.GET("/api/rss/feeds"));
+}
+
+export async function getCounts(client: JesiniaClient): Promise<Counts> {
+  return unwrap(await client.GET("/api/rss/counts"));
+}
+
+export async function listPosts(client: JesiniaClient, scope: Scope, before?: string): Promise<PostPage> {
+  const query = {
+    view: scope.view,
+    limit: PAGE_SIZE,
+    ...(scope.feed !== null ? { feed: scope.feed } : {}),
+    ...(scope.folder !== null ? { folder: scope.folder } : {}),
+    ...(before !== undefined ? { before } : {}),
+  };
+  return unwrap(await client.GET("/api/rss/posts", { params: { query } }));
+}
+
+export async function searchPosts(client: JesiniaClient, q: string, signal?: AbortSignal): Promise<Post[]> {
+  return unwrap(await client.GET("/api/rss/posts/search", { params: { query: { q } }, ...(signal ? { signal } : {}) }));
+}
+
+export async function setRead(client: JesiniaClient, id: number, read: boolean): Promise<Post> {
+  const r = await client.PATCH("/api/rss/posts/{post_id}", {
+    params: { path: { post_id: id }, header: withIdempotency() },
+    body: { read },
+  });
+  return unwrap(r);
+}
+
+/**
+ * Mark the post and everything above it in `scope` read. `asOf` is when the list was loaded:
+ * posts that arrived later were never on screen and stay unread.
+ */
+export async function markReadAbove(
+  client: JesiniaClient,
+  postId: number,
+  scope: Scope,
+  asOf: string,
+): Promise<number> {
+  const r = await client.POST("/api/rss/posts/read-above", {
+    params: { header: withIdempotency() },
+    body: { post_id: postId, view: scope.view, feed: scope.feed, folder: scope.folder, as_of: asOf },
+  });
+  return unwrap(r).marked;
+}
+
+/** The original article as Markdown; an `RssRequestError` with the cause when it can't be had. */
+export async function fullArticle(client: JesiniaClient, id: number): Promise<string> {
+  return unwrap(await client.GET("/api/rss/posts/{post_id}/article", { params: { path: { post_id: id } } })).markdown;
+}
+
+export async function retryArchive(client: JesiniaClient, id: number): Promise<Post> {
+  const r = await client.POST("/api/rss/posts/{post_id}/archive", {
+    params: { path: { post_id: id }, header: withIdempotency() },
+  });
+  return unwrap(r);
+}
+
+export async function refreshFeeds(client: JesiniaClient): Promise<void> {
+  unwrap(await client.POST("/api/rss/refresh", { params: { header: withIdempotency() } }));
+}
+
+/** Unread counts are capped in the UI (spec §2.3). */
+export function capCount(n: number): string {
+  return n > COUNT_CAP ? `${COUNT_CAP}+` : String(n);
+}
+
+/** `raw` resolved against `base` when it is an http(s) URL, else null (feed URLs are untrusted). */
+export function safeHttpUrl(raw: string, base?: string): string | null {
+  let url: URL;
+  try {
+    url = base === undefined ? new URL(raw) : new URL(raw, base);
+  } catch {
+    return null;
+  }
+  return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+}
+
+export function needsFullArticle(post: Post): boolean {
+  return post.is_summary || (post.content_html ?? "").length < SHORT_CONTENT_CHARS;
+}
+
+export function readingMinutes(text: string): number {
+  const words = text.split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.round(words / WORDS_PER_MINUTE));
+}
