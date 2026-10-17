@@ -8,7 +8,9 @@ from datetime import UTC, datetime
 import pytest
 from fastapi import HTTPException
 
-from jesinia.apps.issues.module import IDEMPOTENCY_PRUNE_JOB, ISSUES_DB, IssuesModule
+from jesinia.apps.issues.application.sync import SyncService
+from jesinia.apps.issues.domain.triage import IssueFilters
+from jesinia.apps.issues.module import IDEMPOTENCY_PRUNE_JOB, ISSUES_DB, SYNC_JOB, IssuesModule
 from jesinia.core.config import Config
 from jesinia.core.db import DbClass, open_db
 from jesinia.core.events import EventBus
@@ -16,6 +18,7 @@ from jesinia.core.idempotency import SqliteIdempotencyStore
 from jesinia.core.module import AppContext
 from jesinia.core.scheduler import Scheduler
 from jesinia.registry import DATABASES, modules
+from jesinia.services.github.application.service import GitHubService
 
 
 def test_issues_db_is_history_and_registered_after_its_services() -> None:
@@ -55,3 +58,44 @@ async def test_start_opens_the_db_and_wires_idempotency(cfg: Config) -> None:
     await module.start(AppContext(cfg, EventBus(), Scheduler()))
     assert module.idempotency.reserve("k", "POST /x", datetime.now(UTC)) is None
     await module.stop()
+
+
+class _NoCache:
+    def get(self, key: str) -> None:
+        return None
+
+    def put(self, key: str, etag: str, status: int, data: object) -> None:
+        return None
+
+    def prune(self, older_than: object) -> int:
+        return 0
+
+
+async def _no_token() -> str | None:
+    return None
+
+
+async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> None:
+    module = IssuesModule()
+    with pytest.raises(HTTPException, match="not started"):
+        _ = module.sync
+    await module.sync_repos()  # nothing to sync before start
+
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    with pytest.raises(HTTPException, match="require the github service") as caught:
+        _ = module.sync
+    assert caught.value.status_code == 503
+    await module.stop()
+
+    ctx = AppContext(cfg, EventBus(), Scheduler())
+    github = GitHubService(_no_token, _NoCache())
+    ctx.services["github"] = github
+    await module.start(ctx)
+    assert isinstance(module.sync, SyncService)
+    await module.sync.watch("acme/web")
+    # Without a token the sync fails, is recorded and the cache keeps serving.
+    await ctx.scheduler.run_now(SYNC_JOB)
+    state = await module.sync.list("inbox", IssueFilters())
+    assert state.rows == [] and state.sync_error is not None
+    await module.stop()
+    await github.aclose()
