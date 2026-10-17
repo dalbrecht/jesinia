@@ -6,6 +6,7 @@ class FakeSource {
   static all: FakeSource[] = [];
   listeners = new Map<string, (e: MessageEvent<string>) => void>();
   onerror: (() => void) | null = null;
+  onopen: (() => void) | null = null;
   closed = false;
   constructor(
     public url: string,
@@ -70,6 +71,30 @@ describe("subscribe", () => {
     src.onerror?.();
     vi.advanceTimersByTime(5000);
     expect(FakeSource.all).toHaveLength(1);
+  });
+
+  it("calls onOpen on every connect, and applies a restarted server's (higher) ids", () => {
+    vi.useFakeTimers();
+    const seen: number[] = [];
+    const opened: boolean[] = [];
+    subscribe<{ n: number }>("/api/events?topics=rss.post_changed", (e) => seen.push(e.data.n), {
+      EventSource: Impl,
+      events: ["rss.post_changed"],
+      retryMs: 100,
+      onOpen: (reconnected) => opened.push(reconnected),
+    });
+    const first = FakeSource.all[0] as FakeSource;
+    first.onopen?.();
+    first.emit("rss.post_changed", "1790000000000001", '{"n":1}');
+    first.onerror?.(); // the server restarts
+    vi.advanceTimersByTime(100);
+    const second = FakeSource.all[1] as FakeSource;
+    expect(new URL(second.url).searchParams.get("after")).toBe("1790000000000001");
+    second.onopen?.();
+    // The new boot's ids start at its own boot time, above the old ones.
+    second.emit("rss.post_changed", "1790000000500001", '{"n":2}');
+    expect(seen).toEqual([1, 2]);
+    expect(opened).toEqual([false, true]);
   });
 
   it("uses the global EventSource by default", () => {

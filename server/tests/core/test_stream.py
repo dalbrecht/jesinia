@@ -8,7 +8,10 @@ from jesinia.core.stream import EventLog
 from tests.conftest import bearer, lifespan_client
 
 
-async def test_event_log_buffers_and_fans_out() -> None:
+async def test_event_log_buffers_and_fans_out(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from jesinia.core import stream
+
+    monkeypatch.setattr(stream, "boot_id", lambda: 0)  # ids from 1, to read them plainly
     bus = EventBus()
     log = EventLog(bus)
     q = log.listen()
@@ -26,7 +29,10 @@ async def test_event_log_buffers_and_fans_out() -> None:
     )
 
 
-async def test_events_route_replays_after_id(cfg: Config) -> None:
+async def test_events_route_replays_after_id(cfg: Config, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from jesinia.core import stream
+
+    monkeypatch.setattr(stream, "boot_id", lambda: 0)
     app = create_app(cfg, [], static_root=None)
     async with lifespan_client(app) as c:
         bus = app.state.ctx.bus
@@ -69,6 +75,7 @@ async def test_events_follow_delivers_live_and_keeps_alive(cfg: Config, monkeypa
     from jesinia.core import stream
 
     monkeypatch.setattr(stream, "KEEPALIVE_SECONDS", 0.01)
+    monkeypatch.setattr(stream, "boot_id", lambda: 0)
     bus = EventBus()
     log = EventLog(bus)
     router = stream.events_router(log, still_authorized=lambda r: True)
@@ -109,6 +116,7 @@ async def test_a_stalled_listener_is_cut_off_instead_of_queueing_forever(monkeyp
     from jesinia.core import stream
 
     monkeypatch.setattr(stream, "BUFFER", 2)
+    monkeypatch.setattr(stream, "boot_id", lambda: 0)
     bus = EventBus()
     log = EventLog(bus)
     resp = await _endpoint(log, lambda r: True)(
@@ -130,6 +138,7 @@ async def test_a_stream_ends_when_its_credentials_are_revoked(monkeypatch) -> No
     from jesinia.core import stream
 
     monkeypatch.setattr(stream, "KEEPALIVE_SECONDS", 0.01)
+    monkeypatch.setattr(stream, "boot_id", lambda: 0)
     bus = EventBus()
     log = EventLog(bus)
     valid = {"yes": True}
@@ -161,3 +170,24 @@ def test_is_authorized_follows_session_invalidation(cfg: Config) -> None:
     assert auth.is_authorized(req)  # type: ignore[arg-type]
     auth.invalidate_sessions()
     assert not auth.is_authorized(req)  # type: ignore[arg-type]
+
+
+async def test_event_ids_keep_rising_across_restarts() -> None:
+    """A restarted server's ids start above the last one a browser saw (R29): they begin at
+    the boot time in microseconds, so a reconnect's ``after`` never hides new events."""
+    first = EventLog(EventBus())
+    for i in range(3):
+        await first._record(Event("kb.page_changed", {"n": i}))
+    last = first.since(0, {"kb.page_changed"})[-1].id
+    await asyncio.sleep(0.001)
+    again = EventLog(EventBus())
+    await again._record(Event("kb.page_changed", {"n": 0}))
+    assert again.since(0, {"kb.page_changed"})[0].id > last
+    assert last < 2**53  # still an exact JavaScript number
+
+
+def test_boot_id_is_the_time_in_microseconds(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from jesinia.core import stream
+
+    monkeypatch.setattr(stream.time, "time_ns", lambda: 1_790_000_000_123_456_789)
+    assert stream.boot_id() == 1_790_000_000_123_456

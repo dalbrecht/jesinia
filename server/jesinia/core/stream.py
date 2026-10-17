@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``GET /api/events``: selected bus topics as server-sent events, for the PWAs.
 
-Only allowlisted topics are streamed. Each event gets a sequence id; a reconnecting
+Only allowlisted topics are streamed. Each event gets a sequence id that keeps rising across
+restarts (it starts at the boot time in microseconds); a reconnecting
 client passes ``after`` (or ``Last-Event-ID``) and receives what it missed from a
 bounded in-memory buffer, then live events. A listener that falls a full buffer behind
 is cut off rather than queued without limit; its client reconnects with
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -27,6 +29,13 @@ from jesinia.core.events import Event, EventBus
 STREAMED_TOPICS = frozenset({"kbsync.status", "kb.page_changed", "rss.post_changed"})
 BUFFER = 500
 KEEPALIVE_SECONDS = 15.0
+
+
+def boot_id() -> int:
+    """Where this boot's event ids start: the time in microseconds. A browser reconnecting
+    after a restart passes ``after=<its last id>``; ids that began at 0 again would sit below
+    it and never be sent. Microseconds stay below 2**53, so JavaScript reads them exactly."""
+    return time.time_ns() // 1000
 
 
 @dataclass(frozen=True)
@@ -45,7 +54,7 @@ class EventLog:
 
     def __init__(self, bus: EventBus, topics: frozenset[str] = STREAMED_TOPICS) -> None:
         self.topics = topics
-        self._seq = 0
+        self._seq = boot_id()
         self._buffer: deque[Logged] = deque(maxlen=BUFFER)
         self._listeners: set[asyncio.Queue[Logged]] = set()
         self._overflowed: set[asyncio.Queue[Logged]] = set()
