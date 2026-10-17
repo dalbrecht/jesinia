@@ -56,6 +56,7 @@ from jesinia.apps.review.domain.posting import (
     PreviewOutdated,
     ReviewBodyTooLong,
     ReviewedHeadGone,
+    RoundChanged,
 )
 from jesinia.apps.review.domain.queue import (
     InvalidPrRefError,
@@ -110,6 +111,7 @@ _STATUS: dict[type[Exception], int] = {
     NeedsConfirmation: status.HTTP_409_CONFLICT,
     ReviewedHeadGone: status.HTTP_409_CONFLICT,
     PreviewOutdated: status.HTTP_409_CONFLICT,
+    RoundChanged: status.HTTP_409_CONFLICT,
     CommentOnlyOnOwnPr: status.HTTP_409_CONFLICT,
     EarlierReviewPosted: status.HTTP_409_CONFLICT,
     PostingInProgress: status.HTTP_409_CONFLICT,
@@ -184,6 +186,21 @@ async def _respond(
     if result is None:
         return Response(status_code=ok)
     return JSONResponse(jsonable_encoder(result), status_code=ok)
+
+
+def _shown(current: int, shown: int | None) -> int:
+    """The round a save, preview or post acts on: the one the author was shown, which must
+    still be the PR's current round (Codex P1 on PR #58). Never retargeted onto a newer one.
+
+    Raises:
+        RoundChanged: a newer round started since.
+    """
+    if shown is not None and shown != current:
+        raise RoundChanged(
+            f"a new review round ({current}) started since round {shown} was shown; nothing "
+            "was saved or posted"
+        )
+    return current
 
 
 def _ref(owner: str, repo: str, number: int) -> PrRef:
@@ -326,7 +343,9 @@ def build_router(host: ReviewHost) -> APIRouter:
         """Replace the latest round's summary and drafts (deleted ones stay deleted)."""
 
         async def run() -> DraftsOut:
-            round_id = await host.posting.round_for(_ref(owner, repo, number))
+            round_id = _shown(
+                await host.posting.round_for(_ref(owner, repo, number)), body.round_id
+            )
             drafts = [draft.draft() for draft in body.drafts]
             return DraftsOut.of(await host.posting.save_drafts(round_id, body.summary, drafts))
 
@@ -339,7 +358,9 @@ def build_router(host: ReviewHost) -> APIRouter:
         # seeding the drafts, happens once whatever the number of calls).
 
         async def run() -> PreviewOut:
-            round_id = await host.posting.round_for(_ref(owner, repo, number))
+            round_id = _shown(
+                await host.posting.round_for(_ref(owner, repo, number)), body.round_id
+            )
             return PreviewOut.of(await host.posting.preview(round_id, body.event))
 
         return await _respond(run)
@@ -357,7 +378,9 @@ def build_router(host: ReviewHost) -> APIRouter:
         Owner only (never an agent session); every preview warning must be confirmed."""
 
         async def run() -> PostedOut:
-            round_id = await host.posting.round_for(_ref(owner, repo, number))
+            round_id = _shown(
+                await host.posting.round_for(_ref(owner, repo, number)), body.round_id
+            )
             url = await host.posting.post(
                 round_id, body.event, body.confirm, key=idem.key or "", digest=body.digest
             )

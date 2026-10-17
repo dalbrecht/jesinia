@@ -359,11 +359,12 @@ export async function previewPost(
   repo: string,
   number: number,
   event: ReviewEvent,
+  roundId: number | null = null,
 ): Promise<PostPreview> {
   return unwrap(
     await client.POST("/api/review/prs/{owner}/{repo}/{number}/post/preview", {
       params: prParams(repo, number),
-      body: { event },
+      body: { event, round_id: roundId },
     }),
   );
 }
@@ -374,7 +375,7 @@ export async function postReview(
   repo: string,
   number: number,
   key: string,
-  post: { event: ReviewEvent; confirm: PostWarning[]; digest: string },
+  post: { event: ReviewEvent; confirm: PostWarning[]; digest: string; round_id: number | null },
 ): Promise<string> {
   const posted = unwrap(
     await client.POST("/api/review/prs/{owner}/{repo}/{number}/post", {

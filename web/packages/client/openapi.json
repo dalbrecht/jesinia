@@ -6823,6 +6823,18 @@
             "type": "array",
             "maxItems": 500,
             "title": "Drafts"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id",
+            "description": "The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)"
           }
         },
         "type": "object",
@@ -7642,6 +7654,18 @@
             "minLength": 1,
             "title": "Digest",
             "description": "The digest of the preview being confirmed"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id",
+            "description": "The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)"
           }
         },
         "type": "object",
@@ -7977,6 +8001,18 @@
               "COMMENT"
             ],
             "title": "Event"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id",
+            "description": "The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)"
           }
         },
         "type": "object",

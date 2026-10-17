@@ -52,6 +52,8 @@ export type PostDialogProps = {
   reasons: string[];
   /** The PR's head now (the round's head is the preview's). */
   prHead: string;
+  /** The round the author was shown: previews and posts name it (Codex P1). */
+  roundId: number | null;
   keys: ActionKeys;
   onClose: () => void;
   onPosted: (url: string) => void;
@@ -80,7 +82,7 @@ export function PostDialog(props: PostDialogProps) {
     setPreview(null);
     setPreviewError(null);
     setConfirmed(new Set());
-    previewPost(client, repo, number, event).then(
+    previewPost(client, repo, number, event, props.roundId).then(
       (p) => {
         if (current) setPreview(p);
       },
@@ -93,7 +95,7 @@ export function PostDialog(props: PostDialogProps) {
     return () => {
       current = false;
     };
-  }, [client, repo, number, event, reads]);
+  }, [client, repo, number, event, reads, props.roundId]);
 
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
   useEffect(() => dialog.current?.focus(), []);
@@ -144,6 +146,7 @@ export function PostDialog(props: PostDialogProps) {
           event: p.event,
           confirm: [...p.warnings],
           digest: p.digest,
+          round_id: props.roundId,
         });
         keys.settle(action);
         props.onPosted(url);
@@ -160,7 +163,12 @@ export function PostDialog(props: PostDialogProps) {
           timer.current = setTimeout(() => void post(p), secs * 1000);
           return;
         }
-        if (code === "EarlierReviewPosted") {
+        if (code === "RoundChanged") {
+          setFailure({
+            final: true,
+            message: "A new review round started: nothing was posted. Close this and review the new round.",
+          });
+        } else if (code === "EarlierReviewPosted") {
           const href = safeHttpUrl(facts?.reviewUrl ?? "");
           setFailure({
             final: true,

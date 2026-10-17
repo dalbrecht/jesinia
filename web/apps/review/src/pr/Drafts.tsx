@@ -24,7 +24,8 @@ type Status =
   | { kind: "idle" }
   | { kind: "saving" }
   | { kind: "saved" }
-  | { kind: "error"; message: string; invalid: string | null };
+  | { kind: "error"; message: string; invalid: string | null }
+  | { kind: "stale" };
 
 /** Where a draft is anchored, in words: "path:14–15", or the path for a note on the file. */
 export function draftLocation(d: Draft): string {
@@ -91,6 +92,9 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
   const savedRevision = useRef(0);
   const inflight = useRef<Promise<boolean> | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The round the editor shows, and whether a save found a newer one (Codex P1).
+  const roundId = useRef<number | null>(null);
+  const stale = useRef(false);
 
   const nextKey = () => `d${(counter.current += 1)}`;
   const isDirty = () => revision.current !== savedRevision.current;
@@ -115,15 +119,26 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
     return key;
   };
   const adopt = useCallback((d: DraftSet) => {
+    const sameRound = roundId.current === null || roundId.current === d.round_id;
+    if (!sameRound) keyById.current = new Map(); // a new round: nothing of the old one carries
+    roundId.current = d.round_id;
     setSet(d);
     setSummary(d.summary);
     // A draft the author just added (not saved yet: no id) stays, after the server's list.
-    const local = itemsRef.current.filter((i) => i.isNew && (i.draft.id === null || i.draft.id === undefined));
+    const local = sameRound
+      ? itemsRef.current.filter((i) => i.isNew && (i.draft.id === null || i.draft.id === undefined))
+      : [];
     setItems([...d.drafts.map((draft) => ({ key: keyFor(draft), draft, isNew: false })), ...local]);
   }, []);
 
   useEffect(() => {
-    if (!enabled || !active || isDirty() || inflight.current) return;
+    if (!enabled || !active || isDirty()) return;
+    const busy = inflight.current;
+    if (busy) {
+      // A save (or a blur's flush) is settling: read once it has.
+      void busy.then(() => setAgain((n) => n + 1));
+      return;
+    }
     let current = true;
     const startedAt = revision.current;
     getDrafts(client, repo, number).then(
@@ -132,7 +147,9 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
         if (!current || revision.current !== startedAt || isDirty() || inflight.current) {
           // Dropped, but the read may have seeded drafts (N2): any id never seen is the
           // server's addition, kept as a clean item so the next save keeps it.
-          const unseen = d.drafts.filter((x) => x.id !== null && x.id !== undefined && !keyById.current.has(x.id));
+          const unseen = (d.round_id === roundId.current ? d.drafts : []).filter(
+            (x) => x.id !== null && x.id !== undefined && !keyById.current.has(x.id),
+          );
           if (unseen.length) {
             setItems([...itemsRef.current, ...unseen.map((draft) => ({ key: keyFor(draft), draft, isNew: false }))]);
           }
@@ -154,7 +171,12 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
   const saveOnce = useCallback(async (): Promise<boolean> => {
     const rev = revision.current;
     const kept = itemsRef.current.filter((i) => i.draft.body.trim() !== "");
-    const update: DraftsUpdate = { summary: summaryRef.current, drafts: kept.map((i) => toBody(i.draft)) };
+    // Bound to the round shown (Codex P1): a newer round refuses it rather than taking it.
+    const update: DraftsUpdate = {
+      summary: summaryRef.current,
+      drafts: kept.map((i) => toBody(i.draft)),
+      round_id: roundId.current,
+    };
     const action = `drafts:${JSON.stringify(update)}`;
     setStatus({ kind: "saving" });
     try {
@@ -183,6 +205,12 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
       return true;
     } catch (e) {
       keys.current.settle(action, e);
+      if (e instanceof ReviewRequestError && e.code === "RoundChanged") {
+        // The author's text stays here, unsaved, until they copy it or discard it.
+        stale.current = true;
+        setStatus({ kind: "stale" });
+        return false;
+      }
       let message = `Couldn't save the drafts: ${errorCause(e)}`;
       let invalid: string | null = null;
       if (e instanceof ReviewRequestError && e.code === "InvalidDraftContent") {
@@ -206,6 +234,7 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     const run = async (): Promise<boolean> => {
+      if (stale.current) return false; // never save an old round's text into a new one
       while (isDirty()) {
         if (!(await saveOnce())) return false;
       }
@@ -225,6 +254,7 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
     revision.current += 1;
     setUnsaved(true);
     if (timer.current) clearTimeout(timer.current);
+    if (stale.current) return;
     timer.current = setTimeout(() => void flush(), AUTOSAVE_MS);
   };
 
@@ -261,6 +291,17 @@ export function useDrafts({ client, repo, number, enabled, refresh, active = tru
     unsaved,
     clearFocus: () => setFocusKey(null),
     reload: () => setAgain((n) => n + 1),
+    /** Drops the old round's unsaved edits and reads the current round's drafts. */
+    discard: () => {
+      stale.current = false;
+      savedRevision.current = revision.current;
+      roundId.current = null;
+      keyById.current = new Map();
+      setItems([]);
+      setUnsaved(false);
+      setStatus({ kind: "idle" });
+      setAgain((n) => n + 1);
+    },
     editSummary: (text: string) => {
       setSummary(text);
       edited();
@@ -394,6 +435,14 @@ export function DraftsEditor({ drafts }: { drafts: DraftsState }) {
       <div className={s.row} aria-live="polite">
         {status.kind === "saving" ? <span className={s.muted}>Saving…</span> : null}
         {status.kind === "saved" ? <span className={s.muted}>Drafts saved.</span> : null}
+        {status.kind === "stale" ? (
+          <>
+            <span role="alert">A new review round started; your edits are kept here — copy them or discard.</span>
+            <Button size="sm" variant="secondary" onClick={drafts.discard}>
+              Discard my edits
+            </Button>
+          </>
+        ) : null}
         {status.kind === "error" ? (
           <>
             <span role="alert">{status.message}</span>

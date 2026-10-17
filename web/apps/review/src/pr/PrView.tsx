@@ -197,12 +197,14 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   );
 
   // Opening the tab starts what the round lacks (spec §2); it never loads the PR again (M4).
+  // It waits for the PR's first cached view (Codex P2): a deep link to a PR that isn't cached
+  // is loaded by the workspace first, and opening it before that would only fail. Once per
+  // tab lifetime (R60).
+  const isCached = view !== null;
+  const opened = useRef(false);
   useEffect(() => {
-    setNotice(null);
-    setDepth(null);
-    setEntryId(null);
-    setWalkNote(null);
-    setSession(null);
+    if (!isCached || opened.current) return;
+    opened.current = true;
     open("open").then(
       (r) => {
         setNotice(noticeOf(r));
@@ -216,7 +218,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
           retryOpen: true,
         }),
     );
-  }, [open]);
+  }, [open, isCached]);
 
   const shown = view && view.pr.repo === repo && view.pr.number === number ? view : null;
   const artifacts = useMemo(() => (shown ? readArtifacts(shown) : null), [shown]);
@@ -700,6 +702,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
           verdict={words?.text ?? null}
           reasons={artifacts.verdict?.reasons ?? []}
           prHead={pr.head_sha}
+          roundId={drafts.set?.round_id ?? round?.id ?? null}
           keys={keys.current}
           onClose={closePosting}
           onPosted={(url) => {

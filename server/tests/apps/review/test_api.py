@@ -810,3 +810,24 @@ async def test_preview_names_the_live_head_and_refusals_name_the_draft(env: Env)
         headers=keyed(),
     )
     assert summary.status_code == 422 and summary.json()["field"] == "summary"
+
+
+async def test_saves_previews_and_posts_are_bound_to_the_round_shown(env: Env) -> None:
+    """Codex P1 on PR #58: a save, preview or post names the round the author was looking at;
+    once a newer round is current it is refused with a typed 409, never retargeted."""
+    old = env.round()
+    await env.client.get(f"{PR}/drafts")
+    current = {"summary": "Mine.", "drafts": [], "round_id": old}
+    assert (await env.client.put(f"{PR}/drafts", json=current, headers=keyed())).status_code == 200
+    new = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
+    assert new != old
+    stale = await env.client.put(f"{PR}/drafts", json=current, headers=keyed())
+    assert stale.status_code == 409 and stale.json()["error"] == "RoundChanged"
+    assert env.store.review_summary(new) != "Mine."  # never retargeted onto the new round
+    preview = await env.client.post(
+        f"{PR}/post/preview", json={"event": "COMMENT", "round_id": old}
+    )
+    assert preview.status_code == 409 and preview.json()["error"] == "RoundChanged"
+    post = {"event": "COMMENT", "confirm": [], "digest": "d", "round_id": old}
+    refused = await env.client.post(f"{PR}/post", json=post, headers=keyed())
+    assert refused.status_code == 409 and refused.json()["error"] == "RoundChanged"

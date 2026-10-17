@@ -331,6 +331,11 @@ class DraftBody(BaseModel):
 class DraftsIn(BaseModel):
     summary: str = Field(default="", max_length=BODY_MAX, description="The review body")
     drafts: list[DraftBody] = Field(default_factory=list, max_length=DRAFTS_MAX)
+    round_id: int | None = Field(
+        default=None,
+        description="The round the author was shown; refused with 409 RoundChanged once a "
+        "newer round is current (the PWA always sends it)",
+    )
 
 
 class DraftsOut(BaseModel):
@@ -361,6 +366,11 @@ class DraftsOut(BaseModel):
 
 class PreviewIn(BaseModel):
     event: ReviewEvent
+    round_id: int | None = Field(
+        default=None,
+        description="The round the author was shown; refused with 409 RoundChanged once a "
+        "newer round is current (the PWA always sends it)",
+    )
 
 
 class CommentOut(BaseModel):
@@ -420,6 +430,11 @@ class PostIn(BaseModel):
     )
     digest: str = Field(
         min_length=1, max_length=128, description="The digest of the preview being confirmed"
+    )
+    round_id: int | None = Field(
+        default=None,
+        description="The round the author was shown; refused with 409 RoundChanged once a "
+        "newer round is current (the PWA always sends it)",
     )
 
 

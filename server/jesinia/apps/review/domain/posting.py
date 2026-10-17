@@ -101,6 +101,11 @@ class PreviewOutdated(PostingDomainError):  # noqa: N818 - the error code client
     """What would be posted changed since the preview the author confirmed."""
 
 
+class RoundChanged(PostingDomainError):  # noqa: N818 - the error code clients see
+    """The round a save, preview or post names is no longer the PR's current round: it is
+    refused, never moved onto the new round (the author's text stays with them)."""
+
+
 class EarlierReviewPosted(PostingDomainError):  # noqa: N818 - the error code clients see
     """An earlier attempt whose response was lost turned out to be on GitHub, and it isn't
     the review now being posted (another digest or event): that earlier version is what

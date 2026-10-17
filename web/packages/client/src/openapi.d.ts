@@ -1413,6 +1413,11 @@ export interface components {
             summary: string;
             /** Drafts */
             drafts?: components["schemas"]["DraftBody"][];
+            /**
+             * Round Id
+             * @description The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)
+             */
+            round_id?: number | null;
         };
         /** DraftsOut */
         DraftsOut: {
@@ -1734,6 +1739,11 @@ export interface components {
              * @description The digest of the preview being confirmed
              */
             digest: string;
+            /**
+             * Round Id
+             * @description The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)
+             */
+            round_id?: number | null;
         };
         /** PostOut */
         PostOut: {
@@ -1849,6 +1859,11 @@ export interface components {
              * @enum {string}
              */
             event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+            /**
+             * Round Id
+             * @description The round the author was shown; refused with 409 RoundChanged once a newer round is current (the PWA always sends it)
+             */
+            round_id?: number | null;
         };
         /**
          * PreviewOut

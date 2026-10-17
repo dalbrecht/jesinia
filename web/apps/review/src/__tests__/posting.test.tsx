@@ -183,7 +183,12 @@ describe("posting", () => {
     await userEvent.click(approve);
     await waitFor(() => expect(sent(calls, "POST", `${API}/post`)).toHaveLength(1));
     const post = sent(calls, "POST", `${API}/post`)[0];
-    expect(await post?.clone().json()).toEqual({ event: "APPROVE", confirm: ["blocking_comment"], digest: "digest-1" });
+    expect(await post?.clone().json()).toEqual({
+      event: "APPROVE",
+      confirm: ["blocking_comment"],
+      digest: "digest-1",
+      round_id: 3,
+    });
     expect(post?.headers.get("Idempotency-Key")).toBeTruthy();
     expect((await screen.findAllByText(/Posted to GitHub/)).length).toBeGreaterThan(0);
     expect(screen.queryByRole("dialog")).toBeNull();
