@@ -6,6 +6,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
+import { WINDOW_FROM } from "../pr/Outline";
+import { LINES_SHOWN } from "../pr/Walkthrough";
 import type { PrView } from "../api";
 import { queue, routes, row } from "./fixtures";
 import { API, ARTIFACTS, drafts, FILES, PATH, preview, reviewed } from "./pr-fixtures";
@@ -359,31 +361,38 @@ describe("big PRs (I4, R61)", () => {
   }
 
   it("windows a long walkthrough in the outline, keeping the current step in view", async () => {
-    setup(big(1000));
+    // Just past the windowing threshold: enough to window, small enough to stay fast on CI.
+    const n = WINDOW_FROM + 50;
+    setup(big(n));
     await ready();
     const steps = within(outline()).getByRole("list", { name: /Walkthrough/ });
     const shown = within(steps).getAllByRole("link");
-    expect(shown.length).toBeLessThan(100);
+    expect(shown.length).toBeLessThan(n / 2);
     expect(shown[0]).toHaveAccessibleName(/1\. Step 0/);
-    fireEvent.scroll(steps, { target: { scrollTop: 30 * 500 } });
-    expect(within(steps).getByRole("link", { name: /501\. Step 500/ })).toBeInTheDocument();
-    await userEvent.click(within(steps).getByRole("link", { name: /501\. Step 500/ }));
-    expect(screen.getByRole("heading", { level: 2, name: "Step 500" })).toBeInTheDocument();
+    fireEvent.scroll(steps, { target: { scrollTop: 30 * 150 } });
+    expect(within(steps).getByRole("link", { name: /151\. Step 150/ })).toBeInTheDocument();
+    await userEvent.click(within(steps).getByRole("link", { name: /151\. Step 150/ }));
+    expect(screen.getByRole("heading", { level: 2, name: "Step 150" })).toBeInTheDocument();
   });
 
   it("a step shows its own hunks, the file's others on request, and a big hunk in pieces", async () => {
-    setup(big(3, 1000));
+    // A hunk just past the line window (not thousands of lines): it still shows in pieces.
+    setup(big(3, LINES_SHOWN + 20));
     await ready();
     await go(/1\. Step 0/);
     const diff = screen.getByRole("region", { name: "Diff for this step" });
-    expect(within(diff).getAllByRole("group")).toHaveLength(1);
-    expect(within(diff).getAllByText(/^\+line /)).toHaveLength(400);
-    await userEvent.click(within(diff).getByRole("button", { name: "Show 600 more lines" }));
-    expect(within(diff).getAllByText(/^\+line /)).toHaveLength(1000);
+    // Counted with selectors, not role or text queries: those compute the accessibility tree
+    // over hundreds of diff lines on every call, which is what made this test slow on CI.
+    const hunks = () => diff.querySelectorAll('[role="group"]').length;
+    const lines = () => [...diff.querySelectorAll("pre")].filter((p) => p.textContent?.startsWith("+line ")).length;
+    expect(hunks()).toBe(1);
+    expect(lines()).toBe(LINES_SHOWN);
+    await userEvent.click(within(diff).getByRole("button", { name: "Show 20 more lines" }));
+    expect(lines()).toBe(LINES_SHOWN + 20);
     await userEvent.click(screen.getByRole("button", { name: "Show the file's 2 other hunks" }));
-    expect(within(diff).getAllByRole("group")).toHaveLength(3);
+    expect(hunks()).toBe(3);
     await userEvent.click(screen.getByRole("button", { name: "Show only this step's hunks" }));
-    expect(within(diff).getAllByRole("group")).toHaveLength(1);
+    expect(hunks()).toBe(1);
   });
 
   it("paging through steps costs about the same at n and 4n steps (generous ratio, absolute ceiling)", async () => {
@@ -392,8 +401,12 @@ describe("big PRs (I4, R61)", () => {
       await ready();
       await go(/1\. Step 0/);
       const start = performance.now();
+      // fireEvent, not userEvent: the measure is the app's work per page, not the simulated
+      // pointer sequence around each click.
       for (let i = 0; i < 5; i += 1) {
-        await userEvent.click(within(actions()).getByRole("button", { name: /→$/ }));
+        act(() => {
+          fireEvent.click(within(actions()).getByRole("button", { name: /→$/ }));
+        });
       }
       const ms = performance.now() - start;
       expect(screen.getByRole("heading", { level: 2, name: "Step 5" })).toBeInTheDocument();
@@ -407,11 +420,14 @@ describe("big PRs (I4, R61)", () => {
       for (let i = 0; i < 3; i += 1) runs.push(await page(n));
       return runs.sort((a, b) => a - b)[1] as number;
     };
-    await page(50); // warm up
-    await page(250);
-    const small = await median(250);
-    const large = await median(1000);
+    // Both sizes are past the windowing threshold, so the ratio measures windowing itself.
+    await page(WINDOW_FROM + 50); // warm up
+    const small = await median(WINDOW_FROM + 50);
+    const large = await median(4 * (WINDOW_FROM + 50));
     expect(large).toBeLessThan(10_000);
     expect(large / Math.max(small, 20)).toBeLessThan(8);
-  }, 60_000);
+    // An explicit timeout: this one test renders the app 7 times (a warm-up and two medians
+    // of three) to compare n with 4n. It takes about 1 s locally; a loaded CI runner can be
+    // ten times slower, and the default 5 s would fail it for load, not for a regression.
+  }, 30_000);
 });

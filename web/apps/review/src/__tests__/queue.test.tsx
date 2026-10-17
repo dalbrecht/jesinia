@@ -301,6 +301,7 @@ describe("always cached", () => {
 
   it("shows loading only on the very first run, then the rows as they arrive", async () => {
     let reads = 0;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const { calls } = setup(queue([]), {
       "GET /api/review/queue": () => {
         reads += 1;
@@ -308,8 +309,11 @@ describe("always cached", () => {
       },
     });
     expect(await screen.findByText(/Fetching your pull requests from GitHub for the first time/)).toBeInTheDocument();
-    // It polls while the first sync runs.
-    await waitFor(() => expect(screen.getByRole("article", { name: /#1/ })).toBeInTheDocument(), { timeout: 5000 });
+    // It polls while the first sync runs (every 2 s; the clock is moved, not waited on).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+    expect(await screen.findByRole("article", { name: /#1/ })).toBeInTheDocument();
     expect(gets(calls, "/api/review/queue").length).toBeGreaterThanOrEqual(2);
   });
 

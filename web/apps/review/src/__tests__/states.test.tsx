@@ -48,8 +48,16 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.stubGlobal("matchMedia", undefined); // jsdom has none: the wide layout
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
+
+/** Moves the app's polling clock on: polls wait seconds, and real waits made CI time out. */
+async function advance(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
 
 describe("pre-review states", () => {
   it("say what each row waits on, in words, and the strip counts them", async () => {
@@ -152,6 +160,7 @@ describe("failures", () => {
 
   it("a queue that can't be read at all says so, then shows it once it can", async () => {
     let fail = true;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     setup(queue([]), {
       "GET /api/review/queue": () =>
         fail
@@ -160,7 +169,8 @@ describe("failures", () => {
     });
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the queue: review.sqlite is locked.");
     fail = false;
-    await waitFor(() => expect(screen.getByRole("article", { name: /#1/ })).toBeInTheDocument(), { timeout: 4000 });
+    await advance(2100); // the first retry after a failed read
+    expect(await screen.findByRole("article", { name: /#1/ })).toBeInTheDocument();
   });
 
   it("⌘K says why a load failed", async () => {
@@ -258,29 +268,32 @@ describe("polling", () => {
     calls.filter((c) => c.method === "GET" && new URL(c.url).pathname === "/api/review/queue").length;
 
   it("relaxes to the idle pace while GitHub auth is missing, even with nothing cached", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const { calls } = setup(queue([], { synced_at: null, sync_error: "no GitHub token: run `gh auth login`" }));
     await screen.findByText(/Nothing is cached yet/);
-    await new Promise((r) => setTimeout(r, 2600));
+    await advance(2600);
     expect(gets(calls)).toBe(1);
   });
 
   it("backs off when the queue can't be read again and again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const { calls } = setup(queue([]), {
       "GET /api/review/queue": () => Response.json({ error: "ReviewError", detail: "locked" }, { status: 500 }),
     });
     await screen.findByRole("alert");
     // Retries at 2 s, then 4 s later: by 5 s only the first retry has run (a steady 2 s would be 2).
-    await new Promise((r) => setTimeout(r, 5000));
+    await advance(5000);
     expect(gets(calls)).toBe(2);
-  }, 10_000);
+  });
 
   it("stops polling once the app is gone", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const env = fakeClient(routes(queue([], { synced_at: null, syncing: true })));
     const view = render(<App client={env.client} />);
     await screen.findByText(/first time/);
     view.unmount();
     const before = gets(env.calls);
-    await new Promise((r) => setTimeout(r, 2500));
+    await advance(2500);
     expect(gets(env.calls)).toBe(before);
   });
 });
