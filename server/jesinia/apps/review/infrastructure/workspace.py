@@ -476,6 +476,11 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
     """
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
+    # asyncio's wait() also waits for the pipes to close; output a capped read left unread
+    # would keep stdout open (its transport paused) and wait() would never return.
+    if proc.stdout is not None:
+        while await proc.stdout.read(65536):
+            pass
     await proc.wait()
 
 

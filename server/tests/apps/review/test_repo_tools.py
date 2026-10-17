@@ -23,6 +23,7 @@ from jesinia.apps.review.api.tools import RepoGitIn, RepoGrepIn, RepoLsIn, RepoR
 from jesinia.apps.review.application.ports import TreeGit
 from jesinia.apps.review.application.repo_tools import (
     SEARCH_TIMEOUT,
+    GrepResult,
     RepoTools,
     _parse_grep,
     safe_path,
@@ -31,7 +32,9 @@ from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.domain.repo_access import (
     BSD_REGEX,
     FILE_LINES_PER_SESSION,
+    GIT_MAX_BYTES,
     GNU_REGEX,
+    GREP_MAX_BYTES,
     GREP_MAX_LINE_CHARS,
     GREP_MAX_MATCHES,
     READ_LINES_PER_CALL,
@@ -141,6 +144,9 @@ def tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Tree]:
         # A NUL past git's 8000-byte binary sniff, in a line that matches: text, to git.
         (work / "aaa-nul.txt").write_bytes(b"pad\n" * 2500 + b"nul_marker\0tail\n")
         (work / "zzz-normal.txt").write_text("nul_marker ok\n")
+        # Output whose UTF-8 is much longer than its character count.
+        (work / "emoji.txt").write_text(("emoji_marker " + "\U0001f600" * 450 + "\n") * 300)
+        (work / "latin1.txt").write_bytes((b"\xe9" * 1000 + b"\n") * 600)
         # The PR renames its author in blame output, if blame honours this.
         (work / ".mailmap").write_text("Mallory <m@example.invalid> Test <test@example.invalid>\n")
 
@@ -699,6 +705,8 @@ async def test_repo_git_runs_hardened(
     for command in ("log", "show", "blame"):
         ((argv, _),) = by_cmd[command]
         assert "--no-textconv" in argv and "--no-ext-diff" in argv
+    for command in ("log", "show"):
+        ((argv, _),) = by_cmd[command]
         assert "--end-of-options" in argv
     for command in ("log", "show", "grep", "rev-parse", "merge-base"):
         assert all(argv[argv.index("-C") + 1] == str(tree.path) for argv, _ in by_cmd[command])
@@ -715,7 +723,10 @@ async def test_repo_git_runs_hardened(
     assert "-C" not in blame
     mirror = tree.path.parent.parent / "mirror.git"
     assert blame[blame.index("--git-dir") + 1] == str(mirror.resolve())
-    assert blame[blame.index("--end-of-options") + 1 :] == (tree.head, "src/app.py")
+    # git 2.43 can't parse `--end-of-options <rev> -- <path>` in blame; the revision is a
+    # full id from rev-parse (never an option) and the path follows `--`.
+    assert "--end-of-options" not in blame
+    assert blame[-3:] == (tree.head, "--", "src/app.py")
 
 
 async def test_tree_reads_refuse_trees_outside_the_workspace(tree: Tree, tmp_path: Path) -> None:
@@ -1265,3 +1276,44 @@ async def test_a_call_racing_an_unbind_leaves_no_slot_behind(
         await call
     with pytest.raises(NoReviewSessionError):
         sessions.git_slot(SESSION)
+
+
+# --- Codex round 1 -------------------------------------------------------------------------
+
+
+async def test_blame_runs_on_real_git_in_every_form(tools: RepoTools, tree: Tree) -> None:
+    # Real git on every platform: the grammar differs between git versions.
+    plain = await tools.git(SESSION, "blame", ["src/app.py"])
+    assert plain["output"].count("\n") == 2 and "needle v2" in plain["output"]
+    ranged = await tools.git(SESSION, "blame", ["-L", "2,2", "src/app.py"])
+    assert ranged["output"].count("\n") == 1 and "needle v2" in ranged["output"]
+    at_rev = await tools.git(SESSION, "blame", ["-L1,2", tree.first, "--", "src/app.py"])
+    assert "return 'needle'" in at_rev["output"] and "v2" not in at_rev["output"]
+    head = await tools.git(SESSION, "blame", ["HEAD~1", "src/app.py"])
+    assert head["output"] == at_rev["output"]
+
+
+def _match_bytes(found: GrepResult) -> int:
+    return sum(len(m["path"].encode()) + len(m["text"].encode()) for m in found["matches"])
+
+
+async def test_grep_caps_output_by_utf8_bytes(tools: RepoTools) -> None:
+    found = await tools.grep(SESSION, "emoji_marker", glob="emoji.txt")
+    assert found["truncated"] is True and found["matches"]
+    assert _match_bytes(found) <= GREP_MAX_BYTES
+    assert all(len(m["text"]) <= GREP_MAX_LINE_CHARS for m in found["matches"])
+
+
+async def test_read_caps_output_by_utf8_bytes(tools: RepoTools) -> None:
+    # Each invalid byte decodes to a 3-byte replacement character.
+    read = await tools.read(SESSION, "latin1.txt")
+    assert read["truncated"] is True
+    body = "".join(line.split("\t", 1)[1] for line in read["text"].splitlines(keepends=True))
+    assert 0 < len(body.encode()) <= READ_MAX_BYTES
+
+
+async def test_git_caps_output_by_utf8_bytes(tools: RepoTools) -> None:
+    shown = await tools.git(SESSION, "show", ["HEAD:latin1.txt"])
+    assert shown["truncated"] is True
+    assert 0 < len(shown["output"].encode()) <= GIT_MAX_BYTES
+    assert shown["output"].endswith("\n")  # whole lines only

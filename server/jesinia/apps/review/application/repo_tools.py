@@ -153,13 +153,29 @@ def _read_lines(path: Path, first: int, count: int) -> tuple[list[str], bool, bo
                 continue
             if len(lines) == count:
                 return lines, True, False
-            if size + len(raw) > READ_MAX_BYTES:
+            # Counted in UTF-8 after decoding: undecodable bytes grow into three-byte
+            # replacement characters.
+            line = raw.decode(errors="replace")
+            encoded = len(line.encode())
+            if size + encoded > READ_MAX_BYTES:
                 if not lines:
-                    lines.append(raw[:READ_MAX_BYTES].decode(errors="replace"))
+                    cut = line.encode()[:READ_MAX_BYTES]
+                    lines.append(cut.decode(errors="ignore"))
                 return lines, True, True
-            lines.append(raw.decode(errors="replace"))
-            size += len(raw)
+            lines.append(line)
+            size += encoded
     return lines, False, False
+
+
+def _within_bytes(lines: list[str], limit: int) -> list[str]:
+    """The leading lines whose UTF-8 encoding fits in ``limit`` bytes. Output is capped
+    after decoding, because undecodable bytes grow threefold as replacement characters."""
+    size = 0
+    for count, line in enumerate(lines):
+        size += len(line.encode())
+        if size > limit:
+            return lines[:count]
+    return lines
 
 
 def _allowance_key(root: Path, rel: str) -> str:
@@ -336,7 +352,10 @@ class RepoTools:
                 skipped.add(rel)
                 continue
             text = raw_text.decode(errors="replace")
-            entry_size = len(rel) + min(len(text), GREP_MAX_LINE_CHARS) + 16
+            # The cap is on UTF-8 bytes: an emoji is one character but four bytes, and
+            # every undecodable byte becomes a three-byte replacement character.
+            shown = text[:GREP_MAX_LINE_CHARS]
+            entry_size = len(rel.encode()) + len(shown.encode()) + 16
             if len(matches) >= GREP_MAX_MATCHES or size + entry_size > GREP_MAX_BYTES:
                 truncated = True
                 continue
@@ -349,7 +368,7 @@ class RepoTools:
                 {
                     "path": rel,
                     "line": line,
-                    "text": text[:GREP_MAX_LINE_CHARS],
+                    "text": shown,
                     "line_truncated": len(text) > GREP_MAX_LINE_CHARS,
                 }
             )
@@ -413,8 +432,11 @@ class RepoTools:
         if cmd == "blame":
             # Run without the worktree (see TreeGit), so HEAD is resolved here first.
             revision = revisions[0] if revisions else await self._commit(session, root, "HEAD")
+            # No --end-of-options: git 2.43's blame misparses `--end-of-options <rev> --
+            # <path>` ("bad revision ''"). Nothing here can pass for an option anyway: the
+            # revision is a full commit id from rev-parse and the path follows `--`.
             argv = ["blame", "--no-ext-diff", "--no-textconv", *plan.options]
-            argv += ["--end-of-options", revision, plan.paths[0]]
+            argv += [revision, "--", plan.paths[0]]
         else:
             argv = [cmd, "--no-ext-diff", "--no-textconv", "--no-color", *plan.options]
             argv += ["--end-of-options", *revisions, *(f"{r}:{p}" for r, p in blobs)]
@@ -436,7 +458,7 @@ class RepoTools:
             if content_of is not None:
                 self._refuse_skipped(content_of, _is_binary(data))
             every_line = data.decode(errors="replace").splitlines(keepends=True)
-            lines = every_line[: min(granted, GIT_MAX_LINES)]
+            lines = _within_bytes(every_line[: min(granted, GIT_MAX_LINES)], GIT_MAX_BYTES)
         finally:
             if key is not None:
                 self._allowance.refund(session, key, granted - len(lines))

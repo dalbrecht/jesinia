@@ -782,3 +782,21 @@ async def test_prune_drops_keep_refs_outside_the_keep_set(tmp_path: Path, fixtur
     assert not (mirror.parent / "trees").exists()  # a repo with no worktrees yet
     assert await ws.prune({(REPO, fixture.head)}) == 0
     assert _keep_refs(mirror) == {f"refs/jesinia/keep/{fixture.head}"}
+
+
+async def test_kill_never_waits_on_unread_output() -> None:
+    # A capped read stops reading, then kills git. If git's unread output is left in the
+    # pipe, asyncio's wait() blocks until the pipe closes, i.e. forever.
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+    proc: asyncio.subprocess.Process = await real_spawn(
+        "python3",
+        "-c",
+        "import sys; sys.stdout.write('x' * 1_000_000)",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    await proc.stdout.readexactly(65537)
+    await asyncio.wait_for(workspace_module._kill(proc), timeout=5)
+    assert proc.returncode is not None
