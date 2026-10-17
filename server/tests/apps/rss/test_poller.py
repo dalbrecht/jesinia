@@ -270,7 +270,9 @@ async def test_poll_caps_items_and_isolates_a_hostile_feed(
     assert (_feed(store, huge.id).last_error or "").startswith("FetchTooLarge: ")
     assert "limit 5000000" in (_feed(store, huge.id).last_error or "")
     assert (_feed(store, sneaky.id).last_error or "").startswith("FetchBlocked: internal.example")
-    assert _feed(store, broken.id).last_error == "ConnectError: refused"
+    # A transport failure arrives as a FetchError (cause kept) and counts like any other.
+    assert _feed(store, broken.id).last_error == "FetchError: ConnectError: refused"
+    assert _feed(store, broken.id).fail_count == 1
     assert len(_guids(conn, long.id)) == MAX_ITEMS  # the parser keeps the newest 500
     assert _guids(conn, good.id) == ["a", "b"]
     assert _feed(store, good.id).fail_count == 0

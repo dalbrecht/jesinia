@@ -610,3 +610,19 @@ async def test_a_fresh_start_prunes_expired_posts_and_keys(cfg: Config) -> None:
     # Without waiting a day of uptime: the daily jobs also run once at start.
     assert counts == (0, 0)
     conn.close()
+
+
+@pytest.mark.parametrize(
+    ("error", "cause"),
+    [
+        (httpx.ConnectTimeout("timed out"), "ConnectTimeout: timed out"),
+        (httpx.ConnectError("connection refused"), "ConnectError: connection refused"),
+    ],
+)
+async def test_adding_an_unreachable_feed_is_a_502_with_the_cause(
+    env: Env, mock: respx.MockRouter, error: httpx.HTTPError, cause: str
+) -> None:
+    mock.get(FEED_URL).mock(side_effect=error)
+    refused = await _add(env)
+    assert _error(refused, 502, "FeedUnavailable") == f"could not fetch {FEED_URL}: {cause}"
+    assert (await env.client.get(f"{API}/feeds")).json() == []

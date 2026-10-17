@@ -116,7 +116,19 @@ class FetchService:
 
     async def get(self, url: str, *, max_bytes: int = 5_000_000, cache: bool = True) -> FetchResult:
         """GET ``url`` through the guards. ``cache=False`` neither revalidates against nor
-        stores in the conditional-request cache (for bodies the caller keeps elsewhere)."""
+        stores in the conditional-request cache (for bodies the caller keeps elsewhere).
+
+        Raises ``FetchBlocked``, ``FetchTooLarge``, or ``FetchError`` (chained to the cause)
+        for a transport failure: a timeout, a refused connection, TLS or protocol errors.
+        """
+        try:
+            return await self._get(url, max_bytes=max_bytes, cache=cache)
+        except httpx.HTTPError as exc:
+            message = str(exc)
+            kind = type(exc).__name__
+            raise FetchError(f"{kind}: {message}" if message else kind) from exc
+
+    async def _get(self, url: str, *, max_bytes: int, cache: bool) -> FetchResult:
         async with httpx.AsyncClient(
             timeout=TIMEOUT,
             transport=self._transport,
@@ -160,10 +172,7 @@ class FetchService:
         extractor = self._extractor
         if extractor is None:
             raise FetchError("article extraction is not available")
-        try:
-            result = await self.get(url)
-        except httpx.HTTPError as exc:
-            raise FetchError(f"could not fetch {url}: {exc}") from exc
+        result = await self.get(url)
         if result.status != 200:
             raise FetchError(f"{url} answered HTTP {result.status}")
         content_type = result.content_type.lower()

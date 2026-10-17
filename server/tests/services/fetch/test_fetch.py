@@ -6,6 +6,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import httpcore
+import httpx
 import pytest
 import respx
 from httpx import Response
@@ -13,7 +14,12 @@ from httpx import Response
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
 from jesinia.core.db import DbClass, ModuleDb, open_db
-from jesinia.services.fetch.application.service import FetchBlocked, FetchService, FetchTooLarge
+from jesinia.services.fetch.application.service import (
+    FetchBlocked,
+    FetchError,
+    FetchService,
+    FetchTooLarge,
+)
 from jesinia.services.fetch.domain.address import is_public
 from jesinia.services.fetch.infrastructure.cache import SqliteFetchCache
 from jesinia.services.fetch.infrastructure.sanitize import sanitize_html
@@ -307,3 +313,32 @@ async def test_get_without_the_cache_neither_revalidates_nor_stores(
     assert "If-None-Match" not in route.calls[1].request.headers
     cached = await fetch.get("https://pub.example/img")  # nothing was stored to answer from
     assert not cached.from_cache and route.call_count == 3
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectTimeout("timed out"),
+        httpx.ConnectError("connection refused"),
+        httpx.ReadError("tls handshake failed"),
+        httpx.RemoteProtocolError("peer closed"),
+    ],
+)
+async def test_transport_failures_are_fetch_errors_with_their_cause(
+    fetch: FetchService, error: httpx.HTTPError
+) -> None:
+    with respx.mock:
+        respx.get("https://pub.example/feed").mock(side_effect=error)
+        with pytest.raises(FetchError) as caught:
+            await fetch.get("https://pub.example/feed")
+    assert caught.value.__cause__ is error
+    assert str(caught.value) == f"{type(error).__name__}: {error}"
+
+
+async def test_a_transport_failure_without_a_message_still_names_its_kind(
+    fetch: FetchService,
+) -> None:
+    with respx.mock:
+        respx.get("https://pub.example/feed").mock(side_effect=httpx.ReadTimeout(""))
+        with pytest.raises(FetchError, match="^ReadTimeout$"):
+            await fetch.get("https://pub.example/feed")
