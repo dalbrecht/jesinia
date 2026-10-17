@@ -611,16 +611,16 @@ class SqliteIssuesStore:
     def take_plan(self, plan_id: str, repo: str) -> LabelPlan | None:
         with transaction(self._conn):
             row = self._conn.execute(
-                "SELECT kind, json, created_at FROM label_plans WHERE id = ? AND repo = ?",
+                "SELECT repo, kind, json, created_at FROM label_plans WHERE id = ? AND repo = ?",
                 (plan_id, repo),
             ).fetchone()
             if row is None:
                 return None
             self._conn.execute("DELETE FROM label_plans WHERE id = ?", (plan_id,))
-        kind, ops, created_at = row
+        stored_repo, kind, ops, created_at = row
         return LabelPlan(
             plan_id,
-            repo,
+            stored_repo,
             parse_plan_kind(kind),
             tuple(_op(op) for op in json.loads(ops)),
             datetime.fromisoformat(created_at),

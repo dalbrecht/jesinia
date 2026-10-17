@@ -263,6 +263,12 @@ class IssueClient:
         issues = [_issue(repo, item) for item in items if "pull_request" not in item]
         return Page(issues, next_token)
 
+    async def repository(self, repo: str) -> str:
+        """GitHub's own ``owner/name`` for ``repo`` (GitHub answers any letter case), which
+        also proves the repo exists and the token can read it."""
+        path = f"/repos/{validate_repo(repo)}"
+        return text(mapping(await get_json(self._github, path), path), "full_name")
+
     async def labeled(self, repo: str, name: str) -> list[LabeledItem]:
         """Every issue and pull request carrying label ``name`` now, open and closed (every
         page). Pull requests are kept and marked: deleting a label strips it from them too.

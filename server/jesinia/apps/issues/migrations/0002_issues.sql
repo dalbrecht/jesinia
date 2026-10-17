@@ -9,8 +9,10 @@
 -- `schema_json` is the effective schema and `schema_source` where it came from; the schema the
 -- author made in Settings is kept apart in `settings_schema_json`, so a `.jesinia/labels.yml`
 -- (which wins while it exists, spec §2) never overwrites it, and it is back when the file goes.
+-- Every repo column is COLLATE NOCASE: GitHub answers any letter case, and the name GitHub
+-- reports (stored at watch time) must match whatever spelling a request or payload uses.
 CREATE TABLE repos (
-    repo TEXT PRIMARY KEY,
+    repo TEXT PRIMARY KEY COLLATE NOCASE,
     watched INTEGER NOT NULL DEFAULT 1,
     added_at TEXT NOT NULL,
     schema_source TEXT NOT NULL DEFAULT 'default',  -- 'default', 'repo' or 'settings'
@@ -25,7 +27,7 @@ CREATE TABLE repos (
 -- `json` is the whole issue as GitHub sent it (mapped); the other columns are what the views
 -- filter and sort on, recomputed on every sync and whenever the repo's schema changes.
 CREATE TABLE issues (
-    repo TEXT NOT NULL REFERENCES repos (repo) ON DELETE CASCADE,
+    repo TEXT NOT NULL COLLATE NOCASE REFERENCES repos (repo) ON DELETE CASCADE,
     number INTEGER NOT NULL,
     json TEXT NOT NULL,
     complete INTEGER NOT NULL,
@@ -45,21 +47,21 @@ CREATE TABLE issues (
 CREATE INDEX issues_by_view ON issues (state, inbox, complete);
 
 CREATE TABLE labels (
-    repo TEXT NOT NULL REFERENCES repos (repo) ON DELETE CASCADE,
+    repo TEXT NOT NULL COLLATE NOCASE REFERENCES repos (repo) ON DELETE CASCADE,
     name TEXT NOT NULL COLLATE NOCASE,
     json TEXT NOT NULL,
     PRIMARY KEY (repo, name)
 );
 
 CREATE TABLE milestones (
-    repo TEXT NOT NULL REFERENCES repos (repo) ON DELETE CASCADE,
+    repo TEXT NOT NULL COLLATE NOCASE REFERENCES repos (repo) ON DELETE CASCADE,
     number INTEGER NOT NULL,
     json TEXT NOT NULL,
     PRIMARY KEY (repo, number)
 );
 
 CREATE TABLE comments (
-    repo TEXT NOT NULL,
+    repo TEXT NOT NULL COLLATE NOCASE,
     number INTEGER NOT NULL,
     comment_id INTEGER NOT NULL,
     json TEXT NOT NULL,
@@ -69,7 +71,7 @@ CREATE TABLE comments (
 );
 
 CREATE TABLE timeline (
-    repo TEXT NOT NULL,
+    repo TEXT NOT NULL COLLATE NOCASE,
     number INTEGER NOT NULL,
     position INTEGER NOT NULL,
     json TEXT NOT NULL,
@@ -79,10 +81,10 @@ CREATE TABLE timeline (
 
 -- An epic's direct children in GitHub's order; a child may live in another repo of the owner.
 CREATE TABLE sub_issue_links (
-    repo TEXT NOT NULL,
+    repo TEXT NOT NULL COLLATE NOCASE,
     parent_number INTEGER NOT NULL,
     position INTEGER NOT NULL,
-    child_repo TEXT NOT NULL,
+    child_repo TEXT NOT NULL COLLATE NOCASE,
     child_number INTEGER NOT NULL,
     child_id INTEGER,
     PRIMARY KEY (repo, parent_number, position),
@@ -93,7 +95,7 @@ CREATE TABLE sub_issue_links (
 -- ops; a plan is consumed by its apply and pruned once older than PLAN_TTL.
 CREATE TABLE label_plans (
     id TEXT PRIMARY KEY,
-    repo TEXT NOT NULL REFERENCES repos (repo) ON DELETE CASCADE,
+    repo TEXT NOT NULL COLLATE NOCASE REFERENCES repos (repo) ON DELETE CASCADE,
     kind TEXT NOT NULL,
     json TEXT NOT NULL,
     created_at TEXT NOT NULL

@@ -20,7 +20,7 @@ from jesinia.core.idempotency import SqliteIdempotencyStore
 from jesinia.core.module import AppContext
 from jesinia.core.scheduler import Job, Scheduler
 from jesinia.registry import DATABASES, modules
-from jesinia.services.github.application.service import GitHubService
+from jesinia.services.github.application.service import GitHubService, GitHubUnavailable
 
 
 def test_issues_db_is_history_and_registered_after_its_services() -> None:
@@ -102,10 +102,18 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     await module.start(ctx)
     assert isinstance(module.sync, SyncService)
     assert isinstance(module.labels, LabelSetupService)
-    await module.sync.watch("acme/web")
-    # Without a token the sync fails, is recorded and the cache keeps serving.
+    # Without a token a repo can't be added (GitHub names it), ...
+    with pytest.raises(GitHubUnavailable):
+        await module.sync.configure("acme/web", watched=True, settings_schema=None)
+    # ... and a repo added earlier fails its sync, recorded, while the cache keeps serving.
+    conn = open_db(cfg.data_dir, ISSUES_DB)
+    conn.execute(
+        "INSERT INTO repos (repo, added_at) VALUES ('acme/web', '2026-10-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
     await ctx.scheduler.run_now(SYNC_JOB)
-    state = await module.sync.list("inbox", IssueFilters())
+    state = module.queries.view("inbox", IssueFilters())
     assert state.rows == [] and state.sync_error is not None
     await module.stop()
     await github.aclose()

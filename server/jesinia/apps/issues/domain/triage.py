@@ -53,6 +53,11 @@ class RepoNotWatchedError(TriageDomainError):
     """The repo was never added (or was removed): Jesinia only syncs repos the author added."""
 
 
+class RepoMovedError(TriageDomainError):
+    """GitHub lists a watched repo's issues under another name (it was renamed or
+    transferred): the sync records it rather than mixing two names in the cache."""
+
+
 class IssueNotCachedError(TriageDomainError):
     """The issue isn't in the cache (its repo hasn't synced it yet)."""
 

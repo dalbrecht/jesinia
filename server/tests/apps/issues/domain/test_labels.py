@@ -145,3 +145,12 @@ def test_member_lists_never_make_a_plan_outdated() -> None:
     previewed.check("migrate", T0, (DeleteLabel("old", "new", (1, 2, 3)),))
     with pytest.raises(LabelPlanOutdatedError):
         previewed.check("migrate", T0, (DeleteLabel("old", "newer", (1, 2)),))
+
+
+def test_migration_never_plans_a_label_onto_itself() -> None:
+    nfc = unicodedata.normalize("NFC", "area:café")
+    nfd = unicodedata.normalize("NFD", "area:café")
+    # Built directly: the parser refuses this schema, but a stored one must not do harm.
+    schema = replace(DEFAULT_SCHEMA, areas=(Canonical(nfc, (nfd,)),))
+    assert migration_aliases(schema, [nfc]) == []
+    assert plan_migration(schema, [nfc], {nfc: [1, 2]}) == MigrationPlan((), ())

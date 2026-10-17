@@ -676,3 +676,16 @@ async def test_remove_label_404_on_a_pull_request_reads_its_labels(issues: Issue
     pr = {"number": 11, "labels": [{"name": "review:bot"}], "pull_request": {"url": "x"}}
     respx.get(f"{API}/repos/acme/api/issues/11").mock(return_value=Response(200, json=pr))
     assert await issues.remove_label("acme/api", 11, "gone") == ("review:bot",)
+
+
+@respx.mock
+async def test_repository_returns_githubs_own_spelling(issues: IssueClient) -> None:
+    respx.get(f"{API}/repos/ACME/Api").mock(
+        return_value=Response(200, json={"full_name": "acme/api", "id": 1})
+    )
+    assert await issues.repository("ACME/Api") == "acme/api"
+    respx.get(f"{API}/repos/acme/gone").mock(
+        return_value=Response(404, json={"message": "Not Found"})
+    )
+    with pytest.raises(GitHubRequestError):
+        await issues.repository("acme/gone")

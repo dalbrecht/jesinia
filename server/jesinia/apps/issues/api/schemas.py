@@ -124,11 +124,12 @@ class IssuesReposOut(BaseModel):
 
 
 class IssuesRepoIn(BaseModel):
-    """Settings → Issues for one repo. PUT replaces: ``settings_schema`` left out (or null)
-    clears the schema kept in Settings, so the default applies when there is no labels.yml."""
+    """Settings → Issues for one repo. PUT replaces, so ``settings_schema`` is required: send
+    the schema to keep, or an explicit ``null`` to clear it (the default then applies when there
+    is no labels.yml). Leaving it out is a 422, never a silent wipe of the author's schema."""
 
     watched: bool
-    settings_schema: LabelSchemaBody | None = None
+    settings_schema: LabelSchemaBody | None
 
 
 class IssueRowOut(BaseModel):

@@ -184,7 +184,7 @@ def classify(labels: Iterable[str], schema: LabelSchema) -> Classified:
     unknown: list[str] = []
     for raw in labels:
         label = raw.strip()
-        key = label.casefold()
+        key = label_key(raw)
         if not key:
             continue
         if key in index.by_label:
@@ -291,8 +291,8 @@ def _label_name(raw: object) -> str | None:
 class _Parser:
     """Builds a schema from a parsed ``labels.yml`` mapping, listing what it can't use.
 
-    Every label name and alias may appear once across the whole schema; later repeats are
-    dropped with an error, so a label never means two things.
+    Every label name and alias may appear once across the whole schema (compared by
+    ``label_key``); later repeats are dropped with an error, so a label never means two things.
     """
 
     def __init__(self) -> None:
@@ -300,10 +300,12 @@ class _Parser:
         self._seen: set[str] = set()
 
     def _admit(self, where: str, label: str) -> bool:
-        if label.casefold() in self._seen:
+        # ``label_key``: an alias equal to a name in another Unicode form is the same label,
+        # and would otherwise make a migration move a label onto itself and delete it.
+        if label_key(label) in self._seen:
             self.errors.append(f"{where}: {label!r} is already in the schema")
             return False
-        self._seen.add(label.casefold())
+        self._seen.add(label_key(label))
         return True
 
     def _canonical(

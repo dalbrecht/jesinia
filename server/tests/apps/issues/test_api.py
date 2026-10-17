@@ -91,7 +91,9 @@ class Env:
     host: Host
 
     async def watch_and_sync(self) -> None:
-        await self.client.put(REPO_PATH, json={"watched": True}, headers=keyed())
+        await self.client.put(
+            REPO_PATH, json={"watched": True, "settings_schema": None}, headers=keyed()
+        )
         self.clock.now += timedelta(minutes=1)
         await self.client.post(f"{REPO_PATH}/sync", headers=keyed())
 
@@ -138,7 +140,7 @@ READS = [
     ("GET", ITEM, None),
 ]
 WRITES = [
-    ("PUT", REPO_PATH, {"watched": True}),
+    ("PUT", REPO_PATH, {"watched": True, "settings_schema": None}),
     ("POST", f"{REPO_PATH}/sync", None),
     ("POST", f"{ITEM}/refresh", None),
     ("POST", f"{LABELS}/apply", {"kind": "setup", "plan_id": "x"}),
@@ -201,7 +203,9 @@ async def test_an_apply_replayed_with_its_key_returns_the_stored_result(env: Env
 
 
 async def test_a_sync_replayed_with_its_key_does_not_sync_again(env: Env) -> None:
-    await env.client.put(REPO_PATH, json={"watched": True}, headers=keyed())
+    await env.client.put(
+        REPO_PATH, json={"watched": True, "settings_schema": None}, headers=keyed()
+    )
     key = keyed()
     first = await env.client.post(f"{REPO_PATH}/sync", headers=key)
     assert first.status_code == 200
@@ -215,7 +219,9 @@ async def test_a_sync_replayed_with_its_key_does_not_sync_again(env: Env) -> Non
 
 
 async def test_first_sync_lands_existing_issues_in_the_backlog(env: Env) -> None:
-    watched = await env.client.put(REPO_PATH, json={"watched": True}, headers=keyed())
+    watched = await env.client.put(
+        REPO_PATH, json={"watched": True, "settings_schema": None}, headers=keyed()
+    )
     assert watched.status_code == 200
     assert watched.json()["watched"] and watched.json()["synced_at"] is None
     env.clock.now += timedelta(minutes=1)
@@ -267,19 +273,25 @@ async def test_repo_settings_round_trip(env: Env) -> None:
     assert bad.status_code == 400 and bad.json()["error"] == "InvalidSettingsSchemaError"
     assert "areas[1]" in bad.json()["detail"]
 
-    off = await env.client.put(REPO_PATH, json={"watched": False}, headers=keyed())
+    off = await env.client.put(
+        REPO_PATH, json={"watched": False, "settings_schema": None}, headers=keyed()
+    )
     assert off.status_code == 200 and not off.json()["watched"]
-    assert off.json()["settings_schema"] is None  # PUT replaces: no schema clears it
+    assert off.json()["settings_schema"] is None  # an explicit null clears it
 
 
 async def test_unknown_and_malformed_repos_are_structured_errors(env: Env) -> None:
     unknown = await env.client.put(
-        f"{API}/repos/acme/nope", json={"watched": False}, headers=keyed()
+        f"{API}/repos/acme/nope", json={"watched": False, "settings_schema": None}, headers=keyed()
     )
     assert unknown.status_code == 404 and unknown.json()["error"] == "RepoNotWatchedError"
     sync = await env.client.post(f"{API}/repos/acme/nope/sync", headers=keyed())
     assert sync.status_code == 404
-    bad = await env.client.put(f"{API}/repos/acme/no%20pe", json={"watched": True}, headers=keyed())
+    bad = await env.client.put(
+        f"{API}/repos/acme/no%20pe",
+        json={"watched": True, "settings_schema": None},
+        headers=keyed(),
+    )
     assert bad.status_code == 400 and bad.json()["error"] == "InvalidRepoError"
 
 
@@ -614,3 +626,50 @@ async def test_the_preview_says_which_deletes_will_be_skipped(env: Env) -> None:
     plan = (await env.client.post(f"{LABELS}/preview", json={"kind": "migrate"})).json()
     assert [op["name"] for op in plan["ops"]] == ["p, high"]
     assert "comma" in plan["ops"][0]["skip_cause"] and "by hand" in plan["ops"][0]["skip_cause"]
+
+
+async def test_listed_rows_open_by_their_reported_repo(env: Env) -> None:
+    env.github.full_names["acme/web"] = REPO
+    typed = f"{API}/repos/ACME/Web"
+    watched = await env.client.put(
+        typed, json={"watched": True, "settings_schema": None}, headers=keyed()
+    )
+    assert watched.status_code == 200 and watched.json()["repo"] == REPO
+    env.clock.now += timedelta(minutes=1)
+    await env.client.post(f"{typed}/sync", headers=keyed())
+    rows = (await env.client.get(f"{API}/backlog")).json()["rows"]
+    assert rows and all(row["repo"] == REPO for row in rows)
+    for spelling in (rows[0]["repo"], "ACME/Web"):
+        owner, name = spelling.split("/")
+        item = await env.client.get(f"{API}/item/{owner}/{name}/{rows[0]['number']}")
+        assert item.status_code == 200, spelling
+        filtered = (await env.client.get(f"{API}/backlog", params={"repo": spelling})).json()
+        assert len(filtered["rows"]) == len(rows), spelling
+    found = await _call(_tools(env)["issues_get"], repo=rows[0]["repo"], n=rows[0]["number"])
+    assert isinstance(found, dict) and found["number"] == rows[0]["number"]
+
+
+async def test_a_put_without_settings_schema_is_refused_not_a_silent_wipe(env: Env) -> None:
+    await env.watch_and_sync()
+    schema = {"readiness": [{"name": "agent-ready"}], "priority": [{"name": "p1"}],
+              "type": [{"name": "bug"}]}  # fmt: skip
+    kept = await env.client.put(
+        REPO_PATH, json={"watched": True, "settings_schema": schema}, headers=keyed()
+    )
+    assert kept.status_code == 200
+    bare = await env.client.put(REPO_PATH, json={"watched": True}, headers=keyed())
+    assert bare.status_code == 422
+    repos = (await env.client.get(f"{API}/repos")).json()["repos"]
+    assert repos[0]["settings_schema"] is not None
+    cleared = await env.client.put(
+        REPO_PATH, json={"watched": True, "settings_schema": None}, headers=keyed()
+    )
+    assert cleared.status_code == 200 and cleared.json()["settings_schema"] is None
+
+
+async def test_a_broken_labels_yml_refuses_the_label_batches(env: Env) -> None:
+    env.github.files[(REPO, LABELS_YML)] = "readiness: [unclosed\n"
+    await env.watch_and_sync()
+    refused = await env.client.post(f"{LABELS}/preview", json={"kind": "setup"})
+    assert refused.status_code == 400 and refused.json()["error"] == "SchemaHasErrorsError"
+    assert "not valid YAML" in refused.json()["detail"]

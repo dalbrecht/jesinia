@@ -89,6 +89,12 @@ class LabelPlanOutdatedError(LabelPlanError):
     """The repo changed since the preview; what was approved is no longer what would run."""
 
 
+class SchemaHasErrorsError(LabelPlanError):
+    """The repo's ``.jesinia/labels.yml`` couldn't be fully read: setup and migration refuse to
+    run against a fallback schema, which would push the default convention onto a repo that
+    has its own."""
+
+
 class LabelNameCollisionError(LabelPlanError):
     """Two labels on GitHub compare as one name (case or Unicode form); Jesinia won't guess
     which one a step means."""
@@ -188,9 +194,15 @@ def migration_aliases(schema: LabelSchema, existing: Iterable[str]) -> list[tupl
     return [
         (on_github[label_key(alias)], canonical.name)
         for _, canonical in schema_labels(schema)
-        for alias in canonical.aliases
+        for alias in _distinct_aliases(canonical)
         if label_key(alias) in on_github
     ]
+
+
+def _distinct_aliases(canonical: Canonical) -> list[str]:
+    """The aliases that are other labels: one equal to the canonical by ``label_key`` (another
+    Unicode form, say) is the same label, and moving it onto itself would strip and delete it."""
+    return [a for a in canonical.aliases if label_key(a) != label_key(canonical.name)]
 
 
 @dataclass(frozen=True)
@@ -227,7 +239,11 @@ def plan_migration(
     create: list[CreateLabel] = []
     delete: list[DeleteLabel] = []
     for dimension, canonical in schema_labels(schema):
-        present = [on_github[label_key(a)] for a in canonical.aliases if label_key(a) in on_github]
+        present = [
+            on_github[label_key(a)]
+            for a in _distinct_aliases(canonical)
+            if label_key(a) in on_github
+        ]
         if not present:
             continue
         if label_key(canonical.name) not in on_github:

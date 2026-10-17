@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 import tracemalloc
+import unicodedata
 
 import pytest
 
@@ -339,3 +340,25 @@ def test_a_valid_settings_schema_round_trips() -> None:
     schema = validate_settings_schema({"areas": [{"name": "area:web", "aliases": ["web"]}]})
     assert schema.areas == (Canonical("area:web", ("web",)),)
     assert schema.errors == ()
+
+
+# Unicode forms (final review I2) --------------------------------------------------------
+
+
+def test_alias_equal_to_its_canonical_in_another_unicode_form_is_refused() -> None:
+    nfc = unicodedata.normalize("NFC", "area:café")
+    nfd = unicodedata.normalize("NFD", "area:café")
+    assert nfc != nfd
+    schema = schema_from_mapping({"areas": [{"name": nfc, "aliases": [nfd]}]})
+    assert schema.areas == (Canonical(nfc),)
+    assert any("already in the schema" in error for error in schema.errors)
+    with pytest.raises(InvalidSettingsSchemaError):
+        validate_settings_schema({"areas": [{"name": nfc, "aliases": [nfd]}]})
+
+
+def test_nfd_label_on_github_classifies() -> None:
+    nfd = unicodedata.normalize("NFD", "area:café")
+    schema = schema_from_mapping({"areas": [unicodedata.normalize("NFC", "area:café")]})
+    classified = classify(["agent-ready", nfd], schema)
+    assert classified.areas == [unicodedata.normalize("NFC", "area:café")]
+    assert classified.readiness == "agent-ready" and classified.unknown == []

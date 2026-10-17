@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -32,6 +33,7 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlanKindMismatchError,
     LabelPlanNotFoundError,
     LabelPlanOutdatedError,
+    SchemaHasErrorsError,
     skip_cause,
 )
 from jesinia.apps.issues.domain.triage import RepoNotWatchedError
@@ -220,7 +222,7 @@ def executor(github: FakeGitHub, pauses: Pauses | None = None) -> LabelExecutor:
 
 async def synced(github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock) -> None:
     sync = SyncService(github, store, clock)
-    await sync.watch(REPO)
+    await sync.configure(REPO, watched=True, settings_schema=None)
     clock.now += timedelta(minutes=1)
     await sync.sync(REPO)
     github.calls.clear()
@@ -254,7 +256,7 @@ async def test_setup_creates_only_missing_canonical_labels(
     assert [w for w, _ in github.writes] == ["create_label"] * 3
     # IR4: the labels were read fresh before anything was created, once per apply.
     assert github.call_names() == ["labels"]
-    assert (await labels.planner.setup(REPO)) == []
+    assert (await labels.planner.current(REPO, "setup"))[0] == ()
     # IR5: one pause between consecutive writes.
     assert pauses.calls == [WRITE_INTERVAL.total_seconds()] * 2
 
@@ -285,7 +287,7 @@ async def test_preview_and_apply_need_a_watched_repo(labels: LabelSetupService) 
     with pytest.raises(RepoNotWatchedError):
         await labels.preview(REPO, "setup")
     with pytest.raises(RepoNotWatchedError):
-        await labels.planner.migrate(REPO)
+        await labels.planner.current(REPO, "migrate")
 
 
 async def test_concurrent_applies_on_one_repo_run_one_at_a_time(
@@ -362,8 +364,6 @@ async def test_migration_relabels_then_deletes(
     )
     await synced(github, store, clock)
 
-    planned = await labels.planner.migrate(REPO)
-    assert planned.relabel == {1: ("design needed",), 2: ("platform:ios", "apple")}
     plan = await labels.preview(REPO, "migrate")
     assert [type(op) for op in plan.ops] == [CreateLabel] + [DeleteLabel] * 3
     assert [op.members for op in plan.ops if isinstance(op, DeleteLabel)] == [(1,), (2,), (2,)]
@@ -772,3 +772,38 @@ async def test_a_comma_alias_previews_as_a_delete_that_will_be_skipped(
     await synced(github, store, clock)
     plan = await labels.preview(REPO, "migrate")
     assert [skip_cause(op) for op in plan.ops] == [COMMA_CAUSE]
+
+
+async def test_executor_refuses_a_move_onto_the_same_label(github: FakeGitHub) -> None:
+    nfc = unicodedata.normalize("NFC", "area:café")
+    nfd = unicodedata.normalize("NFD", "area:café")
+    github.set_labels(nfc)
+    github.put(issue(1, labels=(nfc,)))
+    run = await executor(github).run(REPO, [DeleteLabel(nfd, nfc), DeleteLabel("x")])
+    assert [r.state for r in run.results] == ["failed", "skipped"]
+    assert "same label" in str(run.results[0].cause)
+    assert github.writes == [] and "labeled" not in github.call_names()
+
+
+async def test_cache_update_after_apply_hits_rows_of_a_differently_cased_repo(
+    labels: LabelSetupService, github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    github.set_labels("design needed", "design-needed")
+    github.put(issue(1, labels=("design needed",)))
+    await synced(github, store, clock)
+    plan = await labels.preview("ACME/WEB", "migrate")  # the author's spelling
+    assert (await labels.apply("Acme/Web", "migrate", plan.id)).complete
+    cached = store.cached_issue(REPO, 1)
+    assert cached is not None and cached.issue.labels == ("design-needed",)
+
+
+async def test_setup_and_migration_refuse_a_broken_labels_yml(
+    labels: LabelSetupService, github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    github.files[(REPO, LABELS_YML)] = "readiness: [unclosed\n"
+    await synced(github, store, clock)
+    with pytest.raises(SchemaHasErrorsError, match="not valid YAML"):
+        await labels.preview(REPO, "setup")
+    with pytest.raises(SchemaHasErrorsError, match="not valid YAML"):
+        await labels.preview(REPO, "migrate")
+    assert github.writes == []

@@ -44,6 +44,7 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlanKind,
     LabelPlanNotFoundError,
     MigrationPlan,
+    SchemaHasErrorsError,
     migration_aliases,
     plan_migration,
     plan_setup,
@@ -164,6 +165,12 @@ class _Run:
             _StepFailedError: the replacement doesn't exist, or some moves failed (the rest
                 were still made).
         """
+        if label_key(op.name) == label_key(replacement):
+            # Defence in depth (the planner never plans it): a move onto the same label would
+            # strip it from every member and then delete it.
+            raise _StepFailedError(
+                f"{op.name!r} and {replacement!r} are the same label; nothing to move"
+            )
         target = self.known.get(label_key(replacement))
         if target is None:
             raise _StepFailedError(
@@ -338,29 +345,6 @@ class LabelPlanner:
             raise RepoNotWatchedError(f"{repo} is not a watched repo; add it first")
         return state
 
-    async def setup(self, repo: str) -> list[CreateLabel]:
-        """The canonical labels the repo is missing.
-
-        Raises:
-            InvalidRepoError: ``repo`` is not ``owner/name``.
-            RepoNotWatchedError: the author hasn't added ``repo``.
-            LabelNameCollisionError: two GitHub labels compare as one name.
-            GitHubError: GitHub couldn't be read.
-        """
-        ops, _ = await self.current(repo, "setup")
-        return [op for op in ops if isinstance(op, CreateLabel)]
-
-    async def migrate(self, repo: str) -> MigrationPlan:
-        """Every alias on GitHub mapped to its canonical label, with its members listed live
-        (a name with a comma can't be listed, so it shows none).
-
-        Raises:
-            as ``setup``.
-        """
-        state = self.watched(repo)
-        labels = await self._github.labels(state.repo)
-        return await self._migration(state, labels)
-
     async def _migration(
         self, state: RepoState, labels: Sequence[Label], *, with_members: bool = True
     ) -> MigrationPlan:
@@ -374,14 +358,25 @@ class LabelPlanner:
     async def current(
         self, repo: str, kind: LabelPlanKind, *, with_members: bool = True
     ) -> tuple[tuple[LabelOp, ...], list[Label]]:
-        """The ops ``kind`` would run now, and the fresh read of the labels they came from.
+        """The ops ``kind`` would run now (a setup: the canonical labels the repo is missing; a
+        migration: every alias on GitHub mapped to its canonical, its members listed live, none
+        for a name with a comma), and the fresh read of the labels they came from.
         ``with_members=False`` skips listing each alias's members: an apply's shape check
         ignores them (the executor lists them live itself).
 
         Raises:
-            as ``setup``.
+            InvalidRepoError: ``repo`` is not ``owner/name``.
+            RepoNotWatchedError: the author hasn't added ``repo``.
+            SchemaHasErrorsError: its labels.yml couldn't be fully read.
+            LabelNameCollisionError: two GitHub labels compare as one name.
+            GitHubError: GitHub couldn't be read.
         """
         state = self.watched(repo)
+        if state.schema_source == "repo" and state.schema.errors:
+            raise SchemaHasErrorsError(
+                f"{state.repo}'s .jesinia/labels.yml has problems, so its labels can't be set "
+                f"up or migrated until it is fixed: {'; '.join(state.schema.errors)}"
+            )
         labels = await self._github.labels(state.repo)
         if kind == "setup":
             return tuple(plan_setup(state.schema, [label.name for label in labels])), labels
@@ -436,7 +431,7 @@ class LabelSetupService:
             InvalidRepoError, RepoNotWatchedError, LabelNameCollisionError, GitHubError: as the
             planner's.
         """
-        name = validate_repo(repo)
+        name = self.planner.watched(repo).repo  # GitHub's spelling, whatever was typed
         ops, _ = await self._current(name, kind)
         now = self._clock()
         plan = LabelPlan(uuid.uuid4().hex, name, kind, ops, now)
@@ -456,12 +451,13 @@ class LabelSetupService:
             RepoNotWatchedError, LabelNameCollisionError, GitHubError: as the planner's.
         """
         name = validate_repo(repo)
-        async with self._locks.setdefault(name, asyncio.Lock()):
+        async with self._locks.setdefault(name.casefold(), asyncio.Lock()):
             plan = self._store.take_plan(plan_id, name)
             if plan is None:
                 raise LabelPlanNotFoundError(
                     f"no previewed plan {plan_id!r} for {name}; preview the batch first"
                 )
+            name = plan.repo  # GitHub's spelling, kept by the preview
             # Kind and expiry first, before asking GitHub; then against the repo as it is now.
             plan.check(kind, self._clock(), plan.ops)
             ops, labels = await self._current(name, kind, with_members=False)
@@ -512,9 +508,9 @@ class LabelSetupService:
         its cause and never fails the apply (the next sync corrects the cache)."""
         try:
             state = self.planner.watched(repo)
-            self._store.replace_labels(repo, run.labels)
+            self._store.replace_labels(state.repo, run.labels)
             for number, labels in run.relabelled.items():
-                cached = self._store.issue(repo, number)
+                cached = self._store.issue(state.repo, number)
                 if cached is None:
                     continue  # labelled on GitHub after the last sync: the sync brings it
                 result = triage(labels, cached.sub_issue_count, state.schema)

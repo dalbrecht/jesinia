@@ -46,14 +46,11 @@ from jesinia.apps.issues.application.ports import (
     SchemaSource,
     StoredIssue,
 )
-from jesinia.apps.issues.application.reads import build_view
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, LabelSchema, parse_labels_yml
 from jesinia.apps.issues.domain.triage import (
-    IssueFilters,
     IssueNotCachedError,
-    IssueView,
+    RepoMovedError,
     RepoNotWatchedError,
-    ViewName,
     is_inbox,
     triage,
 )
@@ -73,6 +70,11 @@ DETAIL_PAGE_CAP = 10
 Clock = Callable[[], datetime]
 # Told which issues just entered the Inbox view (Task 5 queues suggestion jobs from it).
 OnInbox = Callable[[str, Sequence[int]], Awaitable[None]]
+
+
+def _key(repo: str) -> str:
+    """Repo names compare without letter case, as GitHub's do."""
+    return repo.casefold()
 
 
 def _without_file(settings: LabelSchema | None) -> tuple[SchemaSource, LabelSchema]:
@@ -122,37 +124,25 @@ class SyncService:
 
     # Repos ----------------------------------------------------------------------------
 
-    async def watch(self, repo: str) -> None:
-        """Add ``repo``: its existing issues will land in the Backlog, later ones in the
-        Inbox. Watching it again keeps its original ``added_at``.
-
-        Raises:
-            InvalidRepoError: ``repo`` is not ``owner/name``.
-        """
-        self._store.watch(validate_repo(repo), self._clock())
-
-    async def unwatch(self, repo: str) -> None:
-        """Stop syncing ``repo``; its cache stays."""
-        self._store.unwatch(validate_repo(repo))
-
-    async def watched_repos(self) -> builtins.list[str]:
-        return self._store.watched_repos()
-
     async def configure(
         self, repo: str, *, watched: bool, settings_schema: LabelSchema | None
     ) -> RepoState:
         """Settings → Issues for one repo: watch or unwatch it and keep (or clear, with
-        ``None``) its Settings schema (see ``set_settings_schema``).
+        ``None``) its Settings schema (see ``set_settings_schema``). A repo is watched under
+        the name GitHub reports for it, whatever spelling the author typed, so every key
+        (store, views, items, MCP) is the one GitHub's payloads use. Its existing issues land
+        in the Backlog, later ones in the Inbox; watching it again keeps its ``added_at``.
 
         Raises:
             InvalidRepoError: ``repo`` is not ``owner/name``.
             RepoNotWatchedError: unwatching a repo the author never added.
+            GitHubError: watching a repo GitHub can't find (or can't be reached).
         """
-        name = validate_repo(repo)
         if watched:
+            name = validate_repo(await self._github.repository(validate_repo(repo)))
             self._store.watch(name, self._clock())
         else:
-            self.state(name)  # only a repo the author added can be unwatched
+            name = self.state(repo).repo  # only a repo the author added can be unwatched
             self._store.unwatch(name)
         await self.set_settings_schema(name, settings_schema)
         return self.state(name)
@@ -177,12 +167,8 @@ class SyncService:
 
     # Views ----------------------------------------------------------------------------
 
-    async def list(self, view: ViewName, filters: IssueFilters) -> IssueView:
-        """The cached ``view``; never awaits GitHub or a running sync."""
-        return build_view(self._store, view, filters, self._clock(), self.is_syncing)
-
     def is_syncing(self, repo: str) -> bool:
-        return repo in self._syncing
+        return _key(repo) in self._syncing
 
     # Sync -----------------------------------------------------------------------------
 
@@ -195,6 +181,17 @@ class SyncService:
                     return
             except RepoNotWatchedError:
                 continue  # unwatched while an earlier repo synced
+            except Exception as exc:  # one repo's unexpected failure never stops the others
+                log.exception("issues.sync of %s failed unexpectedly", repo)
+                self._record_unexpected(repo, exc)
+
+    def _record_unexpected(self, repo: str, exc: Exception) -> None:
+        """Show an unexpected failure in the repo's status; best effort (recording may be what
+        failed, and that cause is already logged)."""
+        try:
+            self._record_failure(repo, f"{type(exc).__name__}: {exc}")
+        except Exception:
+            log.exception("issues.sync could not record the failure of %s", repo)
 
     async def sync(self, repo: str) -> None:
         """Sync one watched repo now. Failures are recorded, never raised; a sync of this
@@ -204,33 +201,35 @@ class SyncService:
             InvalidRepoError: ``repo`` is not ``owner/name``.
             RepoNotWatchedError: the author hasn't added ``repo``.
         """
-        self._watched(repo)
-        await self._sync(repo)
+        await self._sync(self._watched(repo).repo)
 
     async def _sync(self, repo: str) -> bool:
         """Run one repo's sync; ``False`` when rate limited (the run should stop)."""
         now = self._clock()
         if self._backoff_until is not None and now < self._backoff_until:
             return False
-        lock = self._locks.setdefault(repo, asyncio.Lock())
+        lock = self._lock(repo)
         if lock.locked():
             return True
         async with lock:
-            self._syncing.add(repo)
+            self._syncing.add(_key(repo))
             try:
                 await self._run(self._watched(repo))
             except GitHubRateLimitedError as exc:
                 self._backoff_until = exc.reset_at or now + SYNC_INTERVAL
                 self._record_failure(repo, f"GitHub rate limit: {exc}")
                 return False
-            except GitHubError as exc:
+            except (GitHubError, RepoMovedError) as exc:
                 self._record_failure(repo, str(exc))
                 return True
             finally:
-                self._syncing.discard(repo)
+                self._syncing.discard(_key(repo))
             self._backoff_until = None
             self._store.record_sync(repo, self._clock(), None)
             return True
+
+    def _lock(self, repo: str) -> asyncio.Lock:
+        return self._locks.setdefault(_key(repo), asyncio.Lock())
 
     def _record_failure(self, repo: str, cause: str) -> None:
         log.warning("issues.sync of %s failed, serving the cache: %s", repo, cause)
@@ -246,6 +245,12 @@ class SyncService:
         done = False
         while not done:
             page = await self._github.list_issues(repo, cursor.since, cursor.page_token)
+            moved = {i.repo for i in page.items if _key(i.repo) != _key(repo)}
+            if moved:
+                raise RepoMovedError(
+                    f"GitHub lists {repo}'s issues under {', '.join(sorted(moved))}: the repo "
+                    "was renamed or moved; re-add it under its new name"
+                )
             # A covered issue comes back at the inclusive ``since``: re-take it only if it
             # changed (an edit within the high-water second), else skip the write and fetches.
             fresh = [
@@ -347,7 +352,7 @@ class SyncService:
             RepoNotWatchedError: the author never added ``repo``.
         """
         name = validate_repo(repo)
-        async with self._locks.setdefault(name, asyncio.Lock()):
+        async with self._lock(name):
             state = self.state(name)
             self._store.set_settings_schema(name, schema)
             if state.schema_source != "repo":
@@ -364,7 +369,8 @@ class SyncService:
 
     async def recompute(self, repo: str) -> None:
         """Re-triage every cached issue of ``repo`` against its stored schema (IR18): call it
-        after the schema or its overlay changes. It can clear the Inbox flag (an issue now
+        after the schema or its overlay changes. Kept for Task 5–6's ``schema_overlay``, which
+        changes the stored schema outside Settings. It can clear the Inbox flag (an issue now
         complete) but never set it: the convention changed, not the issue, so this never floods
         the Inbox (IR30). It waits for a running sync of the repo, so pages that sync saves with
         the old schema can't overwrite it.
@@ -374,7 +380,7 @@ class SyncService:
             RepoNotWatchedError: the author hasn't added ``repo``.
         """
         state = self._watched(repo)
-        async with self._locks.setdefault(state.repo, asyncio.Lock()):
+        async with self._lock(state.repo):
             current = self._watched(repo)  # the schema stored by the time the lock is ours
             self._retriage(current.repo, current.schema)
 

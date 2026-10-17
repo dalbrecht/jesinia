@@ -1872,13 +1872,14 @@ export interface components {
         };
         /**
          * IssuesRepoIn
-         * @description Settings → Issues for one repo. PUT replaces: ``settings_schema`` left out (or null)
-         *     clears the schema kept in Settings, so the default applies when there is no labels.yml.
+         * @description Settings → Issues for one repo. PUT replaces, so ``settings_schema`` is required: send
+         *     the schema to keep, or an explicit ``null`` to clear it (the default then applies when there
+         *     is no labels.yml). Leaving it out is a 422, never a silent wipe of the author's schema.
          */
         IssuesRepoIn: {
             /** Watched */
             watched: boolean;
-            settings_schema?: components["schemas"]["LabelSchemaBody"] | null;
+            settings_schema: components["schemas"]["LabelSchemaBody"] | null;
         };
         /**
          * IssuesRepoOut

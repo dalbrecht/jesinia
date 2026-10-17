@@ -37,6 +37,9 @@ class IssueReads(Protocol):
     """The GitHub reads sync makes. Every method may raise ``GitHubError`` (a
     ``GitHubRateLimitedError`` while rate limited)."""
 
+    async def repository(self, repo: str) -> str:
+        """GitHub's own spelling of ``repo``'s ``owner/name``."""
+
     async def list_issues(
         self, repo: str, since: datetime | None, page_token: str | None
     ) -> Page[Issue]: ...
