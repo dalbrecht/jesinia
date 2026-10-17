@@ -35,6 +35,7 @@ from jesinia.apps.review.domain.repo_access import (
     InvalidSearchError,
     NoReviewSessionError,
     NotACommitError,
+    OutsidePrHistoryError,
     RepoGitError,
     RepoPathNotFoundError,
     RepoToolError,
@@ -95,6 +96,8 @@ class Tree:
     first: str
     head: str
     outside: Path
+    other: str  # another PR's head, branched from `first`
+    other_tree: Path
 
 
 @pytest.fixture(scope="module")
@@ -124,6 +127,9 @@ def tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Tree]:
         (work / "evil\nsrc").mkdir()
         (work / "evil\nsrc" / "x.py").write_text("newline_marker\n")
         (work / "alias.txt").symlink_to("big.txt")
+        # A NUL past git's 8000-byte binary sniff, in a line that matches: text, to git.
+        (work / "aaa-nul.txt").write_bytes(b"pad\n" * 2500 + b"nul_marker\0tail\n")
+        (work / "zzz-normal.txt").write_text("nul_marker ok\n")
 
         (work / "src" / "app.py").write_text("def hello():\n    return 'needle v2'\n")
         (work / "big.txt").write_text("".join(f"line {i}\n" for i in range(1, 5001)))
@@ -143,17 +149,23 @@ def tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Tree]:
         (work / "inner").symlink_to("src")
         (work / "gitlink").symlink_to(".git")
         head = commit_all(work, "second")
-        git(work, "push", "-q", "origin", "main")
+        # main moves on after the PR's head, and another PR branches from `first`.
+        (work / "later.txt").write_text("later\n")
+        commit_all(work, "later on main")
+        git(work, "checkout", "-q", "-b", "other", first)
+        (work / "other.txt").write_text("other PR\n")
+        other = commit_all(work, "other PR")
+        git(work, "push", "-q", "origin", "main", "other")
 
         workspace = GitWorkspace(base / "data" / "review" / "repos", lambda repo: str(remote))
 
-        async def checkout() -> Path:
+        async def checkout() -> tuple[Path, Path]:
             await workspace.ensure_mirror(REPO)
-            await workspace.fetch(REPO, ["refs/heads/main"])
-            return await workspace.worktree(REPO, head)
+            await workspace.fetch(REPO, ["refs/heads/main", "refs/heads/other"])
+            return await workspace.worktree(REPO, head), await workspace.worktree(REPO, other)
 
-        path = asyncio.run(checkout())
-        yield Tree(workspace, path, first, head, outside)
+        path, other_tree = asyncio.run(checkout())
+        yield Tree(workspace, path, first, head, outside, other, other_tree)
 
 
 @pytest.fixture(autouse=True)
@@ -868,5 +880,67 @@ def test_posix_ere_spells_out_shorthand_classes(pattern: str, expected: str) -> 
 
 def test_grep_output_cut_mid_record_drops_that_record() -> None:
     cut = b"a.py\x001\x00one\nb\nc.py\x002\x00two\nd.py\x003\x00thr"
-    assert _parse_grep(cut) == [("a.py", 1, b"one"), ("b\nc.py", 2, b"two")]
-    assert _parse_grep(b"") == []
+    assert _parse_grep(cut) == ([("a.py", 1, b"one"), ("b\nc.py", 2, b"two")], True)
+    assert _parse_grep(b"") == ([], False)
+    assert _parse_grep(b"a.py\x001\x00one\n") == ([("a.py", 1, b"one")], False)
+    # A NUL inside matched text doesn't misalign the records that follow it.
+    nul = b"a.py\x001\x00x\x00y\x00z\nb.py\x002\x00ok\n"
+    assert _parse_grep(nul) == ([("a.py", 1, b"x\x00y\x00z"), ("b.py", 2, b"ok")], False)
+
+
+# --- fix round 2: revisions stay inside the PR's history -----------------------------------
+
+
+async def test_revisions_outside_the_pr_history_are_refused(tools: RepoTools, tree: Tree) -> None:
+    other_worktree = _worktree_ref(tree)
+    outside = ["main", "other", tree.other, tree.other[:12], other_worktree]
+    for revision in outside:
+        for cmd, args in (
+            ("log", [revision]),
+            ("show", [revision]),
+            ("show", [f"{revision}:other.txt"]),
+            ("blame", [revision, "src/app.py"]),
+        ):
+            with pytest.raises(OutsidePrHistoryError, match="not part of this PR's history"):
+                await tools.git(SESSION, cmd, args)
+
+
+async def test_revisions_in_the_pr_history_are_allowed(tools: RepoTools, tree: Tree) -> None:
+    merge_base = git(tree.path, "merge-base", "HEAD", tree.other)
+    assert merge_base == tree.first
+    for revision in ("HEAD", "HEAD~1", merge_base, tree.head):
+        shown = await tools.git(SESSION, "show", ["--oneline", "--stat", revision])
+        assert shown["output"]
+    blame = await tools.git(SESSION, "blame", ["HEAD~1", "src/app.py"])
+    assert "needle" in blame["output"]
+
+
+def _worktree_ref(tree: Tree) -> str:
+    """``worktrees/<name>/HEAD`` naming the other PR's worktree, as seen from this one."""
+    admin = Path(git(tree.path, "rev-parse", "--git-common-dir")) / "worktrees"
+    for name in sorted(p.name for p in admin.iterdir()):
+        ref = f"worktrees/{name}/HEAD"
+        if git(tree.path, "rev-parse", ref) == tree.other:
+            return ref
+    raise AssertionError("no worktree ref for the other PR")
+
+
+async def test_unbind_frees_the_sessions_lock_and_allowance(tree: Tree) -> None:
+    sessions = ReviewSessionRegistry()
+    sessions.bind(SESSION, tree.path)
+    tools = RepoTools(sessions.worktree_for, tree.workspace, sessions.allowance)
+    await tools.read(SESSION, "src/app.py")
+    assert sessions.allowance.tracks(SESSION)
+    sessions.unbind(SESSION)
+    assert not sessions.allowance.tracks(SESSION)
+    assert not sessions.allowance.tracks("never-bound")
+
+
+async def test_a_nul_in_a_matched_line_never_hides_later_matches(tools: RepoTools) -> None:
+    found = await tools.grep(SESSION, "nul_marker")
+    assert [(m["path"], m["line"]) for m in found["matches"]] == [
+        ("aaa-nul.txt", 2501),
+        ("zzz-normal.txt", 1),
+    ]
+    assert found["matches"][0]["text"] == "nul_marker\x00tail"
+    assert found["truncated"] is False

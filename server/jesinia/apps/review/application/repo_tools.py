@@ -35,6 +35,7 @@ from jesinia.apps.review.domain.repo_access import (
     InvalidReadRangeError,
     NoReviewSessionError,
     NotACommitError,
+    OutsidePrHistoryError,
     RepoGitError,
     RepoPathNotFoundError,
     UnsafePathError,
@@ -167,29 +168,39 @@ def _allowance_key(root: Path, rel: str) -> str:
     return f"inode:{stat.st_dev}:{stat.st_ino}"
 
 
-def _parse_grep(data: bytes) -> list[tuple[str, int, bytes]]:
-    """``git grep -n -z`` records as ``(path, line, text)``.
+def _parse_grep(data: bytes) -> tuple[list[tuple[str, int, bytes]], bool]:
+    """``git grep -n -z`` records as ``(path, line, text)``, and whether the output ended
+    inside a record.
 
-    Parsed NUL-first: a path may contain a newline, but the matched text can't (it is one
-    line), so each field after a line number is ``<text>\n<next path>``. A final record cut
-    mid-way is dropped.
+    Records are ``<path>\\0<line>\\0<text>\\n``. A path may contain a newline but never a
+    NUL; matched text never contains a newline but may contain NULs (git only sniffs the
+    first 8000 bytes for binary). So the text runs from after the line number to the first
+    newline, rejoining any NUL-split pieces, and the next path starts right after it. An
+    unfinished final record (output cut at the byte cap) is reported, never dropped quietly.
 
     Raises:
-        RepoGitError: output that isn't in that shape (a NUL inside matched text).
+        RepoGitError: a line number that isn't a number.
     """
     fields = data.split(b"\0")
     records: list[tuple[str, int, bytes]] = []
     path = fields[0]
-    for index in range(1, len(fields) - 1, 2):
-        line, rest = fields[index], fields[index + 1]
-        text, newline, following = rest.partition(b"\n")
-        if not newline:
-            break
+    index = 1
+    while index < len(fields):
+        line = fields[index]
+        pieces: list[bytes] = []
+        newline = b""
+        while not newline:
+            index += 1
+            if index == len(fields):
+                return records, True  # the output ended inside this record
+            text, newline, following = fields[index].partition(b"\n")
+            pieces.append(text)
         if not line.isdigit():
             raise RepoGitError("could not parse git grep output; narrow the search with a glob")
-        records.append((os.fsdecode(path), int(line), text))
+        records.append((os.fsdecode(path), int(line), b"\0".join(pieces)))
         path = following
-    return records
+        index += 1
+    return records, bool(path)
 
 
 class RepoTools:
@@ -210,7 +221,6 @@ class RepoTools:
         self._sessions_to_worktree = sessions_to_worktree
         self._git = git
         self._allowance = allowance
-        self._locks: dict[str, asyncio.Lock] = {}
 
     async def read(
         self, session_id: str | None, path: str, start: int | None = None, end: int | None = None
@@ -302,8 +312,11 @@ class RepoTools:
         keys: dict[str, str] = {}
         withheld = 0
         size = 0
-        truncated = output.truncated
-        for rel, line, raw_text in _parse_grep(output.data):
+        records, unfinished = _parse_grep(output.data)
+        # Only output already cut at the byte cap may end mid-record; either way it is
+        # reported as truncated, so no match is ever missing silently.
+        truncated = output.truncated or unfinished
+        for rel, line, raw_text in records:
             # repo_read refuses control characters in paths, so they are skipped here too.
             if auto_skip_reason(rel, False) is not None or any(ord(c) < 32 for c in rel):
                 skipped.add(rel)
@@ -462,7 +475,7 @@ class RepoTools:
         Raises:
             AllowanceExhaustedError: nothing of the file's allowance is left.
         """
-        async with self._locks.setdefault(session, asyncio.Lock()):
+        async with self._allowance.lock(session):
             granted = self._allowance.take(session, key, lines)
         if granted == 0:
             raise AllowanceExhaustedError(
@@ -472,10 +485,14 @@ class RepoTools:
         return granted
 
     async def _commit(self, root: Path, revision: str) -> str:
-        """The commit ``revision`` names, as a full id.
+        """The commit ``revision`` names, as a full id, if it is part of the PR's history.
+
+        The mirror holds every fetched branch and every other PR's head; agents read only
+        the PR under review, which includes the base history it was built on (R17).
 
         Raises:
             NotACommitError: a blob, a tree, or nothing.
+            OutsidePrHistoryError: a commit that isn't an ancestor of the worktree's HEAD.
         """
         output = await self._run_git(
             root,
@@ -488,6 +505,16 @@ class RepoTools:
             raise NotACommitError(
                 f"{revision!r} does not name a commit. Read file content with repo_read, "
                 "or with show <commit>:<path>"
+            )
+        ancestry = await self._run_git(
+            root,
+            ["merge-base", "--is-ancestor", "--end-of-options", commit, "HEAD"],
+            output_limit=4096,
+            accept_exit_codes=frozenset({0, 1}),  # 1: not an ancestor
+        )
+        if ancestry.exit_code != 0:
+            raise OutsidePrHistoryError(
+                f"{revision!r} is not part of this PR's history (an ancestor of its head)"
             )
         return commit
 

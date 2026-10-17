@@ -15,6 +15,7 @@ repo tools is checked here before anything touches the filesystem or git:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -107,6 +108,10 @@ class NotACommitError(UnsafeGitArgumentError):
     """A ``repo_git`` revision names a blob, a tree or nothing, not a commit."""
 
 
+class OutsidePrHistoryError(UnsafeGitArgumentError):
+    """A ``repo_git`` revision is a commit, but not an ancestor of the PR's head."""
+
+
 class InvalidSearchError(RepoToolError):
     """A ``repo_grep`` pattern or glob is refused before running."""
 
@@ -117,10 +122,12 @@ class RepoGitError(RepoToolError):
 
 @dataclass(frozen=True)
 class CappedOutput:
-    """A command's stdout, cut at a byte limit; ``truncated`` says whether it was cut."""
+    """A command's stdout, cut at a byte limit; ``truncated`` says whether it was cut.
+    ``exit_code`` is git's (one of the accepted codes), or 0 when git was cut off."""
 
     data: bytes
     truncated: bool
+    exit_code: int = 0
 
 
 @dataclass(frozen=True)
@@ -148,6 +155,15 @@ class FileLineAllowance:
     def __init__(self, per_file: int) -> None:
         self.per_file = per_file
         self._used: dict[str, dict[str, int]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def lock(self, session_id: str) -> asyncio.Lock:
+        """The lock that makes a session's check-and-reserve one step."""
+        return self._locks.setdefault(session_id, asyncio.Lock())
+
+    def tracks(self, session_id: str) -> bool:
+        """Whether any state (reads or a lock) is held for ``session_id``."""
+        return session_id in self._used or session_id in self._locks
 
     def remaining(self, session_id: str, path: str) -> int:
         return self.per_file - self._used.get(session_id, {}).get(path, 0)
@@ -171,8 +187,9 @@ class FileLineAllowance:
             used[path] -= max(0, min(lines, used[path]))
 
     def drop(self, session_id: str) -> None:
-        """Forget a session (it ended or was unbound)."""
+        """Forget a session (it ended or was unbound): its reads and its lock."""
         self._used.pop(session_id, None)
+        self._locks.pop(session_id, None)
 
 
 def _has_control_characters(text: str) -> bool:

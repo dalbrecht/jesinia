@@ -259,7 +259,7 @@ class GitWorkspace:
         )
         if not truncated and code not in accept_exit_codes:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
-        return CappedOutput(out, truncated)
+        return CappedOutput(out, truncated, 0 if truncated else code)
 
     async def prune(self, keep: set[tuple[str, str]]) -> int:
         kept = {(canonical_repo(repo), check_sha(sha)) for repo, sha in keep}
