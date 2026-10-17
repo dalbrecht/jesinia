@@ -49,8 +49,22 @@ class GitCommandError(WorkspaceError):
         self.stderr = stderr
 
 
+class GitTimeoutError(WorkspaceError):
+    """A git command ran past its time limit and was killed."""
+
+    def __init__(self, argv: tuple[str, ...], seconds: float) -> None:
+        super().__init__(f"{' '.join(argv)} timed out after {seconds:g}s")
+        self.argv = argv
+        self.seconds = seconds
+
+
+class GitUnavailableError(WorkspaceError):
+    """The git executable could not be started (missing from PATH, not executable)."""
+
+
 def parse_repo(repo: str) -> tuple[str, str]:
-    """Split ``owner/name``.
+    """Split ``owner/name`` and lowercase both: GitHub names are case-insensitive, and so is
+    the default macOS filesystem, so ``Acme/Widget`` and ``acme/widget`` are one repo.
 
     Raises:
         InvalidRepoError: anything else, including ``.`` and ``..`` as the name.
@@ -58,7 +72,17 @@ def parse_repo(repo: str) -> tuple[str, str]:
     owner, slash, name = repo.partition("/")
     if not slash or not _OWNER.fullmatch(owner) or not _NAME.fullmatch(name) or name in {".", ".."}:
         raise InvalidRepoError(f"not a GitHub owner/name: {repo!r}")
-    return owner, name
+    return owner.lower(), name.lower()
+
+
+def canonical_repo(repo: str) -> str:
+    """The one spelling of ``repo`` used for paths, locks and comparisons.
+
+    Raises:
+        InvalidRepoError: as ``parse_repo``.
+    """
+    owner, name = parse_repo(repo)
+    return f"{owner}/{name}"
 
 
 def check_sha(sha: str) -> str:

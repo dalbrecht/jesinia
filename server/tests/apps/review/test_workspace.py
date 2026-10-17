@@ -5,6 +5,7 @@ detached worktrees per head, and per-file patch IDs for rebase detection."""
 from __future__ import annotations
 
 import asyncio
+import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,11 +17,14 @@ import pytest
 from jesinia.apps.review.application.ports import Workspace
 from jesinia.apps.review.domain.workspace import (
     GitCommandError,
+    GitTimeoutError,
+    GitUnavailableError,
     InvalidRefError,
     InvalidRepoError,
     InvalidShaError,
     WorkspaceError,
     WorkspacePathError,
+    canonical_repo,
     check_ref,
     check_sha,
     parse_repo,
@@ -36,6 +40,13 @@ GIT_ENV = {
     "GIT_COMMITTER_EMAIL": "test@example.invalid",
     "GIT_CONFIG_NOSYSTEM": "1",
 }
+INHERITED = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+)
 A_LINES = "".join(f"line {i}\n" for i in range(1, 21))
 
 
@@ -197,6 +208,7 @@ async def test_prune_skips_entries_it_did_not_create(tmp_path: Path, fixture: Fi
     (root / ".hidden" / "x" / "trees" / ("a" * 40)).mkdir(parents=True)
     assert await ws.prune(set()) == 0
     assert (root / "acme" / "widget" / "trees" / "not-a-sha").is_dir()
+    assert (root / ".hidden" / "x" / "trees" / ("a" * 40)).is_dir()
 
 
 async def test_never_pushes(
@@ -222,7 +234,7 @@ async def test_never_pushes(
     assert not any("push" in argv for argv in recorded)
 
 
-async def test_git_runs_non_interactively_without_system_config(
+async def test_git_env_is_non_interactive_and_isolated(
     tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: list[dict[str, str]] = []
@@ -232,14 +244,222 @@ async def test_git_runs_non_interactively_without_system_config(
         seen.append(kwargs["env"])
         return await real_spawn(*argv, **kwargs)
 
+    # The system config stays in force (it holds macOS's osxkeychain credential helper);
+    # a git hook's repository variables must not redirect commands to another repo.
+    monkeypatch.delenv("GIT_CONFIG_NOSYSTEM")
+    elsewhere = tmp_path / "elsewhere"
+    for key in INHERITED:
+        monkeypatch.setenv(key, str(elsewhere))
     monkeypatch.setattr(SPAWN, recording_spawn)
-    await make_workspace(tmp_path, fixture).ensure_mirror(REPO)
-    assert seen and all(
-        env["GIT_TERMINAL_PROMPT"] == "0"
-        and env["GIT_CONFIG_NOSYSTEM"] == "1"
-        and env["GIT_PAGER"] == "cat"
-        for env in seen
+    ws = make_workspace(tmp_path, fixture)
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/main"])
+    assert not elsewhere.exists()
+    root = str((tmp_path / "data" / "review" / "repos").resolve())
+    assert seen
+    for env in seen:
+        assert env["GIT_TERMINAL_PROMPT"] == "0" and env["GIT_PAGER"] == "cat"
+        assert env["GIT_LFS_SKIP_SMUDGE"] == "1" and env["GIT_CEILING_DIRECTORIES"] == root
+        assert "GIT_CONFIG_NOSYSTEM" not in env
+        assert not set(INHERITED) & set(env)
+
+
+async def test_worktree_ignores_hostile_global_lfs_config(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "lfs-work"
+    subprocess.run(["git", "clone", "-q", str(fixture.remote), str(work)], check=True)
+    git(work, "checkout", "-q", "-b", "lfs", fixture.base)
+    (work / ".gitattributes").write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
+    (work / "big.bin").write_text("version https://git-lfs.github.com/spec/v1\noid sha256:00\n")
+    lfs_head = commit_all(work, "lfs")
+    git(work, "push", "-q", "origin", "lfs")
+    # A global config like the author's: LFS required, but its binary is missing.
+    home = tmp_path / "home"
+    home.mkdir()
+    hostile = home / ".gitconfig"
+    hostile.write_text(
+        '[filter "lfs"]\n\trequired = true\n\tsmudge = git-lfs-missing smudge %f\n'
+        "\tprocess = git-lfs-missing filter-process\n"
     )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(hostile))
+    ws = make_workspace(tmp_path, fixture)
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/lfs"])
+    tree = await ws.worktree(REPO, lfs_head)
+    assert (tree / "big.bin").read_text().startswith("version https://git-lfs")
+
+
+async def test_repo_names_are_case_insensitive(tmp_path: Path, fixture: Fixture) -> None:
+    ws = await fetched(tmp_path, fixture)
+    kept = await ws.worktree(REPO, fixture.head)
+    assert await ws.worktree("Acme/Widget", fixture.head) == kept
+    assert ws._lock("Acme/Widget") is ws._lock(REPO)
+    assert await ws.prune({("Acme/Widget", fixture.head)}) == 0
+    assert kept.is_dir()
+
+
+async def test_worktree_recovers_when_its_directory_was_deleted(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    path = await ws.worktree(REPO, fixture.head)
+    shutil.rmtree(path)  # still registered in the mirror
+    assert await ws.worktree(REPO, fixture.head) == path
+    assert (path / "c.txt").read_text() == "new file\n"
+
+
+async def test_an_interrupted_add_never_yields_a_partial_tree(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+
+    async def add_then_hang(*argv: str, **kwargs: Any) -> Any:
+        if "add" in argv:
+            # git registered and checked out the tree, then got stuck: a partial checkout.
+            subprocess.run(argv, check=True, capture_output=True, env=kwargs["env"])
+            target = Path(argv[argv.index("--detach") + 1])
+            (target / "c.txt").unlink()
+            return await real_spawn("sleep", "30", **kwargs)
+        return await real_spawn(*argv, **kwargs)
+
+    monkeypatch.setattr(SPAWN, add_then_hang)
+    hanging = GitWorkspace(ws.root, lambda repo: str(fixture.remote), command_timeout=0.5)
+    with pytest.raises(GitTimeoutError):
+        await hanging.worktree(REPO, fixture.head)
+    trees = ws.root.resolve() / "acme" / "widget" / "trees"
+    assert not (trees / fixture.head).exists()
+    assert [p.name for p in trees.iterdir()] == []
+
+    monkeypatch.setattr(SPAWN, real_spawn)
+    path = await ws.worktree(REPO, fixture.head)
+    assert (path / "c.txt").read_text() == "new file\n"
+
+
+async def test_a_timed_out_git_is_killed_and_reported(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[asyncio.subprocess.Process] = []
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+
+    async def hang(*argv: str, **kwargs: Any) -> Any:
+        proc = await real_spawn("sleep", "30", **kwargs)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(SPAWN, hang)
+    ws = GitWorkspace(tmp_path / "repos", str, command_timeout=0.2, fetch_timeout=0.3)
+    with pytest.raises(GitTimeoutError, match=r"init .* timed out after 0.2s"):
+        await ws.ensure_mirror(REPO)
+    with pytest.raises(GitTimeoutError, match=r"fetch .* timed out after 0.3s") as caught:
+        await ws.fetch(REPO, ["refs/heads/main"])
+    assert "fetch" in caught.value.argv and caught.value.seconds == 0.3
+    assert all(proc.returncode is not None for proc in started)
+
+
+async def test_a_cancelled_git_is_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[asyncio.subprocess.Process] = []
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+
+    async def hang(*argv: str, **kwargs: Any) -> Any:
+        proc = await real_spawn("sleep", "30", **kwargs)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(SPAWN, hang)
+    task = asyncio.create_task(GitWorkspace(tmp_path / "repos", str).ensure_mirror(REPO))
+    while not started:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert started[0].returncode is not None
+
+
+async def test_a_missing_git_binary_is_a_typed_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "no-bin"))
+    with pytest.raises(GitUnavailableError) as caught:
+        await GitWorkspace(tmp_path / "repos", str).ensure_mirror(REPO)
+    assert isinstance(caught.value.__cause__, OSError)
+
+
+async def test_fetch_with_no_refs_runs_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def refuse(*argv: str, **kwargs: Any) -> Any:
+        raise AssertionError(f"ran {argv}")
+
+    monkeypatch.setattr(SPAWN, refuse)
+    await GitWorkspace(tmp_path / "repos", str).fetch(REPO, [])
+
+
+async def test_diff_ignores_the_users_diff_config(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    plain = await ws.diff(REPO, fixture.base, fixture.head)
+    ids = await ws.patch_ids(REPO, fixture.base, fixture.head)
+    custom = tmp_path / "custom-gitconfig"
+    custom.write_text(
+        "[diff]\n\tnoprefix = true\n\tcontext = 9\n\tmnemonicPrefix = true\n"
+        "\talgorithm = histogram\n\trenames = false\n"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(custom))
+    assert await ws.diff(REPO, fixture.base, fixture.head) == plain
+    assert await ws.patch_ids(REPO, fixture.base, fixture.head) == ids
+    assert "--- a/a.txt\n+++ b/a.txt" in plain
+
+
+async def test_patch_ids_cover_renames_deletes_and_binaries(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    work = tmp_path / "more-work"
+    subprocess.run(["git", "clone", "-q", str(fixture.remote), str(work)], check=True)
+    git(work, "checkout", "-q", "-b", "more", fixture.base)
+    git(work, "mv", "a.txt", "renamed.txt")
+    git(work, "rm", "-q", "b.txt")
+    (work / "blob.bin").write_bytes(bytes(range(256)))
+    more_head = commit_all(work, "more")
+    git(work, "push", "-q", "origin", "more")
+    ws = make_workspace(tmp_path, fixture)
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/more"])
+    ids = await ws.patch_ids(REPO, fixture.base, more_head)
+    assert set(ids) == {"renamed.txt", "b.txt", "blob.bin"}
+    assert len(set(ids.values())) == 3 and all(len(v) == 40 for v in ids.values())
+
+
+async def test_prune_never_follows_symlinks(tmp_path: Path, fixture: Fixture) -> None:
+    ws = await fetched(tmp_path, fixture)
+    kept = await ws.worktree(REPO, fixture.head)
+    trees = kept.parent
+    link = trees / fixture.rebased_head
+    link.symlink_to(kept, target_is_directory=True)
+    outside = tmp_path / "outside"
+    (outside / "x" / "trees" / fixture.head).mkdir(parents=True)
+    (ws.root / "evil").symlink_to(outside, target_is_directory=True)
+    (trees / f".tmp-{fixture.conflict_head}-stale").mkdir()
+
+    assert await ws.prune({(REPO, fixture.head)}) == 1
+    assert not link.is_symlink() and kept.is_dir() and (kept / "c.txt").exists()
+    assert (outside / "x" / "trees" / fixture.head).is_dir()
+    assert not (trees / f".tmp-{fixture.conflict_head}-stale").exists()
+
+
+async def test_worktree_replaces_a_symlink_without_following_it(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    kept = await ws.worktree(REPO, fixture.head)
+    link = kept.parent / fixture.rebased_head
+    link.symlink_to(kept, target_is_directory=True)
+    path = await ws.worktree(REPO, fixture.rebased_head)
+    assert path == link and not path.is_symlink()
+    assert (kept / "c.txt").exists()
 
 
 async def test_failing_git_surfaces_its_stderr(tmp_path: Path, fixture: Fixture) -> None:
@@ -304,7 +524,7 @@ async def test_concurrent_worktree_calls_share_one_checkout(
 
 
 def test_github_remote_url_uses_https_and_no_credentials() -> None:
-    assert github_remote_url("acme/widget") == "https://github.com/acme/widget.git"
+    assert github_remote_url("Acme/Widget") == "https://github.com/acme/widget.git"
     with pytest.raises(InvalidRepoError):
         github_remote_url("acme/widget/../x")
 
@@ -318,8 +538,9 @@ def test_parse_repo_rejects_anything_but_owner_slash_name(repo: str) -> None:
         parse_repo(repo)
 
 
-def test_parse_repo_accepts_github_names() -> None:
-    assert parse_repo("acme-co/widget.js_2") == ("acme-co", "widget.js_2")
+def test_parse_repo_accepts_github_names_case_insensitively() -> None:
+    assert parse_repo("Acme-Co/Widget.js_2") == ("acme-co", "widget.js_2")
+    assert canonical_repo("Acme/Widget") == "acme/widget"
 
 
 @pytest.mark.parametrize("sha", ["", "abc123", "A" * 40, "g" * 40, "a" * 41, "-" + "a" * 39])
@@ -343,3 +564,12 @@ def test_check_ref_rejects_unsafe_refs(ref: str) -> None:
 @pytest.mark.parametrize("ref", ["refs/heads/main", "refs/pull/12/head", "a" * 40])
 def test_check_ref_accepts_full_refs_and_shas(ref: str) -> None:
     assert check_ref(ref) == ref
+
+
+async def test_a_failed_add_leaves_nothing_behind(tmp_path: Path, fixture: Fixture) -> None:
+    ws = await fetched(tmp_path, fixture)
+    unknown = "b" * 40
+    with pytest.raises(GitCommandError, match=unknown):
+        await ws.worktree(REPO, unknown)
+    trees = ws.root.resolve() / "acme" / "widget" / "trees"
+    assert not trees.exists() or [p.name for p in trees.iterdir()] == []
