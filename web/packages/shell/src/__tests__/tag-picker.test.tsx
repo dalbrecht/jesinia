@@ -232,4 +232,19 @@ describe("TagPicker", () => {
     slow.release(Response.json({ normalised: "wal-mode", ...NOT_FOUND }));
     await waitFor(() => expect(changes).toHaveBeenLastCalledWith(["wal-mode"]));
   });
+
+  it("suggestOnOpen asks once as it opens (Keep), never again on its own", async () => {
+    const env = fakeClient({ "POST /api/kb/tags/suggest": [{ tag: "sqlite", new: false }] });
+    const view = (text: string) => (
+      <ClientProvider client={env.client}>
+        <TagPicker text={text} value={[]} onChange={() => {}} suggestOnOpen />
+      </ClientProvider>
+    );
+    const { rerender } = render(view("Post about SQLite."));
+    expect(await screen.findByRole("button", { name: "#sqlite" })).toBeInTheDocument();
+    expect(await suggests(env.calls)[0]?.json()).toEqual({ text: "Post about SQLite.", limit: 5 });
+    rerender(view("Post about SQLite, with a note."));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(suggests(env.calls)).toHaveLength(1);
+  });
 });

@@ -18,6 +18,11 @@ export type TagPickerProps = {
   /** The chosen tags, normalised and without `#`. */
   value: string[];
   onChange: (tags: string[]) => void;
+  /**
+   * Ask for suggestions once, as the picker opens: for a surface the user opened in order to
+   * tag something (RSS Keep, spec §3.1). It runs in the background and never blocks typing.
+   */
+  suggestOnOpen?: boolean;
 };
 
 /** A near-match the user can take instead of the tag they typed. */
@@ -32,12 +37,12 @@ function causeText(cause: unknown): string {
 
 /**
  * Tag chips for something about to be saved, plus a box to add a tag by name. Suggestions
- * (which may run the user's agent) are fetched only when the user asks, about to save, never
- * on every change of `text`. Tags outside the catalog carry a *new* badge (saving adds them);
+ * (which may run the user's agent) are fetched only when the user asks (Suggest tags, or opening
+ * a surface with `suggestOnOpen`), never on every change of `text`. Tags outside the catalog carry a *new* badge (saving adds them);
  * a typed tag close to an existing one offers the existing one instead, so near-duplicates are
  * never created by accident.
  */
-export function TagPicker({ text, context, value, onChange }: TagPickerProps) {
+export function TagPicker({ text, context, value, onChange, suggestOnOpen = false }: TagPickerProps) {
   const client = useClient();
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [suggesting, setSuggesting] = useState(false);
@@ -129,6 +134,13 @@ export function TagPicker({ text, context, value, onChange }: TagPickerProps) {
       if (scope.current === asked) setChecking(false);
     }
   };
+
+  // Once per mount (on open only, with the text it opened with), after the text effect above
+  // has reset the suggestions. No guard ref: under StrictMode's remount the first answer is
+  // dropped as stale, so the second ask is the one that shows.
+  useEffect(() => {
+    if (suggestOnOpen) void suggest();
+  }, []);
 
   const pick = (suggestion: Suggestion) => {
     // A new suggestion is checked like a typed tag: it may be a near-duplicate.

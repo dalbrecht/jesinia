@@ -29,6 +29,14 @@ kept current over `/api/events`.
 - `registerServiceWorker(scope)` and `sw.js`, the minimal service worker that makes an
   app installable.
 - `readTheme` / `applyTheme` / `cycleTheme`.
+- `ChatRail` (with its reducer: `reduce`, `EMPTY`, `ChatState`, `lineDiff`): the agent chat
+  shared by Notes and RSS Engage. It takes `session`, `onSessionNeeded(runner)` (start one for
+  the first message) and `footer(chat)`, the app's own actions (Save note, Keep with this
+  conversation). Agent replies render through `renderMarkdown`.
+- `SafeMarkdown` / `renderMarkdown` / `safeHttpUrl` (ruling R17): untrusted Markdown through
+  react-markdown with raw HTML skipped and http(s)-only URLs; never `innerHTML`.
+- `TagPicker`: tag chips with catalog suggestions and near-duplicate checks;
+  `suggestOnOpen` asks for suggestions once as it opens (RSS Keep).
 - Test helpers: `fakeClient`, `baseRoutes`, `syncStatus`.
 
 ## Development

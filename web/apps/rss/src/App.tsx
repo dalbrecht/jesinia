@@ -3,10 +3,12 @@
 // drill-down from feeds to list to a full-screen reader.
 import type { JesiniaClient } from "@jesinia/client";
 import { Button, Input, relativeTime, useToast, VisuallyHidden } from "@jesinia/design";
-import { AppShell, useClient } from "@jesinia/shell";
+import { AppShell, ChatRail, useClient, type ChatState, type Runners } from "@jesinia/shell";
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
+  askTakeaway,
   capCount,
+  engagePost,
   getCounts,
   listFeeds,
   listPosts,
@@ -17,11 +19,13 @@ import {
   setRead,
   type Counts,
   type Feed,
+  type Kept,
   type Post,
   type Scope,
   type View,
 } from "./api";
 import { Feeds } from "./Feeds";
+import { KeepPopover } from "./KeepPopover";
 import { KEY_HELP, useKeys } from "./keys";
 import { PostList } from "./PostList";
 import { Reader, sentence } from "./Reader";
@@ -46,6 +50,11 @@ function useNarrow(): boolean {
 
 function causeOf(e: unknown): string {
   return sentence(e instanceof Error ? e.message : String(e));
+}
+
+/** Whitespace folded, as the server folds a takeaway. */
+function oneLine(text: string): string {
+  return text.split(/\s+/).filter(Boolean).join(" ");
 }
 
 function titleOf(scope: Scope, feeds: Feed[], query: string): string {
@@ -122,9 +131,20 @@ type WorkspaceProps = {
   refreshRef: MutableRefObject<(() => void) | null>;
   onRefreshing: (busy: boolean) => void;
   onRefreshed: (at: string) => void;
+  /** null while the server's runners are still loading. */
+  runners: Runners | null;
 };
 
-function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
+/** The Keep popover, open for one post; after Engage it carries the takeaway. */
+type Keeping = { postId: number; note: string; takeaway: { text: string; session: string } | null };
+/**
+ * The conversation about one post; `tried` once a session was asked for on opening. Closing
+ * the rail (or Done on the sheet) only hides it: the chat keeps its state until another post
+ * opens.
+ */
+type Engaged = { postId: number; session: string | null; tried: boolean; open: boolean };
+
+function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: WorkspaceProps) {
   const client = useClient();
   const toast = useToast();
   const narrow = useNarrow();
@@ -150,6 +170,18 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
   /** Per post, the latest read toggle: older answers arriving late are ignored. */
   const readSeq = useRef(new Map<number, number>());
   const countsFailing = useRef(false);
+  const [keeping, setKeeping] = useState<Keeping | null>(null);
+  const [engaged, setEngaged] = useState<Engaged | null>(null);
+  const [takingAway, setTakingAway] = useState(false);
+  /** The post the conversation is about: a session that starts after another post opened is let go. */
+  const engagedPost = useRef<number | null>(null);
+  /**
+   * The takeaway is one more turn in the session, so afterwards the chat's last message is the
+   * takeaway prompt. Asking again right after uses the author's note from before it.
+   */
+  const lastTakeaway = useRef<{ session: string; reply: string; note: string } | null>(null);
+  const runner = Object.entries(runners ?? {}).find(([, r]) => r.available)?.[0] ?? null;
+  const hasAgent = runners === null || runner !== null;
 
   const fail = useCallback(
     (what: string, e: unknown) => toast.show({ tone: "danger", message: `Couldn't ${what}: ${causeOf(e)}` }),
@@ -323,6 +355,72 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
       fail("mark these read", e);
     });
   };
+
+  // Keep and Engage belong to the post they were opened for.
+  useEffect(() => {
+    setKeeping((k) => (k && k.postId !== selectedId ? null : k));
+    setEngaged((e) => (e && e.postId !== selectedId ? null : e));
+    if (engagedPost.current !== selectedId) engagedPost.current = null;
+  }, [selectedId]);
+
+  const startSession = useCallback(
+    async (postId: number, chosen: string): Promise<string | null> => {
+      try {
+        const session = await engagePost(client, postId, chosen);
+        if (engagedPost.current !== postId) return null; // another post opened meanwhile
+        setEngaged((e) => (e && e.postId === postId ? { ...e, session: session.id } : e));
+        return session.id;
+      } catch (e) {
+        if (engagedPost.current === postId) fail("start the chat", e);
+        return null;
+      }
+    },
+    [client, fail],
+  );
+
+  // Engage starts the session as the rail opens, once a runner is known; if that fails, the
+  // first message tries again.
+  useEffect(() => {
+    if (!engaged || engaged.session || engaged.tried || runner === null) return;
+    setEngaged({ ...engaged, tried: true });
+    void startSession(engaged.postId, runner);
+  }, [engaged, runner, startSession]);
+
+  const keep = () => {
+    if (selected) setKeeping({ postId: selected.id, note: "", takeaway: null });
+  };
+  const engage = () => {
+    if (!selected) return;
+    if (engaged?.postId === selected.id) {
+      setEngaged({ ...engaged, open: true }); // back to the same conversation
+      return;
+    }
+    engagedPost.current = selected.id;
+    setEngaged({ postId: selected.id, session: null, tried: false, open: true });
+  };
+  const closeChat = () => setEngaged((e) => (e ? { ...e, open: false } : e));
+  const kept = (result: Kept) => {
+    replace(result.post);
+    setKeeping(null);
+    loadCounts();
+    toast.show({ tone: "success", message: `Kept to ${result.path}.` });
+  };
+  const keepWithConversation = async (chat: ChatState, postId: number, session: string) => {
+    const previous = lastTakeaway.current;
+    const afterTakeaway = previous?.session === session && oneLine(chat.lastReply?.text ?? "") === previous.reply;
+    const note = afterTakeaway ? previous.note : chat.lastUserText;
+    setTakingAway(true);
+    try {
+      const takeaway = await askTakeaway(client, session);
+      lastTakeaway.current = { session, reply: oneLine(takeaway.text), note };
+      setKeeping({ postId, note, takeaway: { text: takeaway.text, session } });
+    } catch (e) {
+      fail("get a takeaway", e);
+    } finally {
+      setTakingAway(false);
+    }
+  };
+
   const goTo = (next: Scope) => {
     setScope(next);
     setQuery("");
@@ -331,12 +429,14 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
     setStage("list");
   };
 
-  // While the key list is open, keys belong to it (Esc closes it).
-  useKeys(showKeys ? {} : {
+  // While the key list or the Keep popover is open, keys belong to it (Esc closes it).
+  useKeys(showKeys || keeping ? {} : {
     j: () => move(1),
     k: () => move(-1),
     Enter: openOriginal,
     o: openOriginal,
+    n: keep,
+    e: engage,
     m: () => selected && markRead(selected, !selected.read),
     "Shift+A": readAbove,
     "g a": () => goTo(UNREAD),
@@ -349,7 +449,13 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
   }); // prettier-ignore
 
   const title = titleOf(scope, feeds, search);
-  const showFeeds = !narrow || stage === "feeds";
+  const chat =
+    selected !== undefined && engaged !== null && engaged.postId === selected.id
+      ? { post: selected, session: engaged.session, open: engaged.open }
+      : null;
+  const chatOpen = chat !== null && chat.open;
+  // Engaged on a wide screen, the feeds give way so the reader keeps a usable measure.
+  const showFeeds = narrow ? stage === "feeds" : !chatOpen;
   // Until the effect above settles, a reader stage with nothing selected is the list.
   const shown = stage === "reader" && !selected ? "list" : stage;
   const showList = !narrow || shown === "list";
@@ -416,7 +522,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
   );
 
   return (
-    <div className={narrow ? s.narrow : s.layout}>
+    <div className={narrow ? s.narrow : chatOpen ? s.engagedLayout : s.layout}>
       {showFeeds ? <Feeds feeds={feeds} counts={counts} scope={scope} onScope={goTo} /> : null}
       {showList ? listPane : null}
       {showReader ? (
@@ -430,15 +536,118 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
             onNext={() => move(1)}
             onToggleRead={() => markRead(selected, !selected.read)}
             onChanged={replace}
+            onKeep={keep}
+            onEngage={engage}
+            engaged={chatOpen}
             {...(narrow ? { back: { label: title, onBack: () => setStage("list") } } : {})}
-          />
+          >
+            {keeping && keeping.postId === selected.id ? (
+              <KeepPopover
+                key={keeping.takeaway?.session ?? "quick"}
+                post={selected}
+                initialNote={keeping.note}
+                takeaway={keeping.takeaway}
+                hasAgent={hasAgent}
+                onKept={kept}
+                onCancel={() => setKeeping(null)}
+              />
+            ) : null}
+          </Reader>
         ) : (
           <section className={s.reader} aria-label="Reader">
             <p className={s.empty}>Choose a post to read it here.</p>
           </section>
         )
       ) : null}
+      {chat ? (
+        <EngageChat
+          open={chat.open}
+          narrow={narrow}
+          post={chat.post}
+          session={chat.session}
+          runners={runners}
+          onSessionNeeded={(chosen) => startSession(chat.post.id, chosen)}
+          onClose={closeChat}
+          takingAway={takingAway}
+          onKeepWithConversation={(state, session) => void keepWithConversation(state, chat.post.id, session)}
+        />
+      ) : null}
       {showKeys ? <KeysDialog onClose={() => setShowKeys(false)} /> : null}
+    </div>
+  );
+}
+
+type EngageChatProps = {
+  /** Hidden, not unmounted, while closed: the transcript lives in the rail. */
+  open: boolean;
+  narrow: boolean;
+  post: Post;
+  session: string | null;
+  runners: Runners | null;
+  onSessionNeeded: (runner: string) => Promise<string | null>;
+  onClose: () => void;
+  takingAway: boolean;
+  onKeepWithConversation: (chat: ChatState, session: string) => void;
+};
+
+/** Engage (spec §3.2): the chat rail beside the reader, or a sheet over it on a narrow screen. */
+function EngageChat(props: EngageChatProps) {
+  const { session } = props;
+  const rail = (
+    <ChatRail
+      className={props.narrow ? s.sheetChat : s.chatRail}
+      label="Chat about this post"
+      subject={`“${props.post.title}”`}
+      placeholder="Ask about this post"
+      session={session}
+      onSessionNeeded={props.onSessionNeeded}
+      runners={props.runners}
+      actions={
+        props.narrow ? (
+          <Button variant="ghost" size="sm" onClick={props.onClose}>
+            Done
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="⇥"
+            aria-label="Close chat"
+            title="Close chat"
+            onClick={props.onClose}
+          />
+        )
+      }
+      {...(session
+        ? {
+            footer: (chat: ChatState) => (
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={!chat.lastReply || chat.busy}
+                loading={props.takingAway}
+                onClick={() => props.onKeepWithConversation(chat, session)}
+              >
+                Keep with this conversation
+              </Button>
+            ),
+          }
+        : {})}
+    />
+  );
+  // One tree for both layouts, so a resize across the breakpoint keeps the transcript.
+  return (
+    <div
+      className={props.narrow ? s.sheet : s.railSlot}
+      hidden={!props.open}
+      {...(props.narrow ? { role: "dialog", "aria-label": "Chat about this post" } : {})}
+    >
+      {props.narrow ? (
+        <div className={s.grab} aria-hidden="true">
+          <i />
+        </div>
+      ) : null}
+      {rail}
     </div>
   );
 }
@@ -462,7 +671,14 @@ export function App({ client }: { client?: JesiniaClient }) {
       controls={controls}
       {...(client ? { client } : {})}
     >
-      <Workspace refreshRef={refreshRef} onRefreshing={setRefreshing} onRefreshed={setLastUpdate} />
+      {(status) => (
+        <Workspace
+          refreshRef={refreshRef}
+          onRefreshing={setRefreshing}
+          onRefreshed={setLastUpdate}
+          runners={status.runners}
+        />
+      )}
     </AppShell>
   );
 }

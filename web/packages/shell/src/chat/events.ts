@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Agent session events (GET /api/agents/sessions/{id}/events) → ChatTranscript messages.
+// Agent session events (GET /api/agents/sessions/{id}/events) → ChatTranscript messages, for
+// the shared chat rail (Notes, RSS Engage).
 import type { ChatMessage } from "@jesinia/design";
 
 export type AgentEvent = { seq: number; kind: string; data: Record<string, unknown>; origin: string };
@@ -20,7 +21,7 @@ export type ChatState = {
   messages: ChatMessage[];
   /** A turn is in flight (from the user's message until turn_done or error). */
   busy: boolean;
-  /** The last completed agent reply, for Save note. */
+  /** The last completed agent reply, for the rail's footer (Save note, Keep with this conversation). */
   lastReply: { text: string; model: string } | null;
   lastUserText: string;
   attached: boolean;

@@ -3,12 +3,12 @@
 // top right, the post in the serif reading style, and Previous / Next / Mark read along the
 // bottom. Mount one per post (`key={post.id}`): the loaded article belongs to that post.
 import { Button } from "@jesinia/design";
-import { useClient } from "@jesinia/shell";
-import { useMemo, useState } from "react";
+import { SafeMarkdown, useClient } from "@jesinia/shell";
+import { useMemo, useState, type ReactNode } from "react";
 import { fullArticle, needsFullArticle, readingMinutes, retryArchive, safeHttpUrl, type Post } from "./api";
 import { archiveStatus, ArchiveBadge } from "./PostList";
 import s from "./rss.module.css";
-import { SafeHtml, SafeMarkdown } from "./SafeContent";
+import { SafeHtml } from "./SafeContent";
 
 /** The server's cause as a sentence, so the fix can follow it. */
 export function sentence(text: string): string {
@@ -42,9 +42,13 @@ export type ReaderProps = {
   onToggleRead: () => void;
   /** The post changed on the server (an archive retry). */
   onChanged: (post: Post) => void;
-  /** Task 14 wires these; until then the buttons show but are unavailable. */
+  /** Keep (n) and Engage (e); without a handler the button shows but is unavailable. */
   onKeep?: () => void;
   onEngage?: () => void;
+  /** The chat rail is open for this post. */
+  engaged?: boolean;
+  /** Over the reader: the Keep popover. */
+  children?: ReactNode;
   /** Narrow layout: back to the list, labelled with where it goes. */
   back?: { label: string; onBack: () => void };
 };
@@ -96,7 +100,14 @@ export function Reader(props: ReaderProps) {
               Open original ↗
             </Button>
           ) : null}
-          <Button variant="secondary" size="sm" title="Engage (e)" disabled={!props.onEngage} onClick={props.onEngage}>
+          <Button
+            variant="secondary"
+            size="sm"
+            title="Engage (e)"
+            aria-pressed={props.engaged ?? false}
+            disabled={!props.onEngage}
+            onClick={props.onEngage}
+          >
             Engage
           </Button>
           <Button variant="primary" size="sm" title="Keep (n)" disabled={!props.onKeep} onClick={props.onKeep}>
@@ -104,6 +115,7 @@ export function Reader(props: ReaderProps) {
           </Button>
         </span>
       </div>
+      {props.children}
       <div className={s.readerScroll}>
         <article className={s.read}>
           <h1>{post.title}</h1>

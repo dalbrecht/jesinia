@@ -10,6 +10,17 @@
     grid-template-columns: 180px minmax(240px, 300px) minmax(0, 1fr);
   }
 }
+/* Engaged (design pass): the feeds give way to the chat rail, so the reader keeps its measure. */
+.engagedLayout {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(320px, 380px);
+  height: calc(100vh - 38px);
+}
+@media (max-width: 1000px) {
+  .engagedLayout {
+    grid-template-columns: minmax(200px, 260px) minmax(0, 1fr) minmax(280px, 340px);
+  }
+}
 /* Under 768 px only one pane shows at a time (feeds → list → reader). */
 .narrow {
   display: grid;
@@ -225,6 +236,7 @@
 
 /* Reader */
 .reader {
+  position: relative; /* the Keep popover sits over it */
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
@@ -398,4 +410,84 @@
   margin-right: 4px;
   border: 1px solid var(--jx-border-strong);
   border-radius: var(--jx-radius-sm);
+}
+
+/* Keep popover (spec §3.1): over the reader, under its toolbar's Keep. */
+.keep {
+  position: absolute;
+  top: 44px;
+  right: var(--jx-space-3);
+  z-index: 4;
+  display: grid;
+  gap: var(--jx-space-3);
+  width: min(420px, calc(100% - 2 * var(--jx-space-3)));
+  max-height: calc(100% - 56px);
+  overflow-y: auto;
+  padding: var(--jx-space-3);
+  border: 1px solid var(--jx-border);
+  border-radius: var(--jx-radius-lg);
+  background: var(--jx-surface);
+  box-shadow: var(--jx-panel-raised-shadow);
+}
+.keepTitle {
+  margin: 0;
+  font-size: var(--jx-text-lg);
+  font-weight: 600;
+}
+.keepTags {
+  display: grid;
+  gap: var(--jx-space-1);
+}
+.keepLabel {
+  font-size: var(--jx-text-sm);
+  font-weight: 500;
+}
+.keepActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--jx-space-2);
+}
+.kbd {
+  margin-left: var(--jx-space-1);
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-xs);
+  opacity: 0.8;
+}
+
+/* Engage: the chat rail beside the reader; on a narrow screen a full-height sheet over it. */
+.chatRail {
+  min-width: 0;
+}
+.railSlot {
+  display: contents; /* the rail is the grid's third column */
+}
+.railSlot[hidden],
+.sheet[hidden] {
+  display: none;
+}
+.sheet {
+  position: fixed;
+  inset: 84px 0 0; /* below the title bar and the reader toolbar, so Keep stays in reach */
+  z-index: 5;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0;
+  background: var(--jx-bg);
+  box-shadow: var(--jx-panel-raised-shadow);
+}
+.grab {
+  display: grid;
+  justify-items: center;
+  padding-top: 6px;
+}
+.grab i {
+  display: block;
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--jx-border-strong);
+}
+.sheetChat {
+  border-left: 0;
 }

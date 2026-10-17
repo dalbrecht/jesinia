@@ -3,7 +3,7 @@
 // allowlist; nothing from a feed can run.
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { renderMarkdown, SafeHtml, SafeMarkdown } from "../SafeContent";
+import { SafeHtml } from "../SafeContent";
 
 const BASE = "https://blog.example/posts/one";
 
@@ -111,67 +111,5 @@ describe("SafeHtml", () => {
     expect(root).toHaveTextContent("anchor");
     expect(root.querySelector("td")).toHaveTextContent("cell");
     expect(root.innerHTML).not.toContain("note");
-  });
-});
-
-describe("SafeMarkdown", () => {
-  it("renders Markdown with safe links", () => {
-    const { container } = render(<SafeMarkdown markdown={"# Title\n\nSee [docs](https://docs.example/a)."} />);
-    expect(container.querySelector("h1")).toHaveTextContent("Title");
-    const a = container.querySelector("a");
-    expect(a?.getAttribute("href")).toBe("https://docs.example/a");
-    expect(a?.getAttribute("target")).toBe("_blank");
-    expect(a?.getAttribute("rel")).toBe("noopener noreferrer nofollow");
-  });
-
-  it("a javascript: link renders inert", () => {
-    const { container } = render(
-      <SafeMarkdown markdown={"[x](javascript:alert(1)) and ![i](data:image/png;base64,AAAA) <javascript:alert(2)>"} />,
-    );
-    expect(container).toHaveTextContent("x");
-    expect(container.querySelector("a[href]")).toBeNull();
-    expect(container.querySelector("img[src]")).toBeNull();
-    expectInert(container);
-  });
-
-  it("raw HTML in Markdown is skipped", () => {
-    const { container } = render(
-      <SafeMarkdown
-        markdown={
-          "Hello <img src=x onerror=alert(1)> <script>alert(1)</script>\n\n<iframe src='https://e.example'></iframe>"
-        }
-      />,
-    );
-    expect(container).toHaveTextContent("Hello");
-    expect(container.querySelector("img, script, iframe")).toBeNull();
-    expectInert(container);
-  });
-
-  it("keeps http(s) images, lazy and without a referrer", () => {
-    const { container } = render(<SafeMarkdown markdown={"![chart](https://img.example/c.png)"} />);
-    const img = container.querySelector("img");
-    expect(img?.getAttribute("src")).toBe("https://img.example/c.png");
-    expect(img?.getAttribute("alt")).toBe("chart");
-    expect(img?.getAttribute("loading")).toBe("lazy");
-    expect(img?.getAttribute("referrerpolicy")).toBe("no-referrer");
-  });
-
-  it("resolves relative Markdown links and images against the post", () => {
-    const { container } = render(
-      <SafeMarkdown
-        markdown={"[next](/two) ![pic](img/p.png) [bad](javascript:x)"}
-        base="https://blog.example/posts/one"
-      />,
-    );
-    expect(container.querySelector("a")?.getAttribute("href")).toBe("https://blog.example/two");
-    expect(container.querySelector("img")?.getAttribute("src")).toBe("https://blog.example/posts/img/p.png");
-    expect(container.querySelectorAll("a")).toHaveLength(1);
-  });
-
-  it("renderMarkdown is the same renderer, for ChatTranscript", () => {
-    const { container } = render(<div>{renderMarkdown("**bold** [y](javascript:void(0))")}</div>);
-    expect(container.querySelector("strong")).toHaveTextContent("bold");
-    expect(container.querySelector("a[href]")).toBeNull();
-    expectInert(container);
   });
 });

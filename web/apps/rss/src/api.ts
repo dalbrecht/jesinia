@@ -2,11 +2,19 @@
 // Shapes and calls the RSS PWA uses (`/api/rss`, spec §2).
 import { errorText, withIdempotency, type components, type JesiniaClient } from "@jesinia/client";
 
+export { safeHttpUrl } from "@jesinia/shell";
+
 export type Post = components["schemas"]["PostOut"];
 export type Feed = components["schemas"]["FeedOut"];
 export type Counts = components["schemas"]["CountsOut"];
 export type PostPage = components["schemas"]["PostPageOut"];
+export type Kept = components["schemas"]["KeepOut"];
+export type Takeaway = components["schemas"]["TakeawayOut"];
+export type EngageSession = components["schemas"]["SessionOut"];
 export type View = "unread" | "kept" | "all";
+
+/** What Keep writes (spec §3.1); `takeaway` only from Engage, as the author left it. */
+export type KeepRequest = { note: string; tags: string[]; takeaway?: { text: string; session: string } };
 
 /** Which posts the list shows: a view, optionally narrowed to one feed or one folder. */
 export type Scope = { view: View; feed: number | null; folder: number | null };
@@ -101,20 +109,35 @@ export async function refreshFeeds(client: JesiniaClient): Promise<void> {
   unwrap(await client.POST("/api/rss/refresh", { params: { header: withIdempotency() } }));
 }
 
+/** Write the post's KB page now; the archive then follows in the background (`post.archive_state`). */
+export async function keepPost(client: JesiniaClient, id: number, keep: KeepRequest): Promise<Kept> {
+  const r = await client.POST("/api/rss/posts/{post_id}/keep", {
+    params: { path: { post_id: id }, header: withIdempotency() },
+    body: keep,
+  });
+  return unwrap(r);
+}
+
+/** A read-only agent session about the post (spec §3.2); chat in it through `/api/agents`. */
+export async function engagePost(client: JesiniaClient, id: number, runner: string): Promise<EngageSession> {
+  const r = await client.POST("/api/rss/posts/{post_id}/engage", {
+    params: { path: { post_id: id }, header: withIdempotency() },
+    body: { runner },
+  });
+  return unwrap(r);
+}
+
+/** The engaged agent's 1–3 sentence takeaway, for the author to edit; nothing is written. */
+export async function askTakeaway(client: JesiniaClient, session: string): Promise<Takeaway> {
+  const r = await client.POST("/api/rss/sessions/{session_id}/takeaway", {
+    params: { path: { session_id: session }, header: withIdempotency() },
+  });
+  return unwrap(r);
+}
+
 /** Unread counts are capped in the UI (spec §2.3). */
 export function capCount(n: number): string {
   return n > COUNT_CAP ? `${COUNT_CAP}+` : String(n);
-}
-
-/** `raw` resolved against `base` when it is an http(s) URL, else null (feed URLs are untrusted). */
-export function safeHttpUrl(raw: string, base?: string): string | null {
-  let url: URL;
-  try {
-    url = base === undefined ? new URL(raw) : new URL(raw, base);
-  } catch {
-    return null;
-  }
-  return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
 }
 
 export function needsFullArticle(post: Post): boolean {

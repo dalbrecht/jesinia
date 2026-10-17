@@ -5,7 +5,8 @@
   (DNS-rebinding defense).
 - ``403`` for state-changing requests whose ``Origin`` is present and not the local origin.
 - A strict CSP (including ``frame-ancestors 'none'``: no other local port may frame the
-  authenticated UI) plus ``X-Frame-Options``, ``nosniff``, and ``no-referrer``.
+  authenticated UI; the RSS pages may also load https images) plus ``X-Frame-Options``,
+  ``nosniff``, and ``no-referrer``.
 """
 
 from __future__ import annotations
@@ -20,13 +21,25 @@ CSP = (
     "frame-ancestors 'none'; "
     "object-src 'none'; base-uri 'none'"
 )
+# Ruling R21: the RSS reader shows feed images, which live on other hosts. Its pages alone
+# may load images over https (never http:); with ``no-referrer`` the hosts learn nothing of
+# the reader. Scripts, frames and connections stay as strict as everywhere else.
+RSS_CSP = f"{CSP}; img-src 'self' https:"
+RSS_PREFIX = "/rss"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-_HEADERS = [
-    (b"content-security-policy", CSP.encode()),
+_OTHER_HEADERS = [
     (b"x-content-type-options", b"nosniff"),
     (b"referrer-policy", b"no-referrer"),
     (b"x-frame-options", b"DENY"),  # legacy equivalent of frame-ancestors 'none'
 ]
+_HEADERS = [(b"content-security-policy", CSP.encode()), *_OTHER_HEADERS]
+_RSS_HEADERS = [(b"content-security-policy", RSS_CSP.encode()), *_OTHER_HEADERS]
+
+
+def _headers_for(path: str) -> list[tuple[bytes, bytes]]:
+    """The RSS PWA's pages (``/rss``, ``/rss/…``) get the image allowance; nothing else does."""
+    is_rss_page = path == RSS_PREFIX or path.startswith(f"{RSS_PREFIX}/")
+    return _RSS_HEADERS if is_rss_page else _HEADERS
 
 
 class LocalOriginGuard:
@@ -63,9 +76,11 @@ class LocalOriginGuard:
             await self._reject(send, 403, "cross-origin request refused")
             return
 
+        extra = _headers_for(scope["path"])
+
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message["headers"] = [*message.get("headers", []), *_HEADERS]
+                message["headers"] = [*message.get("headers", []), *extra]
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
