@@ -461,6 +461,24 @@ async def test_posting_conflicts_are_typed_409s(env: Env) -> None:
     assert refused.status_code == 422 and refused.json()["error"] == "InvalidDraftContent"
 
 
+async def test_a_transient_409_is_not_replayed_for_the_same_key(env: Env) -> None:
+    env.round()
+    env.poster.error = GitHubRequestError(502, "Bad Gateway")
+    preview = (await env.client.post(f"{PR}/post/preview", json={"event": "COMMENT"})).json()
+    post = {"event": "COMMENT", "confirm": [], "digest": preview["digest"]}
+    key = keyed()
+    assert (await env.client.post(f"{PR}/post", json=post, headers=key)).status_code == 502
+    env.poster.error = None
+    waiting = await env.client.post(f"{PR}/post", json=post, headers=key)
+    assert waiting.status_code == 409 and waiting.headers["retry-after"] == "180"
+    env.clock.advance(4)  # past the grace period, and the review never appeared
+    posted = await env.client.post(f"{PR}/post", json=post, headers=key)
+    assert posted.status_code == 200 and posted.json() == {"review_url": URL}
+    assert len(env.poster.posted) == 1
+    again = await env.client.post(f"{PR}/post", json=post, headers=key)
+    assert again.json() == {"review_url": URL} and len(env.poster.posted) == 1
+
+
 async def test_done_marks_the_latest_round(env: Env) -> None:
     none = await env.client.post(f"{PR}/done", headers=keyed())
     assert none.status_code == 404

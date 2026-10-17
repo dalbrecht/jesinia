@@ -1975,7 +1975,7 @@ export interface components {
             event?: ("APPROVE" | "REQUEST_CHANGES" | "COMMENT") | null;
             /**
              * Retry After
-             * @description For PostingStillUncertain: seconds before retrying
+             * @description For PostingStillUncertain and PostingInProgress: seconds before retrying (also the Retry-After header)
              */
             retry_after?: number | null;
         };

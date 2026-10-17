@@ -91,6 +91,17 @@ def app(store: SqliteIdempotencyStore, counter: Counter) -> FastAPI:
 
         return await idem.run(run)
 
+    @app.post("/busy")
+    async def busy(idem: IdempotentCall = keyed) -> Response:
+        async def run() -> Response:
+            n = counter.hit("busy")
+            if n == 1:
+                return JSONResponse({"error": "Busy"}, status_code=409,
+                                    headers={"Retry-After": "30"})  # fmt: skip
+            return JSONResponse({"run": n})
+
+        return await idem.run(run)
+
     @app.post("/raises")
     async def raises(idem: IdempotentCall = keyed) -> Response:
         async def run() -> Response:
@@ -230,3 +241,15 @@ def test_a_call_exposes_its_key_for_work_that_must_remember_it(
     # Posting a review records the key with its attempt, so a retry can find it.
     assert IdempotentCall(store, "k-1", "POST /x", NOW).key == "k-1"
     assert IdempotentCall(store, None, "POST /x", NOW).key is None
+
+
+async def test_a_transient_answer_with_retry_after_is_never_replayed(
+    client: httpx.AsyncClient, counter: Counter
+) -> None:
+    busy = await client.post("/busy", headers=_key("k"))
+    assert busy.status_code == 409 and busy.headers["retry-after"] == "30"
+    fresh = await client.post("/busy", headers=_key("k"))
+    assert fresh.status_code == 200 and fresh.json() == {"run": 2}
+    # The real answer is stored like any other.
+    assert (await client.post("/busy", headers=_key("k"))).json() == {"run": 2}
+    assert counter.runs == {"busy": 2}

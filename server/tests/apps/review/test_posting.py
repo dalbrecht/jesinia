@@ -735,8 +735,9 @@ async def test_losing_the_in_flight_race_is_a_typed_conflict(env: Env) -> None:
         return original(*args, **kwargs)  # type: ignore[arg-type]
 
     store.start_posting = racing  # type: ignore[method-assign,assignment]
-    with pytest.raises(PostingInProgress):
+    with pytest.raises(PostingInProgress) as busy:
         await env.post("COMMENT")
+    assert busy.value.retry_after == 5
     assert env.github.posted == []
 
 

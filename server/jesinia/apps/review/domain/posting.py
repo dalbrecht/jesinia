@@ -118,7 +118,10 @@ class InvalidDraftContent(PostingDomainError):  # noqa: N818 - the error code cl
 
 
 class PostingInProgress(PostingDomainError):  # noqa: N818 - the error code clients see
-    """Another attempt to post this round's review is in flight (another process won)."""
+    """Another attempt to post this round's review is in flight (another process won):
+    retry after ``retry_after`` seconds."""
+
+    retry_after: int = 5
 
 
 class PostingStillUncertain(PostingDomainError):  # noqa: N818 - the error code clients see

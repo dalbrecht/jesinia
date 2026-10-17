@@ -151,7 +151,10 @@ def _error(exc: Exception) -> JSONResponse:
         warnings=warnings,
         review_url=None if earlier is None else earlier.url,
         event=None if earlier is None else earlier.event,
-        retry_after=exc.retry_after if isinstance(exc, PostingStillUncertain) else None,
+        # Transient: the Retry-After header also keeps idempotency from replaying it (R50).
+        retry_after=exc.retry_after
+        if isinstance(exc, PostingStillUncertain | PostingInProgress)
+        else None,
     )
     headers = None if body.retry_after is None else {"Retry-After": str(body.retry_after)}
     return JSONResponse(

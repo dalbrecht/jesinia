@@ -8153,7 +8153,7 @@
               }
             ],
             "title": "Retry After",
-            "description": "For PostingStillUncertain: seconds before retrying"
+            "description": "For PostingStillUncertain and PostingInProgress: seconds before retrying (also the Retry-After header)"
           }
         },
         "type": "object",
