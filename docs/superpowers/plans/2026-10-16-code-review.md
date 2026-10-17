@@ -294,8 +294,14 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **`QueueService`:**
   - `async sync()` refreshes from `PrClient.list_review_inbox` every 2 minutes (scheduler
     job `review.sync`);
-  - `async list(filter) -> list[QueueRow]`, where `QueueRow` carries every field in spec §2,
-    including `coverage_pct` and the evidence summary;
+  - `async list(filter) -> QueueView(rows: list[QueueRow], synced_at: datetime | None,
+    syncing: bool, sync_error: str | None)`. `QueueRow` carries every field in spec §2,
+    including `coverage_pct` and the evidence summary.
+    - It **always serves from `review.sqlite` without awaiting GitHub (spec §2, always
+      cached)**. A sync in progress or failed is reported in the view, never by blocking or
+      emptying it.
+    - PR files and diff fetched for a round are cached too (`pr_files(repo, number, head_sha,
+      json)`), so opening a PR renders from the cache.
   - `async load(ref: str) -> QueueRow` parses a URL, `owner/repo#n` or a route path, marks it
     loaded, and prioritises it;
   - `async dismiss(repo, n)`.
@@ -307,6 +313,9 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
     configured/landed/timeout × debounce);
   - `test_propose_depth_thresholds`;
   - `test_load_accepts_url_shorthand_and_route`;
+  - `test_list_serves_cache_while_github_is_unreachable` (sync raises, and `list` still returns
+    the last rows with `sync_error` set);
+  - `test_list_never_awaits_sync`;
   - `test_scheduler_priority_and_concurrency_two`;
   - `test_rapid_pushes_cost_one_review`.
 - [ ] **Step 2: Run.** Expected: FAIL.
@@ -465,12 +474,18 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **Queue rows:** every spec §2 field (CI state, automated and human review comment count,
   kind, depth, pre-review state, verdict, coverage %); a **Load PR** field plus a ⌘K command;
   a repo filter on the left.
-- **States:** empty, loading, and GitHub auth missing (the wireframe's inline danger state with
-  the exact command).
+- **States:** empty, loading (only on the very first run, before anything is cached), and
+  GitHub auth missing. Auth missing shows the cached queue under the wireframe's danger
+  banner with the exact command, never an empty page.
+- **Freshness:** the header reads "Updated N min ago · refreshing…" from `synced_at` and
+  `syncing`. An opened PR whose cached head differs from the live head is marked **stale**
+  until it refreshes.
 - **Routes:** `/review/` and `/review/<owner>/<repo>/<n>`.
 
 - [ ] **Step 1: Failing tests:**
   - rows render every field;
+  - the cached queue renders immediately while sync is pending, and stays visible under a
+    banner when sync fails;
   - "waiting for CI" and "Review anyway";
   - load by URL and shorthand navigates;
   - the Still approved group is collapsed;

@@ -1,0 +1,28 @@
+{
+  "state": "success",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "total_count": 3,
+  "statuses": [
+    {
+      "context": "ci/legacy",
+      "state": "success",
+      "description": "ci/legacy",
+      "target_url": "https://ci.example.com/ci/legacy",
+      "created_at": "2026-10-15T10:00:00Z"
+    },
+    {
+      "context": "ci/deploy",
+      "state": "error",
+      "description": "ci/deploy",
+      "target_url": "https://ci.example.com/ci/deploy",
+      "created_at": "2026-10-15T10:00:00Z"
+    },
+    {
+      "context": "ci/other",
+      "state": "failure",
+      "description": "ci/other",
+      "target_url": "https://ci.example.com/ci/other",
+      "created_at": "2026-10-15T10:00:00Z"
+    }
+  ]
+}

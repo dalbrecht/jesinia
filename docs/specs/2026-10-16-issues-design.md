@@ -347,6 +347,13 @@ and touch sensors, such as `@dnd-kit` (MIT), wrapped once in `@jesinia/design` a
 - **Duplicates:** accepting a duplicate closes the issue as a duplicate (`state_reason: duplicate` with
   `duplicate_issue_id`) and a comment linking the original, as an approved change in the series above.
 
+### 6.3 Always cached
+
+Like the review queue, every synced issue, label, milestone, sub-issue link, comment and draft
+lives in `issues.sqlite`. Views render from it immediately and refresh in the background, with
+"Updated N min ago · refreshing…" shown. If GitHub is unreachable, the cached data stays
+visible under a banner.
+
 ## 7. Architecture
 
 - **The `issues` app module** (`server/jesinia/apps/issues/`, owning `issues.sqlite`), layered

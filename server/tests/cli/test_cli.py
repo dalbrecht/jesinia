@@ -387,6 +387,7 @@ def test_registry_runs_every_module_in_order() -> None:
         "fetch",
         "notes",
         "rss",
+        "review",
     ]
 
 

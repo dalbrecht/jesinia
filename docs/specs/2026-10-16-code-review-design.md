@@ -67,6 +67,17 @@ Each has a safeguard in §5.
 At this volume the entry point is an **inbox, not a PR page (builder's call, from the user's
 volume)**. It extends the wireframe's PR picker:
 
+- **Always cached (user):** every PR in the queue, and everything Jesinia has fetched or
+  generated for it, is kept locally in `review.sqlite`, so the UI never appears empty while
+  connecting to GitHub. That covers metadata, CI state, review counts, files and diff, rounds
+  and artifacts.
+  - The queue and any opened PR render from the cache at once, then refresh in the background.
+  - The header shows "Updated N min ago · refreshing…", and rows update in place.
+  - An opened PR whose head moved shows its cached review marked **stale** until the refresh
+    lands.
+  - If GitHub is unreachable or auth is missing, the cached queue stays visible under a
+    banner; it is never replaced by an empty or error page.
+
 - **What's listed:** every open PR across the author's watched repos where their review is
   requested, they are the author, or they've reviewed it before. The repo list on the left
   filters it.

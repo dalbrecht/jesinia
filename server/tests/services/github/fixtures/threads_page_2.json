@@ -1,0 +1,34 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": "Y3Vyc29yOjI="
+          },
+          "nodes": [
+            {
+              "isResolved": true,
+              "path": "src/old.py",
+              "line": null,
+              "originalLine": 4,
+              "comments": {
+                "nodes": [
+                  {
+                    "body": "Outdated nit",
+                    "author": null,
+                    "commit": null,
+                    "originalCommit": {
+                      "oid": "cccccccccccccccccccccccccccccccccccccccc"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

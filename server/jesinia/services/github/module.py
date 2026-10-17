@@ -28,6 +28,7 @@ class GitHubModule:
         self._token = token
         self._conn: sqlite3.Connection | None = None
         self._has_token: bool | None = None
+        self._service: GitHubService | None = None
 
     def router(self) -> APIRouter | None:
         return None
@@ -39,10 +40,14 @@ class GitHubModule:
         self._conn = open_db(ctx.cfg.data_dir, GITHUB_DB)
         cache = SqliteGitHubCache(self._conn)
         cache.prune(CACHE_TTL)
-        ctx.services["github"] = GitHubService(self._token, cache)
+        self._service = GitHubService(self._token, cache)
+        ctx.services["github"] = self._service
         self._has_token = (await self._token()) is not None
 
     async def stop(self) -> None:
+        if self._service is not None:
+            await self._service.aclose()
+            self._service = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None
