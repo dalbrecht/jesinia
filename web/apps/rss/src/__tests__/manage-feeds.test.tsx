@@ -51,8 +51,13 @@ describe("Add feed", () => {
     });
     const manage = await openManage();
     expect(manage.getByLabelText("Feed or site URL")).toHaveFocus();
-    await userEvent.type(manage.getByLabelText("Feed or site URL"), " https://example.com ");
-    await userEvent.type(manage.getByLabelText("Folder (optional)"), "Reading");
+    // Pasted, not typed: each typed character re-renders the whole app, and on a loaded CI
+    // runner 28 of them took this test past the 5 s timeout. A paste is one input event with
+    // the same text (the spaces still test the trim).
+    await userEvent.click(manage.getByLabelText("Feed or site URL"));
+    await userEvent.paste(" https://example.com ");
+    await userEvent.click(manage.getByLabelText("Folder (optional)"));
+    await userEvent.paste("Reading");
     await userEvent.click(manage.getByRole("button", { name: "Add feed" }));
     await waitFor(() => expect(sent(calls, "POST", "/api/rss/feeds")).toHaveLength(1));
     const req = sent(calls, "POST", "/api/rss/feeds")[0];
