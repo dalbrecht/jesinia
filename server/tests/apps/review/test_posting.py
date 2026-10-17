@@ -945,3 +945,45 @@ async def test_a_body_exactly_at_the_limit_marker_included_is_posted(env: Env) -
 
 def test_the_marker_reserve_covers_the_largest_posting_id() -> None:
     assert len(marked_body("body", 2**63 - 1)) - len("body") == MARKER_RESERVE
+
+
+# --- Codex round 2: drafts are seeded once the findings are in ---------------------------------
+
+
+def _running_round(env: Env) -> int:
+    """A second round on the head whose triage jobs haven't finished."""
+    return env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
+
+
+async def test_drafts_opened_early_get_the_findings_when_they_arrive(env: Env) -> None:
+    round_id = _running_round(env)
+    early = await env.service.drafts(round_id)
+    assert early.findings_pending and early.drafts == ()
+    preview = await env.service.preview(round_id, "COMMENT")  # also before the findings
+    assert any("still running" in note for note in preview.notes)
+
+    # The author writes a draft of their own meanwhile.
+    mine = Draft(path="src/app.py", body="My own note.", line=4, side="RIGHT")
+    saved = await env.service.save_drafts(round_id, "Notes.", [mine])
+    assert saved.findings_pending and [d.body for d in saved.drafts] == ["My own note."]
+
+    env.store.put_artifact(round_id, "correctness", {"findings": []})
+    assert (await env.service.drafts(round_id)).findings_pending  # findings still running
+    env.store.put_artifact(round_id, "findings", {"findings": [finding(2, 3, "Swallowed.")]})
+    ready = await env.service.drafts(round_id)
+    assert not ready.findings_pending
+    assert [d.body for d in ready.drafts][0] == "My own note."
+    assert ["Swallowed." in d.body for d in ready.drafts] == [False, True]
+    assert ready.summary == "Notes."
+    # Seeding is once: reading again (or deleting a generated draft) adds nothing back.
+    assert len((await env.service.drafts(round_id)).drafts) == 2
+    await env.service.save_drafts(round_id, "Notes.", [ready.drafts[0]])
+    assert len((await env.service.drafts(round_id)).drafts) == 1
+
+
+async def test_a_failed_findings_job_still_seeds_what_there_is(env: Env) -> None:
+    round_id = _running_round(env)
+    env.store.put_artifact(round_id, "correctness", {"findings": [finding(2, 3, "Bug.")]})
+    env.store.put_artifact(round_id, "jobs", {"findings": {"state": "failed", "error": "x"}})
+    drafts = await env.service.drafts(round_id)
+    assert not drafts.findings_pending and len(drafts.drafts) == 1

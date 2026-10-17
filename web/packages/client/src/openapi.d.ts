@@ -1406,6 +1406,12 @@ export interface components {
              * @description GitHub's file list for the head isn't cached yet, so where each draft posts is unknown; the preview reads it
              */
             files_pending: boolean;
+            /**
+             * Findings Pending
+             * @description the correctness pass or the findings job is still running; their drafts are added (next to the author's) when both have finished
+             * @default false
+             */
+            findings_pending: boolean;
         };
         /** EngageIn */
         EngageIn: {

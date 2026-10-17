@@ -652,8 +652,8 @@ class SqliteReviewStore:
         )
 
     def seed_drafts(self, round_id: int, drafts: Sequence[Draft]) -> bool:
-        """Store a round's first drafts, once: False (and nothing written) if it was seeded
-        or edited before."""
+        """Add a round's generated drafts, once, after any the author already wrote: False
+        (and nothing written) if it was seeded before."""
         with transaction(self._conn):
             claimed = self._conn.execute(
                 "UPDATE rounds SET drafts_seeded = 1 WHERE id = ? AND drafts_seeded = 0",
@@ -665,12 +665,10 @@ class SqliteReviewStore:
         return True
 
     def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> None:
-        """Replace a round's summary and drafts (the author's edit) in one transaction."""
+        """Replace a round's summary and drafts (the author's edit) in one transaction. It
+        doesn't count as seeding: findings arriving later still add their drafts."""
         with transaction(self._conn):
-            self._conn.execute(
-                "UPDATE rounds SET drafts_seeded = 1, summary = ? WHERE id = ?",
-                (summary, round_id),
-            )
+            self._conn.execute("UPDATE rounds SET summary = ? WHERE id = ?", (summary, round_id))
             self._conn.execute("DELETE FROM drafts WHERE round_id = ?", (round_id,))
             self._insert_drafts(round_id, drafts)
 

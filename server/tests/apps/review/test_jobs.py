@@ -962,3 +962,25 @@ async def test_the_correctness_job_stores_what_its_tools_read(env: Env) -> None:
     await env.jobs.run(JobKind.FINDINGS, a_round())
     assert (11, "findings_reads") not in env.store.artifacts
     assert env.registry.reads.ranges(env.runner.requests[-1].workdir.name) == []
+
+
+# --- Codex round 2: strict JSON (no NaN or Infinity) -------------------------------------------
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+async def test_non_finite_numbers_go_to_retry_and_are_never_stored(env: Env, constant: str) -> None:
+    def metrics(score: str) -> str:
+        rule = '{"id": "A", "layer": "base"}'
+        item = f'{{"criterion": "c", "rule": {rule}, "score": {score}, "note": "n"}}'
+        return f'{{"scores": [{item}]}}'
+
+    with pytest.raises(InvalidAgentOutput, match=constant):
+        parse_job_output(metrics(constant), schema_for(JobKind.METRICS))
+    env.script(metrics(constant), metrics("7"))
+    good = await env.jobs.run(JobKind.METRICS, a_round())
+    assert good["scores"] == [
+        {"criterion": "c", "rule": {"id": "A", "layer": "base"}, "score": 7, "note": "n"}
+    ]
+    assert constant in env.prompts()[1] and "reply again" in env.prompts()[1].lower()
+    stored = json.dumps(list(env.store.artifacts.values()), allow_nan=False)
+    assert constant not in stored

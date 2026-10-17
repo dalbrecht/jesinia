@@ -718,3 +718,11 @@ def test_a_review_body_over_githubs_limit_is_a_422() -> None:
     refused = _error(ReviewBodyTooLong(70_000, 65_536))
     assert refused.status_code == 422 and b"ReviewBodyTooLong" in refused.body
     assert b"70000 characters" in refused.body or b"70,000 characters" in refused.body
+
+
+def test_drafts_out_says_when_findings_are_pending() -> None:
+    from jesinia.apps.review.api.schemas import DraftsOut
+    from jesinia.apps.review.application.posting import DraftSet
+
+    out = DraftsOut.of(DraftSet(3, "", (), None, findings_pending=True))
+    assert out.findings_pending is True and out.files_pending is True

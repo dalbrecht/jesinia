@@ -32,10 +32,10 @@ import contextlib
 import logging
 import math
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Collection, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Final, Protocol
 
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
@@ -93,6 +93,8 @@ log = logging.getLogger(__name__)
 Clock = Callable[[], datetime]
 # How long after an attempt began a missing review may still appear on GitHub (R49).
 POSTING_GRACE = timedelta(minutes=3)
+# The jobs whose findings become drafts.
+_FINDING_JOBS: Final = ("correctness", "findings")
 _FILE_ERRORS = (GitHubError, GitHubPayloadError, PullRequestDomainError, QueueDomainError)
 
 
@@ -155,6 +157,8 @@ class PostingStore(Protocol):
 
     def artifact(self, round_id: int, kind: str) -> object: ...
 
+    def artifact_kinds(self, round_id: int) -> set[str]: ...
+
     def viewer(self) -> str | None: ...
 
     def pr_files(self, ref: PrRef, head_sha: str) -> builtins.list[PrFile] | None: ...
@@ -191,12 +195,15 @@ class PostingStore(Protocol):
 class DraftSet:
     """A round's review summary and drafts, as the author edits them. ``in_body`` says, per
     draft, whether it posts in the review body (GitHub can't anchor it inline); it is
-    ``None`` while GitHub's file list for the head isn't cached (``files_pending``)."""
+    ``None`` while GitHub's file list for the head isn't cached (``files_pending``).
+    ``findings_pending``: the correctness pass or the findings job is still running, so
+    their drafts aren't here yet; they are added when both have finished or failed."""
 
     round_id: int
     summary: str
     drafts: tuple[Draft, ...]
     in_body: tuple[bool, ...] | None = None
+    findings_pending: bool = False
 
     @property
     def files_pending(self) -> bool:
@@ -274,8 +281,7 @@ class PostingService:
             NoReviewRound: no such round.
         """
         rnd = self._round(round_id)
-        self._seed(rnd)
-        return self._draft_set(rnd)
+        return self._draft_set(rnd, pending=not self._seed(rnd))
 
     async def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> DraftSet:
         """Replace the round's summary and drafts (the author's edit, including deletions).
@@ -290,10 +296,13 @@ class PostingService:
         if len(summary) > BODY_MAX:
             raise InvalidDraftError(f"the summary is at most {BODY_MAX} characters")
         check_review_text(summary, drafts)
+        # Findings already in are seeded first, so this edit (deletions included) replaces
+        # them; findings still running are added next to it when they arrive.
+        settled = self._seed(rnd)
         self._store.save_drafts(round_id, summary, drafts)
-        return self._draft_set(rnd)
+        return self._draft_set(rnd, pending=not settled)
 
-    def _draft_set(self, rnd: RoundRecord) -> DraftSet:
+    def _draft_set(self, rnd: RoundRecord, *, pending: bool) -> DraftSet:
         """The drafts from the store, each placed against the cached file list (never
         fetched here: a GET must not wait for GitHub)."""
         drafts = tuple(self._store.drafts(rnd.id))
@@ -302,10 +311,28 @@ class PostingService:
         if files is not None:
             commentable = commentable_lines(files)
             placed = tuple(not commentable.anchors(draft) for draft in drafts)
-        return DraftSet(rnd.id, self._store.review_summary(rnd.id), drafts, placed)
+        return DraftSet(rnd.id, self._store.review_summary(rnd.id), drafts, placed, pending)
 
-    def _seed(self, rnd: RoundRecord) -> None:
-        """Seed the round's drafts from its findings, once."""
+    def _findings_settled(self, rnd: RoundRecord) -> bool:
+        """Whether the round's findings are all in: it finished cleanly, or the correctness
+        pass and the findings job have each stored their output or failed."""
+        if rnd.finished_at is not None and rnd.error is None:
+            return True
+        kinds = self._store.artifact_kinds(rnd.id)
+        jobs = self._store.artifact(rnd.id, "jobs")
+        failed = {
+            kind
+            for kind, entry in (jobs.items() if isinstance(jobs, Mapping) else ())
+            if isinstance(entry, Mapping) and entry.get("state") == "failed"
+        }
+        return all(kind in kinds or kind in failed for kind in _FINDING_JOBS)
+
+    def _seed(self, rnd: RoundRecord) -> bool:
+        """Seed the round's drafts from its findings, once, as soon as they are all in
+        (Codex round 2: seeding earlier would miss them for good). Returns whether they
+        are in."""
+        if not self._findings_settled(rnd):
+            return False
         found = self._store.artifact(rnd.id, "findings")
         correctness = self._store.artifact(rnd.id, "correctness")
         findings = [
@@ -313,6 +340,7 @@ class PostingService:
             *_findings_of(found),
         ]
         self._store.seed_drafts(rnd.id, seed_drafts(_unique(findings)))
+        return True
 
     async def _commentable(self, rnd: RoundRecord) -> tuple[CommentableLines, list[str]]:
         """Where GitHub takes comments on the round's head: its cached file list, read once
@@ -342,8 +370,13 @@ class PostingService:
             GitHubError: GitHub couldn't be read.
         """
         rnd = self._round(round_id)
-        self._seed(rnd)
+        settled = self._seed(rnd)
         commentable, notes = await self._commentable(rnd)
+        if not settled:
+            notes.append(
+                "the correctness pass or the findings job is still running; its drafts are "
+                "added when it finishes"
+            )
         live = await self._github.get(rnd.ref.repo, rnd.ref.number)
         newer_head = await self._newer_head(rnd, live)
         viewer = self._store.viewer() or await self._github.viewer()

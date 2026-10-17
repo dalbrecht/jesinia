@@ -152,7 +152,8 @@ def _logical_lines(handle: BinaryIO) -> Iterator[bytes]:
 
 def _read_lines(path: Path, first: int, count: int) -> tuple[list[str], bool, bool]:
     """Lines ``first``.. (at most ``count``) of ``path``, whether more follow, and whether
-    the byte cap stopped the read. A single line longer than the cap is cut to it."""
+    the byte cap stopped the read. A single line longer than the cap is cut to it (then it
+    is the only line returned, and the byte cap is reported)."""
     lines: list[str] = []
     size = 0
     with path.open("rb") as handle:
@@ -334,8 +335,10 @@ class RepoTools:
             )
         finally:
             self._allowance.refund(session, key, granted - len(lines))
-        if self._reads is not None:
-            self._reads.record(session, rel, first, first + len(lines) - 1)
+        # A line cut at the byte cap (always alone) wasn't read whole: not credited (M7).
+        whole = 0 if byte_capped and len(lines) == 1 and not lines[0].endswith("\n") else len(lines)
+        if self._reads is not None and whole:
+            self._reads.record(session, rel, first, first + whole - 1)
         truncated = has_more and len(lines) < last - first + 1
         remaining = self._allowance.remaining(session, key)
         cap = (

@@ -265,6 +265,12 @@ def _bounded_int(digits: str) -> int:
     return int(digits)
 
 
+def _no_constant(name: str) -> object:
+    """JSON has no ``NaN`` or ``Infinity``; Python's parser accepts them, and an artifact
+    holding one breaks strict serialisation later."""
+    raise InvalidAgentOutput(f"the reply has {name}, which isn't a JSON number")
+
+
 def _problem(error: ValidationError) -> str:
     """A schema violation in Jesinia's words: where (paths are schema names and indices)
     and which rule failed, plus the missing property names for ``required`` (from the
@@ -294,7 +300,9 @@ def parse_job_output(text: str, schema: Mapping[str, object]) -> dict[str, objec
     if _nesting_depth(body) > MAX_REPLY_DEPTH:
         raise InvalidAgentOutput(f"the reply nests deeper than {MAX_REPLY_DEPTH} levels")
     try:
-        data = json.loads(body, parse_int=_bounded_int)
+        data = json.loads(body, parse_int=_bounded_int, parse_constant=_no_constant)
+    except InvalidAgentOutput:
+        raise
     except json.JSONDecodeError as exc:
         raise InvalidAgentOutput(
             f"the reply is not valid JSON ({exc.msg} at line {exc.lineno} column {exc.colno})"

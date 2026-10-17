@@ -1607,3 +1607,23 @@ async def test_a_session_out_of_git_time_gets_a_typed_fenced_refusal(tree: Tree)
     sessions.unbind(SESSION)
     sessions.bind(SESSION, tree.path)
     await tools.grep(SESSION, "needle")
+
+
+async def test_a_byte_capped_line_is_not_credited_as_read(tree: Tree) -> None:
+    """Codex round 2: a line cut at the byte cap wasn't read whole, so it isn't recorded
+    (like a cut grep line); the next whole line is."""
+    sessions = ReviewSessionRegistry()
+    sessions.bind(SESSION, tree.path)
+    tools = RepoTools(
+        sessions.worktree_for, tree.workspace, sessions.allowance, reads=sessions.reads
+    )
+    wide = tree.path / "wide-read.txt"  # untracked, local to this test
+    wide.write_text("z" * (READ_MAX_BYTES + 10) + "\nok\n")
+    try:
+        cut = await tools.read(SESSION, "wide-read.txt")
+        assert cut["end"] == 1 and cut["truncated"] is True
+        assert sessions.reads_of(SESSION) == []
+        await tools.read(SESSION, "wide-read.txt", start=2)
+        assert sessions.reads_of(SESSION) == [("wide-read.txt", 2, 2)]
+    finally:
+        wide.unlink()

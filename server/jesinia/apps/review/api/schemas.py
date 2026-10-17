@@ -303,6 +303,11 @@ class DraftsOut(BaseModel):
         description="GitHub's file list for the head isn't cached yet, so where each draft "
         "posts is unknown; the preview reads it"
     )
+    findings_pending: bool = Field(
+        default=False,
+        description="the correctness pass or the findings job is still running; their "
+        "drafts are added (next to the author's) when both have finished",
+    )
 
     @classmethod
     def of(cls, drafts: DraftSet) -> DraftsOut:
@@ -312,6 +317,7 @@ class DraftsOut(BaseModel):
             summary=drafts.summary,
             drafts=[DraftBody.of(d, where) for d, where in zip(drafts.drafts, placed, strict=True)],
             files_pending=drafts.files_pending,
+            findings_pending=drafts.findings_pending,
         )
 
 
