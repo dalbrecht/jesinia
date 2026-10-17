@@ -567,7 +567,8 @@ async def test_poll_logs_name_the_host_never_the_path_or_credentials(
 async def test_a_stored_feed_error_keeps_only_the_hosts_of_urls(store: SqliteFeedStore) -> None:
     url = "https://feeds.example/feed.xml?key=s3cret"
     feed = _subscribe(store, url)
-    failing = FetchError(f"could not fetch {url}: redirected to https://u:pw@cdn.example/x?t=tok")
+    target = "https://u:pw@cdn.example/x?t=tok"  # trufflehog:ignore
+    failing = FetchError(f"could not fetch {url}: redirected to {target}")
     await _poller(store, FakeFetcher({url: failing}), Clock()).poll_due()
     error = _feed(store, feed.id).last_error
     assert error is not None and "feeds.example" in error and "cdn.example" in error

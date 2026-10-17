@@ -154,15 +154,19 @@ def test_feed_urls_must_be_absolute_http() -> None:
     for bad in ("ftp://example.com/x", "javascript:alert(1)", "https://", "/feed", "http://[::1"):
         with pytest.raises(InvalidFeedUrl):
             validate_feed_url(bad)
-    for secret in ("https://me:pw@example.com/feed", "https://token@example.com/feed"):
+    for secret in (
+        "https://me:pw@example.com/feed",  # trufflehog:ignore
+        "https://token@example.com/feed",  # trufflehog:ignore
+    ):
         with pytest.raises(InvalidFeedUrl, match="credentials in URL are not supported"):
             validate_feed_url(secret)
 
 
 def test_log_helpers_keep_only_hosts() -> None:
-    assert host_of("https://u:p@feeds.example:8443/a?b") == "feeds.example"
+    assert host_of("https://u:p@feeds.example:8443/a?b") == "feeds.example"  # trufflehog:ignore
     assert host_of("not a url") == "?" and host_of("http://[::1") == "?"
-    text = "fetch https://u:p@a.example/x?k=1 failed (see http://b.example) at HTTPS://C.example"
+    secret = "https://u:p@a.example/x?k=1"  # trufflehog:ignore
+    text = f"fetch {secret} failed (see http://b.example) at HTTPS://C.example"
     assert redact_urls(text) == (
         "fetch https://a.example failed (see http://b.example) at HTTPS://c.example"
     )
@@ -176,7 +180,7 @@ def test_log_helpers_keep_only_hosts() -> None:
         ("got https://h.example/a'b\"c?t=SECRET now", "got https://h.example now"),
         ("(see https://h.example/x?t=SECRET)", "(see https://h.example)"),
         ("at https://h.example/x?t=SECRET.", "at https://h.example."),
-        ("by https://u:SECRET@h.example/x", "by https://h.example"),
+        ("by https://u:SECRET@h.example/x", "by https://h.example"),  # trufflehog:ignore
         ("on http://[::1]:8080/SECRET?k=SECRET", "on http://[::1]"),
         ("bad http://[SECRET/x", "bad <url>"),
     ],
@@ -184,7 +188,9 @@ def test_log_helpers_keep_only_hosts() -> None:
 def test_redaction_leaves_no_part_of_a_url_but_its_host(text: str, expected: str) -> None:
     redacted = redact_urls(text)
     assert redacted == expected and "SECRET" not in redacted
-    assert has_credentials("https://u@a.example/") and not has_credentials("https://a.example/@x")
+    assert has_credentials("https://u@a.example/") and not has_credentials(  # trufflehog:ignore
+        "https://a.example/@x"
+    )
 
 
 def test_folder_names_are_trimmed_and_bounded() -> None:
@@ -524,10 +530,12 @@ async def test_module_polls_due_feeds_on_its_schedule(env: Env, mock: respx.Mock
 
 async def test_feed_urls_with_credentials_are_refused(env: Env, mock: respx.MockRouter) -> None:
     route = mock.get(url__regex=r".*").mock(return_value=httpx.Response(500))
-    refused = await _add(env, "https://me:s3cret@private.example/feed")
+    refused = await _add(env, "https://me:s3cret@private.example/feed")  # trufflehog:ignore
     detail = _error(refused, 400, "InvalidFeedUrl")
     assert detail == "credentials in URL are not supported" and "s3cret" not in refused.text
-    opml = render_opml([OpmlFeed("https://me:s3cret@private.example/feed", "Paid", None)])
+    opml = render_opml(
+        [OpmlFeed("https://me:s3cret@private.example/feed", "Paid", None)]  # trufflehog:ignore
+    )
     imported = (await env.client.post(f"{API}/opml", json={"opml": opml})).json()
     assert imported["added"] == 0
     assert [f["cause"] for f in imported["failed"]] == ["credentials in URL are not supported"]
@@ -537,7 +545,10 @@ async def test_feed_urls_with_credentials_are_refused(env: Env, mock: respx.Mock
 async def test_a_site_advertising_a_feed_with_credentials_is_refused(
     env: Env, mock: respx.MockRouter
 ) -> None:
-    page = b'<html><head><link rel="alternate" type="application/rss+xml" href="https://u:p@example.com/feed.xml"></head></html>'
+    link = "https://u:p@example.com/feed.xml"  # trufflehog:ignore
+    page = (
+        f'<html><head><link rel="alternate" type="application/rss+xml" href="{link}"></head></html>'
+    ).encode()
     _serve(mock, "https://example.com/", page, "text/html")
     refused = await _add(env, "https://example.com/")
     assert _error(refused, 400, "InvalidFeedUrl") == "credentials in URL are not supported"

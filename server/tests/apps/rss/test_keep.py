@@ -903,20 +903,30 @@ async def test_archives_run_a_few_at_a_time_and_are_forgotten_when_done(
 ) -> None:
     running = 0
     peak = 0
+    full = asyncio.Event()  # as many archives as may run are inside the gate
+    release = asyncio.Event()  # the test lets them finish
 
-    async def slow(request: httpx.Request) -> httpx.Response:
+    async def gated(request: httpx.Request) -> httpx.Response:
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
-        await asyncio.sleep(0.02)
+        if running == ARCHIVE_CONCURRENCY:
+            full.set()
+        await release.wait()
         running -= 1
         return httpx.Response(503)
 
-    mock.get(url__regex=r"https://many\.example/.*").mock(side_effect=slow)
+    mock.get(url__regex=r"https://many\.example/.*").mock(side_effect=gated)
     keeper = keep_env.rss.keeper
     for n in range(6):
         await keeper.keep(keep_env.post(url=f"https://many.example/{n}"), "", [], None)
+    # No archive can finish before the gate opens, so all six are pending.
     assert len(keeper.pending()) == 6
-    await keeper.drain()
-    assert 1 <= peak <= ARCHIVE_CONCURRENCY < 6
+    await asyncio.wait_for(full.wait(), timeout=5)
+    for _ in range(50):  # every other archive gets the chance to start, and must not
+        await asyncio.sleep(0)
+    assert running == peak == ARCHIVE_CONCURRENCY < 6
+    release.set()
+    await asyncio.wait_for(keeper.drain(), timeout=5)
+    assert peak == ARCHIVE_CONCURRENCY
     assert keeper.pending() == [] and keeper._archives == {}  # nothing kept per page

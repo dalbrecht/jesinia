@@ -205,7 +205,7 @@ def _rss_with_link(link: str, comments: str = "") -> bytes:
         ("//cdn.example.org/x", "https://cdn.example.org/x"),
         ("http://", "https://e.com/feed"),
         # Never copied into a kept page's front matter (and so into git).
-        ("https://me:pw@a.example/x", "https://e.com/feed"),
+        ("https://me:pw@a.example/x", "https://e.com/feed"),  # trufflehog:ignore
     ],
 )
 def test_item_and_site_urls_are_normalised_to_http_urls(link: str, expected: str) -> None:
@@ -221,7 +221,7 @@ def test_item_and_site_urls_are_normalised_to_http_urls(link: str, expected: str
         ("data:text/html,hi", None),
         ("/item?id=1", "https://news.ycombinator.com/item?id=1"),
         ("//news.ycombinator.com/item?id=2", "https://news.ycombinator.com/item?id=2"),
-        ("https://u:p@news.ycombinator.com/item?id=3", None),
+        ("https://u:p@news.ycombinator.com/item?id=3", None),  # trufflehog:ignore
     ],
 )
 def test_discussion_url_is_normalised_or_dropped(comments: str, expected: str | None) -> None:
@@ -303,6 +303,7 @@ def test_external_entity_is_ignored() -> None:
 
 def test_a_feed_reached_through_credentials_never_lends_them_to_its_items() -> None:
     # The feed was redirected to a URL with userinfo: it is the fallback for bad item links.
-    feed = parse_feed(_rss_with_link("javascript:alert(1)"), "https://u:pw@e.com/feed?x=1")
+    redirected = "https://u:pw@e.com/feed?x=1"  # trufflehog:ignore
+    feed = parse_feed(_rss_with_link("javascript:alert(1)"), redirected)
     assert feed.items[0].url == "https://e.com/feed?x=1"
     assert feed.site_url == "https://e.com/feed?x=1"
