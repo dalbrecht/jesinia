@@ -103,6 +103,15 @@ class Issue:
 
 
 @dataclass(frozen=True)
+class LabeledItem:
+    """An issue or pull request carrying a label, as GitHub's label filter lists it now."""
+
+    number: int
+    labels: tuple[str, ...]
+    is_pull_request: bool
+
+
+@dataclass(frozen=True)
 class Label:
     name: str
     color: str
@@ -206,6 +215,15 @@ def validate_label_name(name: str) -> str:
     if not name.strip("."):
         # ``.`` and ``..`` would be dot segments in a label's URL; refuse every dot-only name.
         raise InvalidLabelError(f"label name can't be only dots: {name!r}")
+    return name
+
+
+def validate_label_filter(name: str) -> str:
+    """A label name GitHub's ``labels=`` filter can express: it is a comma-separated list, so
+    a name with a comma would match other labels (or none)."""
+    validate_label_name(name)
+    if "," in name:
+        raise InvalidLabelError(f"GitHub can't list issues by a label name with a comma: {name!r}")
     return name
 
 

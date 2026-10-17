@@ -10,19 +10,25 @@ are a list of ``LabelOp`` that a preview shows and an apply runs in order (the e
   of its aliases exists on GitHub (``write_name`` would give ``None``). A canonical reachable
   through an existing alias is not missing; migrating renames it.
 - **Migration** maps every alias that exists on GitHub to its canonical: it creates a canonical
-  that doesn't exist yet, relabels every cached issue carrying an alias (add the canonical,
-  remove the alias) and then deletes the alias labels. The executor deletes only after every
-  earlier step succeeded, so no issue can lose a label it wasn't given back.
+  that doesn't exist yet, then for each alias a ``DeleteLabel`` with that canonical as its
+  ``replacement``. Membership never comes from the cache (ruling IR31): the preview lists the
+  alias's issues and pull requests live, for the author to see, and the executor lists them live
+  again right before the delete, moves every one to the canonical, and deletes only when every
+  move (for every alias) succeeded. A label added on GitHub after the last sync, or carried by
+  a pull request (never cached), is moved, not stripped.
 - **Plans:** a preview stores its ops under an id for ``PLAN_TTL``. An apply must name a plan
   that exists, hasn't expired and is of the same kind, and the ops planned again from the repo's
-  current state must equal the stored ones: anything changed since the preview (a label created
-  or deleted on GitHub, the schema, the cached issues) asks for a fresh preview.
+  current state must have the same shape (labels created, deleted and their replacements; the
+  member lists are re-read anyway): a label created or deleted on GitHub, or a schema change,
+  since the preview asks for a fresh preview.
+- **Names** compare by ``label_key`` (NFC, casefolded). Two GitHub labels with one key are
+  refused rather than guessed between.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Literal, get_args
 
@@ -34,9 +40,9 @@ from jesinia.apps.issues.domain.schema import (
     TYPE,
     Canonical,
     LabelSchema,
+    label_key,
     write_name,
 )
-from jesinia.services.github.domain.issue import Issue, IssueRef
 
 LabelPlanKind = Literal["setup", "migrate"]
 PLAN_KINDS: tuple[LabelPlanKind, ...] = get_args(LabelPlanKind)
@@ -83,8 +89,9 @@ class LabelPlanOutdatedError(LabelPlanError):
     """The repo changed since the preview; what was approved is no longer what would run."""
 
 
-class RepoNotSyncedError(LabelPlanError):
-    """A migration relabels issues from the cache, so the repo must have finished a sync."""
+class LabelNameCollisionError(LabelPlanError):
+    """Two labels on GitHub compare as one name (case or Unicode form); Jesinia won't guess
+    which one a step means."""
 
 
 @dataclass(frozen=True)
@@ -97,23 +104,18 @@ class CreateLabel:
 
 
 @dataclass(frozen=True)
-class Relabel:
-    """On issue ``number``, replace each ``(old, new)`` label present on a fresh read: add the
-    new ones in one write, then remove the old ones."""
-
-    number: int
-    replace: tuple[tuple[str, str], ...]
-
-
-@dataclass(frozen=True)
 class DeleteLabel:
-    """Delete a label from the repo (and so from every issue); runs only when every earlier
-    step of the batch succeeded."""
+    """Delete a label from the repo (and so from every issue). With a ``replacement`` the
+    executor first lists the label's issues and pull requests live and moves each to the
+    replacement, and deletes only when every move succeeded. ``members`` is what the preview
+    listed (shown to the author; never trusted at apply time)."""
 
     name: str
+    replacement: str | None = None
+    members: tuple[int, ...] = ()
 
 
-LabelOp = CreateLabel | Relabel | DeleteLabel
+LabelOp = CreateLabel | DeleteLabel
 
 
 def parse_plan_kind(value: str) -> LabelPlanKind:
@@ -143,18 +145,51 @@ def _create(dimension: str, canonical: Canonical) -> CreateLabel:
     )
 
 
-def _key(label: str) -> str:
-    return label.strip().casefold()
+def _on_github(existing: Iterable[str]) -> dict[str, str]:
+    """GitHub's labels by ``label_key``.
+
+    Raises:
+        LabelNameCollisionError: two labels share a key.
+    """
+    found: dict[str, str] = {}
+    for name in existing:
+        key = label_key(name)
+        if key in found:
+            raise LabelNameCollisionError(
+                f"{found[key]!r} and {name!r} on GitHub compare as the same label; rename one "
+                "on GitHub first"
+            )
+        found[key] = name
+    return found
 
 
 def plan_setup(schema: LabelSchema, existing: Iterable[str]) -> list[CreateLabel]:
     """The canonical labels to create so every schema value can be written on the repo whose
-    labels are ``existing``."""
-    names = list(existing)
+    labels are ``existing``.
+
+    Raises:
+        LabelNameCollisionError: two of ``existing`` compare as one name.
+    """
+    names = list(_on_github(existing).values())
     return [
         _create(dimension, canonical)
         for dimension, canonical in schema_labels(schema)
         if write_name(canonical, names) is None
+    ]
+
+
+def migration_aliases(schema: LabelSchema, existing: Iterable[str]) -> list[tuple[str, str]]:
+    """``(alias as spelled on GitHub, canonical)`` for every alias on GitHub, in schema order.
+
+    Raises:
+        LabelNameCollisionError: two of ``existing`` compare as one name.
+    """
+    on_github = _on_github(existing)
+    return [
+        (on_github[label_key(alias)], canonical.name)
+        for _, canonical in schema_labels(schema)
+        for alias in canonical.aliases
+        if label_key(alias) in on_github
     ]
 
 
@@ -163,41 +198,48 @@ class MigrationPlan:
     """What migrating a repo's aliases to their canonical labels does, in order."""
 
     create: tuple[CreateLabel, ...]
-    relabel: Mapping[IssueRef, Relabel]
-    delete: tuple[str, ...]
+    delete: tuple[DeleteLabel, ...]
+
+    @property
+    def relabel(self) -> dict[int, tuple[str, ...]]:
+        """Each listed issue or pull request and the aliases it will lose (for the preview)."""
+        found: dict[int, tuple[str, ...]] = {}
+        for op in self.delete:
+            for number in op.members:
+                found[number] = (*found.get(number, ()), op.name)
+        return found
 
     def ops(self) -> list[LabelOp]:
-        return [*self.create, *self.relabel.values(), *(DeleteLabel(n) for n in self.delete)]
+        return [*self.create, *self.delete]
 
 
 def plan_migration(
-    repo: str, schema: LabelSchema, existing: Iterable[str], issues: Iterable[Issue]
+    schema: LabelSchema, existing: Iterable[str], members: Mapping[str, Sequence[int]]
 ) -> MigrationPlan:
-    """Plan the migration of ``repo``: ``existing`` is its labels on GitHub, ``issues`` every
-    cached issue (open and closed). Old labels keep GitHub's own spelling."""
-    on_github = {_key(name): name for name in existing}
-    to_canonical: dict[str, str] = {}  # casefolded alias on GitHub -> canonical
+    """Plan a migration: ``existing`` is the repo's labels on GitHub and ``members`` the issue
+    and pull request numbers listed live for each alias (keyed as GitHub spells it).
+
+    Raises:
+        LabelNameCollisionError: two of ``existing`` compare as one name.
+    """
+    names = list(existing)
+    on_github = _on_github(names)
     create: list[CreateLabel] = []
-    delete: list[str] = []
+    delete: list[DeleteLabel] = []
     for dimension, canonical in schema_labels(schema):
-        present = [_key(alias) for alias in canonical.aliases if _key(alias) in on_github]
+        present = [on_github[label_key(a)] for a in canonical.aliases if label_key(a) in on_github]
         if not present:
             continue
-        if _key(canonical.name) not in on_github:
+        if label_key(canonical.name) not in on_github:
             create.append(_create(dimension, canonical))
-        for alias in present:
-            to_canonical[alias] = canonical.name
-            delete.append(on_github[alias])
-    relabel: dict[IssueRef, Relabel] = {}
-    for item in issues:
-        pairs = tuple(
-            (label, to_canonical[_key(label)])
-            for label in item.labels
-            if _key(label) in to_canonical
+        delete.extend(
+            DeleteLabel(alias, canonical.name, tuple(members.get(alias, ()))) for alias in present
         )
-        if pairs:
-            relabel[IssueRef(repo, item.number, item.id)] = Relabel(item.number, pairs)
-    return MigrationPlan(tuple(create), relabel, tuple(delete))
+    return MigrationPlan(tuple(create), tuple(delete))
+
+
+def _shape(op: LabelOp) -> LabelOp:
+    return replace(op, members=()) if isinstance(op, DeleteLabel) else op
 
 
 @dataclass(frozen=True)
@@ -230,8 +272,8 @@ class LabelPlan:
             raise LabelPlanExpiredError(
                 f"plan {self.id} expired at {self.expires_at.isoformat()}; preview again"
             )
-        if current != self.ops:
+        if tuple(map(_shape, current)) != tuple(map(_shape, self.ops)):
             raise LabelPlanOutdatedError(
-                f"{self.repo} changed since plan {self.id} was previewed (labels, schema or "
-                "issues); preview again and approve what would run now"
+                f"{self.repo} changed since plan {self.id} was previewed (its labels or "
+                "schema); preview again and approve what would run now"
             )

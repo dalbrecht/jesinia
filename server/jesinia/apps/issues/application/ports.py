@@ -24,6 +24,7 @@ from jesinia.services.github.domain.issue import (
     IssueComment,
     IssueRef,
     Label,
+    LabeledItem,
     Milestone,
     Page,
     TimelineEvent,
@@ -165,13 +166,21 @@ class CachedIssue:
     details_synced_at: datetime | None
 
 
-class IssueCache(Protocol):
+class ViewCache(Protocol):
+    """What an Inbox or Backlog view reads (``IssuesStore`` has it too)."""
+
+    def watched_repos(self) -> list[str]: ...
+
+    def repo(self, repo: str) -> RepoState | None: ...
+
+    def rows(self, view: ViewName, filters: IssueFilters, now: datetime) -> list[IssueRow]: ...
+
+
+class IssueCache(ViewCache, Protocol):
     """The cache reads behind ``IssueQueries``; never GitHub."""
 
     def all_repos(self) -> list[RepoState]:
         """Every repo the author added, watched or not, by name."""
-
-    def repo(self, repo: str) -> RepoState | None: ...
 
     def cached_issue(self, repo: str, n: int) -> CachedIssue | None: ...
 
@@ -184,8 +193,8 @@ class IssueCache(Protocol):
 
     def search(self, query: str, repo: str | None, limit: int) -> list[IssueRow]:
         """Issues of watched repos (open and closed) whose number is ``query`` (``12`` or
-        ``#12``) or whose title, body or labels contain it, case-insensitively and literally;
-        most recently updated first."""
+        ``#12``) or whose title, body or labels contain it literally, ignoring case for ASCII
+        letters only (SQLite ``LIKE``); most recently updated first."""
 
 
 class LabelWrites(Protocol):
@@ -194,7 +203,9 @@ class LabelWrites(Protocol):
 
     async def labels(self, repo: str) -> list[Label]: ...
 
-    async def get(self, repo: str, n: int) -> Issue: ...
+    async def labeled(self, repo: str, name: str) -> list[LabeledItem]:
+        """Every issue and pull request carrying ``name`` now (``InvalidLabelError`` for a
+        name with a comma, which GitHub's filter can't express)."""
 
     async def add_labels(self, repo: str, n: int, names: Sequence[str]) -> tuple[str, ...]: ...
 
@@ -210,7 +221,13 @@ class LabelPlanStore(Protocol):
 
     def repo(self, repo: str) -> RepoState | None: ...
 
-    def issues(self, repo: str) -> list[Issue]: ...
+    def issue(self, repo: str, n: int) -> Issue | None: ...
+
+    def replace_labels(self, repo: str, labels: Sequence[Label]) -> None: ...
+
+    def update_issue_labels(self, issue: Issue, labels: Sequence[str], triaged: Triage) -> None:
+        """Store a cached issue's labels as a write left them, with its new triage; the Inbox flag
+        is cleared when it is now complete, never set."""
 
     def save_plan(self, plan: LabelPlan, now: datetime) -> None:
         """Keep ``plan``; plans that expired before ``now`` are dropped."""

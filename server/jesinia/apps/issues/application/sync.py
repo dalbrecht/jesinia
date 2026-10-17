@@ -46,6 +46,7 @@ from jesinia.apps.issues.application.ports import (
     SchemaSource,
     StoredIssue,
 )
+from jesinia.apps.issues.application.reads import build_view
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, LabelSchema, parse_labels_yml
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
@@ -178,16 +179,10 @@ class SyncService:
 
     async def list(self, view: ViewName, filters: IssueFilters) -> IssueView:
         """The cached ``view``; never awaits GitHub or a running sync."""
-        repos = [filters.repo] if filters.repo is not None else self._store.watched_repos()
-        states = [state for repo in repos if (state := self._store.repo(repo)) is not None]
-        synced = [state.synced_at for state in states]
-        errors = [f"{state.repo}: {state.sync_error}" for state in states if state.sync_error]
-        return IssueView(
-            rows=self._store.rows(view, filters, self._clock()),
-            synced_at=None if not synced or None in synced else min(t for t in synced if t),
-            syncing=any(repo in self._syncing for repo in repos),
-            sync_error="; ".join(errors) or None,
-        )
+        return build_view(self._store, view, filters, self._clock(), self.is_syncing)
+
+    def is_syncing(self, repo: str) -> bool:
+        return repo in self._syncing
 
     # Sync -----------------------------------------------------------------------------
 

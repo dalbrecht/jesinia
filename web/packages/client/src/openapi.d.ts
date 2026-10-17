@@ -1143,8 +1143,12 @@ export interface paths {
         put?: never;
         /**
          * Preview Labels
-         * @description What the setup or migration batch would do, from a fresh read of the repo's labels;
-         *     nothing is written to GitHub. Apply it with its ``plan_id``.
+         * @description What the setup or migration batch would do, from a fresh read of the repo's labels
+         *     (and, for a migration, each old label's issues listed live); nothing is written to
+         *     GitHub. Apply it with its ``plan_id``.
+         *
+         *     Deliberately not keyed, unlike the other POSTs: it changes nothing on GitHub, and the
+         *     plan row each call keeps is harmless (plans expire and are pruned).
          */
         post: operations["preview_labels_api_issues_labels__owner___repo__preview_post"];
         delete?: never;
@@ -1165,8 +1169,9 @@ export interface paths {
         /**
          * Apply Labels
          * @description Apply a previewed batch (an approval; owner only). Refused with a 409 when the
-         *     repo changed since the preview. A rate limit stops the batch: a 503 with
-         *     ``Retry-After`` and the steps so far.
+         *     repo's labels or schema changed since the preview. When GitHub stops the batch (a rate
+         *     limit, with ``Retry-After``, or a rejected token) the answer is a 503 with the steps so
+         *     far.
          */
         post: operations["apply_labels_api_issues_labels__owner___repo__apply_post"];
         delete?: never;
@@ -1184,8 +1189,9 @@ export interface paths {
         };
         /**
          * Get View
-         * @description The cached Inbox or Backlog, at once; ``syncing`` and ``sync_error`` report
-         *     GitHub. ``filter`` is a saved filter (``incomplete``, ``stale_90d``).
+         * @description The cached Inbox or Backlog, at once, even without the github service;
+         *     ``syncing`` and ``sync_error`` report GitHub. ``filter`` is a saved filter
+         *     (``incomplete``, ``stale_90d``).
          */
         get: operations["get_view_api_issues__view__get"];
         put?: never;
@@ -1957,8 +1963,9 @@ export interface components {
         /**
          * LabelApplyOut
          * @description What an apply did, step by step. ``note`` says why old labels were kept;
-         *     ``rate_limited_until`` is set when GitHub stopped the batch (the response is then a 503
-         *     with ``Retry-After``). Anything left needs a fresh preview.
+         *     ``stopped`` is set when GitHub stopped the batch (a rate limit, with
+         *     ``rate_limited_until`` and ``Retry-After``, or a rejected token): the response is then a 503.
+         *     Anything left needs a fresh preview.
          */
         LabelApplyOut: {
             /** Repo */
@@ -1974,6 +1981,8 @@ export interface components {
             steps: components["schemas"]["LabelStepOut"][];
             /** Note */
             note: string | null;
+            /** Stopped */
+            stopped: string | null;
             /** Rate Limited */
             rate_limited: boolean;
             /** Rate Limited Until */
@@ -1991,25 +2000,26 @@ export interface components {
         };
         /**
          * LabelOpOut
-         * @description One step: ``create`` (``name``, ``color``, ``description``), ``relabel`` (issue
-         *     ``number``, each ``replace``) or ``delete`` (``name``).
+         * @description One step: ``create`` (``name``, ``color``, ``description``) or ``delete`` (``name``).
+         *     A delete with a ``replacement`` first moves every issue and pull request carrying the label
+         *     to it (listed live at apply time); ``members`` is what the preview listed.
          */
         LabelOpOut: {
             /**
              * Op
              * @enum {string}
              */
-            op: "create" | "relabel" | "delete";
+            op: "create" | "delete";
             /** Name */
-            name: string | null;
+            name: string;
             /** Color */
             color: string | null;
             /** Description */
             description: string | null;
-            /** Number */
-            number: number | null;
-            /** Replace */
-            replace: components["schemas"]["LabelReplaceOut"][];
+            /** Replacement */
+            replacement: string | null;
+            /** Members */
+            members: number[];
         };
         /** LabelPlanIn */
         LabelPlanIn: {
@@ -2041,13 +2051,6 @@ export interface components {
             /** Ops */
             ops: components["schemas"]["LabelOpOut"][];
         };
-        /** LabelReplaceOut */
-        LabelReplaceOut: {
-            /** Old */
-            old: string;
-            /** New */
-            new: string;
-        };
         /**
          * LabelSchemaBody
          * @description A label schema in ``.jesinia/labels.yml``'s shape (spec §2).
@@ -2066,7 +2069,10 @@ export interface components {
             /** Free Prefixes */
             free_prefixes?: string[];
         };
-        /** LabelStepOut */
+        /**
+         * LabelStepOut
+         * @description A step's outcome; ``failed_issues`` are the issues a delete's moves failed on.
+         */
         LabelStepOut: {
             op: components["schemas"]["LabelOpOut"];
             /**
@@ -2076,6 +2082,8 @@ export interface components {
             state: "done" | "failed" | "skipped";
             /** Cause */
             cause: string | null;
+            /** Failed Issues */
+            failed_issues: number[];
         };
         /** LoadIn */
         LoadIn: {

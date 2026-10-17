@@ -50,6 +50,7 @@ from jesinia.services.github.domain.issue import (
     IssueComment,
     IssueRef,
     Label,
+    LabeledItem,
     LinkedPr,
     Milestone,
     Page,
@@ -64,6 +65,7 @@ from jesinia.services.github.domain.issue import (
     validate_issue_title,
     validate_label_color,
     validate_label_description,
+    validate_label_filter,
     validate_label_name,
     validate_label_names,
     validate_page_token,
@@ -260,6 +262,20 @@ class IssueClient:
         items, next_token = await self._page(path, page_token, params)
         issues = [_issue(repo, item) for item in items if "pull_request" not in item]
         return Page(issues, next_token)
+
+    async def labeled(self, repo: str, name: str) -> list[LabeledItem]:
+        """Every issue and pull request carrying label ``name`` now, open and closed (every
+        page). Pull requests are kept and marked: deleting a label strips it from them too.
+
+        Raises:
+            InvalidLabelError: ``name`` has a comma, which GitHub's filter can't express.
+        """
+        path = f"/repos/{validate_repo(repo)}/issues"
+        params = {"labels": validate_label_filter(name), "state": "all"}
+        return [
+            LabeledItem(number(item, "number"), _label_names(item), "pull_request" in item)
+            for item in await get_pages(self._github, path, params)
+        ]
 
     async def get(self, repo: str, n: int) -> Issue:
         """One issue, from one request; its sub-issues are ``sub_issues(repo, n)``."""

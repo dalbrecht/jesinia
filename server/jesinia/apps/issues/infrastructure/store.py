@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import cast
 
@@ -25,7 +25,6 @@ from jesinia.apps.issues.domain.labels import (
     DeleteLabel,
     LabelOp,
     LabelPlan,
-    Relabel,
     parse_plan_kind,
 )
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, Canonical, LabelSchema
@@ -157,18 +156,23 @@ def _schema_json(schema: LabelSchema) -> str:
 def _op_json(op: LabelOp) -> dict[str, object]:
     if isinstance(op, CreateLabel):
         return {"op": "create", "name": op.name, "color": op.color, "description": op.description}
-    if isinstance(op, Relabel):
-        return {"op": "relabel", "number": op.number, "replace": [list(p) for p in op.replace]}
-    return {"op": "delete", "name": op.name}
+    return {
+        "op": "delete",
+        "name": op.name,
+        "replacement": op.replacement,
+        "members": list(op.members),
+    }
 
 
 def _op(data: dict[str, object]) -> LabelOp:
     if data["op"] == "create":
         return CreateLabel(str(data["name"]), str(data["color"]), str(data["description"]))
-    if data["op"] == "relabel":
-        pairs = cast(list[list[str]], data["replace"])
-        return Relabel(cast(int, data["number"]), tuple((old, new) for old, new in pairs))
-    return DeleteLabel(str(data["name"]))
+    replacement = data["replacement"]
+    return DeleteLabel(
+        str(data["name"]),
+        None if replacement is None else str(replacement),
+        tuple(cast(list[int], data["members"])),
+    )
 
 
 def _repo_state(row: tuple[object, ...]) -> RepoState:
@@ -457,24 +461,35 @@ class SqliteIssuesStore:
         ).fetchone()
         return None if row is None else _issue(row[0])
 
+    def update_issue_labels(self, issue: Issue, labels: Sequence[str], triaged: Triage) -> None:
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE issues SET json = ? WHERE repo = ? AND number = ?",
+                (_issue_json(replace(issue, labels=tuple(labels))), issue.repo, issue.number),
+            )
+            self._write_triage(issue.repo, [(issue.number, triaged)])
+
     def update_triage(self, repo: str, triaged: Sequence[tuple[int, Triage]]) -> None:
         with transaction(self._conn):
-            self._conn.executemany(
-                "UPDATE issues SET complete = ?, missing_json = ?, triage_json = ?, is_epic = ?, "
-                "inbox = CASE WHEN ? THEN 0 ELSE inbox END WHERE repo = ? AND number = ?",
-                [
-                    (
-                        int(result.complete),
-                        json.dumps(result.missing),
-                        json.dumps(asdict(result)),
-                        int(result.is_epic),
-                        int(result.complete),
-                        repo,
-                        number,
-                    )
-                    for number, result in triaged
-                ],
-            )
+            self._write_triage(repo, triaged)
+
+    def _write_triage(self, repo: str, triaged: Sequence[tuple[int, Triage]]) -> None:
+        self._conn.executemany(
+            "UPDATE issues SET complete = ?, missing_json = ?, triage_json = ?, is_epic = ?, "
+            "inbox = CASE WHEN ? THEN 0 ELSE inbox END WHERE repo = ? AND number = ?",
+            [
+                (
+                    int(result.complete),
+                    json.dumps(result.missing),
+                    json.dumps(asdict(result)),
+                    int(result.is_epic),
+                    int(result.complete),
+                    repo,
+                    number,
+                )
+                for number, result in triaged
+            ],
+        )
 
     # Sub-issues, comments and timeline --------------------------------------------------
 

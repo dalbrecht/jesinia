@@ -5,7 +5,7 @@ titles, bodies, labels and comments are the issue authors' text: the PWA shows i
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +17,6 @@ from jesinia.apps.issues.domain.labels import (
     LabelOp,
     LabelPlan,
     LabelPlanKind,
-    Relabel,
 )
 from jesinia.apps.issues.domain.schema import (
     MAX_ALIASES,
@@ -33,6 +32,7 @@ REPO_MAX = 140
 PLAN_ID_MAX = 64
 
 LabelName = Field(min_length=1, max_length=MAX_LABEL_NAME)
+LabelText = Annotated[str, Field(min_length=1, max_length=MAX_LABEL_NAME)]
 
 
 class IssuesErrorOut(BaseModel):
@@ -48,7 +48,7 @@ class LabelCanonicalBody(BaseModel):
     """A canonical label value and the existing labels that mean the same thing."""
 
     name: str = LabelName
-    aliases: list[str] = Field(default_factory=list, max_length=MAX_ALIASES)
+    aliases: list[LabelText] = Field(default_factory=list, max_length=MAX_ALIASES)
 
     @classmethod
     def of(cls, canonical: Canonical) -> LabelCanonicalBody:
@@ -66,7 +66,7 @@ class LabelSchemaBody(BaseModel):
     initiative: LabelCanonicalBody = Field(
         default_factory=lambda: LabelCanonicalBody(name="initiative")
     )
-    free_prefixes: list[str] = Field(default_factory=list, max_length=MAX_ENTRIES)
+    free_prefixes: list[LabelText] = Field(default_factory=list, max_length=MAX_ENTRIES)
 
     @classmethod
     def of(cls, schema: LabelSchema) -> LabelSchemaBody:
@@ -296,21 +296,17 @@ class LabelApplyIn(BaseModel):
     plan_id: str = Field(min_length=1, max_length=PLAN_ID_MAX)
 
 
-class LabelReplaceOut(BaseModel):
-    old: str
-    new: str
-
-
 class LabelOpOut(BaseModel):
-    """One step: ``create`` (``name``, ``color``, ``description``), ``relabel`` (issue
-    ``number``, each ``replace``) or ``delete`` (``name``)."""
+    """One step: ``create`` (``name``, ``color``, ``description``) or ``delete`` (``name``).
+    A delete with a ``replacement`` first moves every issue and pull request carrying the label
+    to it (listed live at apply time); ``members`` is what the preview listed."""
 
-    op: Literal["create", "relabel", "delete"]
-    name: str | None
+    op: Literal["create", "delete"]
+    name: str
     color: str | None
     description: str | None
-    number: int | None
-    replace: list[LabelReplaceOut]
+    replacement: str | None
+    members: list[int]
 
     @classmethod
     def of(cls, op: LabelOp) -> LabelOpOut:
@@ -320,19 +316,17 @@ class LabelOpOut(BaseModel):
                 name=op.name,
                 color=op.color,
                 description=op.description,
-                number=None,
-                replace=[],
+                replacement=None,
+                members=[],
             )
-        if isinstance(op, Relabel):
-            return cls(
-                op="relabel",
-                name=None,
-                color=None,
-                description=None,
-                number=op.number,
-                replace=[LabelReplaceOut(old=old, new=new) for old, new in op.replace],
-            )
-        return cls(op="delete", name=op.name, color=None, description=None, number=None, replace=[])
+        return cls(
+            op="delete",
+            name=op.name,
+            color=None,
+            description=None,
+            replacement=op.replacement,
+            members=list(op.members),
+        )
 
 
 class LabelPlanOut(BaseModel):
@@ -356,25 +350,35 @@ class LabelPlanOut(BaseModel):
 
 
 class LabelStepOut(BaseModel):
+    """A step's outcome; ``failed_issues`` are the issues a delete's moves failed on."""
+
     op: LabelOpOut
     state: Literal["done", "failed", "skipped"]
     cause: str | None
+    failed_issues: list[int]
 
     @classmethod
     def of(cls, result: OpResult) -> LabelStepOut:
-        return cls(op=LabelOpOut.of(result.op), state=result.state, cause=result.cause)
+        return cls(
+            op=LabelOpOut.of(result.op),
+            state=result.state,
+            cause=result.cause,
+            failed_issues=list(result.failed_issues),
+        )
 
 
 class LabelApplyOut(BaseModel):
     """What an apply did, step by step. ``note`` says why old labels were kept;
-    ``rate_limited_until`` is set when GitHub stopped the batch (the response is then a 503
-    with ``Retry-After``). Anything left needs a fresh preview."""
+    ``stopped`` is set when GitHub stopped the batch (a rate limit, with
+    ``rate_limited_until`` and ``Retry-After``, or a rejected token): the response is then a 503.
+    Anything left needs a fresh preview."""
 
     repo: str
     kind: LabelPlanKind
     complete: bool
     steps: list[LabelStepOut]
     note: str | None
+    stopped: str | None
     rate_limited: bool
     rate_limited_until: datetime | None
 
@@ -386,6 +390,7 @@ class LabelApplyOut(BaseModel):
             complete=run.complete,
             steps=[LabelStepOut.of(result) for result in run.results],
             note=run.note,
+            stopped=run.stopped,
             rate_limited=run.is_rate_limited,
             rate_limited_until=run.rate_limited_until,
         )

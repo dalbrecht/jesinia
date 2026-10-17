@@ -93,6 +93,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     with pytest.raises(HTTPException, match="require the github service"):
         _ = module.labels
     assert isinstance(module.queries, IssueQueries)  # the cache reads need no GitHub
+    assert module.clock().tzinfo is not None
     await module.stop()
 
     ctx = AppContext(cfg, EventBus(), Scheduler())

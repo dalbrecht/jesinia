@@ -5,10 +5,18 @@ untrusted data, returned verbatim; the MCP tools fence it."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
-from jesinia.apps.issues.application.ports import CachedIssue, IssueCache, RepoState
-from jesinia.apps.issues.domain.triage import IssueNotCachedError, IssueRow
+from jesinia.apps.issues.application.ports import CachedIssue, IssueCache, RepoState, ViewCache
+from jesinia.apps.issues.domain.triage import (
+    IssueFilters,
+    IssueNotCachedError,
+    IssueRow,
+    IssueView,
+    ViewName,
+)
 from jesinia.services.github.domain.issue import (
     IssueComment,
     IssueRef,
@@ -18,6 +26,27 @@ from jesinia.services.github.domain.issue import (
 from jesinia.services.github.domain.repo import validate_repo
 
 SEARCH_LIMIT = 50
+
+Clock = Callable[[], datetime]
+IsSyncing = Callable[[str], bool]
+
+
+def build_view(
+    cache: ViewCache, view: ViewName, filters: IssueFilters, now: datetime, is_syncing: IsSyncing
+) -> IssueView:
+    """The cached ``view`` with the listed repos' sync state reported, never awaited:
+    ``synced_at`` is the oldest last good sync (``None`` while any listed repo never synced),
+    ``sync_error`` joins each listed repo's last failure."""
+    repos = [filters.repo] if filters.repo is not None else cache.watched_repos()
+    states = [state for repo in repos if (state := cache.repo(repo)) is not None]
+    synced = [state.synced_at for state in states]
+    errors = [f"{state.repo}: {state.sync_error}" for state in states if state.sync_error]
+    return IssueView(
+        rows=cache.rows(view, filters, now),
+        synced_at=None if not synced or None in synced else min(t for t in synced if t),
+        syncing=any(is_syncing(repo) for repo in repos),
+        sync_error="; ".join(errors) or None,
+    )
 
 
 @dataclass(frozen=True)
@@ -32,17 +61,35 @@ class IssueDetail:
 
 
 class IssueQueries:
-    """Reads over the cache (``SqliteIssuesStore``)."""
+    """Reads over the cache (``SqliteIssuesStore``); they work without the github service.
 
-    def __init__(self, cache: IssueCache) -> None:
+    Args:
+        cache: ``issues.sqlite``.
+        clock: the current UTC time.
+        is_syncing: whether a repo's sync is running (``SyncService.is_syncing``; never,
+            without the github service).
+    """
+
+    def __init__(
+        self, cache: IssueCache, clock: Clock, is_syncing: IsSyncing | None = None
+    ) -> None:
         self._cache = cache
+        self._clock = clock
+        self._is_syncing: IsSyncing = is_syncing or (lambda repo: False)
+
+    def view(self, view: ViewName, filters: IssueFilters) -> IssueView:
+        """The cached Inbox or Backlog (see ``build_view``)."""
+        return build_view(self._cache, view, filters, self._clock(), self._is_syncing)
 
     def repos(self) -> list[RepoState]:
         """Every repo the author added, watched or not."""
         return self._cache.all_repos()
 
     def detail(self, repo: str, n: int) -> IssueDetail:
-        """Raises:
+        """Any cached issue, its repo watched or not: an opened issue's tab keeps working after
+        its repo is unwatched (the cache is kept), while lists and search show watched repos.
+
+        Raises:
         InvalidRepoError: ``repo`` is not ``owner/name``.
         InvalidIssueReferenceError: ``n`` isn't an issue number.
         IssueNotCachedError: ``repo#n`` hasn't been synced.

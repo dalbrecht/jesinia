@@ -32,6 +32,7 @@ the epic completeness rule; no other completeness rule for initiatives exists.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -158,8 +159,13 @@ def _index(schema: LabelSchema) -> _Index:
     )
 
 
-def _key(label: str) -> str:
-    return label.strip().casefold()
+def label_key(label: str) -> str:
+    """How label names compare: Unicode NFC, surrounding whitespace ignored, casefolded (as
+    GitHub's own names compare, near enough)."""
+    return unicodedata.normalize("NFC", label).strip().casefold()
+
+
+_key = label_key
 
 
 def _add(values: list[str], value: str) -> None:

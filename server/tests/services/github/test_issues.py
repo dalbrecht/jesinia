@@ -28,6 +28,7 @@ from jesinia.services.github.domain.issue import (
     IssueComment,
     IssueRef,
     Label,
+    LabeledItem,
     LinkedPr,
     Milestone,
 )
@@ -637,3 +638,30 @@ def test_hostile_segments_are_refused_by_the_path_helper() -> None:
     for bad in ("", ".", ".."):
         with pytest.raises(InvalidPathSegmentError):
             path_segment(bad)
+
+
+@respx.mock
+@pytest.mark.parametrize("name", ["priority: high", "design needed", "🚀 launch", "100%", "a/b"])
+async def test_labeled_lists_issues_and_prs_carrying_a_label_live(
+    issues: IssueClient, name: str
+) -> None:
+    pr = {"number": 7, "labels": [{"name": name}], "pull_request": {"url": "x"}}
+    full = [{"number": n, "labels": [{"name": name}, {"name": "bug"}]} for n in range(1, 101)]
+    first = respx.get(f"{API}/repos/acme/api/issues", params__contains={"page": "1"}).mock(
+        return_value=Response(200, json=full)
+    )
+    respx.get(f"{API}/repos/acme/api/issues", params__contains={"page": "2"}).mock(
+        return_value=Response(200, json=[pr])
+    )
+    items = await issues.labeled("acme/api", name)
+    params = first.calls.last.request.url.params
+    assert params["labels"] == name and params["state"] == "all"
+    assert len(items) == 101
+    assert items[0] == LabeledItem(1, (name, "bug"), is_pull_request=False)
+    assert items[-1] == LabeledItem(7, (name,), is_pull_request=True)
+
+
+async def test_labeled_refuses_a_name_githubs_filter_cannot_express(issues: IssueClient) -> None:
+    # ``labels=`` is a comma-separated list: "priority, high" would match other labels.
+    with pytest.raises(InvalidLabelError, match="comma"):
+        await issues.labeled("acme/api", "priority, high")

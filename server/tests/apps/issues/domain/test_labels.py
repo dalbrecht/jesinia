@@ -4,6 +4,7 @@ relabel and delete, and the checks an apply makes against its preview."""
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -14,19 +15,19 @@ from jesinia.apps.issues.domain.labels import (
     CreateLabel,
     DeleteLabel,
     InvalidLabelPlanKindError,
+    LabelNameCollisionError,
     LabelPlan,
     LabelPlanExpiredError,
     LabelPlanKindMismatchError,
     LabelPlanOutdatedError,
     MigrationPlan,
-    Relabel,
+    migration_aliases,
     parse_plan_kind,
     plan_migration,
     plan_setup,
     schema_labels,
 )
-from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, Canonical, LabelSchema
-from jesinia.services.github.domain.issue import Issue, IssueRef
+from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, Canonical, LabelSchema, label_key
 
 REPO = "acme/web"
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -38,14 +39,6 @@ SCHEMA = replace(
     ),
     areas=(Canonical("area:apple", ("platform:ios", "apple")), Canonical("area:wiki", ("wiki",))),
 )
-
-
-def issue(n: int, *labels: str) -> Issue:
-    return Issue(
-        repo=REPO, number=n, id=1000 + n, title=f"Issue {n}", body="", state="open",
-        state_reason=None, labels=labels, milestone=None, parent=None, sub_issues=(),
-        created_at=T0, updated_at=T0, url=f"https://github.com/{REPO}/issues/{n}", author="o",
-    )  # fmt: skip
 
 
 def all_names(schema: LabelSchema) -> list[str]:
@@ -78,42 +71,44 @@ def test_setup_of_a_repo_with_every_label_is_empty() -> None:
     assert plan_setup(SCHEMA, all_names(SCHEMA)) == []
 
 
-def test_migration_maps_aliases_present_on_github_to_their_canonical() -> None:
+def test_migration_aliases_are_the_aliases_present_on_github() -> None:
     existing = ["design needed", "Apple", "platform:ios", "area:apple", "bug", "wiki-ish"]
-    issues = [
-        issue(1, "design needed", "bug"),
-        issue(2, "apple", "platform:ios"),
-        issue(3, "bug", "area:apple"),  # nothing to relabel
-        issue(4, "area:apple", "Apple"),  # has the canonical too: the alias still goes
+    assert migration_aliases(SCHEMA, existing) == [
+        ("design needed", "design-needed"),
+        ("platform:ios", "area:apple"),
+        ("Apple", "area:apple"),
     ]
-    plan = plan_migration(REPO, SCHEMA, existing, issues)
-    # design-needed doesn't exist yet: created before anything is relabelled to it.
-    assert plan.create == (
-        CreateLabel("design-needed", plan.create[0].color, plan.create[0].description),
+
+
+def test_migration_creates_missing_canonicals_then_deletes_aliases_after_moving_members() -> None:
+    existing = ["design needed", "Apple", "platform:ios", "area:apple", "bug"]
+    members = {"design needed": [1], "platform:ios": [2], "Apple": [2, 4]}
+    plan = plan_migration(SCHEMA, existing, members)
+    # design-needed doesn't exist yet: created before anything is moved to it.
+    assert [op.name for op in plan.create] == ["design-needed"]
+    assert plan.delete == (
+        DeleteLabel("design needed", "design-needed", (1,)),
+        DeleteLabel("platform:ios", "area:apple", (2,)),
+        DeleteLabel("Apple", "area:apple", (2, 4)),
     )
-    assert plan.relabel == {
-        IssueRef(REPO, 1, 1001): Relabel(1, (("design needed", "design-needed"),)),
-        IssueRef(REPO, 2, 1002): Relabel(
-            2, (("apple", "area:apple"), ("platform:ios", "area:apple"))
-        ),
-        IssueRef(REPO, 4, 1004): Relabel(4, (("Apple", "area:apple"),)),
-    }
-    # Old labels in GitHub's own spelling, in schema order.
-    assert plan.delete == ("design needed", "platform:ios", "Apple")
-    ops = plan.ops()
-    assert isinstance(ops[0], CreateLabel)
-    assert [type(op) for op in ops[1:4]] == [Relabel, Relabel, Relabel]
-    assert ops[4:] == [
-        DeleteLabel("design needed"),
-        DeleteLabel("platform:ios"),
-        DeleteLabel("Apple"),
-    ]
+    assert plan.relabel == {1: ("design needed",), 2: ("platform:ios", "Apple"), 4: ("Apple",)}
+    assert plan.ops() == [*plan.create, *plan.delete]
 
 
 def test_migration_without_aliases_on_github_is_empty() -> None:
-    plan = plan_migration(REPO, SCHEMA, ["bug", "area:apple"], [issue(1, "wiki")])
-    assert plan == MigrationPlan((), {}, ())
-    assert plan.ops() == []
+    plan = plan_migration(SCHEMA, ["bug", "area:apple"], {})
+    assert plan == MigrationPlan((), ())
+    assert plan.ops() == [] and plan.relabel == {}
+
+
+def test_two_github_labels_with_one_key_are_refused_not_guessed() -> None:
+    with pytest.raises(LabelNameCollisionError, match="Straße"):
+        migration_aliases(SCHEMA, ["Straße", "STRASSE", "bug"])
+    # NFC and NFD spellings of one name are the same label.
+    nfd = unicodedata.normalize("NFD", "café")
+    assert label_key(nfd) == label_key("Café ")
+    with pytest.raises(LabelNameCollisionError):
+        plan_setup(SCHEMA, [nfd, "café"])
 
 
 def test_parse_plan_kind() -> None:
@@ -142,3 +137,11 @@ def test_a_plan_applies_only_as_its_own_kind() -> None:
 def test_a_plan_whose_repo_state_changed_is_outdated() -> None:
     with pytest.raises(LabelPlanOutdatedError, match="preview"):
         plan().check("setup", T0, ())
+
+
+def test_member_lists_never_make_a_plan_outdated() -> None:
+    previewed = LabelPlan("p1", REPO, "migrate", (DeleteLabel("old", "new", (1, 2)),), T0)
+    # Membership is listed again live at apply time, so only the shape is compared.
+    previewed.check("migrate", T0, (DeleteLabel("old", "new", (1, 2, 3)),))
+    with pytest.raises(LabelPlanOutdatedError):
+        previewed.check("migrate", T0, (DeleteLabel("old", "newer", (1, 2)),))

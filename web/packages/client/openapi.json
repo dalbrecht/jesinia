@@ -5056,7 +5056,7 @@
           "issues"
         ],
         "summary": "Preview Labels",
-        "description": "What the setup or migration batch would do, from a fresh read of the repo's labels;\nnothing is written to GitHub. Apply it with its ``plan_id``.",
+        "description": "What the setup or migration batch would do, from a fresh read of the repo's labels\n(and, for a migration, each old label's issues listed live); nothing is written to\nGitHub. Apply it with its ``plan_id``.\n\nDeliberately not keyed, unlike the other POSTs: it changes nothing on GitHub, and the\nplan row each call keeps is harmless (plans expire and are pruned).",
         "operationId": "preview_labels_api_issues_labels__owner___repo__preview_post",
         "parameters": [
           {
@@ -5172,7 +5172,7 @@
           "issues"
         ],
         "summary": "Apply Labels",
-        "description": "Apply a previewed batch (an approval; owner only). Refused with a 409 when the\nrepo changed since the preview. A rate limit stops the batch: a 503 with\n``Retry-After`` and the steps so far.",
+        "description": "Apply a previewed batch (an approval; owner only). Refused with a 409 when the\nrepo's labels or schema changed since the preview. When GitHub stops the batch (a rate\nlimit, with ``Retry-After``, or a rejected token) the answer is a 503 with the steps so\nfar.",
         "operationId": "apply_labels_api_issues_labels__owner___repo__apply_post",
         "parameters": [
           {
@@ -5306,7 +5306,7 @@
           "issues"
         ],
         "summary": "Get View",
-        "description": "The cached Inbox or Backlog, at once; ``syncing`` and ``sync_error`` report\nGitHub. ``filter`` is a saved filter (``incomplete``, ``stale_90d``).",
+        "description": "The cached Inbox or Backlog, at once, even without the github service;\n``syncing`` and ``sync_error`` report GitHub. ``filter`` is a saved filter\n(``incomplete``, ``stale_90d``).",
         "operationId": "get_view_api_issues__view__get",
         "parameters": [
           {
@@ -8828,6 +8828,17 @@
             ],
             "title": "Note"
           },
+          "stopped": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          },
           "rate_limited": {
             "type": "boolean",
             "title": "Rate Limited"
@@ -8852,11 +8863,12 @@
           "complete",
           "steps",
           "note",
+          "stopped",
           "rate_limited",
           "rate_limited_until"
         ],
         "title": "LabelApplyOut",
-        "description": "What an apply did, step by step. ``note`` says why old labels were kept;\n``rate_limited_until`` is set when GitHub stopped the batch (the response is then a 503\nwith ``Retry-After``). Anything left needs a fresh preview."
+        "description": "What an apply did, step by step. ``note`` says why old labels were kept;\n``stopped`` is set when GitHub stopped the batch (a rate limit, with\n``rate_limited_until`` and ``Retry-After``, or a rejected token): the response is then a 503.\nAnything left needs a fresh preview."
       },
       "LabelCanonicalBody": {
         "properties": {
@@ -8868,7 +8880,9 @@
           },
           "aliases": {
             "items": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 50,
+              "minLength": 1
             },
             "type": "array",
             "maxItems": 50,
@@ -8888,20 +8902,12 @@
             "type": "string",
             "enum": [
               "create",
-              "relabel",
               "delete"
             ],
             "title": "Op"
           },
           "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Name"
           },
           "color": {
@@ -8926,23 +8932,23 @@
             ],
             "title": "Description"
           },
-          "number": {
+          "replacement": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Number"
+            "title": "Replacement"
           },
-          "replace": {
+          "members": {
             "items": {
-              "$ref": "#/components/schemas/LabelReplaceOut"
+              "type": "integer"
             },
             "type": "array",
-            "title": "Replace"
+            "title": "Members"
           }
         },
         "type": "object",
@@ -8951,11 +8957,11 @@
           "name",
           "color",
           "description",
-          "number",
-          "replace"
+          "replacement",
+          "members"
         ],
         "title": "LabelOpOut",
-        "description": "One step: ``create`` (``name``, ``color``, ``description``), ``relabel`` (issue\n``number``, each ``replace``) or ``delete`` (``name``)."
+        "description": "One step: ``create`` (``name``, ``color``, ``description``) or ``delete`` (``name``).\nA delete with a ``replacement`` first moves every issue and pull request carrying the label\nto it (listed live at apply time); ``members`` is what the preview listed."
       },
       "LabelPlanIn": {
         "properties": {
@@ -9016,24 +9022,6 @@
         "title": "LabelPlanOut",
         "description": "A previewed batch: apply it with ``plan_id`` before ``expires_at``."
       },
-      "LabelReplaceOut": {
-        "properties": {
-          "old": {
-            "type": "string",
-            "title": "Old"
-          },
-          "new": {
-            "type": "string",
-            "title": "New"
-          }
-        },
-        "type": "object",
-        "required": [
-          "old",
-          "new"
-        ],
-        "title": "LabelReplaceOut"
-      },
       "LabelSchemaBody": {
         "properties": {
           "readiness": {
@@ -9076,7 +9064,9 @@
           },
           "free_prefixes": {
             "items": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 50,
+              "minLength": 1
             },
             "type": "array",
             "maxItems": 200,
@@ -9116,15 +9106,24 @@
               }
             ],
             "title": "Cause"
+          },
+          "failed_issues": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Failed Issues"
           }
         },
         "type": "object",
         "required": [
           "op",
           "state",
-          "cause"
+          "cause",
+          "failed_issues"
         ],
-        "title": "LabelStepOut"
+        "title": "LabelStepOut",
+        "description": "A step's outcome; ``failed_issues`` are the issues a delete's moves failed on."
       },
       "LoadIn": {
         "properties": {

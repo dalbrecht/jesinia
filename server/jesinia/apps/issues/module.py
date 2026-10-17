@@ -83,6 +83,10 @@ class IssuesModule:
             raise self._needs_github()
         return self._labels
 
+    def clock(self) -> datetime:
+        """The current UTC time (``Retry-After`` is counted from it)."""
+        return _utc_now()
+
     @property
     def queries(self) -> IssueQueries:
         """Cache-only reads: repos, one issue, search."""
@@ -117,11 +121,12 @@ class IssuesModule:
             IDEMPOTENCY_PRUNE_JOB, timedelta(days=1), self.prune_idempotency_keys, at_start=True
         )
         store = SqliteIssuesStore(self._conn)
-        self._queries = IssueQueries(store)
+        self._queries = IssueQueries(store, _utc_now)
         github = ctx.services.get("github")
         if isinstance(github, GitHubService):
             client = IssueClient(github)
             self._sync = SyncService(client, store, _utc_now)
+            self._queries = IssueQueries(store, _utc_now, self._sync.is_syncing)
             self._labels = LabelSetupService(
                 client, store, _utc_now, on_rate_limit=self._sync.back_off
             )

@@ -11,8 +11,8 @@ import json
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -40,7 +40,7 @@ from jesinia.services.github.application.service import (
     GitHubUnavailable,
 )
 from jesinia.services.github.domain.issue import IssueComment, TimelineEvent
-from tests.apps.issues.test_labels import AMICUS_YML, FakeGitHub
+from tests.apps.issues.test_labels import AMICUS_YML, FakeGitHub, Pauses
 from tests.apps.issues.test_sync import COMPLETE, REPO, FakeClock, issue
 from tests.conftest import BASE_URL, bearer, running
 
@@ -57,6 +57,7 @@ class Host:
     labels: LabelSetupService
     queries: IssueQueries
     idempotency: SqliteIdempotencyStore
+    clock: FakeClock
 
 
 class HostModule:
@@ -118,8 +119,9 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
     clock = FakeClock()
     store = SqliteIssuesStore(conn)
     sync = SyncService(github, store, clock)
-    labels = LabelSetupService(github, store, clock, on_rate_limit=sync.back_off)
-    host = Host(sync, labels, IssueQueries(store), SqliteIdempotencyStore(conn))
+    labels = LabelSetupService(github, store, clock, on_rate_limit=sync.back_off, pause=Pauses())
+    queries = IssueQueries(store, clock, sync.is_syncing)
+    host = Host(sync, labels, queries, SqliteIdempotencyStore(conn), clock)
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
         transport = httpx.ASGITransport(app=app)
@@ -339,14 +341,14 @@ async def test_label_preview_and_apply_shapes(env: Env) -> None:
     assert preview.status_code == 200
     plan = preview.json()
     assert plan["kind"] == "migrate" and plan["repo"] == REPO and plan["plan_id"]
-    assert [op["op"] for op in plan["ops"]] == ["create", "relabel", "delete"]
+    assert [op["op"] for op in plan["ops"]] == ["create", "delete"]
     assert plan["ops"][1] == {
-        "op": "relabel",
-        "number": 1,
-        "name": None,
+        "op": "delete",
+        "name": "design needed",
         "color": None,
         "description": None,
-        "replace": [{"old": "design needed", "new": "design-needed"}],
+        "replacement": "design-needed",
+        "members": [1],
     }
     assert env.github.writes == []
 
@@ -356,7 +358,8 @@ async def test_label_preview_and_apply_shapes(env: Env) -> None:
     assert applied.status_code == 200
     result = applied.json()
     assert result["complete"] and result["note"] is None and result["rate_limited_until"] is None
-    assert [step["state"] for step in result["steps"]] == ["done"] * 3
+    assert [step["state"] for step in result["steps"]] == ["done"] * 2
+    assert result["steps"][1]["failed_issues"] == [] and result["stopped"] is None
     repos = (await env.client.get(f"{API}/repos")).json()["repos"]
     assert repos[0]["migrated"] is True
 
@@ -390,18 +393,46 @@ async def test_a_rate_limited_apply_says_retry_after_and_is_not_stored(env: Env)
     await env.watch_and_sync()
     plan = (await env.client.post(f"{LABELS}/preview", json={"kind": "setup"})).json()
     first = plan["ops"][0]["name"]
-    reset = datetime.now(UTC) + timedelta(minutes=2)
+    reset = env.clock.now + timedelta(minutes=2)
     env.github.fail[f"create_label:{first}"] = GitHubRateLimitedError(403, "slow down", reset)
     key = keyed()
     body = {"kind": "setup", "plan_id": plan["plan_id"]}
     limited = await env.client.post(f"{LABELS}/apply", json=body, headers=key)
     assert limited.status_code == 503
-    assert 1 <= int(limited.headers["retry-after"]) <= 120
+    assert limited.headers["retry-after"] == "120"  # counted from the service clock
     assert limited.json()["rate_limited_until"] is not None
     assert {step["state"] for step in limited.json()["steps"][1:]} == {"skipped"}
     # Not stored under the key: the same key runs again (the plan was consumed, so 404).
     again = await env.client.post(f"{LABELS}/apply", json=body, headers=key)
     assert again.status_code == 404
+
+
+async def test_an_apply_github_stops_with_a_rejected_token_is_a_503(env: Env) -> None:
+    await env.watch_and_sync()
+    plan = (await env.client.post(f"{LABELS}/preview", json={"kind": "setup"})).json()
+    env.github.fail[f"create_label:{plan['ops'][0]['name']}"] = GitHubUnavailable("rejected")
+    body = {"kind": "setup", "plan_id": plan["plan_id"]}
+    stopped = await env.client.post(f"{LABELS}/apply", json=body, headers=keyed())
+    assert stopped.status_code == 503 and "retry-after" not in stopped.headers
+    assert stopped.json()["stopped"] == "rejected" and not stopped.json()["rate_limited"]
+
+
+async def test_a_refresh_replayed_with_its_key_does_not_fetch_again(env: Env) -> None:
+    await env.watch_and_sync()
+    env.github.issue_comments[(REPO, 1)] = [
+        IssueComment(7, "octo", "first", env.clock.now, "https://c")
+    ]
+    key = keyed()
+    first = await env.client.post(f"{ITEM}/refresh", headers=key)
+    assert first.status_code == 200
+    fetched = (env.github.call_names().count("comments"), env.github.call_names().count("timeline"))
+    env.github.issue_comments[(REPO, 1)] = []  # a second fetch would show this
+    again = await env.client.post(f"{ITEM}/refresh", headers=key)
+    assert again.status_code == 200 and again.json() == first.json()
+    assert (
+        env.github.call_names().count("comments"),
+        env.github.call_names().count("timeline"),
+    ) == fetched
 
 
 async def test_github_failures_are_structured_with_retry_after_when_limited(env: Env) -> None:
@@ -440,6 +471,7 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
         "comments",
         "timeline",
         "get",
+        "labeled",
         "add_labels",
         "remove_label",
         "create_label",
@@ -495,10 +527,13 @@ async def test_mcp_tools_are_read_only(env: Env) -> None:
 
 async def test_mcp_tools_fence_every_issue_derived_text(env: Env) -> None:
     env.github.put(issue(3, labels=(INJECTION,), body="plain"))
+    hostile = replace(env.github.issues[(REPO, 1)], author=INJECTION, milestone=INJECTION)
+    env.github.put(hostile)
     await env.watch_and_sync()
     env.github.issue_comments[(REPO, 1)] = [
-        IssueComment(7, "octo", INJECTION, env.clock.now, "https://c")
+        IssueComment(7, INJECTION, INJECTION, env.clock.now, "https://c")
     ]
+    env.github.events[(REPO, 1)] = [TimelineEvent(8, "labeled", INJECTION, env.clock.now)]
     await env.client.post(f"{ITEM}/refresh", headers=keyed())
     tools = _tools(env)
 
@@ -539,10 +574,11 @@ async def test_the_module_serves_the_routes_and_tools(cfg: Config) -> None:
         async with httpx.AsyncClient(
             transport=transport, base_url=BASE_URL, headers=bearer(cfg.token)
         ) as client:
-            # Without the github service the cached repos still read; views need sync.
+            # Without the github service the cache still reads (spec §6.3).
             repos = await client.get(f"{API}/repos")
             assert repos.status_code == 200 and repos.json() == {"repos": []}
-            assert (await client.get(f"{API}/backlog")).status_code == 503
+            backlog = await client.get(f"{API}/backlog")
+            assert backlog.status_code == 200 and backlog.json()["rows"] == []
             preview = await client.post(f"{LABELS}/preview", json={"kind": "setup"})
             assert preview.status_code == 503
 
@@ -551,3 +587,18 @@ def test_issues_schemas_never_clash_with_other_modules(cfg: Config) -> None:
     schemas = create_app(cfg, modules()).openapi()["components"]["schemas"]
     assert not [name for name in schemas if "__" in name]
     assert {"IssueViewOut", "IssueDetailOut", "LabelPlanOut", "LabelApplyOut"} <= set(schemas)
+
+
+async def test_settings_schema_strings_are_bounded(env: Env) -> None:
+    long = "x" * 51
+    schema = {"readiness": [{"name": "agent-ready", "aliases": [long]}],
+              "priority": [{"name": "p1"}], "type": [{"name": "bug"}]}  # fmt: skip
+    refused = await env.client.put(
+        REPO_PATH, json={"watched": True, "settings_schema": schema}, headers=keyed()
+    )
+    assert refused.status_code == 422
+    prefixes = {**schema, "readiness": [{"name": "agent-ready"}], "free_prefixes": [long]}
+    refused = await env.client.put(
+        REPO_PATH, json={"watched": True, "settings_schema": prefixes}, headers=keyed()
+    )
+    assert refused.status_code == 422

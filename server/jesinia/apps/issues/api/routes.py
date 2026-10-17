@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, Path, Query, status
@@ -40,12 +40,12 @@ from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.domain.labels import (
+    LabelNameCollisionError,
     LabelPlanError,
     LabelPlanExpiredError,
     LabelPlanKindMismatchError,
     LabelPlanNotFoundError,
     LabelPlanOutdatedError,
-    RepoNotSyncedError,
 )
 from jesinia.apps.issues.domain.schema import InvalidSettingsSchemaError, validate_settings_schema
 from jesinia.apps.issues.domain.triage import (
@@ -82,6 +82,9 @@ class IssuesHost(Protocol):
     @property
     def idempotency(self) -> IdempotencyStore: ...
 
+    def clock(self) -> datetime:
+        """The current UTC time."""
+
 
 _STATUS: dict[type[Exception], int] = {
     RepoNotWatchedError: status.HTTP_404_NOT_FOUND,
@@ -90,7 +93,7 @@ _STATUS: dict[type[Exception], int] = {
     LabelPlanExpiredError: status.HTTP_409_CONFLICT,
     LabelPlanKindMismatchError: status.HTTP_409_CONFLICT,
     LabelPlanOutdatedError: status.HTTP_409_CONFLICT,
-    RepoNotSyncedError: status.HTTP_409_CONFLICT,
+    LabelNameCollisionError: status.HTTP_409_CONFLICT,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -132,12 +135,8 @@ def _status_of(exc: Exception) -> int:
     return next(_STATUS[kind] for kind in type(exc).__mro__ if kind in _STATUS)
 
 
-def _error(exc: Exception) -> JSONResponse:
-    wait = (
-        retry_after(exc.reset_at, datetime.now(UTC))
-        if isinstance(exc, GitHubRateLimitedError)
-        else None
-    )
+def _error(exc: Exception, now: Callable[[], datetime]) -> JSONResponse:
+    wait = retry_after(exc.reset_at, now()) if isinstance(exc, GitHubRateLimitedError) else None
     body = IssuesErrorOut(error=type(exc).__name__, detail=str(exc), retry_after=wait)
     headers = None if wait is None else {"Retry-After": str(wait)}
     return JSONResponse(
@@ -145,13 +144,15 @@ def _error(exc: Exception) -> JSONResponse:
     )
 
 
-async def _respond(work: Callable[[], Awaitable[BaseModel | Response]]) -> Response:
+async def _respond(
+    work: Callable[[], Awaitable[BaseModel | Response]], now: Callable[[], datetime]
+) -> Response:
     """``work``'s model as a concrete ``Response`` (so idempotency can store it), or its typed
     error as structured JSON."""
     try:
         result = await work()
     except _TYPED as exc:
-        return _error(exc)
+        return _error(exc, now)
     if isinstance(result, Response):
         return result
     return JSONResponse(jsonable_encoder(result))
@@ -175,7 +176,7 @@ def build_router(host: IssuesHost) -> APIRouter:
         async def run() -> IssuesReposOut:
             return IssuesReposOut(repos=[IssuesRepoOut.of(s) for s in host.queries.repos()])
 
-        return await _respond(run)
+        return await _respond(run, host.clock)
 
     @r.put(repo_path, response_model=IssuesRepoOut)
     async def put_repo(
@@ -192,7 +193,7 @@ def build_router(host: IssuesHost) -> APIRouter:
             )
             return IssuesRepoOut.of(state)
 
-        return await idem.run(lambda: _respond(run))
+        return await idem.run(lambda: _respond(run, host.clock))
 
     @r.post(f"{repo_path}/sync", response_model=IssuesRepoOut)
     async def sync_repo(owner: Owner, repo: Name, idem: IdempotentCall = keyed) -> Response:
@@ -203,7 +204,7 @@ def build_router(host: IssuesHost) -> APIRouter:
             await host.sync.sync(name)
             return IssuesRepoOut.of(host.sync.state(name))
 
-        return await idem.run(lambda: _respond(run))
+        return await idem.run(lambda: _respond(run, host.clock))
 
     @r.get(item_path, response_model=IssueDetailOut)
     async def get_item(owner: Owner, repo: Name, n: Number) -> Response:
@@ -212,7 +213,7 @@ def build_router(host: IssuesHost) -> APIRouter:
         async def run() -> IssueDetailOut:
             return IssueDetailOut.of(host.queries.detail(_repo(owner, repo), n))
 
-        return await _respond(run)
+        return await _respond(run, host.clock)
 
     @r.post(f"{item_path}/refresh", response_model=IssueDetailOut)
     async def refresh_item(
@@ -225,17 +226,21 @@ def build_router(host: IssuesHost) -> APIRouter:
             await host.sync.refresh_details(name, n)
             return IssueDetailOut.of(host.queries.detail(name, n))
 
-        return await idem.run(lambda: _respond(run))
+        return await idem.run(lambda: _respond(run, host.clock))
 
     @r.post(f"{labels_path}/preview", response_model=LabelPlanOut)
     async def preview_labels(owner: Owner, repo: Name, body: LabelPlanIn) -> Response:
-        """What the setup or migration batch would do, from a fresh read of the repo's labels;
-        nothing is written to GitHub. Apply it with its ``plan_id``."""
+        """What the setup or migration batch would do, from a fresh read of the repo's labels
+        (and, for a migration, each old label's issues listed live); nothing is written to
+        GitHub. Apply it with its ``plan_id``.
+
+        Deliberately not keyed, unlike the other POSTs: it changes nothing on GitHub, and the
+        plan row each call keeps is harmless (plans expire and are pruned)."""
 
         async def run() -> LabelPlanOut:
             return LabelPlanOut.of(await host.labels.preview(_repo(owner, repo), body.kind))
 
-        return await _respond(run)
+        return await _respond(run, host.clock)
 
     apply_responses: dict[int | str, dict[str, Any]] = {
         503: {"model": LabelApplyOut, "description": "GitHub's rate limit stopped the batch"}
@@ -250,23 +255,27 @@ def build_router(host: IssuesHost) -> APIRouter:
         idem: IdempotentCall = keyed,
     ) -> Response:
         """Apply a previewed batch (an approval; owner only). Refused with a 409 when the
-        repo changed since the preview. A rate limit stops the batch: a 503 with
-        ``Retry-After`` and the steps so far."""
+        repo's labels or schema changed since the preview. When GitHub stops the batch (a rate
+        limit, with ``Retry-After``, or a rejected token) the answer is a 503 with the steps so
+        far."""
 
         async def run() -> Response:
             name = _repo(owner, repo)
             result = await host.labels.apply(name, body.kind, body.plan_id)
             out = jsonable_encoder(LabelApplyOut.of(name, body.kind, result))
-            if not result.is_rate_limited:
+            if result.stopped is None:
                 return JSONResponse(out)
-            wait = retry_after(result.rate_limited_until, datetime.now(UTC))
+            # A 5xx is never stored under the key either way; a rate limit says when to retry.
+            headers = (
+                {"Retry-After": str(retry_after(result.rate_limited_until, host.clock()))}
+                if result.is_rate_limited
+                else None
+            )
             return JSONResponse(
-                out,
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                headers={"Retry-After": str(wait)},
+                out, status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers=headers
             )
 
-        return await idem.run(lambda: _respond(run))
+        return await idem.run(lambda: _respond(run, host.clock))
 
     # Last: ``/{view}`` would otherwise also match ``/repos``.
     @r.get("/{view}", response_model=IssueViewOut)
@@ -275,13 +284,14 @@ def build_router(host: IssuesHost) -> APIRouter:
         repo: Annotated[str | None, Query(max_length=REPO_MAX)] = None,
         saved: Annotated[str | None, Query(alias="filter", max_length=64)] = None,
     ) -> Response:
-        """The cached Inbox or Backlog, at once; ``syncing`` and ``sync_error`` report
-        GitHub. ``filter`` is a saved filter (``incomplete``, ``stale_90d``)."""
+        """The cached Inbox or Backlog, at once, even without the github service;
+        ``syncing`` and ``sync_error`` report GitHub. ``filter`` is a saved filter
+        (``incomplete``, ``stale_90d``)."""
 
         async def run() -> IssueViewOut:
             filters = IssueFilters(repo, parse_saved_filter(saved))
-            return IssueViewOut.of(await host.sync.list(parse_view(view), filters))
+            return IssueViewOut.of(host.queries.view(parse_view(view), filters))
 
-        return await _respond(run)
+        return await _respond(run, host.clock)
 
     return r
