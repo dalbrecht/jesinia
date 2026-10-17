@@ -431,3 +431,9 @@ class ReviewErrorOut(BaseModel):
     warnings: list[PostWarning] | None = Field(
         default=None, description="For NeedsConfirmation: every warning to confirm"
     )
+    review_url: str | None = Field(
+        default=None, description="For EarlierReviewPosted: the review GitHub already has"
+    )
+    event: ReviewEvent | None = Field(
+        default=None, description="For EarlierReviewPosted: that review's event"
+    )

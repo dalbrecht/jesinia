@@ -416,6 +416,24 @@ async def test_github_failures_while_previewing_are_502_or_503(env: Env) -> None
     assert no_token.status_code == 503 and "gh auth login" in no_token.json()["detail"]
 
 
+async def test_an_earlier_review_on_github_is_a_409_with_its_url(env: Env) -> None:
+    env.round()
+    env.poster.error, env.poster.lose_response = GitHubRequestError(None, "ReadTimeout"), True
+    first = (await env.client.post(f"{PR}/post/preview", json={"event": "COMMENT"})).json()
+    post = {"event": "COMMENT", "confirm": [], "digest": first["digest"]}
+    assert (await env.client.post(f"{PR}/post", json=post, headers=keyed())).status_code == 502
+    env.poster.error, env.poster.lose_response = None, False
+    await env.client.put(f"{PR}/drafts", json={"summary": "Edited.", "drafts": []},
+                         headers=keyed())  # fmt: skip
+    second = (await env.client.post(f"{PR}/post/preview", json={"event": "COMMENT"})).json()
+    post["digest"] = second["digest"]
+    refused = await env.client.post(f"{PR}/post", json=post, headers=keyed())
+    assert refused.status_code == 409
+    assert refused.json()["error"] == "EarlierReviewPosted"
+    assert refused.json()["review_url"] == URL and refused.json()["event"] == "COMMENT"
+    assert len(env.poster.posted) == 1
+
+
 async def test_done_marks_the_latest_round(env: Env) -> None:
     none = await env.client.post(f"{PR}/done", headers=keyed())
     assert none.status_code == 404

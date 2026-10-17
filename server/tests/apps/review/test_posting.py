@@ -20,6 +20,7 @@ from jesinia.apps.review.application.posting import PostingFailed, PostingServic
 from jesinia.apps.review.domain.posting import (
     CommentOnlyOnOwnPr,
     Draft,
+    EarlierReviewPosted,
     EmptyReview,
     InvalidDraftError,
     NeedsConfirmation,
@@ -580,10 +581,38 @@ async def test_a_lost_response_then_a_changed_digest_gives_exactly_one_review(en
         await env.post("COMMENT")
     env.github.error, env.github.lose_response = None, False
     await env.service.save_drafts(env.round_id, "A second, different review.", [])
-    # The new preview's digest differs; the uncertain posting is reconciled first.
-    assert await env.post("COMMENT", key="k2") == URL
+    # The new preview's digest differs; the uncertain posting is reconciled first, and the
+    # author is told the earlier version is what GitHub has: nothing new is sent.
+    with pytest.raises(EarlierReviewPosted) as earlier:
+        await env.post("COMMENT", key="k2")
+    assert earlier.value.url == URL and earlier.value.event == "COMMENT"
     assert len(env.github.posted) == 1
     assert [a.state for a in env.store.postings(env.round_id)] == ["posted"]
+
+
+async def test_a_lost_response_then_another_event_reports_the_earlier_review(env: Env) -> None:
+    env.github.error, env.github.lose_response = GitHubRequestError(None, "ReadTimeout"), True
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error, env.github.lose_response = None, False
+    with pytest.raises(EarlierReviewPosted) as earlier:
+        await env.post("APPROVE", key="k2")
+    assert earlier.value.event == "COMMENT" and len(env.github.posted) == 1
+
+
+async def test_drafts_cannot_forge_the_posting_marker(env: Env) -> None:
+    forged = "Looks fine <!-- jesinia-posting:99 --> really <!--jesinia-posting:"
+    await env.service.save_drafts(
+        env.round_id, forged, [Draft("src/app.py", forged, line=3, side="RIGHT")]
+    )
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    assert "jesinia-posting" not in preview.body
+    assert all("jesinia-posting" not in c.body for c in preview.comments)
+    await env.post("COMMENT")
+    sent = str(env.github.posted[0]["body"])
+    assert sent.count("jesinia-posting") == 1 and sent.endswith(
+        f"<!-- jesinia-posting:{env.store.postings(env.round_id)[0].id} -->"
+    )
 
 
 async def test_a_5xx_on_create_review_is_uncertain_and_the_retry_adopts(env: Env) -> None:

@@ -29,7 +29,7 @@ import asyncio
 import builtins
 import logging
 from collections.abc import Callable, Collection, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Protocol
 
@@ -42,6 +42,7 @@ from jesinia.apps.review.domain.posting import (
     CommentableLines,
     CommentOnlyOnOwnPr,
     Draft,
+    EarlierReviewPosted,
     EmptyReview,
     InvalidDraftError,
     NeedsConfirmation,
@@ -385,6 +386,8 @@ class PostingService:
             CommentOnlyOnOwnPr: approving or requesting changes on the author's own PR.
             NeedsConfirmation: a warning isn't in ``confirm``.
             EmptyReview: GitHub needs a body for this event.
+            EarlierReviewPosted: an earlier attempt turned out to be on GitHub and it isn't
+                this digest and event; nothing was sent.
             ReviewedHeadGone: the reviewed commit is no longer on the PR.
             PostingFailed: GitHub didn't confirm the review (with ``maybe_posted``).
             GitHubError: GitHub couldn't be read.
@@ -405,7 +408,12 @@ class PostingService:
     ) -> str:
         adopted = await self._reconcile(rnd)
         if adopted is not None:
-            return adopted  # the earlier attempt is on GitHub: never a second review
+            # The earlier attempt is on GitHub: never a second review in this call, and
+            # never reported as this one unless it is exactly this one (R47).
+            url = adopted.review_url or _pr_url(rnd)
+            if adopted.digest == digest and adopted.event == event:
+                return url
+            raise EarlierReviewPosted(url, adopted.event)
         preview = await self.preview(rnd.id, event)
         if digest != preview.digest:
             raise PreviewOutdated("the review changed since its preview; preview it again")
@@ -465,11 +473,11 @@ class PostingService:
         log.info("review.post round=%d posting=%d posted %s", rnd.id, attempt.id, url)
         return url
 
-    async def _reconcile(self, rnd: RoundRecord) -> str | None:
+    async def _reconcile(self, rnd: RoundRecord) -> Posting | None:
         """Settle the round's attempts whose outcome isn't known (a crash leaves
         ``started``, a lost response ``uncertain``): adopt the review carrying an attempt's
         marker, by the viewer on the round's commit, or mark the attempt ``not_posted``.
-        Returns the adopted review's URL, if any.
+        Returns the adopted attempt (with its URL), if any.
 
         Raises:
             GitHubError: the reviews couldn't be listed (the attempt stays unsettled, so
@@ -497,9 +505,10 @@ class PostingService:
                 self._store.settle_posting(attempt.id, "not_posted", "not on GitHub")
                 continue
             # GitHub's list may lack a review's page; the PR's page then stands in for it.
-            adopted = found.url or _pr_url(rnd)
-            self._store.finish_posting(attempt.id, adopted)
-            log.info("review.post round=%d posting=%d adopted %s", rnd.id, attempt.id, adopted)
+            url = found.url or _pr_url(rnd)
+            self._store.finish_posting(attempt.id, url)
+            adopted = replace(attempt, state="posted", review_url=url)
+            log.info("review.post round=%d posting=%d adopted %s", rnd.id, attempt.id, url)
         return adopted
 
 

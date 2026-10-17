@@ -41,6 +41,7 @@ from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.reviews import ReviewReads
 from jesinia.apps.review.domain.posting import (
     CommentOnlyOnOwnPr,
+    EarlierReviewPosted,
     EmptyReview,
     InvalidDraftError,
     NeedsConfirmation,
@@ -103,6 +104,7 @@ _STATUS: dict[type[Exception], int] = {
     ReviewedHeadGone: status.HTTP_409_CONFLICT,
     PreviewOutdated: status.HTTP_409_CONFLICT,
     CommentOnlyOnOwnPr: status.HTTP_409_CONFLICT,
+    EarlierReviewPosted: status.HTTP_409_CONFLICT,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -136,7 +138,14 @@ def _status_of(exc: Exception) -> int:
 
 def _error(exc: Exception) -> JSONResponse:
     warnings = list(exc.warnings) if isinstance(exc, NeedsConfirmation) else None
-    body = ReviewErrorOut(error=type(exc).__name__, detail=str(exc), warnings=warnings)
+    earlier = exc if isinstance(exc, EarlierReviewPosted) else None
+    body = ReviewErrorOut(
+        error=type(exc).__name__,
+        detail=str(exc),
+        warnings=warnings,
+        review_url=None if earlier is None else earlier.url,
+        event=None if earlier is None else earlier.event,
+    )
     return JSONResponse(body.model_dump(exclude_none=True), status_code=_status_of(exc))
 
 

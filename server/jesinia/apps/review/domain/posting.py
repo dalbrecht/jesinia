@@ -14,7 +14,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Final, Literal
 
@@ -46,6 +46,9 @@ MARKER_NOTE: Final = (
 )
 
 _BLOCKING = re.compile("blocking", re.IGNORECASE)
+# Jesinia's posting marker, whole or begun: a draft must never carry one (it would forge
+# which attempt a review belongs to).
+_FORGED_MARKER = re.compile(r"<!--\s*jesinia-posting:(?:.*?-->)?", re.IGNORECASE | re.DOTALL)
 _HUNK = re.compile(r"^@@ -(\d{1,10})(?:,(\d{1,10}))? \+(\d{1,10})(?:,(\d{1,10}))? @@", re.M)
 _SEVERITY_TITLES: Final = {"critical": "Critical", "important": "Important", "minor": "Minor"}
 _GROUPS: Final = frozenset({"correctness", "design", "style"})
@@ -83,6 +86,21 @@ class CommentOnlyOnOwnPr(PostingDomainError):  # noqa: N818 - the error code cli
 
 class PreviewOutdated(PostingDomainError):  # noqa: N818 - the error code clients see
     """What would be posted changed since the preview the author confirmed."""
+
+
+class EarlierReviewPosted(PostingDomainError):  # noqa: N818 - the error code clients see
+    """An earlier attempt whose response was lost turned out to be on GitHub, and it isn't
+    the review now being posted (another digest or event): that earlier version is what
+    GitHub has, and the newer edits were not sent (ruling R47). ``url`` is its page and
+    ``event`` its event."""
+
+    def __init__(self, url: str, event: ReviewEvent) -> None:
+        super().__init__(
+            f"an earlier version of this review ({event}) is already on GitHub at {url}; "
+            "your newer edits were not sent"
+        )
+        self.url = url
+        self.event = event
 
 
 class EmptyReview(PostingDomainError):  # noqa: N818 - the error code clients see
@@ -236,10 +254,17 @@ def _label(draft: Draft) -> str:
     return f"{_code(draft.path)}, line {draft.line}"
 
 
+def _unforged(text: str) -> str:
+    """``text`` without anything that looks like Jesinia's posting marker."""
+    return _FORGED_MARKER.sub("", text)
+
+
 def compose_review(summary: str, drafts: Sequence[Draft], commentable: CommentableLines) -> Review:
     """The review the drafts make: anchored drafts inline, in order; every other draft (an
     outside-the-diff note, or one GitHub can't anchor) in the body after the summary, under
     its file and lines."""
+    drafts = [replace(draft, body=_unforged(draft.body)) for draft in drafts]
+    summary = _unforged(summary)
     inline = [draft.comment() for draft in drafts if commentable.anchors(draft)]
     in_body = [draft for draft in drafts if not commentable.anchors(draft)]
     parts = [summary.strip()] if summary.strip() else []

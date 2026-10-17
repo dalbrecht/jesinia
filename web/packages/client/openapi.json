@@ -8103,6 +8103,35 @@
             ],
             "title": "Warnings",
             "description": "For NeedsConfirmation: every warning to confirm"
+          },
+          "review_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Url",
+            "description": "For EarlierReviewPosted: the review GitHub already has"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "APPROVE",
+                  "REQUEST_CHANGES",
+                  "COMMENT"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event",
+            "description": "For EarlierReviewPosted: that review's event"
           }
         },
         "type": "object",

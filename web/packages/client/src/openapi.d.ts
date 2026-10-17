@@ -1963,6 +1963,16 @@ export interface components {
              * @description For NeedsConfirmation: every warning to confirm
              */
             warnings?: ("blocking_comment" | "newer_head" | "own_pr_comment_only")[] | null;
+            /**
+             * Review Url
+             * @description For EarlierReviewPosted: the review GitHub already has
+             */
+            review_url?: string | null;
+            /**
+             * Event
+             * @description For EarlierReviewPosted: that review's event
+             */
+            event?: ("APPROVE" | "REQUEST_CHANGES" | "COMMENT") | null;
         };
         /** ReviewRepoSettingBody */
         ReviewRepoSettingBody: {
