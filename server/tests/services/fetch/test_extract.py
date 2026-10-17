@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import re
 from collections.abc import Iterator, Sequence
 from datetime import timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 import respx
 from fastapi import APIRouter
@@ -100,6 +102,52 @@ def test_extract_returns_none_when_the_page_has_no_article_text() -> None:
     assert TrafilaturaExtractor().extract(b"", ARTICLE_URL) is None
 
 
+_FILLER = (
+    "<p>An article long enough for the extractor to keep it as the main text of the page, "
+    "with a few more words added so it clearly counts as prose and not navigation.</p>"
+)
+# Every way a remote page might smuggle a script or data target into the Markdown.
+HOSTILE_BODIES = {
+    "bracketed anchor text": '<p>See <a href="javascript:alert(5)">nested [br]acket</a> now.</p>',
+    "image inside a script link": (
+        '<p><a href="javascript:alert(6)"><img src="https://i.example/x.png" alt="x"></a></p>'
+    ),
+    "mixed-case spaced scheme": '<p>A <a href="  JaVaScRiPt:alert(7)">spaced</a> link.</p>',
+    "autolink-looking anchor": (
+        '<p>Go <a href="javascript:alert(8)">&lt;javascript:alert(8)&gt;</a> there.</p>'
+    ),
+    "reference-style anchor": (
+        '<p><a href="javascript:alert(9)">[ref]</a></p><p>[ref]: <a href="data:x">t</a></p>'
+    ),
+    "raw script": "<p>Before</p><script>alert(10)</script><p>After</p>",
+    "data image": '<p><img src="data:image/png;base64,AAAA" alt="inline"></p>',
+    "data link": '<p>A <a href="data:text/html,hi">data link</a> here.</p>',
+}
+_TARGET = re.compile(r"\]\(\s*<?([^)>\s]*)")
+
+
+@pytest.mark.parametrize("body", HOSTILE_BODIES.values(), ids=HOSTILE_BODIES.keys())
+def test_extract_never_yields_a_non_http_target(body: str) -> None:
+    html = f"<html><body><article><h1>Hostile</h1>{_FILLER}{body}{_FILLER}</article></body></html>"
+    article = TrafilaturaExtractor().extract(html.encode(), ARTICLE_URL)
+    assert article is not None
+    targets = _TARGET.findall(article.markdown)
+    assert all(t.startswith(("https://", "http://")) for t in targets), article.markdown
+    for bad in ("](javascript", "(<javascript", "data:", "alert(10)"):
+        assert bad not in article.markdown.lower(), article.markdown
+    assert re.search(r"(?<!\\)<javascript:", article.markdown, re.IGNORECASE) is None
+    assert all(u.startswith(("https://", "http://")) for u in article.image_urls)
+
+
+def test_extract_keeps_the_text_of_a_dropped_link_without_brackets() -> None:
+    body = HOSTILE_BODIES["bracketed anchor text"]
+    html = f"<html><body><article>{_FILLER}{body}{_FILLER}</article></body></html>"
+    article = TrafilaturaExtractor().extract(html.encode(), ARTICLE_URL)
+    assert article is not None
+    # Plain text, not a ``[text]`` shortcut reference a renderer could resolve.
+    assert "See nested \\[br\\]acket now." in article.markdown
+
+
 async def test_article_composes_the_guarded_get_and_the_extractor(
     mock: respx.MockRouter,
 ) -> None:
@@ -120,6 +168,55 @@ async def test_article_reports_an_http_error_status_as_a_fetch_error(
     with pytest.raises(FetchError, match="HTTP 404"):
         await fetch.article(ARTICLE_URL)
     assert extractor.calls == []
+
+
+async def test_article_extracts_against_the_url_after_redirects(
+    mock: respx.MockRouter,
+) -> None:
+    mock.get(ARTICLE_URL).mock(return_value=Response(302, headers={"location": "/final"}))
+    mock.get("https://news.example/final").mock(
+        return_value=Response(
+            200, content=b"<html>page</html>", headers={"content-type": "text/html"}
+        )
+    )
+    extractor = _FixedExtractor(Article("T", "Body", []))
+    fetch = FetchService(_NoCache(), resolve=_public, min_interval=0, extractor=extractor)
+    await fetch.article(ARTICLE_URL)
+    assert extractor.calls == [(b"<html>page</html>", "https://news.example/final")]
+
+
+async def test_article_refuses_a_page_that_is_not_html(mock: respx.MockRouter) -> None:
+    mock.get(ARTICLE_URL).mock(
+        return_value=Response(200, content=b"%PDF-1.7", headers={"content-type": "application/pdf"})
+    )
+    extractor = _FixedExtractor(Article("T", "Body", []))
+    fetch = FetchService(_NoCache(), resolve=_public, min_interval=0, extractor=extractor)
+    with pytest.raises(FetchError, match="not an HTML page"):
+        await fetch.article(ARTICLE_URL)
+    assert extractor.calls == []
+
+
+async def test_article_wraps_a_transport_error_with_its_cause(mock: respx.MockRouter) -> None:
+    mock.get(ARTICLE_URL).mock(side_effect=httpx.ConnectTimeout("timed out"))
+    fetch = FetchService(
+        _NoCache(), resolve=_public, min_interval=0, extractor=_FixedExtractor(None)
+    )
+    with pytest.raises(FetchError, match="timed out") as caught:
+        await fetch.article(ARTICLE_URL)
+    assert isinstance(caught.value.__cause__, httpx.ConnectTimeout)
+
+
+async def test_article_wraps_an_extractor_failure_with_its_cause(mock: respx.MockRouter) -> None:
+    mock.get(ARTICLE_URL).mock(return_value=Response(200, content=b"<html>page</html>"))
+
+    class _Broken:
+        def extract(self, html: bytes, url: str) -> Article | None:
+            raise ValueError("parser exploded")
+
+    fetch = FetchService(_NoCache(), resolve=_public, min_interval=0, extractor=_Broken())
+    with pytest.raises(FetchError, match="parser exploded") as caught:
+        await fetch.article(ARTICLE_URL)
+    assert isinstance(caught.value.__cause__, ValueError)
 
 
 async def test_article_without_an_extractor_is_a_fetch_error() -> None:

@@ -66,12 +66,19 @@ class PostService:
         return self._store.set_read(sorted(set(ids)), read) if ids else 0
 
     def mark_read_above(
-        self, post_id: int, view: View, feed_id: int | None, folder_id: int | None
+        self,
+        post_id: int,
+        view: View,
+        feed_id: int | None,
+        folder_id: int | None,
+        as_of: datetime,
     ) -> int:
         """Mark the post and everything above it in the current list as read (``Shift+A``):
-        only posts of that view, feed and folder. Raises ``PostNotFound``."""
+        only posts of that view, feed and folder, and only those first seen by ``as_of``
+        (when the client loaded the list), so posts the reader never saw stay unread.
+        Raises ``PostNotFound``."""
         start = self.get(post_id).cursor
-        return self._store.mark_read_from(view, feed_id, folder_id, start)
+        return self._store.mark_read_from(view, feed_id, folder_id, start, as_of)
 
     def cached_article(self, post_id: int) -> str | None:
         """The full article if it was loaded before (nothing is fetched)."""
@@ -96,7 +103,8 @@ class PostService:
         return article.markdown
 
     def search(self, q: str, limit: int = SEARCH_LIMIT) -> builtins.list[PostView]:
-        """Retained posts whose headline or snippet contains ``q``, newest first."""
+        """Retained posts whose headline or snippet contains ``q``, newest first. Case is
+        ignored for ASCII letters only (SQLite ``LIKE``): "über" does not find "Über"."""
         text = q.strip()
         return self._store.search(text, limit) if text else []
 

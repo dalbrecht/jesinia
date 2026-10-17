@@ -442,3 +442,24 @@ async def test_every_store_failure_in_a_round_is_logged(
     logged = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert any(f"disk I/O error on {first.id}" in m for m in logged)
     assert any(f"disk I/O error on {second.id}" in m for m in logged)
+
+
+async def test_an_unchanged_feed_keeps_its_pruned_items_pruned(
+    store: SqliteFeedStore, conn: sqlite3.Connection
+) -> None:
+    clock = Clock()
+    url = "https://example.com/feed.xml"
+    feed = _subscribe(store, url)
+    conn.execute(
+        "INSERT INTO pruned_posts (feed_id, guid, seen_at) VALUES (?, 'old', ?)",
+        (feed.id, (START - timedelta(days=170)).isoformat()),
+    )
+    fetcher = FakeFetcher({url: _ok(url, _rss("1"))})
+    poller = _poller(store, fetcher, clock)
+    await poller.poll_due()
+    # A 304 means the feed may still offer the pruned item: its tombstone stays fresh.
+    clock.now = _feed(store, feed.id).next_poll_at
+    fetcher.responses[url] = _ok(url, b"unchanged, never parsed", from_cache=True)
+    await poller.poll_due()
+    seen = conn.execute("SELECT seen_at FROM pruned_posts WHERE feed_id = ?", (feed.id,))
+    assert [row[0] for row in seen] == [clock.now.isoformat()]

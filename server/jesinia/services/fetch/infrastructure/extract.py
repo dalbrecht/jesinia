@@ -1,53 +1,44 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""``ArticleExtractor`` over trafilatura: a page's main text as Markdown with images and links."""
+"""``ArticleExtractor`` over trafilatura: a page's main text as Markdown with images and links.
+
+The page goes through the allowlist sanitiser before trafilatura sees it, so every link and
+image it can emit already has an absolute http(s) URL (spec §6). Nothing parses the Markdown
+afterwards.
+"""
 
 from __future__ import annotations
 
-import re
-from urllib.parse import urlsplit
-
+import lxml.html
 import trafilatura
 
 from jesinia.services.fetch.application.ports import Article
-
-# A Markdown link or image: ``[text](target)`` or ``[text](<target>)``, optionally ``!``-led.
-_LINK = re.compile(
-    r"(?P<bang>!?)\[(?P<text>[^\]]*)\]\((?:<(?P<angled>[^>]*)>|(?P<plain>[^)\s]*))\)"
-)
+from jesinia.services.fetch.infrastructure.sanitize import sanitize_page
 
 
-def _is_web_url(url: str) -> bool:
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    return parts.scheme in ("http", "https") and bool(parts.hostname)
-
-
-def _keep_web_targets(markdown: str) -> tuple[str, list[str]]:
-    """The Markdown with every non-http(s) link reduced to its text and every non-http(s)
-    image dropped (the text is from a remote page: no ``javascript:`` or ``data:`` targets),
-    plus the image URLs that remain, in order and without repeats."""
-    images: list[str] = []
-
-    def rewrite(match: re.Match[str]) -> str:
-        target = match["angled"] if match["angled"] is not None else match["plain"]
-        if _is_web_url(target):
-            if match["bang"] and target not in images:
-                images.append(target)
-            return match[0]
-        return "" if match["bang"] else match["text"]
-
-    return _LINK.sub(rewrite, markdown), images
+def _clean_tree(raw: lxml.html.HtmlElement, url: str) -> lxml.html.HtmlElement:
+    """The page, sanitised, as a tree; a link or image that lost its URL is reduced to its
+    text (a bare ``<a>`` would become a ``[text]`` reference a renderer could resolve)."""
+    page = sanitize_page(lxml.html.tostring(raw, encoding="unicode"), url)
+    tree = lxml.html.document_fromstring(f"<html><body>{page}</body></html>")
+    for anchor in list(tree.iter("a")):
+        if not anchor.get("href"):
+            anchor.drop_tag()
+    for image in list(tree.iter("img")):
+        if not image.get("src"):
+            image.drop_tree()
+    return tree
 
 
 class TrafilaturaExtractor:
     def extract(self, html: bytes, url: str) -> Article | None:
-        tree = trafilatura.load_html(html)
-        if tree is None:
+        raw = trafilatura.load_html(html)
+        if raw is None:
             return None
-        # Metadata first: extraction prunes the tree it is given.
-        title = trafilatura.extract_metadata(tree, default_url=url).title
+        # The title comes from the raw page's metadata (the sanitiser drops <head>).
+        title = trafilatura.extract_metadata(raw, default_url=url).title
+        tree = _clean_tree(raw, url)
+        # Collected before extraction, which prunes the tree it is given.
+        sources = [str(image.get("src")) for image in tree.iter("img")]
         markdown = trafilatura.extract(
             tree,
             url=url,
@@ -58,5 +49,5 @@ class TrafilaturaExtractor:
         )
         if not markdown:
             return None
-        text, images = _keep_web_targets(markdown)
-        return Article(title or None, text, images)
+        images = list(dict.fromkeys(s for s in sources if s in markdown))
+        return Article(title or None, markdown, images)

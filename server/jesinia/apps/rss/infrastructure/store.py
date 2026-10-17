@@ -72,6 +72,11 @@ class SqliteFeedStore:
         rows = self._conn.execute(f"SELECT {_FEED_COLUMNS} FROM feeds ORDER BY id").fetchall()
         return [_feed(row) for row in rows]
 
+    def refresh_pruned(self, feed_id: int, now: datetime) -> None:
+        self._conn.execute(
+            "UPDATE pruned_posts SET seen_at = ? WHERE feed_id = ?", (utc_text(now), feed_id)
+        )
+
     def set_poll_state(self, feed_id: int, state: PollState) -> None:
         self._conn.execute(
             "UPDATE feeds SET interval_s = ?, next_poll_at = ?, fail_count = ?, last_error = ?, "
@@ -318,11 +323,17 @@ class SqlitePostStore:
         return updated.rowcount
 
     def mark_read_from(
-        self, view: View, feed_id: int | None, folder_id: int | None, start: Cursor
+        self,
+        view: View,
+        feed_id: int | None,
+        folder_id: int | None,
+        start: Cursor,
+        as_of: datetime,
     ) -> int:
         where, params = _scope(view, feed_id, folder_id)
         where.append(f"({_AT} > ? OR ({_AT} = ? AND p.id >= ?))")
-        params += [start[0], start[0], start[1]]
+        where.append("p.first_seen_at <= ?")
+        params += [start[0], start[0], start[1], utc_text(as_of)]
         marked = self._conn.execute(
             f"UPDATE posts SET read = 1 WHERE id IN (SELECT p.id {_FROM} WHERE "
             f"{' AND '.join(where)})",

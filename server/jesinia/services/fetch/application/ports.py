@@ -30,8 +30,14 @@ class FetchCache(Protocol):
 
 @dataclass(frozen=True)
 class Article:
-    """A page's main text as Markdown. Links and images are absolute http(s) URLs;
-    ``image_urls`` lists the images in the order they appear."""
+    """A page's main text as Markdown, from HTML that passed the allowlist sanitiser first.
+
+    Guaranteed: every link and image target the extractor emits, and every entry of
+    ``image_urls`` (the article's images in order, no repeats), is an absolute http(s) URL;
+    scripts and styles are gone. Not guaranteed: page text that merely looks like Markdown
+    is escaped by the extractor, but the result is still untrusted and must be rendered by
+    a sanitising Markdown renderer.
+    """
 
     title: str | None
     markdown: str

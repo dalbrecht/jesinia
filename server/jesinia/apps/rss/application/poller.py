@@ -119,6 +119,7 @@ class Poller:
             # as "unchanged" only after a poll that read it fine. Otherwise it is parsed
             # again, so an unreadable feed keeps failing (and reaches its warning).
             if result.from_cache and feed.fail_count == 0 and feed.last_ok_at is not None:
+                self._store.refresh_pruned(feed.id, self._clock())
                 return self._succeeded(feed, 0, feed.last_error)  # a recovered parse's warning
             parsed = self._reader.parse(result.body, result.url)
             new_items = self._store.add_posts(feed.id, parsed.items, self._clock())

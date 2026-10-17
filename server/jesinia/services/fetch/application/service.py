@@ -151,16 +151,29 @@ class FetchService:
     async def article(self, url: str) -> Article | None:
         """The main text of the page at ``url``, or None when it has none.
 
-        Raises ``FetchError`` when the page cannot be fetched (blocked, too large, or an
-        HTTP error status) or no extractor is configured.
+        Raises ``FetchError`` (chained to the original cause) when the page cannot be
+        fetched (blocked, too large, a transport error or an HTTP error status), is not
+        HTML, cannot be extracted, or no extractor is configured.
         """
-        if self._extractor is None:
+        extractor = self._extractor
+        if extractor is None:
             raise FetchError("article extraction is not available")
-        result = await self.get(url)
+        try:
+            result = await self.get(url)
+        except httpx.HTTPError as exc:
+            raise FetchError(f"could not fetch {url}: {exc}") from exc
         if result.status != 200:
             raise FetchError(f"{url} answered HTTP {result.status}")
-        # Extraction parses the whole page: keep it off the event loop.
-        return await asyncio.to_thread(self._extractor.extract, result.body, result.url)
+        content_type = result.content_type.lower()
+        if content_type and "html" not in content_type:
+            raise FetchError(f"{url} is not an HTML page ({result.content_type})")
+        try:
+            # Extraction parses the whole page: keep it off the event loop.
+            return await asyncio.to_thread(extractor.extract, result.body, result.url)
+        # Third-party parser boundary (trafilatura, lxml): whatever it raises is reported
+        # as this page's failure, with the original exception chained as the cause.
+        except Exception as exc:
+            raise FetchError(f"could not extract the article at {url}: {exc}") from exc
 
 
 def _is_ip(host: str) -> bool:

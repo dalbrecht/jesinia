@@ -20,9 +20,11 @@ from jesinia.apps.rss.domain.post import (
     ArticleUnavailable,
     InvalidCursor,
     InvalidPageSize,
+    InvalidTimestamp,
     PostNotFound,
     format_cursor,
     parse_cursor,
+    parse_timestamp,
 )
 from jesinia.apps.rss.infrastructure.store import SqliteFeedStore, SqlitePostStore
 from jesinia.apps.rss.module import POSTS_PRUNE_JOB, RSS_DB, RssModule
@@ -212,25 +214,48 @@ def test_mark_read_above_respects_the_current_view(world: World) -> None:
     world.add(other, _item("b1", _day(2)), _item("b2", _day(0)))
 
     # In feed a's view, everything from a2 up is marked; feed b's newer posts are not.
-    marked = world.service.mark_read_above(world.id_of("a2"), "unread", tech, None)
+    marked = world.service.mark_read_above(world.id_of("a2"), "unread", tech, None, NOW)
     assert marked == 2
     assert world.guids("read = 1") == {"a2", "a3"}
 
     # The folder view works the same way.
     folder = world.feeds.folder_by_name("Tech")
     assert folder is not None
-    assert world.service.mark_read_above(world.id_of("a1"), "all", None, folder.id) == 3
+    assert world.service.mark_read_above(world.id_of("a1"), "all", None, folder.id, NOW) == 3
     assert world.guids("read = 1") == {"a1", "a2", "a3"}
 
     # In the kept view, only kept posts above the selection are marked.
     world.conn.execute("UPDATE posts SET read = 0")
     world.keep("b1")
     world.keep("a1")
-    assert world.service.mark_read_above(world.id_of("a1"), "kept", None, None) == 2
+    assert world.service.mark_read_above(world.id_of("a1"), "kept", None, None, NOW) == 2
     assert world.guids("read = 1") == {"a1", "b1"}
 
     with pytest.raises(PostNotFound):
-        world.service.mark_read_above(9999, "all", None, None)
+        world.service.mark_read_above(9999, "all", None, None, NOW)
+
+
+def test_mark_read_above_leaves_posts_that_arrived_after_the_list_loaded(world: World) -> None:
+    feed = world.feed("https://a.example/feed")
+    world.add(feed, _item("a1", _day(5)), _item("a2", _day(3)), _item("a3", _day(1)))
+    loaded = NOW
+    # After the list loaded: an undated arrival (sorts on top) and a backdated one that
+    # lands between posts already on screen.
+    world.add(feed, _item("fresh", None), seen=NOW + timedelta(minutes=1))
+    world.add(feed, _item("backdated", _day(2)), seen=NOW + timedelta(minutes=1))
+
+    assert world.service.mark_read_above(world.id_of("a1"), "unread", None, None, loaded) == 3
+    assert world.guids("read = 1") == {"a1", "a2", "a3"}
+    assert world.guids("read = 0") == {"fresh", "backdated"}
+
+
+def test_timestamps_must_carry_an_offset() -> None:
+    plus_two = datetime(2026, 10, 16, 14, 0, tzinfo=timezone(timedelta(hours=2)))
+    assert parse_timestamp(plus_two.isoformat()) == NOW
+    assert parse_timestamp("2026-10-16T12:00:00Z") == NOW
+    for bad in ("", "yesterday", "2026-10-16T12:00:00"):
+        with pytest.raises(InvalidTimestamp):
+            parse_timestamp(bad)
 
 
 def test_prune_keeps_kept_and_prunes_undated_by_first_seen(world: World) -> None:
@@ -438,7 +463,10 @@ async def test_post_routes_require_the_owner(env: Env) -> None:
         calls = [
             anonymous.get(f"{API}/posts"),
             anonymous.patch(f"{API}/posts/1", json={"read": True}),
-            anonymous.post(f"{API}/posts/read-above", json={"post_id": 1, "view": "all"}),
+            anonymous.post(
+                f"{API}/posts/read-above",
+                json={"post_id": 1, "view": "all", "as_of": NOW.isoformat()},
+            ),
             anonymous.get(f"{API}/posts/1/article"),
             anonymous.get(f"{API}/posts/search", params={"q": "x"}),
             anonymous.get(f"{API}/counts"),
@@ -488,7 +516,13 @@ async def test_read_above_route_marks_within_the_view(env: Env) -> None:
     ids = env.seed()
     marked = await env.client.post(
         f"{API}/posts/read-above",
-        json={"post_id": ids["a2"], "view": "unread", "feed": ids["feed"], "folder": None},
+        json={
+            "post_id": ids["a2"],
+            "view": "unread",
+            "feed": ids["feed"],
+            "folder": None,
+            "as_of": NOW.isoformat(),
+        },
     )
     assert marked.status_code == 200, marked.text
     assert marked.json() == {"marked": 2}
@@ -497,9 +531,18 @@ async def test_read_above_route_marks_within_the_view(env: Env) -> None:
     assert counts["feeds"] == [{"id": ids["feed"], "unread": 1}]
     assert counts["folders"] == [{"id": ids["folder"], "unread": 1}]
     missing = await env.client.post(
-        f"{API}/posts/read-above", json={"post_id": 9999, "view": "all"}
+        f"{API}/posts/read-above", json={"post_id": 9999, "view": "all", "as_of": NOW.isoformat()}
     )
     assert missing.status_code == 404
+    for bad in ("yesterday", "2026-10-16T12:00:00"):
+        refused = await env.client.post(
+            f"{API}/posts/read-above", json={"post_id": ids["a1"], "view": "all", "as_of": bad}
+        )
+        assert refused.status_code == 400 and refused.json()["error"] == "InvalidTimestamp"
+    unbounded = await env.client.post(
+        f"{API}/posts/read-above", json={"post_id": ids["a1"], "view": "all"}
+    )
+    assert unbounded.status_code == 422  # as_of is required
 
 
 async def test_article_route_extracts_once_and_reports_failure(
@@ -521,6 +564,12 @@ async def test_article_route_extracts_once_and_reports_failure(
     failed = await env.client.get(f"{API}/posts/{ids['a2']}/article")
     assert failed.status_code == 502
     assert failed.json()["error"] == "ArticleUnavailable" and "503" in failed.json()["detail"]
+
+    mock.get("https://example.com/a3").mock(side_effect=httpx.ConnectTimeout("timed out"))
+    timeout = await env.client.get(f"{API}/posts/{ids['a3']}/article")
+    assert timeout.status_code == 502
+    assert timeout.json()["error"] == "ArticleUnavailable"
+    assert "timed out" in timeout.json()["detail"]
 
 
 async def test_search_route(env: Env) -> None:

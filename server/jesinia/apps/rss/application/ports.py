@@ -74,6 +74,11 @@ class FeedStore(Protocol):
         """Every subscribed feed with its polling state."""
         ...
 
+    def refresh_pruned(self, feed_id: int, now: datetime) -> None:
+        """Keep the feed's tombstones fresh after a poll that found it unchanged: an
+        unchanged feed may still offer the pruned items."""
+        ...
+
     def set_poll_state(self, feed_id: int, state: PollState) -> None:
         """Record a poll's outcome (a feed deleted meanwhile is left deleted)."""
         ...
@@ -141,13 +146,19 @@ class PostStore(Protocol):
         ...
 
     def mark_read_from(
-        self, view: View, feed_id: int | None, folder_id: int | None, start: Cursor
+        self,
+        view: View,
+        feed_id: int | None,
+        folder_id: int | None,
+        start: Cursor,
+        as_of: datetime,
     ) -> int:
-        """Mark read every post in the view at or above ``start``; how many matched."""
+        """Mark read every post in the view at or above ``start`` that was first seen by
+        ``as_of``; how many matched."""
         ...
 
     def search(self, text: str, limit: int) -> list[PostView]:
-        """Posts whose title or snippet contains ``text`` (literally, ignoring case)."""
+        """Posts whose title or snippet contains ``text`` (literally, ignoring ASCII case)."""
         ...
 
     def prune(self, cutoff: datetime, now: datetime) -> int:

@@ -1207,6 +1207,11 @@ export interface components {
             feed?: number | null;
             /** Folder */
             folder?: number | null;
+            /**
+             * As Of
+             * @description When the client loaded the list (ISO 8601 with offset): posts first seen later were never on screen and stay unread
+             */
+            as_of: string;
         };
         /** RenameIn */
         RenameIn: {

@@ -36,6 +36,10 @@ class InvalidCursor(RssError):  # noqa: N818 - the error code clients see
     """A ``before`` cursor that is not ``<ISO 8601 time with offset>,<post id>``."""
 
 
+class InvalidTimestamp(RssError):  # noqa: N818 - the error code clients see
+    """A time that is not ISO 8601 with a UTC offset."""
+
+
 class InvalidPageSize(RssError):  # noqa: N818 - the error code clients see
     """A page size outside 1 to ``PAGE_SIZE_MAX``."""
 
@@ -62,6 +66,18 @@ def parse_cursor(raw: str) -> Cursor:
     if moment.tzinfo is None:
         raise InvalidCursor(f"the cursor time has no UTC offset: {raw!r}")
     return utc_text(moment), int(id_text)
+
+
+def parse_timestamp(raw: str) -> datetime:
+    """An ISO 8601 time with an offset (``Z`` allowed), in UTC; ``InvalidTimestamp`` for
+    anything else, including a time without an offset (whose zone would be a guess)."""
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise InvalidTimestamp(f"not an ISO 8601 time: {raw!r}") from exc
+    if moment.tzinfo is None:
+        raise InvalidTimestamp(f"the time has no UTC offset: {raw!r}")
+    return moment.astimezone(UTC)
 
 
 def check_page_size(limit: int) -> int:

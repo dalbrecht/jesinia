@@ -4396,12 +4396,19 @@
               }
             ],
             "title": "Folder"
+          },
+          "as_of": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "As Of",
+            "description": "When the client loaded the list (ISO 8601 with offset): posts first seen later were never on screen and stay unread"
           }
         },
         "type": "object",
         "required": [
           "post_id",
-          "view"
+          "view",
+          "as_of"
         ],
         "title": "ReadAboveIn"
       },

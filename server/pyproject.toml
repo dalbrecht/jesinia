@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.118",
     "feedparser>=6.0",
     "httpx>=0.28",
+    "lxml>=6.0",
     "mcp>=1.15",
     "nh3>=0.2",
     "pyyaml>=6.0.2",
@@ -107,4 +108,9 @@ layers = ["(api)", "(infrastructure)", "(application)", "(domain)"]
 [[tool.mypy.overrides]]
 # feedparser ships no type information; it is wrapped in a typed adapter in apps/rss/infrastructure/parse.py.
 module = ["feedparser"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# lxml ships no type information; only services/fetch/infrastructure/extract.py uses it.
+module = ["lxml", "lxml.*"]
 ignore_missing_imports = true
