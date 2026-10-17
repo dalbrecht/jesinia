@@ -17,6 +17,7 @@ import pytest
 from jesinia.apps.review.application.ports import Workspace
 from jesinia.apps.review.domain.workspace import (
     GitCommandError,
+    GitOutputError,
     GitTimeoutError,
     GitUnavailableError,
     InvalidRefError,
@@ -573,3 +574,48 @@ async def test_a_failed_add_leaves_nothing_behind(tmp_path: Path, fixture: Fixtu
         await ws.worktree(REPO, unknown)
     trees = ws.root.resolve() / "acme" / "widget" / "trees"
     assert not trees.exists() or [p.name for p in trees.iterdir()] == []
+
+
+async def test_patch_ids_refuse_a_name_list_that_disagrees_with_the_diff(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    real_run = ws._run
+
+    async def phantom_name(location: tuple[str, ...], *args: str, **kwargs: Any) -> bytes:
+        out = await real_run(location, *args, **kwargs)
+        return out + b"phantom.txt\0" if "--name-only" in args else out
+
+    monkeypatch.setattr(ws, "_run", phantom_name)
+    with pytest.raises(GitOutputError, match="3 paths but 2 file diffs"):
+        await ws.patch_ids(REPO, fixture.base, fixture.head)
+
+
+async def test_patch_ids_refuse_a_file_diff_without_a_patch_id(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    real_git = ws._git
+
+    async def first_line_only(location: tuple[str, ...], *args: str, **kwargs: Any) -> str:
+        out = await real_git(location, *args, **kwargs)
+        return out.splitlines(keepends=True)[0] if "patch-id" in args else out
+
+    monkeypatch.setattr(ws, "_git", first_line_only)
+    with pytest.raises(GitOutputError, match="no patch id for c.txt"):
+        await ws.patch_ids(REPO, fixture.base, fixture.head)
+
+
+async def test_a_broken_tree_inside_another_repo_has_no_head(tmp_path: Path) -> None:
+    # Without GIT_CEILING_DIRECTORIES, rev-parse in a damaged tree walks up and reports the
+    # HEAD of whatever repository happens to contain the workspace.
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    git(outer, "init", "-q")
+    (outer / "f.txt").write_text("outer\n")
+    commit_all(outer, "outer")
+    ws = GitWorkspace(outer / "data" / "review" / "repos", str)
+    broken = ws.root / "acme" / "widget" / "trees" / ("a" * 40)
+    broken.mkdir(parents=True)
+    assert git(broken, "rev-parse", "HEAD")  # plain git does find the outer repo
+    assert await ws._head_of(broken) is None

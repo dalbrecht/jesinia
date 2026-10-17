@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
+
+from jesinia.apps.review.domain.repo_access import CappedOutput
 
 
 class Workspace(Protocol):
@@ -36,3 +39,25 @@ class Workspace(Protocol):
 
     async def prune(self, keep: set[tuple[str, str]]) -> int:
         """Remove every worktree whose ``(repo, sha)`` is not in ``keep``; return how many."""
+
+
+class TreeGit(Protocol):
+    """Read-only git inside a review worktree, for the repo tools.
+
+    Runs with the workspace's hardened environment and without the system config (local
+    reads need no credentials). Raises ``WorkspaceError`` subclasses, including for a
+    ``tree`` outside the workspace.
+    """
+
+    async def read_in_tree(
+        self,
+        tree: Path,
+        args: Sequence[str],
+        *,
+        output_limit: int,
+        glob_pathspecs: bool = False,
+        accept_exit_codes: frozenset[int] = frozenset({0}),
+    ) -> CappedOutput:
+        """Run ``git <args>`` in ``tree``; stdout is cut (and the process killed) past
+        ``output_limit`` bytes. ``glob_pathspecs`` lets ``:(glob)`` pathspecs work, which
+        are otherwise literal. An exit code outside ``accept_exit_codes`` raises."""

@@ -26,7 +26,8 @@ def test_review_db_is_history_and_registered() -> None:
 
 async def test_start_opens_the_db_and_roots_the_workspace(cfg: Config) -> None:
     module = ReviewModule()
-    assert module.router() is None and list(module.mcp_tools()) == []
+    assert module.router() is None
+    assert [t.name for t in module.mcp_tools()] == ["repo_read", "repo_grep", "repo_ls", "repo_git"]
     assert not module.health().ok
     with pytest.raises(HTTPException) as caught:
         _ = module.workspace

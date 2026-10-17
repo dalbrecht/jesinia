@@ -29,11 +29,13 @@ import uuid
 # argv-only process spawning, never a shell. Aliased because the standards linter's
 # banned-builtin pattern also matches the name of this safe asyncio function.
 from asyncio import create_subprocess_exec as spawn
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from jesinia.apps.review.domain.repo_access import CappedOutput
 from jesinia.apps.review.domain.workspace import (
     GitCommandError,
+    GitOutputError,
     GitTimeoutError,
     GitUnavailableError,
     WorkspaceError,
@@ -73,6 +75,14 @@ _GIT_OPTIONS = (
     *("-c", "filter.lfs.required=false"),
     *("-c", "submodule.recurse=false"),
     *("-c", "protocol.ext.allow=never"),
+)
+# For the repo tools' reads: no colour codes from the user's config, no gpg run on a PR's
+# (untrusted) commit signatures, and git's default regex flavour for `log --author=` (a
+# user's `grep.patternType=perl` would allow backtracking patterns).
+_TREE_READ_OPTIONS = (
+    *("-c", "color.ui=never"),
+    *("-c", "log.showSignature=false"),
+    *("-c", "grep.patternType=basic"),
 )
 # Pinned so the user's diff.* settings never change what later steps parse.
 _DIFF_OPTIONS = (
@@ -198,6 +208,10 @@ class GitWorkspace:
         paths = [os.fsdecode(name) for name in names.split(b"\0") if name]
         patch = await self._run(mirror, "diff", *options, base, head)
         chunks = [chunk for chunk in _FILE_HEADER.split(patch) if chunk]
+        if len(paths) != len(chunks):
+            raise GitOutputError(
+                f"git diff {base}..{head} listed {len(paths)} paths but {len(chunks)} file diffs"
+            )
         # One patch-id process for every file: each chunk gets a synthetic commit header,
         # and patch-id prints "<patch id> <commit>" per chunk. Both lists are in diff order.
         numbered = b"".join(
@@ -206,7 +220,33 @@ class GitWorkspace:
         out = await self._git(mirror, "patch-id", "--stable", stdin=numbered)
         pairs = (line.split() for line in out.splitlines())
         by_index = {int(commit, 16): patch_id for patch_id, commit in pairs}
+        missing = [path for index, path in enumerate(paths, start=1) if index not in by_index]
+        if missing:
+            raise GitOutputError(f"git patch-id gave no patch id for {', '.join(missing)}")
         return {path: by_index[index] for index, path in enumerate(paths, start=1)}
+
+    async def read_in_tree(
+        self,
+        tree: Path,
+        args: Sequence[str],
+        *,
+        output_limit: int,
+        glob_pathspecs: bool = False,
+        accept_exit_codes: frozenset[int] = frozenset({0}),
+    ) -> CappedOutput:
+        """``TreeGit`` for the repo tools: read-only git inside a worktree under the root."""
+        env = {"GIT_CONFIG_NOSYSTEM": "1"}  # local reads need no credential helper
+        if glob_pathspecs:
+            env["GIT_LITERAL_PATHSPECS"] = "0"
+        argv, out, err, code, truncated = await self._execute(
+            ("-C", str(self._inside(tree)), *_TREE_READ_OPTIONS),
+            args,
+            extra_env=env,
+            output_limit=output_limit,
+        )
+        if not truncated and code not in accept_exit_codes:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return CappedOutput(out, truncated)
 
     async def prune(self, keep: set[tuple[str, str]]) -> int:
         kept = {(canonical_repo(repo), check_sha(sha)) for repo, sha in keep}
@@ -271,9 +311,26 @@ class GitWorkspace:
         timeout: float | None = None,
     ) -> bytes:
         """Run git at ``location`` (``--git-dir`` for the mirror, ``-C`` for a worktree)."""
+        argv, out, err, code, _ = await self._execute(location, args, stdin=stdin, timeout=timeout)
+        if code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return out
+
+    async def _execute(
+        self,
+        location: tuple[str, ...],
+        args: Sequence[str],
+        *,
+        stdin: bytes | None = None,
+        timeout: float | None = None,
+        extra_env: Mapping[str, str] | None = None,
+        output_limit: int | None = None,
+    ) -> tuple[tuple[str, ...], bytes, bytes, int, bool]:
+        """Run git; return its argv, stdout, stderr, exit code and whether stdout was cut."""
         argv = ("git", *_GIT_OPTIONS, *location, *args)
         env = {k: v for k, v in os.environ.items() if k not in _INHERITED_REPO_VARIABLES}
         env |= _GIT_ENV | {"GIT_CEILING_DIRECTORIES": str(self.root.resolve())}
+        env |= extra_env or {}
         try:
             proc = await spawn(
                 *argv,
@@ -288,21 +345,47 @@ class GitWorkspace:
         seconds = self._command_timeout if timeout is None else timeout
         try:
             async with asyncio.timeout(seconds):
-                out, err = await proc.communicate(stdin)
+                if output_limit is None:
+                    out, err = await proc.communicate(stdin)
+                    truncated = False
+                else:
+                    out, err, truncated = await _communicate_capped(proc, output_limit)
         except TimeoutError as exc:
             await _kill(proc)
             raise GitTimeoutError(argv, seconds) from exc
         except asyncio.CancelledError:
             await _kill(proc)
             raise
-        if proc.returncode:
-            raise GitCommandError(argv, proc.returncode, err.decode(errors="replace"))
-        return out
+        return argv, out, err, proc.returncode or 0, truncated
+
+
+async def _communicate_capped(
+    proc: asyncio.subprocess.Process, limit: int
+) -> tuple[bytes, bytes, bool]:
+    """Read at most ``limit`` bytes of stdout; past that, kill git rather than buffer more."""
+    stdout, stderr = proc.stdout, proc.stderr
+    assert stdout is not None and stderr is not None  # spawned with PIPE
+    errors = asyncio.ensure_future(stderr.read())
+    try:
+        try:
+            out = (await stdout.readexactly(limit + 1))[:limit]
+            truncated = True
+            await _kill(proc)
+        except asyncio.IncompleteReadError as short:
+            out, truncated = short.partial, False
+            await proc.wait()
+        return out, await errors, truncated
+    finally:
+        errors.cancel()  # a no-op once read; stops the reader if we were cancelled
 
 
 async def _kill(proc: asyncio.subprocess.Process) -> None:
-    """Kill git's whole process group and reap it."""
-    with contextlib.suppress(ProcessLookupError):
+    """Kill git's whole process group and reap it.
+
+    macOS answers EPERM, not ESRCH, when the group's only members are zombies (git already
+    exited and is waiting to be reaped), so both mean "nothing left to kill".
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
     await proc.wait()
 

@@ -49,6 +49,10 @@ class GitCommandError(WorkspaceError):
         self.stderr = stderr
 
 
+class GitOutputError(WorkspaceError):
+    """git's output did not have the shape the workspace relies on."""
+
+
 class GitTimeoutError(WorkspaceError):
     """A git command ran past its time limit and was killed."""
 
