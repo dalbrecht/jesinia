@@ -111,7 +111,7 @@ class KbModule:
             self._watcher = None
         self._problem = self._usable(root)
         if self._problem is not None or root is None:
-            self._svc.set_files(None)
+            self._svc.set_files(None, self._problem)
             return
         # A different KB from the one indexed (now, or while the server was stopped):
         # its pages are not "missing" — start the derived index over.

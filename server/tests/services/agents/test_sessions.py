@@ -9,8 +9,10 @@ import pytest
 from pydantic import BaseModel
 
 from jesinia.core import auth
+from jesinia.core.auth import Principal
 from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.module import CallContext, ToolDef
+from jesinia.services.agents.application.gate import SessionWriteGate
 from jesinia.services.agents.application.packs import ContextPack, UntrustedDoc
 from jesinia.services.agents.application.runner import RunnerStatus, TurnRequest
 from jesinia.services.agents.application.sessions import (
@@ -328,3 +330,45 @@ async def test_restart_fails_writes_stranded_mid_approval(tmp_path: Path) -> Non
     assert stuck is not None and stuck.state == "failed" and "restarted" in str(stuck.result)
     assert again.store.events(s.id)[-1].kind == "pending_resolved"
     assert (await again.approve(s.id, p.id)).state == "failed"
+
+
+async def test_read_only_session_turns_offer_only_read_tools(tmp_path: Path) -> None:
+    fake = FakeRunner([TextDelta("ok"), TurnDone("f", None)])
+    svc = make(tmp_path, fake)
+    s = await svc.create(SUBJ, "fake", pack(), read_only=True)
+    assert s.read_only
+    await svc.send(s.id, "hi")
+    await svc.wait_idle(s.id)
+    assert fake.requests[-1].allowed_tools == ["kb_read"]
+    # The flag is stored: a restarted server still treats the session as read-only.
+    again = make(tmp_path, fake)
+    assert again.get(s.id).read_only
+    assert not (await svc.create(SUBJ, "fake", pack())).read_only
+
+
+async def test_read_only_session_cannot_be_preauthorized_to_write(tmp_path: Path) -> None:
+    svc = make(tmp_path, FakeRunner([]))
+    with pytest.raises(ValueError, match="read-only"):
+        await svc.create(SUBJ, "fake", pack(), read_only=True, preauthorized_tools={"kb_write"})
+
+
+async def test_sessions_from_before_read_only_stay_writable_through_approval(
+    tmp_path: Path,
+) -> None:
+    # A database at schema version 1 (before 0002 added read_only), with a session in it.
+    old = tmp_path / "old-migrations"
+    old.mkdir()
+    first = files("jesinia.services.agents.migrations") / "0001_init.sql"
+    (old / "0001_init.sql").write_text(first.read_text(encoding="utf-8"), encoding="utf-8")
+    conn = open_db(tmp_path / "data", ModuleDb("sessions", DbClass.HISTORY, old))
+    conn.execute(
+        "INSERT INTO sessions (id, subject_kind, subject_ref, subject_title, runner, status, "
+        "preauthorized, created_at) VALUES ('s1', 'kb', 'p1', 'A page', 'fake', 'idle', '[]', "
+        "'2026-10-01T00:00:00+00:00')"
+    )
+    conn.close()
+    svc = make(tmp_path, FakeRunner([]))  # opens it with every migration, 0002 included
+    assert svc.get("s1").read_only is False
+    gate = SessionWriteGate(svc)
+    decision = await gate.check(TOOLS["kb_write"], In(), Principal("session", "s1"))
+    assert decision.kind == "pending"

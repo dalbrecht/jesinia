@@ -26,9 +26,12 @@ from jesinia.core.paths import default_log_dir
 DEFAULT_PORT = 5374
 DEFAULT_INTERVAL = timedelta(hours=4)
 DEFAULT_QUIET = timedelta(seconds=30)
-DEFAULT_FOLDERS: Mapping[str, str] = MappingProxyType({"note": "Notes"})
+DEFAULT_FOLDERS: Mapping[str, str] = MappingProxyType({"note": "Notes", "source": "Sources"})
+# Unkept RSS posts are pruned this long after publication (rss spec §4.4).
+DEFAULT_RSS_RETENTION = timedelta(days=30)
+RSS_RETENTION_DAYS_MAX = 365
 
-_DURATION = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+_DURATION = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _FOLDER_KIND = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
@@ -46,22 +49,24 @@ class Config:
     kbsync_interval: timedelta = DEFAULT_INTERVAL
     kbsync_quiet: timedelta = DEFAULT_QUIET
     folders: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_FOLDERS))
+    rss_retention: timedelta = DEFAULT_RSS_RETENTION
 
 
 def parse_duration(text: str) -> timedelta:
-    """Parse ``4h``, ``15m``, ``30s`` or combinations like ``1h30m``."""
+    """Parse ``30d``, ``4h``, ``15m``, ``30s`` or combinations like ``1h30m``."""
     m = _DURATION.match(text.strip())
     if not text.strip() or m is None or not any(m.groups()):
-        raise ConfigError(f"invalid duration {text!r} (use e.g. 4h, 15m, 30s)")
-    h, mi, s = (int(g) if g else 0 for g in m.groups())
-    return timedelta(hours=h, minutes=mi, seconds=s)
+        raise ConfigError(f"invalid duration {text!r} (use e.g. 30d, 4h, 15m, 30s)")
+    d, h, mi, s = (int(g) if g else 0 for g in m.groups())
+    return timedelta(days=d, hours=h, minutes=mi, seconds=s)
 
 
 def format_duration(td: timedelta) -> str:
     total = int(td.total_seconds())
-    h, rest = divmod(total, 3600)
+    d, rest = divmod(total, 86400)
+    h, rest = divmod(rest, 3600)
     m, s = divmod(rest, 60)
-    parts = [f"{v}{u}" for v, u in ((h, "h"), (m, "m"), (s, "s")) if v]
+    parts = [f"{v}{u}" for v, u in ((d, "d"), (h, "h"), (m, "m"), (s, "s")) if v]
     return "".join(parts) or "0s"
 
 
@@ -90,6 +95,7 @@ def _serialize(cfg: Config) -> str:
         "[folders]",
     ]
     lines += [f"{kind} = {_quote(folder)}" for kind, folder in sorted(cfg.folders.items())]
+    lines += ["", "[rss]", f"retention = {_quote(format_duration(cfg.rss_retention))}"]
     return "\n".join(lines) + "\n"
 
 
@@ -123,6 +129,7 @@ _ALLOWED: dict[str, frozenset[str] | None] = {
     "kb": frozenset({"path"}),
     "kbsync": frozenset({"interval", "quiet"}),
     "folders": None,  # any folder kind; validated by _apply
+    "rss": frozenset({"retention"}),
 }
 
 
@@ -132,6 +139,7 @@ _TYPES: dict[tuple[str, str], type] = {
     ("kb", "path"): str,
     ("kbsync", "interval"): str,
     ("kbsync", "quiet"): str,
+    ("rss", "retention"): str,
 }
 
 
@@ -159,7 +167,9 @@ def _check_keys(doc: Mapping[str, object]) -> None:
 def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
     _check_keys(doc)
     _check_types(doc)
-    server, kb, kbsync, folders = (_section(doc, s) for s in ("server", "kb", "kbsync", "folders"))
+    server, kb, kbsync, folders, rss = (
+        _section(doc, s) for s in ("server", "kb", "kbsync", "folders", "rss")
+    )
     token = server.get("token")
     if not isinstance(token, str) or not token:
         raise ConfigError("[server] token is missing")
@@ -175,6 +185,8 @@ def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
         cfg = replace(cfg, folders={})
         for kind, folder in folders.items():
             cfg = _apply(cfg, f"folders.{kind}", str(folder))
+    if "retention" in rss:
+        cfg = _apply(cfg, "rss.retention", str(rss["retention"]))
     return cfg
 
 
@@ -224,6 +236,15 @@ def _apply(cfg: Config, key: str, raw: str) -> Config:
         if key == "kbsync.interval":
             return replace(cfg, kbsync_interval=td)
         return replace(cfg, kbsync_quiet=td)
+    if key == "rss.retention":
+        td = parse_duration(raw)
+        whole_days = td.days if td == timedelta(days=td.days) else 0
+        if not 1 <= whole_days <= RSS_RETENTION_DAYS_MAX:
+            raise ConfigError(
+                f"rss.retention must be 1 to {RSS_RETENTION_DAYS_MAX} whole days (e.g. 30d), "
+                f"got {raw!r}"
+            )
+        return replace(cfg, rss_retention=td)
     if key.startswith("folders."):
         kind = key.removeprefix("folders.")
         if not _FOLDER_KIND.match(kind):
@@ -231,12 +252,19 @@ def _apply(cfg: Config, key: str, raw: str) -> Config:
         return replace(cfg, folders={**cfg.folders, kind: _validate_folder(raw)})
     raise ConfigError(
         f"unknown key {key!r} (known: server.port, kb.path, kbsync.interval, "
-        "kbsync.quiet, folders.<kind>)"
+        "kbsync.quiet, folders.<kind>, rss.retention)"
     )
 
 
 def set_value(path: Path, key: str, raw: str) -> Config:
     """Set one key, persist, and return the new config."""
-    cfg = _apply(load_config(path), key, raw)
+    return set_values(path, {key: raw})
+
+
+def set_values(path: Path, values: Mapping[str, str]) -> Config:
+    """Set several keys in one write (all validated first), persist, return the new config."""
+    cfg = load_config(path)
+    for key, raw in values.items():
+        cfg = _apply(cfg, key, raw)
     save_config(cfg, path)
     return cfg

@@ -15,12 +15,19 @@ import ipaddress
 import socket
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from jesinia.services.fetch.application.ports import CachedFetch, FetchCache, Resolver
+from jesinia.services.fetch.application.ports import (
+    Article,
+    ArticleExtractor,
+    CachedFetch,
+    FetchCache,
+    Resolver,
+)
 from jesinia.services.fetch.domain.address import is_public
 
 MAX_REDIRECTS = 5
@@ -72,8 +79,15 @@ class FetchService:
         resolve: Resolver = system_resolve,
         min_interval: float = 1.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        allowed: Callable[[str], bool] = is_public,
+        extractor: ArticleExtractor | None = None,
     ) -> None:
+        """``allowed`` decides which resolved addresses may be fetched; only the
+        end-to-end test server widens it (to loopback, for fixture feeds). ``extractor``
+        turns a fetched page into an article for ``article``."""
         self._cache = cache
+        self._extractor = extractor
+        self._allowed = allowed
         self._resolve = resolve
         self._min_interval = min_interval
         self._transport = transport
@@ -88,7 +102,7 @@ class FetchService:
         if host == "localhost" or host.endswith(".localhost"):
             raise FetchBlocked(f"{host} is not a public host")
         addresses = [host] if _is_ip(host) else await self._resolve(host)
-        if not addresses or not all(is_public(a) for a in addresses):
+        if not addresses or not all(self._allowed(a) for a in addresses):
             raise FetchBlocked(f"{host} does not resolve to a public address")
         return host
 
@@ -100,7 +114,21 @@ class FetchService:
                 await asyncio.sleep(wait)
             last[0] = time.monotonic()
 
-    async def get(self, url: str, *, max_bytes: int = 5_000_000) -> FetchResult:
+    async def get(self, url: str, *, max_bytes: int = 5_000_000, cache: bool = True) -> FetchResult:
+        """GET ``url`` through the guards. ``cache=False`` neither revalidates against nor
+        stores in the conditional-request cache (for bodies the caller keeps elsewhere).
+
+        Raises ``FetchBlocked``, ``FetchTooLarge``, or ``FetchError`` (chained to the cause)
+        for a transport failure: a timeout, a refused connection, TLS or protocol errors.
+        """
+        try:
+            return await self._get(url, max_bytes=max_bytes, cache=cache)
+        except httpx.HTTPError as exc:
+            message = str(exc)
+            kind = type(exc).__name__
+            raise FetchError(f"{kind}: {message}" if message else kind) from exc
+
+    async def _get(self, url: str, *, max_bytes: int, cache: bool) -> FetchResult:
         async with httpx.AsyncClient(
             timeout=TIMEOUT,
             transport=self._transport,
@@ -111,7 +139,7 @@ class FetchService:
             for _ in range(MAX_REDIRECTS + 1):
                 host = await self.check(url)
                 await self._pace(host)
-                cached = self._cache.get(url)
+                cached = self._cache.get(url) if cache else None
                 headers: dict[str, str] = {}
                 if cached is not None and cached.etag:
                     headers["If-None-Match"] = cached.etag
@@ -129,10 +157,47 @@ class FetchService:
                     content_type = resp.headers.get("content-type", "")
                     etag = resp.headers.get("etag")
                     modified = resp.headers.get("last-modified")
-                    if resp.status_code == 200 and (etag or modified):
+                    if cache and resp.status_code == 200 and (etag or modified):
                         self._cache.put(url, CachedFetch(etag, modified, 200, content_type, body))
                     return FetchResult(url, resp.status_code, content_type, body, False)
         raise FetchBlocked(f"too many redirects (more than {MAX_REDIRECTS})")
+
+    async def article(self, url: str) -> Article | None:
+        """The main text of the page at ``url``, or None when it has none.
+
+        Raises ``FetchError`` (chained to the original cause) when the page cannot be
+        fetched (blocked, too large, a transport error or an HTTP error status), is not
+        HTML, cannot be extracted, or no extractor is configured.
+        """
+        extractor = self._extractor
+        if extractor is None:
+            raise FetchError("article extraction is not available")
+        result = await self.get(url)
+        if result.status != 200:
+            raise FetchError(f"{url} answered HTTP {result.status}")
+        content_type = result.content_type.lower()
+        if content_type and "html" not in content_type:
+            raise FetchError(f"{url} is not an HTML page ({result.content_type})")
+        return await self._extract(extractor, result.body, result.url)
+
+    async def convert(self, html: bytes, url: str) -> Article | None:
+        """HTML already in hand (e.g. a feed item's content) as Markdown, through the same
+        sanitiser and extractor as ``article``; nothing is fetched. ``url`` resolves
+        relative links. Raises ``FetchError`` when no extractor is configured or it fails.
+        """
+        if self._extractor is None:
+            raise FetchError("article extraction is not available")
+        return await self._extract(self._extractor, html, url)
+
+    @staticmethod
+    async def _extract(extractor: ArticleExtractor, html: bytes, url: str) -> Article | None:
+        try:
+            # Extraction parses the whole page: keep it off the event loop.
+            return await asyncio.to_thread(extractor.extract, html, url)
+        # Third-party parser boundary (trafilatura, lxml): whatever it raises is reported
+        # as this page's failure, with the original exception chained as the cause.
+        except Exception as exc:
+            raise FetchError(f"could not extract the article at {url}: {exc}") from exc
 
 
 def _is_ip(host: str) -> bool:
@@ -160,14 +225,17 @@ async def _read_capped(resp: httpx.Response, max_bytes: int) -> bytes:
         if len(out) > max_bytes:
             raise FetchTooLarge(f"response exceeds {max_bytes} bytes")
 
-    async for chunk in resp.aiter_raw():
-        if inflate is None:
-            add(chunk)
-            continue
-        data = chunk
-        while data:
-            add(inflate.decompress(data, max_bytes + 1 - len(out)))
-            data = inflate.unconsumed_tail
-    if inflate is not None:
-        add(inflate.flush())
+    try:
+        async for chunk in resp.aiter_raw():
+            if inflate is None:
+                add(chunk)
+                continue
+            data = chunk
+            while data:
+                add(inflate.decompress(data, max_bytes + 1 - len(out)))
+                data = inflate.unconsumed_tail
+        if inflate is not None:
+            add(inflate.flush())
+    except zlib.error as exc:  # a server called bytes gzip/deflate that are not
+        raise FetchError(f"could not decode the {encoding} body: {exc}") from exc
     return bytes(out)

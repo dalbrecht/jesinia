@@ -197,10 +197,15 @@ class SessionService:
         pack: ContextPack,
         *,
         preauthorized_tools: frozenset[str] | set[str] = frozenset(),
+        read_only: bool = False,
     ) -> Session:
-        """A new idle session. A ``one-shot`` subject gets no MCP endpoint or token."""
+        """A new idle session. A ``one-shot`` subject gets no MCP endpoint or token. A
+        ``read_only`` session is offered only the tools that do not write, and the write gate
+        refuses any write it attempts (so none can be pre-authorized)."""
         if runner not in self.runners:
             raise ValueError(f"unknown runner {runner!r}")
+        if read_only and preauthorized_tools:
+            raise ValueError("a read-only session cannot be pre-authorized to write")
         id = uuid.uuid4().hex
         write_pack(pack, self.dir_for(id))
         if subject.kind == ONE_SHOT_SUBJECT:
@@ -218,6 +223,7 @@ class SessionService:
             datetime.now(UTC),
             None,
             frozenset(preauthorized_tools),
+            read_only,
         )
         self.store.add_session(session)
         return session
@@ -314,6 +320,12 @@ class SessionService:
             auth.revoke_session_token(token)
         shutil.rmtree(self.dir_for(session_id), ignore_errors=True)
 
+    def _allowed_tools(self, session: Session) -> list[str]:
+        if is_one_shot(session):
+            return []
+        tools = self._tools()
+        return sorted(n for n, tool in tools.items() if not (session.read_only and tool.writes))
+
     async def _turn(self, id: str, text: str) -> None:
         session = self.get(id)
         runner = self.runners[session.runner]
@@ -324,7 +336,7 @@ class SessionService:
             system_prompt=system_prompt(workdir),
             resume_id=session.agent_session_id,
             mcp_config=workdir / "mcp.json",
-            allowed_tools=[] if is_one_shot(session) else sorted(self._tools()),
+            allowed_tools=self._allowed_tools(session),
         )
         finished = False
         try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from jesinia.services.kb.domain.tags import (
     TAG_LINE_PREFIX,
+    escape_tags,
     extract_tags,
     is_valid_tag,
     near_matches,
@@ -165,3 +166,17 @@ def test_inline_code_span_is_broken_by_a_blank_line() -> None:
 def test_inline_code_span_needs_a_matching_backtick_run_across_lines() -> None:
     body = "``a\n#hidden` still``\n#after `x\n#kept\n"
     assert extract_tags(body) == ["after", "kept"]
+
+
+def test_a_backslash_escaped_hashtag_is_not_a_tag() -> None:
+    assert extract_tags("see \\#foo and #bar") == ["bar"]
+    assert extract_tags("#foo") == ["foo"]
+
+
+def test_escape_tags_escapes_every_tag_and_nothing_else() -> None:
+    text = "Hi #a, C# and [x](#anchor) `#code` http://x.example/#y (#b)\n# Heading #h\n"
+    escaped = escape_tags(text)
+    assert escaped == (
+        "Hi \\#a, C# and [x](#anchor) `#code` http://x.example/#y (\\#b)\n# Heading #h\n"
+    )
+    assert extract_tags(escaped) == [] and escape_tags(escaped) == escaped

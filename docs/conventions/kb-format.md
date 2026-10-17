@@ -66,7 +66,10 @@ jesinia:
 - **Links:** `[[<id>|<Title>]]` or `[[<id>]]`. They resolve by id, so they survive moves.
   Renaming a page updates the title text of links to it.
 - **Tags:** inline `#tags` in the body; see [Tags](#tags).
-- **Assets:** `_assets/<page-id>/`, referenced by relative path.
+- **Assets:** `_assets/<page-id>/` at the KB root, referenced by relative path (from
+  `Sources/x.md`, `../_assets/<page-id>/<file>`). A folder whose files stay on this Mac
+  (archived RSS images) holds a `.gitignore` of `*`, so KB sync never commits them. Asset
+  file names are derived (a content hash plus an extension), never taken from a URL.
 - **AI provenance.** Text an agent wrote is wrapped in Markdown (HTML) comments,
   exactly:
 

@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import asyncio
 import time
+import zlib
 from collections.abc import Iterator
 from importlib.resources import files
 from pathlib import Path
 
 import httpcore
+import httpx
 import pytest
 import respx
 from httpx import Response
@@ -13,7 +15,12 @@ from httpx import Response
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
 from jesinia.core.db import DbClass, ModuleDb, open_db
-from jesinia.services.fetch.application.service import FetchBlocked, FetchService, FetchTooLarge
+from jesinia.services.fetch.application.service import (
+    FetchBlocked,
+    FetchError,
+    FetchService,
+    FetchTooLarge,
+)
 from jesinia.services.fetch.domain.address import is_public
 from jesinia.services.fetch.infrastructure.cache import SqliteFetchCache
 from jesinia.services.fetch.infrastructure.sanitize import sanitize_html
@@ -293,3 +300,71 @@ async def test_compressed_body_is_bounded_after_decoding(fetch: FetchService) ->
     )
     with pytest.raises(FetchBlocked, match="encoding"):
         await fetch.get("https://pub.example/br")
+
+
+@respx.mock
+async def test_get_without_the_cache_neither_revalidates_nor_stores(
+    fetch: FetchService,
+) -> None:
+    route = respx.get("https://pub.example/img").mock(
+        return_value=Response(200, content=b"img", headers={"ETag": "v1"})
+    )
+    await fetch.get("https://pub.example/img", cache=False)
+    await fetch.get("https://pub.example/img", cache=False)
+    assert "If-None-Match" not in route.calls[1].request.headers
+    cached = await fetch.get("https://pub.example/img")  # nothing was stored to answer from
+    assert not cached.from_cache and route.call_count == 3
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectTimeout("timed out"),
+        httpx.ConnectError("connection refused"),
+        httpx.ReadError("tls handshake failed"),
+        httpx.RemoteProtocolError("peer closed"),
+    ],
+)
+async def test_transport_failures_are_fetch_errors_with_their_cause(
+    fetch: FetchService, error: httpx.HTTPError
+) -> None:
+    with respx.mock:
+        respx.get("https://pub.example/feed").mock(side_effect=error)
+        with pytest.raises(FetchError) as caught:
+            await fetch.get("https://pub.example/feed")
+    assert caught.value.__cause__ is error
+    assert str(caught.value) == f"{type(error).__name__}: {error}"
+
+
+async def test_a_transport_failure_without_a_message_still_names_its_kind(
+    fetch: FetchService,
+) -> None:
+    with respx.mock:
+        respx.get("https://pub.example/feed").mock(side_effect=httpx.ReadTimeout(""))
+        with pytest.raises(FetchError, match="^ReadTimeout$"):
+            await fetch.get("https://pub.example/feed")
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+async def test_a_body_that_does_not_decompress_is_a_fetch_error(
+    tmp_path: Path, encoding: str
+) -> None:
+    def serve(request: httpx.Request) -> Response:
+        # The raw bytes reach fetch's own bounded inflater undecoded.
+        return Response(
+            200,
+            stream=httpx.ByteStream(b"this is not compressed"),
+            headers={"Content-Encoding": encoding},
+        )
+
+    conn = open_db(tmp_path, DB)
+    fetch = FetchService(
+        SqliteFetchCache(conn),
+        resolve=resolver({}),
+        min_interval=0,
+        transport=httpx.MockTransport(serve),
+    )
+    with pytest.raises(FetchError, match=f"could not decode the {encoding} body") as caught:
+        await fetch.get("https://pub.example/feed")
+    assert isinstance(caught.value.__cause__, zlib.error)
+    conn.close()

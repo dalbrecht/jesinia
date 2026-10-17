@@ -92,7 +92,7 @@ Notes their own app windows.
 | `jesinia sync now` | Runs a KB git sync cycle now |
 | `jesinia reindex` | Rescans the KB and rebuilds search (with the server stopped, it deletes the derived databases instead, and the next start rebuilds them) |
 | `jesinia backup [--dest DIR]` | Copies agent history and `config.toml` to a timestamped folder |
-| `jesinia config get KEY` / `set KEY VALUE` | `server.port`, `kb.path`, `kbsync.interval` (e.g. `1h`), `kbsync.quiet`, `folders.note` |
+| `jesinia config get KEY` / `set KEY VALUE` | `server.port`, `kb.path`, `kbsync.interval` (e.g. `1h`), `kbsync.quiet`, `folders.note`, `folders.source` (kept RSS posts, default `Sources`), `rss.retention` (1–365 whole days, e.g. `30d`) |
 | `jesinia token show` / `rotate` | Show the install token, or replace it (signs browsers out and re-registers agents) |
 | `jesinia update` | One update attempt (what the update agent runs) |
 | `jesinia openapi` | Prints the HTTP API schema |
