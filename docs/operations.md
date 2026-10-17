@@ -91,7 +91,7 @@ Notes their own app windows.
 | `jesinia doctor` | Checks config, KB, git remote, tools, agent logins, the LaunchAgent and the server, with a fix for each problem. Exits 1 on any `fail` |
 | `jesinia sync now` | Runs a KB git sync cycle now |
 | `jesinia reindex` | Rescans the KB and rebuilds search (with the server stopped, it deletes the derived databases instead, and the next start rebuilds them) |
-| `jesinia backup [--dest DIR]` | Copies agent history and `config.toml` to a timestamped folder |
+| `jesinia backup [--dest DIR]` | Copies agent history, RSS feeds and read state, and `config.toml` to a timestamped folder |
 | `jesinia config get KEY` / `set KEY VALUE` | `server.port`, `kb.path`, `kbsync.interval` (e.g. `1h`), `kbsync.quiet`, `folders.note`, `folders.source` (kept RSS posts, default `Sources`), `rss.retention` (1–365 whole days, e.g. `30d`) |
 | `jesinia token show` / `rotate` | Show the install token, or replace it (signs browsers out and re-registers agents) |
 | `jesinia update` | One update attempt (what the update agent runs) |
@@ -106,7 +106,7 @@ a restart: `./setup` again, or
 | What | Where |
 |---|---|
 | Config (mode 600) | `~/Library/Application Support/jesinia/config.toml` |
-| Databases | `~/Library/Application Support/jesinia/*.sqlite`: `sessions` is history (backed up); the rest are rebuildable |
+| Databases | `~/Library/Application Support/jesinia/*.sqlite`: `sessions` and `rss` (feeds, posts and read state) are history (backed up); the rest are rebuildable |
 | Agent session folders | `~/Library/Application Support/jesinia/sessions/<id>/` |
 | Server log (JSON lines, 10 MB × 5) | `~/Library/Logs/jesinia/server.log` |
 | launchd output | `~/Library/Logs/jesinia/launchd.{out,err}.log` |
@@ -116,6 +116,36 @@ a restart: `./setup` again, or
 
 Set `JESINIA_HOME` to relocate the config, data and logs, for example for a test
 install.
+
+## RSS
+
+The RSS app (`/rss/`) reads your feeds; keeping a post writes it into the KB.
+
+- **Adding feeds:** **+ Add feed** at the bottom of the feeds pane takes a feed URL or a
+  site's address (the feed the site advertises is found). The same dialog files feeds into
+  folders (one level), renames folders and unsubscribes. Unsubscribing drops the feed's
+  unkept posts; kept posts stay. Adding the URL again restores the feed.
+- **Polling:** every feed starts at 30 minutes and adapts between 15 minutes and 12 hours.
+  **↻ Refresh** polls everything now. A feed that fails three times in a row shows its
+  cause (any URL in it cut down to its host) with **Retry**, and keeps being retried with
+  backoff; it is never dropped.
+- **OPML:** import and export are in **Settings → RSS**. Import keeps one level of
+  folders, skips feeds you already follow, and lists any entry whose URL can't be used.
+  Imported feeds are read on the next poll (within a minute) or at once with
+  **Refresh all feeds now**. Export downloads every feed and folder as
+  `jesinia-feeds.opml` (also `GET /api/rss/opml`).
+- **Retention:** unread and read posts you didn't keep are deleted once they are older than
+  the retention (Settings → RSS, or `rss.retention`, 1–365 days, default 30). Kept posts
+  are never deleted. Read state lives in `rss.sqlite`, never in KB files.
+- **Kept posts** become pages in `Sources/` (Settings → RSS, or `folders.source`): your
+  note, the tags, any Engage takeaway, then the archived article as Markdown. They sync
+  with git like any page.
+- **Archived images stay on this Mac.** They are saved under `_assets/<page-id>/` next to
+  the page, and each of those folders has a `.gitignore` containing `*`, so KB sync never
+  commits or pushes them. On another machine the page shows its text with broken image
+  links; **Open original** still works. Deleting the folder loses only the images.
+- **Agents** can find and read posts (`rss_search_posts`, `rss_get_post`) but never keep or
+  mark them; see [agents](conventions/agents.md).
 
 ## Updating
 

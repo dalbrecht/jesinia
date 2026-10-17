@@ -4,17 +4,31 @@ import { Badge, Button, Input, Panel, useToast } from "@jesinia/design";
 import { RUNNER_NAMES, useClient, type KbPathInfo, type ServerStatus, type SyncStatus } from "@jesinia/shell";
 import { useEffect, useState, type FormEvent } from "react";
 import { clock, MODE_LABEL } from "./format";
+import { RssSection } from "./settings/Rss";
 import { TagsSection } from "./settings/Tags";
 import s from "./settings.module.css";
 
+/** The outline, in the design pass's order (Review joins when it ships). */
 const SECTIONS = [
   ["kb", "Knowledge base"],
   ["sync", "Git sync"],
-  ["tags", "Tags"],
   ["agents", "Agents"],
+  ["tags", "Tags"],
+  ["rss", "RSS"],
   ["conflicts", "Conflicts"],
   ["security", "Security"],
 ] as const;
+
+/** The section the address names (`#rss`), so the outline marks where you are. */
+function useHash(): string {
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onChange = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+  return hash;
+}
 
 function KbSection({ status }: { status: ServerStatus }) {
   const client = useClient();
@@ -275,28 +289,36 @@ function SecuritySection() {
   );
 }
 
+/**
+ * The book layout (design pass): an outline of sections on the left, and a view pane on the
+ * right with a toolbar on top; each section keeps its actions along its bottom.
+ */
 export function Settings({ status }: { status: ServerStatus }) {
+  const hash = useHash();
   return (
     <div className={s.layout}>
       <nav className={s.nav} aria-label="Settings sections">
         {SECTIONS.map(([id, label]) => (
-          <a key={id} href={`#${id}`}>
+          <a key={id} href={`#${id}`} aria-current={hash === `#${id}` ? "location" : undefined}>
             {label}
           </a>
         ))}
       </nav>
-      <div className={s.column}>
-        <div className={s.intro}>
-          <h1>Settings</h1>
+      <section className={s.pane} aria-labelledby="settings-title">
+        <header className={s.toolbar}>
+          <h1 id="settings-title">Settings</h1>
           <p>Changes apply to every Jesinia app.</p>
+        </header>
+        <div className={s.column}>
+          <KbSection status={status} />
+          <SyncSection status={status} />
+          <AgentsSection status={status} />
+          <TagsSection />
+          <RssSection />
+          <ConflictsSection status={status} />
+          <SecuritySection />
         </div>
-        <KbSection status={status} />
-        <SyncSection status={status} />
-        <TagsSection />
-        <AgentsSection status={status} />
-        <ConflictsSection status={status} />
-        <SecuritySection />
-      </div>
+      </section>
     </div>
   );
 }

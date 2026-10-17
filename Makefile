@@ -42,17 +42,22 @@ test-e2e: ## Run end-to-end tests (Playwright)
 	$(PNPM) run test:e2e
 
 # Playwright's webServer runs this, so the JS toolchain never starts Python itself.
-e2e-server: ## Build the launcher and serve a throwaway e2e instance (needs E2E_HOME, E2E_PORT)
-	@test -n "$(E2E_HOME)" && test -n "$(E2E_PORT)" || { echo "set E2E_HOME and E2E_PORT"; exit 2; }
-	$(PNPM) --filter @jesinia/launcher --filter @jesinia/notes build
+e2e-server: ## Build the apps and serve a throwaway e2e instance (needs E2E_HOME, E2E_PORT, E2E_FEEDS_PORT)
+	@test -n "$(E2E_HOME)" && test -n "$(E2E_PORT)" && test -n "$(E2E_FEEDS_PORT)" || { echo "set E2E_HOME, E2E_PORT and E2E_FEEDS_PORT"; exit 2; }
+	$(PNPM) --filter @jesinia/launcher --filter @jesinia/notes --filter @jesinia/rss build
 	bash web/tests/e2e/fixture.sh
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set server.port "$(E2E_PORT)" >/dev/null
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set kbsync.quiet 1s >/dev/null
-	@# The server plus a scripted "fake" runner that calls kb_write through MCP (tests only).
-	@# The server commits to the fixture KB; CI runners have no git identity of their own.
+	@# The fixture feeds, on a second loopback port. Only this throwaway server may fetch
+	@# loopback (fake_runner_app's temporary-home guard); the feeds stop with the server.
+	@# Then the server plus a scripted "fake" runner that calls kb_write through MCP (tests
+	@# only). It commits to the fixture KB; CI runners have no git identity of their own.
+	python3 -m http.server "$(E2E_FEEDS_PORT)" --bind 127.0.0.1 \
+	  --directory web/tests/e2e/fixtures/feeds >/dev/null 2>&1 & feeds=$$!; \
+	trap 'kill $$feeds 2>/dev/null' EXIT; \
 	GIT_AUTHOR_NAME="Jesinia E2E" GIT_AUTHOR_EMAIL="e2e@example.invalid" \
 	  GIT_COMMITTER_NAME="Jesinia E2E" GIT_COMMITTER_EMAIL="e2e@example.invalid" \
-	  JESINIA_HOME="$(E2E_HOME)/data" JESINIA_FAKE_RUNNER=1 exec $(UV) run uvicorn \
+	  JESINIA_HOME="$(E2E_HOME)/data" JESINIA_FAKE_RUNNER=1 $(UV) run uvicorn \
 	  jesinia.testing.fake_runner_app:app --host 127.0.0.1 --port "$(E2E_PORT)"
 
 lint: ## Lint Python and JS

@@ -55,6 +55,8 @@ Tool wire names use underscores:
 - `agents_session_attach`, `agents_session_note`
 - `tags_list`, `tags_suggest`, `tags_check` (read-only)
 - `notes_save`
+- `rss_search_posts`, `rss_get_post` (read-only; post text is untrusted feed data). There is
+  no keep tool: keeping a post is the user's action in the RSS app.
 
 Terminal agents get the endpoint from `jesinia install` (see
 [operations](../operations.md#agent-registration)).

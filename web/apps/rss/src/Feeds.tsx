@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // The feeds pane (spec §2.1): the views, then folders (collapsible) and their feeds, each
-// with its unread count, and a warning on a feed that keeps failing.
+// with its unread count, and a warning on a feed that keeps failing (its cause and a Retry).
+// + Add feed, at the bottom, opens feed management.
+import { Button } from "@jesinia/design";
 import { useState } from "react";
 import { capCount, type Counts, type Feed, type Scope } from "./api";
+import { FeedProblem } from "./ManageFeeds";
 import s from "./rss.module.css";
 
 /** Collapsed folder ids, per browser (a convenience: losing it costs nothing). */
@@ -52,9 +55,12 @@ export type FeedsProps = {
   counts: Counts | null;
   scope: Scope;
   onScope: (scope: Scope) => void;
+  onAddFeed: () => void;
+  /** A feed changed (a Retry): reload the feeds and counts. */
+  onFeedChanged: () => void;
 };
 
-export function Feeds({ feeds, counts, scope, onScope }: FeedsProps) {
+export function Feeds({ feeds, counts, scope, onScope, onAddFeed, onFeedChanged }: FeedsProps) {
   const [collapsed, setCollapsed] = useState<number[]>(readCollapsed);
   const { folders, loose } = group(feeds);
   const unreadOf = (list: { id: number; unread: number }[] | undefined, id: number, fallback = 0) =>
@@ -68,8 +74,13 @@ export function Feeds({ feeds, counts, scope, onScope }: FeedsProps) {
   const current = (on: boolean) => (on ? ("true" as const) : undefined);
 
   const feedRow = (feed: Feed) => (
+    <div key={feed.id}>
+      {feedButton(feed)}
+      <FeedProblem feed={feed} onChanged={onFeedChanged} />
+    </div>
+  );
+  const feedButton = (feed: Feed) => (
     <button
-      key={feed.id}
       type="button"
       className={s.feed}
       aria-current={current(scope.feed === feed.id)}
@@ -137,6 +148,11 @@ export function Feeds({ feeds, counts, scope, onScope }: FeedsProps) {
         );
       })}
       {loose.length ? <div className={s.folder}>{loose.map(feedRow)}</div> : null}
+      <div className={s.addFeedRow}>
+        <Button variant="ghost" size="sm" onClick={onAddFeed}>
+          + Add feed
+        </Button>
+      </div>
     </nav>
   );
 }

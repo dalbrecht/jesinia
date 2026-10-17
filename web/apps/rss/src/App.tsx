@@ -27,6 +27,7 @@ import {
 import { Feeds } from "./Feeds";
 import { KeepPopover } from "./KeepPopover";
 import { KEY_HELP, useKeys } from "./keys";
+import { ManageFeeds } from "./ManageFeeds";
 import { PostList } from "./PostList";
 import { Reader, sentence } from "./Reader";
 import s from "./rss.module.css";
@@ -167,6 +168,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   const [reload, setReload] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showKeys, setShowKeys] = useState(false);
+  const [managing, setManaging] = useState(false);
   const [focusSearch, setFocusSearch] = useState(0);
   const searchBox = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
@@ -472,8 +474,21 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     setStage("list");
   };
 
-  // While the key list or the Keep popover is open, keys belong to it (Esc closes it).
-  useKeys(showKeys || keeping ? {} : {
+  /** Feeds or folders changed (an add, move, rename, unsubscribe or Retry). */
+  const feedsChanged = () => {
+    loadFeeds();
+    loadCounts();
+    setReload((n) => n + 1);
+  };
+  const added = (feed: Feed) => {
+    setManaging(false);
+    loadFeeds();
+    loadCounts();
+    goTo({ view: "unread", feed: feed.id, folder: null });
+  };
+
+  // While a dialog or the Keep popover is open, keys belong to it (Esc closes it).
+  useKeys(showKeys || keeping || managing ? {} : {
     j: () => move(1),
     k: () => move(-1),
     Enter: openOriginal,
@@ -566,7 +581,16 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
 
   return (
     <div className={narrow ? s.narrow : chatOpen ? s.engagedLayout : s.layout}>
-      {showFeeds ? <Feeds feeds={feeds} counts={counts} scope={scope} onScope={goTo} /> : null}
+      {showFeeds ? (
+        <Feeds
+          feeds={feeds}
+          counts={counts}
+          scope={scope}
+          onScope={goTo}
+          onAddFeed={() => setManaging(true)}
+          onFeedChanged={feedsChanged}
+        />
+      ) : null}
       {showList ? listPane : null}
       {showReader ? (
         selected ? (
@@ -617,6 +641,9 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
         />
       ) : null}
       {showKeys ? <KeysDialog onClose={() => setShowKeys(false)} /> : null}
+      {managing ? (
+        <ManageFeeds feeds={feeds} onAdded={added} onChanged={feedsChanged} onClose={() => setManaging(false)} />
+      ) : null}
     </div>
   );
 }

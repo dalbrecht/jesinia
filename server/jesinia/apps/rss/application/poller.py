@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from jesinia.apps.rss.application.ports import FeedFetcher, FeedReader, FeedStore, PollState
 from jesinia.apps.rss.domain.feed import (
     Feed,
+    FeedNotFound,
     failure_delay_s,
     host_of,
     next_interval_s,
@@ -81,6 +82,17 @@ class Poller:
         """Poll every feed now (the manual Refresh)."""
         async with self._round:
             return await self._poll(self._store.feeds())
+
+    async def poll_feed(self, feed_id: int) -> None:
+        """Poll one feed now (a feed's Retry); its outcome is recorded on the feed.
+
+        Raises ``FeedNotFound`` for an unknown or unsubscribed feed.
+        """
+        async with self._round:
+            feed = self._store.feed(feed_id)
+            if feed is None or feed.deleted:
+                raise FeedNotFound(f"no feed {feed_id}")
+            await self._poll([feed])
 
     async def _poll(self, feeds: Iterable[Feed]) -> PollSummary:
         due = list(feeds)

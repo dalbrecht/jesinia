@@ -108,6 +108,48 @@ export async function retryArchive(client: JesiniaClient, id: number): Promise<P
   return unwrap(r);
 }
 
+/** Subscribe to a feed URL, or to the feed a site advertises; `folder` is created if new. */
+export async function addFeed(client: JesiniaClient, url: string, folder: string | null): Promise<Feed> {
+  const r = await client.POST("/api/rss/feeds", {
+    params: { header: withIdempotency() },
+    body: { url, folder },
+  });
+  return unwrap(r);
+}
+
+/** Unsubscribe: unkept posts go, kept ones stay in the KB. Adding the URL again restores it. */
+export async function removeFeed(client: JesiniaClient, id: number): Promise<void> {
+  const r = await client.DELETE("/api/rss/feeds/{feed_id}", {
+    params: { path: { feed_id: id }, header: withIdempotency() },
+  });
+  unwrap(r);
+}
+
+/** Put the feed in `folder` (created if new), or in none. */
+export async function moveFeed(client: JesiniaClient, id: number, folder: string | null): Promise<Feed> {
+  const r = await client.PATCH("/api/rss/feeds/{feed_id}", {
+    params: { path: { feed_id: id }, header: withIdempotency() },
+    body: { folder },
+  });
+  return unwrap(r);
+}
+
+export async function renameFolder(client: JesiniaClient, id: number, name: string): Promise<void> {
+  const r = await client.PATCH("/api/rss/folders/{folder_id}", {
+    params: { path: { folder_id: id }, header: withIdempotency() },
+    body: { name },
+  });
+  unwrap(r);
+}
+
+/** Poll one feed now (a failing feed's Retry): the feed afterwards, with its warning if it still fails. */
+export async function refreshFeed(client: JesiniaClient, id: number): Promise<Feed> {
+  const r = await client.POST("/api/rss/feeds/{feed_id}/refresh", {
+    params: { path: { feed_id: id }, header: withIdempotency() },
+  });
+  return unwrap(r);
+}
+
 export async function refreshFeeds(client: JesiniaClient): Promise<void> {
   unwrap(await client.POST("/api/rss/refresh", { params: { header: withIdempotency() } }));
 }

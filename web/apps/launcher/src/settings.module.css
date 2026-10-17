@@ -32,14 +32,41 @@
 .nav a:hover {
   background: var(--jx-surface-hover);
 }
+.nav a[aria-current="location"] {
+  background: var(--jx-row-bg-selected);
+  font-weight: var(--jx-weight-semibold);
+}
+.nav a:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
+}
+/* The view pane: a toolbar on top, then the sections, each with its actions at its bottom. */
+.pane {
+  display: grid;
+  align-content: start;
+  gap: var(--jx-space-4);
+  min-width: 0;
+}
+.toolbar {
+  position: sticky;
+  top: 38px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--jx-space-1) var(--jx-space-3);
+  padding: var(--jx-space-2) 0;
+  background: var(--jx-bg);
+  border-bottom: 1px solid var(--jx-border);
+}
 .column {
   display: grid;
   gap: var(--jx-space-4);
 }
-.intro h1 {
+.toolbar h1 {
   font-size: var(--jx-text-xl);
 }
-.intro p,
+.toolbar p,
 .muted {
   color: var(--jx-fg-muted);
   font-size: var(--jx-text-sm);
@@ -111,4 +138,73 @@
 .chips li {
   display: inline-flex;
   align-items: center;
+}
+
+/* Settings → RSS: one row per setting, its words on the left and its control on the right. */
+.setting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--jx-space-2) var(--jx-space-4);
+  padding-bottom: var(--jx-space-3);
+  border-bottom: 1px solid var(--jx-border);
+}
+.setting > :first-child {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.settingTitle {
+  display: block;
+  font-size: var(--jx-text-sm);
+  font-weight: var(--jx-weight-semibold);
+}
+.select {
+  min-height: 32px;
+  padding: 0 var(--jx-space-2);
+  border: 1px solid var(--jx-border-strong);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-surface);
+  color: var(--jx-fg);
+  font: inherit;
+  font-size: var(--jx-text-sm);
+}
+.select:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
+}
+/* The file picker as a button; the native input stays focusable but unseen. */
+.fileButton {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 var(--jx-space-3);
+  border: 1px solid var(--jx-border-strong);
+  border-radius: var(--jx-button-radius);
+  background: var(--jx-surface);
+  color: var(--jx-fg);
+  font-size: var(--jx-text-sm);
+  cursor: pointer;
+}
+.fileButton:hover {
+  background: var(--jx-surface-hover);
+}
+.fileButton:focus-within {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
+}
+.fileButton input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+.outcome {
+  font-size: var(--jx-text-sm);
+}
+.error {
+  color: var(--jx-danger);
+  font-size: var(--jx-text-sm);
 }

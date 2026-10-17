@@ -222,6 +222,7 @@ async def test_every_route_requires_the_owner(env: Env) -> None:
             anonymous.post(f"{API}/opml", json={"opml": "<opml/>"}),
             anonymous.get(f"{API}/opml"),
             anonymous.post(f"{API}/refresh"),
+            anonymous.post(f"{API}/feeds/1/refresh"),
         ]
         for call in calls:
             assert (await call).status_code == 401
@@ -516,6 +517,43 @@ async def test_refresh_route_polls_every_feed_now(env: Env, mock: respx.MockRout
     with env.db() as db:
         interval = db.execute("SELECT interval_s FROM feeds").fetchone()[0]
     assert interval == 2700  # nothing new: the next poll backs off
+
+
+async def test_refresh_one_feed_polls_only_it_and_answers_with_its_warning(
+    env: Env, mock: respx.MockRouter
+) -> None:
+    route = _serve(mock, FEED_URL, _fixture("rss2.xml"), "application/rss+xml")
+    other_url = "https://other.example/feed.xml"
+    other = _serve(mock, other_url, _fixture("atom.xml"), "application/atom+xml")
+    feed = (await _add(env)).json()
+    assert (await _add(env, other_url)).status_code == 201
+    missing = await env.client.post(
+        f"{API}/feeds/{feed['id']}/refresh", headers={IDEMPOTENCY_HEADER: ""}
+    )
+    assert missing.status_code == 400
+
+    # A feed two failures from its warning fails again: Retry answers with the cause.
+    route.mock(return_value=httpx.Response(503))
+    with env.db() as db:
+        db.execute("UPDATE feeds SET fail_count = 2 WHERE id = ?", (feed["id"],))
+    failed = await env.client.post(f"{API}/feeds/{feed['id']}/refresh")
+    assert failed.status_code == 200, failed.text
+    assert failed.json()["warning"] == "HTTP 503"
+    assert other.call_count == 1  # only the add: the other feed was left alone
+
+    route.mock(
+        return_value=httpx.Response(
+            200, content=_fixture("rss2.xml"), headers={"content-type": "application/rss+xml"}
+        )
+    )
+    recovered = await env.client.post(f"{API}/feeds/{feed['id']}/refresh")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["warning"] is None
+    assert recovered.json()["id"] == feed["id"]
+
+    _error(await env.client.post(f"{API}/feeds/999/refresh"), 404, "FeedNotFound")
+    assert (await env.client.delete(f"{API}/feeds/{feed['id']}")).status_code == 204
+    _error(await env.client.post(f"{API}/feeds/{feed['id']}/refresh"), 404, "FeedNotFound")
 
 
 async def test_module_polls_due_feeds_on_its_schedule(env: Env, mock: respx.MockRouter) -> None:

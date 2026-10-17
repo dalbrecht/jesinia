@@ -491,3 +491,142 @@
 .sheetChat {
   border-left: 0;
 }
+
+/* A failing feed (spec §7): its cause and a Retry, under the feed. */
+.problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-1) var(--jx-space-2);
+  padding: 0 var(--jx-space-3) var(--jx-space-1);
+  font-size: var(--jx-text-xs);
+  color: var(--jx-fg-muted);
+}
+.problemText {
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.addFeedRow {
+  margin-top: auto;
+  padding: var(--jx-space-2) var(--jx-space-2) 0;
+}
+
+/* Feed management (+ Add feed) */
+.manage {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: var(--jx-space-3);
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  padding: var(--jx-space-4);
+  border-radius: var(--jx-radius-lg);
+  background: var(--jx-surface);
+  border: 1px solid var(--jx-border);
+}
+.manage h2 {
+  font-size: var(--jx-text-lg);
+}
+.addFeed {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--jx-space-2);
+}
+.addFeed > button {
+  margin-top: 22px;
+}
+@media (max-width: 560px) {
+  .addFeed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .addFeed > button {
+    margin-top: 0;
+    justify-self: start;
+  }
+}
+.manageBody {
+  overflow-y: auto;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: var(--jx-space-3);
+  border-top: 1px solid var(--jx-border);
+  padding-top: var(--jx-space-3);
+}
+.manageFolderHead {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+  min-height: 28px;
+}
+.manageFolderHead h3 {
+  font-size: var(--jx-text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--jx-fg-muted);
+  font-weight: var(--jx-weight-semibold);
+}
+.renameFolder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--jx-space-2);
+}
+.manageList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: var(--jx-space-2);
+}
+.manageFeed {
+  display: grid;
+  gap: var(--jx-space-1);
+  padding: var(--jx-space-2);
+  border: 1px solid var(--jx-border);
+  border-radius: var(--jx-radius-md);
+}
+.manageFeed .problem {
+  padding: 0;
+}
+.manageFeedHead {
+  display: grid;
+  min-width: 0;
+}
+.manageTitle {
+  font-weight: var(--jx-weight-semibold);
+  font-size: var(--jx-text-sm);
+}
+.manageUrl {
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-xs);
+  color: var(--jx-fg-muted);
+  overflow-wrap: anywhere;
+}
+.manageActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2);
+}
+.manageFoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jx-space-2);
+}
+.folderPick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jx-space-1);
+}
+.folderPick select {
+  border: 1px solid var(--jx-border-strong);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-surface);
+  color: var(--jx-fg);
+  padding: 2px var(--jx-space-1);
+  min-height: 24px;
+}
