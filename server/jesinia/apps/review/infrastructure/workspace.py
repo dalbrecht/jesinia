@@ -77,6 +77,7 @@ _GIT_OPTIONS = (
     *("-c", "filter.lfs.required=false"),
     *("-c", "submodule.recurse=false"),
     *("-c", "protocol.ext.allow=never"),
+    *("-c", "grep.threads=2"),  # a search may not take every core
 )
 # The empty tree's id, as `git hash-object -t tree /dev/null` prints it (SHA-1, which is
 # what GitHub repositories use). Every command in a repository runs with it as
@@ -252,6 +253,7 @@ class GitWorkspace:
         glob_pathspecs: bool = False,
         accept_exit_codes: frozenset[int] = frozenset({0}),
         without_worktree: bool = False,
+        timeout: float | None = None,
     ) -> CappedOutput:
         """``TreeGit`` for the repo tools: read-only git inside a worktree under the root."""
         inside = self._inside(tree)
@@ -271,6 +273,7 @@ class GitWorkspace:
             args,
             extra_env=env,
             output_limit=output_limit,
+            timeout=timeout,
         )
         if not truncated and code not in accept_exit_codes:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
@@ -295,6 +298,7 @@ class GitWorkspace:
         argv, _, err, code, _ = await self._execute(
             ("-C", probe_dir),
             ("grep", "--no-index", "-E", "-q", "-e", pattern, "--", "probe.txt"),
+            extra_env={"GIT_CONFIG_NOSYSTEM": "1"},  # as hardened as the reads it serves
             attribute_source=False,
         )
         if code not in (0, 1):  # 1: no match, i.e. the extension isn't supported

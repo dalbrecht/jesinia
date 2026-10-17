@@ -50,6 +50,10 @@ from jesinia.apps.review.domain.repo_access import (
 from jesinia.apps.review.domain.skip import auto_skip_reason, directory_skip_reason
 from jesinia.apps.review.domain.workspace import GitCommandError, WorkspaceError
 
+# Seconds a search (grep, log --author=) may run: regexes are the one input that can make
+# git work hard. Other commands keep the workspace's default.
+SEARCH_TIMEOUT = 20.0
+
 # git's own test: a NUL byte in the first 8000 bytes means binary.
 _BINARY_SNIFF_BYTES = 8000
 
@@ -218,10 +222,16 @@ class RepoTools:
         sessions_to_worktree: Callable[[str], Path | None],
         git: TreeGit,
         allowance: FileLineAllowance,
+        *,
+        git_slots: Callable[[str], asyncio.Semaphore] | None = None,
     ) -> None:
         self._sessions_to_worktree = sessions_to_worktree
         self._git = git
         self._allowance = allowance
+        own_slots: dict[str, asyncio.Semaphore] = {}
+        self._git_slots = git_slots or (
+            lambda session: own_slots.setdefault(session, asyncio.Semaphore(1))
+        )
 
     async def read(
         self, session_id: str | None, path: str, start: int | None = None, end: int | None = None
@@ -303,8 +313,10 @@ class RepoTools:
         if glob is not None:
             args += ["--", check_glob(glob)]
         output = await self._run_git(
+            session,
             root,
             args,
+            timeout=SEARCH_TIMEOUT,
             output_limit=GREP_RAW_BYTES,
             glob_pathspecs=glob is not None,
             accept_exit_codes=frozenset({0, 1}),  # 1: nothing matched
@@ -411,8 +423,8 @@ class RepoTools:
         plan = plan_git_command(cmd, args, dialect=await self._dialect())
         for path in (*plan.paths, *(blob_path for _, blob_path in plan.blobs)):
             safe_path(root, path)
-        revisions = [await self._commit(root, revision) for revision in plan.revisions]
-        blobs = [(await self._commit(root, rev), path) for rev, path in plan.blobs]
+        revisions = [await self._commit(session, root, revision) for revision in plan.revisions]
+        blobs = [(await self._commit(session, root, rev), path) for rev, path in plan.blobs]
         # The one file whose content this command prints, if any.
         content_of = blobs[0][1] if blobs else plan.paths[0] if cmd == "blame" else None
         key = None
@@ -424,7 +436,7 @@ class RepoTools:
             granted = self._reserve(session, key, content_of, GIT_MAX_LINES)
         if cmd == "blame":
             # Run without the worktree (see TreeGit), so HEAD is resolved here first.
-            revision = revisions[0] if revisions else await self._commit(root, "HEAD")
+            revision = revisions[0] if revisions else await self._commit(session, root, "HEAD")
             argv = ["blame", "--no-ext-diff", "--no-textconv", *plan.options]
             argv += ["--end-of-options", revision, plan.paths[0]]
         else:
@@ -433,8 +445,14 @@ class RepoTools:
             argv += ["--", *plan.paths]
         lines: list[str] = []
         try:
+            searches = any(option.startswith("--author=") for option in plan.options)
             output = await self._run_git(
-                root, argv, output_limit=GIT_MAX_BYTES, without_worktree=cmd == "blame"
+                session,
+                root,
+                argv,
+                output_limit=GIT_MAX_BYTES,
+                without_worktree=cmd == "blame",
+                timeout=SEARCH_TIMEOUT if searches else None,
             )
             data = output.data
             if output.truncated:
@@ -494,7 +512,7 @@ class RepoTools:
             )
         return granted
 
-    async def _commit(self, root: Path, revision: str) -> str:
+    async def _commit(self, session: str, root: Path, revision: str) -> str:
         """The commit ``revision`` names, as a full id, if it is part of the PR's history.
 
         The mirror holds every fetched branch and every other PR's head; agents read only
@@ -505,6 +523,7 @@ class RepoTools:
             OutsidePrHistoryError: a commit that isn't an ancestor of the worktree's HEAD.
         """
         output = await self._run_git(
+            session,
             root,
             ["rev-parse", "--verify", "-q", "--end-of-options", f"{revision}^{{commit}}"],
             output_limit=4096,
@@ -517,6 +536,7 @@ class RepoTools:
                 "or with show <commit>:<path>"
             )
         ancestry = await self._run_git(
+            session,
             root,
             ["merge-base", "--is-ancestor", "--end-of-options", commit, "HEAD"],
             output_limit=4096,
@@ -536,6 +556,7 @@ class RepoTools:
 
     async def _run_git(
         self,
+        session: str,
         root: Path,
         args: Sequence[str],
         *,
@@ -543,16 +564,21 @@ class RepoTools:
         glob_pathspecs: bool = False,
         accept_exit_codes: frozenset[int] = frozenset({0}),
         without_worktree: bool = False,
+        timeout: float | None = None,
     ) -> CappedOutput:
+        """Run git for ``session``, one process at a time per session: parallel tool calls
+        queue here instead of each taking cores."""
         try:
-            return await self._git.read_in_tree(
-                root,
-                args,
-                output_limit=output_limit,
-                glob_pathspecs=glob_pathspecs,
-                accept_exit_codes=accept_exit_codes,
-                without_worktree=without_worktree,
-            )
+            async with self._git_slots(session):
+                return await self._git.read_in_tree(
+                    root,
+                    args,
+                    output_limit=output_limit,
+                    glob_pathspecs=glob_pathspecs,
+                    accept_exit_codes=accept_exit_codes,
+                    without_worktree=without_worktree,
+                    timeout=timeout,
+                )
         except WorkspaceError as exc:
             detail = exc.stderr.strip() if isinstance(exc, GitCommandError) else str(exc)
             raise RepoGitError(f"git {args[0]} failed: {detail}") from exc

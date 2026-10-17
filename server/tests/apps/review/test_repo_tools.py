@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +21,12 @@ from pydantic import BaseModel
 
 from jesinia.apps.review.api.tools import RepoGitIn, RepoGrepIn, RepoLsIn, RepoReadIn, build_tools
 from jesinia.apps.review.application.ports import TreeGit
-from jesinia.apps.review.application.repo_tools import RepoTools, _parse_grep, safe_path
+from jesinia.apps.review.application.repo_tools import (
+    SEARCH_TIMEOUT,
+    RepoTools,
+    _parse_grep,
+    safe_path,
+)
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.domain.repo_access import (
     BSD_REGEX,
@@ -647,6 +652,7 @@ async def test_repo_git_runs_hardened(
         seen.append((argv, kwargs["env"]))
         return await real_spawn(*argv, **kwargs)
 
+    await tree.workspace.regex_dialect()  # probed once per workspace; covered on its own
     monkeypatch.delenv("GIT_CONFIG_NOSYSTEM")
     monkeypatch.setattr(SPAWN, recording_spawn)
     await tools.git(SESSION, "log", ["-p"])
@@ -666,6 +672,7 @@ async def test_repo_git_runs_hardened(
         assert f"--attr-source={EMPTY_TREE}" in argv  # the PR's .gitattributes are ignored
         assert "blame.ignoreRevsFile=" in argv and "log.mailmap=false" in argv
         assert "mailmap.file=" in argv and "mailmap.blob=" in argv
+        assert "grep.threads=2" in argv
     assert sorted(len(runs) for runs in by_cmd.values()) == [1, 1, 1, 1, 1, 2]
     for command in ("log", "show", "blame"):
         ((argv, _),) = by_cmd[command]
@@ -860,6 +867,11 @@ AUTHOR_BLOWUP = "(" + "|".join("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN") + "|(
         "closed)",
         "|".join("abcdefghijklmnopqrstu"),  # 21 alternatives
         "x" * 201,
+        ".*" * 99 + "Q",  # the re-review's CPU blowups: chained open-ended repeats
+        ".*" * 49 + "Q",
+        "a*b+c*d+e*",  # a 5th unbounded repeat
+        "x{1,50}y{1,50}z{1}",  # finite bounds summing to 101
+        "x{50}y{50}z?{1}",
     ],
 )
 @pytest.mark.parametrize("dialect", [BSD_REGEX, GNU_REGEX])
@@ -894,6 +906,11 @@ def test_patterns_outside_the_allowed_regex_subset_are_refused(
         "a]b}c",
         "((a|b)c|d)e",
         "|".join("abcdefghijklmnopqrst"),  # 20 alternatives
+        ".*foo.*bar",
+        "\\w+_id",
+        "a.*b.*c.*d",  # 3 unbounded repeats
+        "a*b+c*d+e?f?",  # 4 unbounded; ? is bounded
+        "x{1,50}y{1,50}",  # bounds summing to 100
     ],
 )
 @pytest.mark.parametrize("dialect", [BSD_REGEX, GNU_REGEX])
@@ -1081,3 +1098,85 @@ async def test_a_failed_regex_probe_fails_the_search_with_its_cause(
     with pytest.raises(RepoGitError, match="regex library missing") as caught:
         await tools.grep(SESSION, "a|b")
     assert isinstance(caught.value.__cause__, GitCommandError)
+
+
+# --- fix round 5: CPU budget -----------------------------------------------------------------
+
+
+class _CountingGit:
+    """Wraps the workspace's ``read_in_tree`` to record concurrency and timeouts."""
+
+    def __init__(self, workspace: GitWorkspace) -> None:
+        self.workspace = workspace
+        self.running: dict[str, int] = {}
+        self.peak: dict[str, int] = {}
+        self.timeouts: list[tuple[str, float | None]] = []
+
+    async def read_in_tree(self, tree: Path, args: Sequence[str], **kwargs: Any) -> CappedOutput:
+        key = str(tree)
+        self.running[key] = self.running.get(key, 0) + 1
+        self.peak[key] = max(self.peak.get(key, 0), self.running[key])
+        self.timeouts.append((args[0], kwargs.get("timeout")))
+        try:
+            await asyncio.sleep(0.01)  # widen the window in which overlap would show
+            return await self.workspace.read_in_tree(tree, args, **kwargs)
+        finally:
+            self.running[key] -= 1
+
+    async def regex_dialect(self) -> RegexDialect:
+        return await self.workspace.regex_dialect()
+
+
+async def test_one_session_never_runs_two_gits_at_once(
+    tree: Tree, registry: ReviewSessionRegistry
+) -> None:
+    counting = _CountingGit(tree.workspace)
+    tools = RepoTools(
+        registry.worktree_for, counting, registry.allowance, git_slots=registry.git_slot
+    )
+    await asyncio.gather(
+        *(tools.grep(SESSION, "needle") for _ in range(3)),
+        *(tools.git(SESSION, "log", ["--oneline", "HEAD~1"]) for _ in range(3)),
+        tools.git(SESSION, "blame", ["src/app.py"]),
+    )
+    assert counting.peak == {str(tree.path.resolve()): 1}
+
+
+async def test_separate_sessions_still_run_in_parallel(tree: Tree, tmp_path: Path) -> None:
+    sessions = ReviewSessionRegistry()
+    sessions.bind("s1", tree.path)
+    sessions.bind("s2", tree.other_tree)
+    counting = _CountingGit(tree.workspace)
+    tools = RepoTools(
+        sessions.worktree_for, counting, sessions.allowance, git_slots=sessions.git_slot
+    )
+    await asyncio.gather(tools.grep("s1", "needle"), tools.grep("s2", "other PR"))
+    assert set(counting.peak.values()) == {1} and len(counting.peak) == 2
+
+
+async def test_searches_get_a_shorter_time_limit(
+    tree: Tree, registry: ReviewSessionRegistry
+) -> None:
+    counting = _CountingGit(tree.workspace)
+    tools = RepoTools(registry.worktree_for, counting, registry.allowance)
+    await tools.grep(SESSION, "needle")
+    await tools.git(SESSION, "log", ["--oneline", "--author=Test"])
+    await tools.git(SESSION, "log", ["--oneline"])
+    await tools.git(SESSION, "show", ["--stat", "HEAD~1"])
+    assert counting.timeouts == [
+        ("grep", SEARCH_TIMEOUT),
+        ("log", SEARCH_TIMEOUT),
+        ("log", None),
+        ("rev-parse", None),
+        ("merge-base", None),
+        ("show", None),
+    ]
+
+
+def test_unbind_releases_the_sessions_git_slot(tmp_path: Path) -> None:
+    sessions = ReviewSessionRegistry()
+    sessions.bind("s", tmp_path)
+    slot = sessions.git_slot("s")
+    assert sessions.git_slot("s") is slot
+    sessions.unbind("s")
+    assert sessions.git_slot("s") is not slot

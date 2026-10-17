@@ -58,12 +58,14 @@ class TreeGit(Protocol):
         glob_pathspecs: bool = False,
         accept_exit_codes: frozenset[int] = frozenset({0}),
         without_worktree: bool = False,
+        timeout: float | None = None,
     ) -> CappedOutput:
         """Run ``git <args>`` in ``tree``; stdout is cut (and the process killed) past
         ``output_limit`` bytes. ``glob_pathspecs`` lets ``:(glob)`` pathspecs work, which
         are otherwise literal. An exit code outside ``accept_exit_codes`` raises.
         ``without_worktree`` runs against the tree's repository only, so no file in the
-        checkout (``.mailmap``) is read; revisions must then be full commit ids."""
+        checkout (``.mailmap``) is read; revisions must then be full commit ids.
+        ``timeout`` overrides the workspace's default time limit, in seconds."""
 
     async def regex_dialect(self) -> RegexDialect:
         """Which ERE extensions the installed git's regex library supports (probed once)."""

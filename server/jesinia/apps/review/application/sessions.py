@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from jesinia.apps.review.domain.repo_access import (
@@ -22,6 +23,7 @@ class ReviewSessionRegistry:
 
     def __init__(self) -> None:
         self._trees: dict[str, Path] = {}
+        self._git_slots: dict[str, asyncio.Semaphore] = {}
         self.allowance = FileLineAllowance(FILE_LINES_PER_SESSION)
 
     def bind(self, session_id: str, path: Path) -> None:
@@ -37,9 +39,15 @@ class ReviewSessionRegistry:
         self._trees[session_id] = path
 
     def unbind(self, session_id: str) -> None:
-        """End ``session_id``'s access and forget its allowance; unknown ids are ignored."""
+        """End ``session_id``'s access and forget its allowance and git slot; unknown ids
+        are ignored."""
         self._trees.pop(session_id, None)
+        self._git_slots.pop(session_id, None)
         self.allowance.drop(session_id)
 
     def worktree_for(self, session_id: str) -> Path | None:
         return self._trees.get(session_id)
+
+    def git_slot(self, session_id: str) -> asyncio.Semaphore:
+        """The session's one git slot: its repo tool calls run git one at a time."""
+        return self._git_slots.setdefault(session_id, asyncio.Semaphore(1))

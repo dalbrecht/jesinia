@@ -54,7 +54,10 @@ class ReviewModule:
         self._conn = open_db(ctx.cfg.data_dir, REVIEW_DB)
         self._workspace = GitWorkspace(ctx.cfg.data_dir / "review" / "repos", github_remote_url)
         self._repo_tools = RepoTools(
-            self.sessions.worktree_for, self._workspace, self.sessions.allowance
+            self.sessions.worktree_for,
+            self._workspace,
+            self.sessions.allowance,
+            git_slots=self.sessions.git_slot,
         )
 
     async def stop(self) -> None:

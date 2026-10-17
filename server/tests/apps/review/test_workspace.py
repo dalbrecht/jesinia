@@ -718,3 +718,22 @@ async def test_a_failed_regex_probe_is_a_typed_error(
     ws = GitWorkspace(tmp_path / "repos", str)
     with pytest.raises(GitCommandError, match="regex library missing"):
         await ws.regex_dialect()
+
+
+async def test_the_regex_probe_runs_hardened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+
+    async def recording_spawn(*argv: str, **kwargs: Any) -> Any:
+        seen.append((argv, kwargs["env"]))
+        return await real_spawn(*argv, **kwargs)
+
+    monkeypatch.delenv("GIT_CONFIG_NOSYSTEM")
+    monkeypatch.setattr(SPAWN, recording_spawn)
+    await GitWorkspace(tmp_path / "repos", str).regex_dialect()
+    assert seen
+    for argv, env in seen:
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_TERMINAL_PROMPT"] == "0"
+        assert "--no-pager" in argv and "grep.threads=2" in argv
