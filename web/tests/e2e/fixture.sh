@@ -31,6 +31,34 @@ Intro paragraph.
 Earlier AI text.
 <!-- /jesinia:ai -->
 PAGE
+# A kept post: Notes opens it in the Read view, with its archived image (local-only, like
+# the RSS archive: the asset folder's .gitignore keeps it out of git).
+kept=0199e000-0000-7000-8000-000000000002
+mkdir -p "$home/kb/Sources" "$home/kb/_assets/$kept"
+cat > "$home/kb/Sources/Kept fixture.md" <<PAGE
+---
+id: $kept
+title: Kept fixture
+jesinia:
+  kind: source/rss
+  source: https://blog.example/kept
+---
+A note on [[0199e000-0000-7000-8000-000000000001|a sibling page]].
+
+<!-- jesinia:ai agent=claude-code model=m at=2026-10-01T00:00:00Z session=s1 -->
+Takeaway: a kept post renders.
+<!-- /jesinia:ai -->
+
+## Article
+
+![A red square](../_assets/$kept/red.png)
+
+Remote: ![a remote chart](https://img.example/c.png)
+PAGE
+printf '*\n' > "$home/kb/_assets/$kept/.gitignore"
+# A 16x16 red PNG.
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mM4YGBAEmIY1TCqYfhqAACs5yAQdN/vpQAAAABJRU5ErkJggg==' \
+  | base64 -d > "$home/kb/_assets/$kept/red.png"
 git -C "$home/kb" add -A
 git -C "$home/kb" commit -qm "fixture"
 git -C "$home/kb" remote add origin "$home/remote.git"

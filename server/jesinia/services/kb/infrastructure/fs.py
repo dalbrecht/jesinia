@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
@@ -33,6 +34,20 @@ def _move_no_clobber(src: Path, dst: Path) -> None:
 TMP_SUFFIX = ".jesinia-tmp"
 
 
+def _open_at(name: str, dir_fd: int, flags: int, disk: str) -> int:
+    """Open ``name`` in the directory ``dir_fd`` read-only, refusing a symlink there.
+
+    Raises ``FileNotFoundError`` when it is missing (or a folder on the way is not one) and
+    ``PathOutsideKb`` when it is a link.
+    """
+    try:
+        return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | flags, dir_fd=dir_fd)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise FileNotFoundError(disk) from exc
+    except OSError as exc:
+        raise PathOutsideKb(f"{disk}: refused ({exc.strerror})") from exc
+
+
 class LocalFiles:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -58,6 +73,32 @@ class LocalFiles:
 
     def read(self, disk: str) -> bytes:
         return self._abs(disk).read_bytes()
+
+    def read_regular(self, disk: str) -> bytes:
+        self._refuse_links(disk)
+        self.contain(PurePosixPath(disk))
+        # Walk down from the root one directory fd at a time, never following a link: a
+        # folder swapped for a symlink after the checks above is refused, not followed.
+        *folders, name = PurePosixPath(disk).parts
+        held: list[int] = [os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)]
+        try:
+            for folder in folders:
+                held.append(_open_at(folder, held[-1], os.O_DIRECTORY, disk))
+            # O_NONBLOCK: a FIFO here must not block the open; fstat rejects it below.
+            fd = _open_at(name, held[-1], os.O_NONBLOCK, disk)
+        finally:
+            for directory in held:
+                os.close(directory)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise FileNotFoundError(f"{disk} is not a regular file")
+            os.set_blocking(fd, True)
+            chunks: list[bytes] = []
+            while chunk := os.read(fd, 1 << 20):
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            os.close(fd)
 
     def exists(self, disk: str) -> bool:
         return self._abs(disk).exists()

@@ -112,6 +112,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/kb/assets/{page_id}/{file}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Asset
+         * @description A page's local image (``_assets/<page_id>/<file>``), typed by its bytes: raster
+         *     images only (415 for anything else, SVG included), never through a symlink.
+         */
+        get: operations["get_asset_api_kb_assets__page_id___file__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/kb/pages": {
         parameters: {
             query?: never;
@@ -2472,6 +2493,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_asset_api_kb_assets__page_id___file__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                page_id: string;
+                file: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                    "image/jpeg": unknown;
+                    "image/gif": unknown;
+                    "image/webp": unknown;
+                    "image/avif": unknown;
                 };
             };
             /** @description Validation Error */

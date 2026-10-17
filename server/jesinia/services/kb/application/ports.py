@@ -38,6 +38,11 @@ class PageFiles(Protocol):
 
     def read(self, disk: str) -> bytes: ...
 
+    def read_regular(self, disk: str) -> bytes:
+        """A regular file's bytes, never through a symlink: ``PathOutsideKb`` for a link on
+        the way (or one that escapes), ``FileNotFoundError`` when it is missing or not a file."""
+        ...
+
     def write_atomic(
         self, disk: str, data: bytes, *, expected_rev: str | None = None, create: bool = False
     ) -> float:

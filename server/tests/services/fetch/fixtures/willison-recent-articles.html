@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Notes on running local models with a long context</title>
+  <meta property="og:title" content="Notes on running local models with a long context">
+</head>
+<body class="smallhead">
+  <div id="smallhead">
+    <div id="smallhead-inner">
+      <h1><a href="/">Simon Willison’s Weblog</a></h1>
+      <nav id="primary-nav" aria-label="Site">
+        <a href="/about/">About</a>
+        <a href="/tags/">Tags</a>
+        <a href="/search/">Search</a>
+      </nav>
+    </div>
+  </div>
+  <div id="wrapper">
+    <div id="primary">
+      <div class="entry entryPage">
+        <div data-permalink-context="/2026/Oct/10/local-models/">
+          <h2>Notes on running local models with a long context</h2>
+          <p>I spent the weekend running local models against long documents to see how far
+            the context window really stretches on a laptop with a reasonable amount of memory.</p>
+          <p>The short version: it works far better than it did a year ago, but the
+            <a href="https://example.org/kv-cache">KV cache</a> is still the thing that runs
+            out first, long before the model weights themselves become the problem.</p>
+          <p>Here is the command I used to load a model with a large context:</p>
+          <pre><code>cat notes/*.md | \
+  llm -m local-model --option context 131072 'summarize this'
+</code></pre>
+          <p>Memory climbed steadily as the prompt grew, and generation slowed down once the
+            cache no longer fit in the faster tier of memory on the machine.</p>
+          <p><img src="https://static.simonwillison.net/static/2026/memory-chart.png" alt="Memory use chart"></p>
+          <p>I expect this to keep improving quickly, and I will keep notes here as it does.</p>
+        </div>
+      </div>
+      <div class="recent-articles">
+        <h2>Recent articles</h2>
+        <ul class="bullets">
+          <li><a href="/2026/Oct/8/sqlite-tricks/">Five SQLite tricks I keep reaching for</a> - 8th October 2026</li>
+          <li><a href="/2026/Oct/3/datasette-release/">Datasette 2.1 release notes</a> - 3rd October 2026</li>
+          <li><a href="/2026/Sep/28/prompt-injection/">Prompt injection is still unsolved</a> - 28th September 2026</li>
+        </ul>
+      </div>
+    </div>
+    <aside id="secondary">
+      <p>Elsewhere: links I found interesting this week.</p>
+      <ul>
+        <li><a href="/elsewhere/1/">An interesting link</a></li>
+      </ul>
+    </aside>
+  </div>
+  <footer id="ft">
+    <p>Colophon. This site is built with Django.</p>
+  </footer>
+</body>
+</html>

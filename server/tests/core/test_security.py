@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import httpx
 import pytest
+from starlette.types import Receive, Scope, Send
 
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
+from jesinia.core.security import CSP, RSS_CSP, LocalOriginGuard
 from tests.conftest import bearer, lifespan_client
 
 
@@ -89,3 +91,39 @@ async def test_non_http_scopes_pass_through() -> None:
     guard = LocalOriginGuard(inner, port=5374)
     await guard({"type": "lifespan"}, None, None)  # type: ignore[arg-type]
     assert seen == ["lifespan"]
+
+
+def _guarded(response_headers: list[tuple[bytes, bytes]]) -> httpx.AsyncClient:
+    """A client for a bare ASGI app, behind the guard, that answers with these headers."""
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": response_headers})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    transport = httpx.ASGITransport(app=LocalOriginGuard(app, port=5374))
+    return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:5374")
+
+
+async def test_an_identical_header_a_response_sets_is_sent_once() -> None:
+    async with _guarded([(b"X-Content-Type-Options", b"nosniff")]) as c:
+        r = await c.get("/api/kb/assets/x/y.png")
+    assert r.headers.get_list("x-content-type-options") == ["nosniff"]
+
+
+async def test_a_response_cannot_weaken_the_security_headers() -> None:
+    weak = [
+        (b"content-security-policy", b"default-src *; script-src 'unsafe-inline'"),
+        (b"X-Frame-Options", b"ALLOWALL"),
+        (b"x-content-type-options", b"sniff"),
+    ]
+    async with _guarded(weak) as c:
+        r = await c.get("/notes/")
+    assert r.headers.get_list("content-security-policy") == [CSP]
+    assert r.headers.get_list("x-frame-options") == ["DENY"]
+    assert r.headers.get_list("x-content-type-options") == ["nosniff"]
+
+
+async def test_rss_pages_keep_their_image_policy_over_a_response_csp() -> None:
+    async with _guarded([(b"content-security-policy", b"default-src *")]) as c:
+        r = await c.get("/rss/")
+    assert r.headers.get_list("content-security-policy") == [RSS_CSP]

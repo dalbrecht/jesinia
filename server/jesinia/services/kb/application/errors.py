@@ -30,6 +30,14 @@ class InvalidAssetName(KbError):
     """An asset file name that is not one plain file name (no folders, no leading dot)."""
 
 
+class AssetNotFound(KbError):
+    """No regular file of that name is in the page's asset folder."""
+
+
+class UnsupportedAssetType(KbError):
+    """The asset's bytes are not a raster image Jesinia serves (PNG, JPEG, GIF, WebP, AVIF)."""
+
+
 class InvalidTag(KbError):
     """The text is not a usable tag (empty, or outside the ``#tag`` grammar)."""
 

@@ -208,6 +208,58 @@
         }
       }
     },
+    "/api/kb/assets/{page_id}/{file}": {
+      "get": {
+        "tags": [
+          "kb"
+        ],
+        "summary": "Get Asset",
+        "description": "A page's local image (``_assets/<page_id>/<file>``), typed by its bytes: raster\nimages only (415 for anything else, SVG included), never through a symlink.",
+        "operationId": "get_asset_api_kb_assets__page_id___file__get",
+        "parameters": [
+          {
+            "name": "page_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Page Id"
+            }
+          },
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "image/png": {},
+              "image/jpeg": {},
+              "image/gif": {},
+              "image/webp": {},
+              "image/avif": {}
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/kb/pages": {
       "put": {
         "tags": [

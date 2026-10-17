@@ -137,6 +137,16 @@ describe("Keep popover", () => {
     expect(within(screen.getByRole("region", { name: "Reader" })).getByText("Archiving…")).toBeInTheDocument();
   });
 
+  it("⌘↵ keeps with a suggested tag just picked, without clicking elsewhere first", async () => {
+    const { calls } = setup();
+    await openFirst();
+    press("n");
+    await userEvent.click(await within(popover()).findByRole("button", { name: "#fly" }));
+    await keepNow();
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/1/keep")).toHaveLength(1));
+    expect(await writes(calls, "/api/rss/posts/1/keep")[0]?.json()).toEqual({ note: "", tags: ["fly"] });
+  });
+
   it("accepts a near-match through TagPicker instead of creating a duplicate", async () => {
     const { calls } = setup();
     await openFirst();

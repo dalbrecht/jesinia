@@ -6,8 +6,10 @@ from datetime import timedelta
 from pathlib import Path
 
 import httpx
+import lxml.html
 import pytest
 import respx
+import trafilatura
 from fastapi import APIRouter
 from httpx import Response
 from markdown_it import MarkdownIt
@@ -17,7 +19,12 @@ from jesinia.core.config import Config
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.fetch.application.ports import Article, CachedFetch
 from jesinia.services.fetch.application.service import FetchError, FetchService
-from jesinia.services.fetch.infrastructure.extract import TrafilaturaExtractor
+from jesinia.services.fetch.infrastructure.extract import (
+    BLANK_CODE_LINE,
+    TrafilaturaExtractor,
+    _clean_tree,
+    _mark_blank_code_lines,
+)
 from jesinia.services.fetch.module import FetchModule
 from tests.conftest import lifespan_client
 
@@ -107,6 +114,11 @@ def test_extract_returns_none_when_the_page_has_no_article_text() -> None:
 _FILLER = (
     "<p>An article long enough for the extractor to keep it as the main text of the page, "
     "with a few more words added so it clearly counts as prose and not navigation.</p>"
+)
+# Different words, so the extractor does not drop it as a repeat of _FILLER.
+_OTHER_FILLER = (
+    "<p>A second paragraph with different words in it, so that the extractor keeps both "
+    "pieces of prose on the page instead of dropping one of them as a duplicate.</p>"
 )
 # Every way a remote page might smuggle a script or data target into the Markdown.
 HOSTILE_BODIES = {
@@ -327,3 +339,295 @@ async def test_convert_reports_failures_as_fetch_errors() -> None:
     with pytest.raises(FetchError, match="parser exploded") as caught:
         await svc.convert(b"<p>x</p>", ARTICLE_URL)
     assert isinstance(caught.value.__cause__, ValueError)
+
+
+# Pages modelled on real blogs whose archives came out broken (headings that are anchor links,
+# site clutter after the post).
+JVNS_URL = "https://jvns.ca/blog/2026/09/27/replacing-the-old-battery-on-rechargeable-bike-lights/"
+WILLISON_URL = "https://simonwillison.net/2026/Oct/10/local-models/"
+FIXTURE_URLS = {
+    "article.html": ARTICLE_URL,
+    "jvns-anchor-headings.html": JVNS_URL,
+    "willison-recent-articles.html": WILLISON_URL,
+    "willison-highlighted-pre.html": "https://simonwillison.net/2026/Oct/12/python-3-15/",
+}
+
+
+def _extract_fixture(name: str) -> Article:
+    article = TrafilaturaExtractor().extract((FIXTURES / name).read_bytes(), FIXTURE_URLS[name])
+    assert article is not None
+    return article
+
+
+def test_extract_unwraps_anchor_links_in_headings() -> None:
+    markdown = _extract_fixture("jvns-anchor-headings.html").markdown
+    lines = markdown.splitlines()
+    assert "### step 1: cut it open" in lines, markdown
+    assert "### step 2: find the battery model" in lines, markdown
+    assert "## what I learned" in lines, markdown
+    assert "#step-1" not in markdown and "#what-i-learned" not in markdown
+
+
+def test_extract_keeps_code_blocks_images_and_body_of_an_anchor_heading_page() -> None:
+    article = _extract_fixture("jvns-anchor-headings.html")
+    markdown = article.markdown
+    assert "```\n$ multimeter --dc\n3.71 V\n```" in markdown, markdown
+    assert "    def solder(wire_a, wire_b):\n        return join(wire_a, wire_b)" in markdown
+    assert "![the bike light cut open](https://jvns.ca/images/bike-light-open.jpg)" in markdown
+    assert article.image_urls == ["https://jvns.ca/images/bike-light-open.jpg"]
+    assert "My bike lights stopped holding a charge this summer." in markdown
+    assert "\nNext time I will buy lights with a removable battery" in markdown, markdown
+    for clutter in ("Categories", "Subscribe to the newsletter", "feed.xml"):
+        assert clutter not in markdown, markdown
+
+
+def test_extract_drops_recent_articles_navigation_and_sidebars() -> None:
+    article = _extract_fixture("willison-recent-articles.html")
+    markdown = article.markdown
+    for clutter in ("Recent articles", "Five SQLite tricks", "/tags/", "Elsewhere", "Colophon"):
+        assert clutter not in markdown, markdown
+    assert "## Notes on running local models with a long context" in markdown
+    assert "[KV cache](https://example.org/kv-cache)" in markdown
+    assert "I expect this to keep improving quickly" in markdown
+    assert "llm -m local-model --option context 131072 'summarize this'\n```" in markdown
+    assert article.image_urls == ["https://static.simonwillison.net/static/2026/memory-chart.png"]
+
+
+def test_extract_keeps_an_article_whose_own_class_looks_like_clutter() -> None:
+    page = (
+        '<html><body><article class="post recent">'
+        f"<h1>Recent thoughts</h1>{_FILLER}{_FILLER}"
+        '<div class="related-posts"><p>Related: another post you might like.</p></div>'
+        '<div aria-label="Share this post"><p>Share on the social network.</p></div>'
+        "<aside><p>An aside the site uses for promotions.</p></aside>"
+        f"{_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    assert "An article long enough for the extractor" in article.markdown
+    for clutter in ("another post you might like", "social network", "promotions"):
+        assert clutter not in article.markdown, article.markdown
+
+
+def _is_only_a_link(text: str) -> bool:
+    tokens = MarkdownIt("commonmark").parse(text.strip())
+    children = [c.type for t in tokens for c in (t.children or []) if c.type != "text"]
+    return len(tokens) == 3 and bool(children) and children[0] in ("link_open", "image")
+
+
+@pytest.mark.parametrize("name", sorted(FIXTURE_URLS))
+def test_extracted_markdown_has_no_empty_heading_or_inline_code_block(name: str) -> None:
+    markdown = _extract_fixture(name).markdown
+    tokens = MarkdownIt("commonmark").parse(markdown)
+    for index, token in enumerate(tokens):
+        if token.type == "heading_open":
+            assert tokens[index + 1].content.strip(), markdown
+        if token.type == "code_block":
+            assert not _is_only_a_link(token.content), markdown
+    # Every <pre> in the fixtures comes out fenced: an indented block is misplaced prose.
+    assert [t.content for t in tokens if t.type == "code_block"] == [], markdown
+
+
+def test_extract_flattens_headings_with_inline_children_and_drops_empty_ones() -> None:
+    page = (
+        f"<html><body><article><h1>Tools</h1>{_FILLER}"
+        '<h2><a href="#log"><code>git\n   log</code>  for\n     history\n</a></h2>'
+        f"{_FILLER}"
+        '<h3><a href="#nothing"></a></h3>'
+        f"{_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    assert "## `git log` for history" in article.markdown.splitlines(), article.markdown
+    assert "#log" not in article.markdown and "#nothing" not in article.markdown
+    tokens = MarkdownIt("commonmark").parse(article.markdown)
+    headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == "heading_open"]
+    assert headings == ["Tools", "`git log` for history"], article.markdown
+
+
+CLUTTER_NAMES = {
+    "post-comments": True,
+    "share-buttons": True,
+    "site-nav": True,
+    "recentArticles": True,
+    "commentary": False,
+    "shared-content": False,
+    "navy": False,
+    "canvas": False,
+}
+
+
+def _clutter_page(attribute: str, name: str) -> bytes:
+    return (
+        f"<html><body><article><h1>Words</h1>{_FILLER}"
+        f'<div {attribute}="{name}"><p>Marker sentence for the {name} block.</p></div>'
+        f"{_FILLER}</article></body></html>"
+    ).encode()
+
+
+@pytest.mark.parametrize(("name", "is_clutter"), CLUTTER_NAMES.items(), ids=CLUTTER_NAMES.keys())
+def test_clean_tree_matches_clutter_names_as_whole_words(name: str, is_clutter: bool) -> None:
+    for attribute in ("class", "id", "aria-label"):
+        raw = trafilatura.load_html(_clutter_page(attribute, name))
+        kept = (
+            f"Marker sentence for the {name} block." in _clean_tree(raw, ARTICLE_URL).text_content()
+        )
+        assert kept is not is_clutter, attribute
+
+
+@pytest.mark.parametrize(("name", "is_clutter"), CLUTTER_NAMES.items(), ids=CLUTTER_NAMES.keys())
+def test_extract_keeps_or_drops_labelled_blocks_by_whole_words(name: str, is_clutter: bool) -> None:
+    # aria-label only: trafilatura applies its own substring rules to class and id.
+    article = TrafilaturaExtractor().extract(_clutter_page("aria-label", name), ARTICLE_URL)
+    assert article is not None
+    kept = f"Marker sentence for the {name} block." in article.markdown
+    assert kept is not is_clutter, article.markdown
+
+
+def test_extract_keeps_markdown_shown_inside_a_code_block() -> None:
+    sample = "```\n    ```\n### \nnot a heading\n```"
+    page = (
+        f"<html><body><article><h1>Fences</h1>{_FILLER}"
+        f"<pre><code>{html.escape(sample)}\n</code></pre>{_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    tokens = MarkdownIt("commonmark").parse(article.markdown)
+    assert [t.content for t in tokens if t.type == "fence"] == [sample + "\n"], article.markdown
+
+
+def test_extract_keeps_highlighted_pre_blocks_without_code_as_fenced_code() -> None:
+    markdown = _extract_fixture("willison-highlighted-pre.html").markdown
+    tokens = MarkdownIt("commonmark").parse(markdown)
+    fences = [t.content for t in tokens if t.type == "fence"]
+    assert fences == [
+        "lists = [[1, 2], [3, 4]]\n"
+        "[*L for L in lists]\n"
+        "# [1, 2, 3, 4]\n"
+        "\n"
+        "# equivalent to [x for L in lists for x in L]\n"
+        "    indented =  True\n",
+        "# install it\nuv python install 3.15\n\n# then run it\nuv run --python 3.15 python\n",
+    ], markdown
+    headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == "heading_open"]
+    assert headings == ["Hello Python 3.15", "Unpacking in comprehensions"], markdown
+    assert "Both examples run unchanged on the release candidate" in markdown
+
+
+def _fences_of(body: str) -> tuple[list[str], str]:
+    page = f"<html><body><article><h1>Code</h1>{_FILLER}{body}{_FILLER}</article></body></html>"
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    tokens = MarkdownIt("commonmark").parse(article.markdown)
+    return [t.content for t in tokens if t.type == "fence"], article.markdown
+
+
+def test_extract_keeps_line_breaks_and_blank_lines_in_code() -> None:
+    fences, markdown = _fences_of("<pre>one<br>two<br><br># three</pre>")
+    assert fences == ["one\ntwo\n\n# three\n"], markdown
+    highlighted = (
+        '<pre><code><span class="k">a</span> = 1\n\n<span class="c"># b</span></code></pre>'
+    )
+    fences, markdown = _fences_of(highlighted)
+    assert fences == ["a = 1\n\n# b\n"], markdown
+
+
+def test_extract_leaves_a_page_that_already_uses_the_blank_line_symbol_alone() -> None:
+    fences, markdown = _fences_of("<p>The ␀ symbol stands for NUL.</p><pre>a\n\nb</pre>")
+    assert "The ␀ symbol stands for NUL." in markdown
+    assert fences == ["a\nb\n"], markdown  # trafilatura's own handling of the blank line
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<pre><code><span class="k">x</span> = 1  <span class="comment"># explain</span>\n'
+        "y = 2</code></pre>",
+        '<pre><span class="k">x</span> = 1  <span class="comment"># explain</span>\ny = 2</pre>',
+        '<pre><code><div class="sidebar">x = 1  # explain</div>\ny = 2</code></pre>',
+    ],
+    ids=["pre-code", "bare-pre", "block-in-code"],
+)
+def test_extract_never_treats_code_as_clutter(body: str) -> None:
+    fences, markdown = _fences_of(body)
+    assert len(fences) == 1 and "# explain" in fences[0], markdown
+    assert "y = 2" in fences[0], markdown
+
+
+HEADING_LINKS = {
+    "fragment": ('<h2><a href="#guide">\n  Read the guide\n</a></h2>', "## Read the guide"),
+    "page url and fragment": (
+        f'<h2><a href="{ARTICLE_URL}#guide">Read the guide</a></h2>',
+        "## Read the guide",
+    ),
+    "external": (
+        '<h2><a href="https://example.org/guide">\n   Read the guide\n </a></h2>',
+        "## [Read the guide](https://example.org/guide)",
+    ),
+    "other page on the site": (
+        '<h2><a href="/2026/other#part">Read the guide</a></h2>',
+        "## [Read the guide](https://news.example/2026/other#part)",
+    ),
+    "mixed": (
+        '<h2>Notes on\n  <a href="https://example.org/guide">the guide</a>\n today</h2>',
+        "## Notes on [the guide](https://example.org/guide) today",
+    ),
+}
+
+
+@pytest.mark.parametrize(("heading", "expected"), HEADING_LINKS.values(), ids=HEADING_LINKS.keys())
+def test_extract_unwraps_only_self_anchors_in_headings(heading: str, expected: str) -> None:
+    body = f"<h1>Links</h1>{_FILLER}{heading}{_OTHER_FILLER}"
+    page = f"<html><body><article>{body}</article></body></html>"
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    assert expected in article.markdown.splitlines(), article.markdown
+
+
+def test_extract_keeps_whitespace_only_lines_in_code_exactly() -> None:
+    fences, markdown = _fences_of("<pre><code>a\n    \n\t\nb\n\nc</code></pre><pre>d\n  \ne</pre>")
+    assert fences == ["a\n    \n\t\nb\n\nc\n", "d\n  \ne\n"], markdown
+
+
+def test_mark_blank_code_lines_marks_empty_and_whitespace_only_lines() -> None:
+    tree = lxml.html.document_fromstring(
+        "<html><body><pre><code>a\n    \nb\n\nc</code></pre><p>x\n  \ny</p></body></html>"
+    )
+    assert _mark_blank_code_lines(tree)
+    assert tree.find(".//code").text == f"a\n    {BLANK_CODE_LINE}\nb\n{BLANK_CODE_LINE}\nc"
+    assert tree.find(".//p").text == "x\n  \ny"
+
+
+def test_extract_keeps_a_wrapper_holding_most_of_the_page_whatever_its_class() -> None:
+    page = (
+        '<html><body><div class="recent-post"><h1>Wrapped</h1>'
+        f"{_FILLER}{_OTHER_FILLER}</div><nav><p>Home and about links.</p></nav></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    assert "A second paragraph with different words" in article.markdown, article.markdown
+    assert "Home and about links" not in article.markdown
+
+
+def test_extract_drops_a_heading_that_is_only_whitespace() -> None:
+    page = (
+        f"<html><body><article><h1>Spaces</h1>{_FILLER}<h3> <em> </em> </h3>"
+        f"{_OTHER_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    tokens = MarkdownIt("commonmark").parse(article.markdown)
+    headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == "heading_open"]
+    assert headings == ["Spaces"], article.markdown
+
+
+def test_extract_joins_line_breaks_in_headings() -> None:
+    page = (
+        f"<html><body><article><h1>Breaks</h1>{_FILLER}<h2>First<br>Second</h2>"
+        f"<h3>One<br/>\n  <em>Two</em><br>Three<br></h3>{_OTHER_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    lines = article.markdown.splitlines()
+    assert "## First Second" in lines, article.markdown
+    assert "### One *Two* Three" in lines, article.markdown
