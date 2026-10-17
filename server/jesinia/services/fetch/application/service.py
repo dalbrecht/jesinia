@@ -167,9 +167,22 @@ class FetchService:
         content_type = result.content_type.lower()
         if content_type and "html" not in content_type:
             raise FetchError(f"{url} is not an HTML page ({result.content_type})")
+        return await self._extract(extractor, result.body, result.url)
+
+    async def convert(self, html: bytes, url: str) -> Article | None:
+        """HTML already in hand (e.g. a feed item's content) as Markdown, through the same
+        sanitiser and extractor as ``article``; nothing is fetched. ``url`` resolves
+        relative links. Raises ``FetchError`` when no extractor is configured or it fails.
+        """
+        if self._extractor is None:
+            raise FetchError("article extraction is not available")
+        return await self._extract(self._extractor, html, url)
+
+    @staticmethod
+    async def _extract(extractor: ArticleExtractor, html: bytes, url: str) -> Article | None:
         try:
             # Extraction parses the whole page: keep it off the event loop.
-            return await asyncio.to_thread(extractor.extract, result.body, result.url)
+            return await asyncio.to_thread(extractor.extract, html, url)
         # Third-party parser boundary (trafilatura, lxml): whatever it raises is reported
         # as this page's failure, with the original exception chained as the cause.
         except Exception as exc:

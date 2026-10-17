@@ -131,12 +131,14 @@ _GETTERS = {
     "kb.path": lambda c: str(c.kb_path) if c.kb_path else "",
     "kbsync.interval": lambda c: format_duration(c.kbsync_interval),
     "kbsync.quiet": lambda c: format_duration(c.kbsync_quiet),
+    "rss.retention": lambda c: format_duration(c.rss_retention),
 }
 
 
 @config_app.command("get")
 def config_get(key: str) -> None:
-    """Print one value (``server.port``, ``kb.path``, ``kbsync.*``, ``folders.<kind>``)."""
+    """Print one value (``server.port``, ``kb.path``, ``kbsync.*``, ``folders.<kind>``,
+    ``rss.retention``)."""
     cfg = _cfg()
     if key in _GETTERS:
         typer.echo(_GETTERS[key](cfg))

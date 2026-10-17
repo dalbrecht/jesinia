@@ -10,6 +10,7 @@ from datetime import datetime
 
 from jesinia.apps.rss.application.ports import NewFeed, PollState
 from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedItem, feed_warning
+from jesinia.apps.rss.domain.kept import ArchiveState
 from jesinia.apps.rss.domain.post import TOMBSTONE_TTL, Counts, Cursor, PostView, View, utc_text
 
 _FEED_COLUMNS = (
@@ -227,6 +228,8 @@ _VIEW_WHERE: dict[str, str] = {
     "kept": "p.kept_page_id IS NOT NULL",
     "all": "1",
 }
+# A page's archive state, from the posts kept to it: the most advanced one wins.
+_ARCHIVE_PRECEDENCE: tuple[ArchiveState, ...] = ("done", "archiving", "failed")
 _LIKE_ESCAPE = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 
 
@@ -385,3 +388,26 @@ class SqlitePostStore:
             kept=int(kept),
             all=int(total),
         )
+
+    def set_kept(self, post_id: int, page_id: str) -> None:
+        self._conn.execute("UPDATE posts SET kept_page_id = ? WHERE id = ?", (page_id, post_id))
+
+    def page_archive_state(self, page_id: str) -> ArchiveState | None:
+        rows = self._conn.execute(
+            "SELECT DISTINCT archive_state FROM posts WHERE kept_page_id = ?", (page_id,)
+        ).fetchall()
+        states = {row[0] for row in rows}
+        return next((state for state in _ARCHIVE_PRECEDENCE if state in states), None)
+
+    def set_archive_state(self, page_id: str, state: ArchiveState, error: str | None) -> None:
+        self._conn.execute(
+            "UPDATE posts SET archive_state = ?, archive_error = ? WHERE kept_page_id = ?",
+            (state, error, page_id),
+        )
+
+    def archiving(self) -> list[tuple[str, int]]:
+        rows = self._conn.execute(
+            "SELECT kept_page_id, MIN(id) FROM posts WHERE archive_state = 'archiving' "
+            "AND kept_page_id IS NOT NULL GROUP BY kept_page_id ORDER BY MIN(id)"
+        ).fetchall()
+        return [(str(row[0]), int(row[1])) for row in rows]

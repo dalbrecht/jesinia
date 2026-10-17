@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import html
 import re
 from collections.abc import Iterator, Sequence
 from datetime import timedelta
@@ -9,6 +10,7 @@ import pytest
 import respx
 from fastapi import APIRouter
 from httpx import Response
+from markdown_it import MarkdownIt
 
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
@@ -139,6 +141,50 @@ def test_extract_never_yields_a_non_http_target(body: str) -> None:
     assert all(u.startswith(("https://", "http://")) for u in article.image_urls)
 
 
+# http(s) URLs carrying characters that end a Markdown link destination early. trafilatura
+# writes them as escaped angle-bracket destinations; an upgrade that stopped doing so would
+# let the URL's tail become a second link with any scheme.
+BREAKOUT_URLS = {
+    "link injection": "https://a.example/x)[x](javascript:alert(1)",
+    "bracket paren": "https://a.example/x)](y",
+    "angle brackets": "https://a.example/<x>/z",
+    "space": "https://a.example/a b",
+    "backslash before paren": "https://a.example/x\\)(javascript:alert(2)",
+}
+
+
+def _targets(markdown: str) -> list[str]:
+    """Every link href and image src a CommonMark renderer would see in ``markdown``."""
+    found: list[str] = []
+    for block in MarkdownIt("commonmark").parse(markdown):
+        stack = list(block.children or [])
+        while stack:
+            token = stack.pop()
+            stack.extend(token.children or [])
+            for name in ("href", "src"):
+                value = token.attrGet(name)
+                if value is not None:
+                    found.append(str(value))
+    return found
+
+
+def test_extract_keeps_breakout_urls_inside_their_destinations() -> None:
+    links = "".join(
+        f'<p>Link {n}: <a href="{html.escape(u)}">anchor {n}</a> and an image '
+        f'<img src="{html.escape(u)}.png" alt="pic {n}"> in a sentence of prose.</p>'
+        for n, u in enumerate(BREAKOUT_URLS.values())
+    )
+    page = (
+        f"<html><body><article><h1>Breakout</h1>{_FILLER}{links}{_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    targets = _targets(article.markdown)
+    assert len(targets) == 2 * len(BREAKOUT_URLS), article.markdown  # every link and image
+    assert all(t.startswith(("http://", "https://")) for t in targets), (targets, article.markdown)
+    assert all(u.startswith(("http://", "https://")) for u in article.image_urls)
+
+
 def test_extract_keeps_the_text_of_a_dropped_link_without_brackets() -> None:
     body = HOSTILE_BODIES["bracketed anchor text"]
     html = f"<html><body><article>{_FILLER}{body}{_FILLER}</article></body></html>"
@@ -259,3 +305,25 @@ async def test_fetch_module_injects_the_trafilatura_extractor(
         assert isinstance(fetch, FetchService)
         article = await fetch.article(ARTICLE_URL)
     assert article is not None and article.title == "Why SQLite Is Enough"
+
+
+async def test_convert_extracts_given_html_without_fetching() -> None:
+    extractor = _FixedExtractor(Article(None, "The text.", []))
+    svc = FetchService(_NoCache(), resolve=_public, min_interval=0, extractor=extractor)
+    converted = await svc.convert(b"<p>The text.</p>", "https://feed.example/post")
+    assert converted == Article(None, "The text.", [])
+    assert extractor.calls == [(b"<p>The text.</p>", "https://feed.example/post")]
+
+
+async def test_convert_reports_failures_as_fetch_errors() -> None:
+    with pytest.raises(FetchError, match="not available"):
+        await FetchService(_NoCache(), resolve=_public).convert(b"<p>x</p>", ARTICLE_URL)
+
+    class Broken:
+        def extract(self, html: bytes, url: str) -> Article | None:
+            raise ValueError("parser exploded")
+
+    svc = FetchService(_NoCache(), resolve=_public, extractor=Broken())
+    with pytest.raises(FetchError, match="parser exploded") as caught:
+        await svc.convert(b"<p>x</p>", ARTICLE_URL)
+    assert isinstance(caught.value.__cause__, ValueError)

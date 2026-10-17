@@ -1,18 +1,28 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""RSS routes under ``/api/rss`` (feeds, folders, OPML, posts) and the read-only MCP tools."""
+"""RSS routes under ``/api/rss`` (feeds, folders, OPML, posts, Keep, Engage, settings) and the
+read-only MCP tools."""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, Query, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from jesinia.apps.rss.application.engage import (
+    EngageBusy,
+    EngageService,
+    EngageSessionNotFound,
+    NotAnEngageSession,
+    NotThisPostsSession,
+    TakeawayUnavailable,
+)
 from jesinia.apps.rss.application.feeds import FeedService, ImportResult
+from jesinia.apps.rss.application.keep import KeepService
 from jesinia.apps.rss.application.poller import Poller, PollSummary
 from jesinia.apps.rss.application.posts import PostService
 from jesinia.apps.rss.domain.feed import (
@@ -26,6 +36,7 @@ from jesinia.apps.rss.domain.feed import (
     FolderNotFound,
     RssError,
 )
+from jesinia.apps.rss.domain.kept import PostNotKept, Takeaway
 from jesinia.apps.rss.domain.post import (
     PAGE_SIZE,
     PAGE_SIZE_MAX,
@@ -38,9 +49,28 @@ from jesinia.apps.rss.domain.post import (
     parse_cursor,
     parse_timestamp,
 )
+from jesinia.apps.rss.domain.settings import (
+    RETENTION_DAYS_MAX,
+    RETENTION_DAYS_MIN,
+    SOURCE_FOLDER_MAX,
+    RssSettings,
+    validate_settings,
+)
 from jesinia.core.idempotency import IdempotencyStore, IdempotentCall, idempotent
 from jesinia.core.module import CallContext, ToolDef
 from jesinia.services.agents.application.packs import UntrustedDoc, wrap_untrusted
+from jesinia.services.agents.domain.session import Session
+from jesinia.services.kb.api.schemas import TAG_MAX
+from jesinia.services.kb.application.errors import (
+    InvalidAssetName,
+    InvalidTag,
+    KbError,
+    KbUnavailable,
+    NearDuplicate,
+    PageNotFound,
+    PathOutsideKb,
+    ReservedPath,
+)
 
 URL_MAX = 2048
 OPML_MAX = 5_000_000
@@ -48,6 +78,11 @@ OPML_MEDIA_TYPE = "text/x-opml"
 QUERY_MAX = 200
 CURSOR_MAX = 100
 TIMESTAMP_MAX = 64
+NOTE_MAX = 20_000
+TAKEAWAY_MAX = 2_000
+TAGS_MAX = 20
+SESSION_ID_MAX = 100
+RUNNER_MAX = 64
 
 
 class RssHost(Protocol):
@@ -64,6 +99,18 @@ class RssHost(Protocol):
 
     @property
     def idempotency(self) -> IdempotencyStore: ...
+
+    @property
+    def keeper(self) -> KeepService: ...
+
+    @property
+    def engage(self) -> EngageService: ...
+
+    def settings(self) -> RssSettings: ...
+
+    def update_settings(self, settings: RssSettings) -> RssSettings:
+        """Persist to ``config.toml`` and apply to the live config; ``InvalidSettings``."""
+        ...
 
 
 class FeedIn(BaseModel):
@@ -246,32 +293,154 @@ class GetPostIn(BaseModel):
     id: int = Field(description="A post id from rss_search_posts")
 
 
+class TakeawayIn(BaseModel):
+    text: str = Field(
+        min_length=1, max_length=TAKEAWAY_MAX, description="The takeaway as the author left it"
+    )
+    session: str = Field(
+        min_length=1, max_length=SESSION_ID_MAX, description="The Engage session it came from"
+    )
+
+
+class KeepIn(BaseModel):
+    note: str = Field(default="", max_length=NOTE_MAX)
+    tags: list[Annotated[str, Field(min_length=1, max_length=TAG_MAX)]] = Field(
+        default_factory=list,
+        max_length=TAGS_MAX,
+        description="Tags for the page; one not in the catalog yet is added to it",
+    )
+    takeaway: TakeawayIn | None = Field(
+        default=None, description="From Engage: written to the page's AI section"
+    )
+
+
+class KeepOut(BaseModel):
+    page_id: str
+    path: str
+    created: bool = Field(description="False when the source's page existed and was updated")
+    post: PostOut
+
+
+class EngageIn(BaseModel):
+    runner: str = Field(min_length=1, max_length=RUNNER_MAX)
+
+
+class SubjectOut(BaseModel):
+    kind: str
+    ref: str
+    title: str
+
+
+class SessionOut(BaseModel):
+    id: str
+    runner: str
+    status: str
+    model: str | None
+    read_only: bool
+    subject: SubjectOut
+
+    @classmethod
+    def of(cls, session: Session) -> SessionOut:
+        subject = SubjectOut(
+            kind=session.subject.kind, ref=session.subject.ref, title=session.subject.title
+        )
+        return cls(
+            id=session.id,
+            runner=session.runner,
+            status=session.status,
+            model=session.model,
+            read_only=session.read_only,
+            subject=subject,
+        )
+
+
+class TakeawayOut(BaseModel):
+    text: str
+    agent: str
+    model: str
+    session: str
+
+    @classmethod
+    def of(cls, takeaway: Takeaway) -> TakeawayOut:
+        return cls(
+            text=takeaway.text,
+            agent=takeaway.agent,
+            model=takeaway.model,
+            session=takeaway.session,
+        )
+
+
+class SettingsBody(BaseModel):
+    retention: int = Field(
+        ge=RETENTION_DAYS_MIN,
+        le=RETENTION_DAYS_MAX,
+        description="Days an unkept post is kept after publication",
+    )
+    source_folder: str = Field(
+        max_length=SOURCE_FOLDER_MAX, description="The KB folder kept posts are written to"
+    )
+
+    @classmethod
+    def of(cls, settings: RssSettings) -> SettingsBody:
+        return cls(retention=settings.retention_days, source_folder=settings.source_folder)
+
+
 class RssErrorOut(BaseModel):
     error: str
     detail: str
+    near: list[str] | None = Field(
+        default=None, description="For NearDuplicate: the existing tags it is close to"
+    )
 
 
 _STATUS: dict[type[RssError], int] = {
     FeedNotFound: status.HTTP_404_NOT_FOUND,
     FolderNotFound: status.HTTP_404_NOT_FOUND,
     PostNotFound: status.HTTP_404_NOT_FOUND,
+    EngageSessionNotFound: status.HTTP_404_NOT_FOUND,
     FeedExists: status.HTTP_409_CONFLICT,
+    PostNotKept: status.HTTP_409_CONFLICT,
+    EngageBusy: status.HTTP_409_CONFLICT,
+    NotAnEngageSession: status.HTTP_400_BAD_REQUEST,
+    NotThisPostsSession: status.HTTP_400_BAD_REQUEST,
     FolderExists: status.HTTP_409_CONFLICT,
     # The remote feed failed, not this server: the cause is in ``detail``.
     FeedUnavailable: status.HTTP_502_BAD_GATEWAY,
     ArticleUnavailable: status.HTTP_502_BAD_GATEWAY,
+    TakeawayUnavailable: status.HTTP_502_BAD_GATEWAY,
+}
+# KB errors from Keep. Unavailable is the KB banner's cause; the action was refused whole.
+_KB_STATUS: dict[type[KbError], int] = {
+    KbUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
+    InvalidTag: status.HTTP_400_BAD_REQUEST,
+    InvalidAssetName: status.HTTP_400_BAD_REQUEST,
+    PathOutsideKb: status.HTTP_400_BAD_REQUEST,
+    ReservedPath: status.HTTP_400_BAD_REQUEST,
+    PageNotFound: status.HTTP_404_NOT_FOUND,
 }
 
 # ``Any`` is FastAPI's own type for ``responses`` (free-form OpenAPI fragments).
 _ERRORS: dict[int | str, dict[str, Any]] = {
-    code: {"model": RssErrorOut} for code in (400, 404, 409, 502)
+    code: {"model": RssErrorOut} for code in (400, 404, 409, 502, 503)
 }
 
 
-def _error(exc: RssError) -> JSONResponse:
-    body = RssErrorOut(error=type(exc).__name__, detail=str(exc))
-    code = _STATUS.get(type(exc), status.HTTP_400_BAD_REQUEST)
-    return JSONResponse(body.model_dump(), status_code=code)
+def _error(exc: RssError | KbError) -> JSONResponse:
+    near = exc.near if isinstance(exc, NearDuplicate) else None
+    body = RssErrorOut(error=type(exc).__name__, detail=str(exc), near=near)
+    if isinstance(exc, RssError):
+        code = _STATUS.get(type(exc), status.HTTP_400_BAD_REQUEST)
+    else:  # a tag exists, a stale write: the KB's state conflicts with the request
+        code = _KB_STATUS.get(type(exc), status.HTTP_409_CONFLICT)
+    return JSONResponse(body.model_dump(exclude_none=True), status_code=code)
+
+
+async def _guarded(work: Callable[[], Awaitable[Response]]) -> Response:
+    """``work``'s response, or its typed RSS or KB error as structured JSON."""
+    try:
+        return await work()
+    except (RssError, KbError) as exc:
+        return _error(exc)
 
 
 async def _respond(
@@ -279,13 +448,14 @@ async def _respond(
 ) -> Response:
     """``work``'s model as a concrete ``Response`` (so idempotency can store it), or the
     typed error as structured JSON."""
-    try:
+
+    async def run() -> Response:
         result = await work()
-    except RssError as exc:
-        return _error(exc)
-    if result is None:
-        return Response(status_code=ok)
-    return JSONResponse(jsonable_encoder(result), status_code=ok)
+        if result is None:
+            return Response(status_code=ok)
+        return JSONResponse(jsonable_encoder(result), status_code=ok)
+
+    return await _guarded(run)
 
 
 def build_router(host: RssHost) -> APIRouter:
@@ -412,6 +582,81 @@ def build_router(host: RssHost) -> APIRouter:
     @r.get("/counts", response_model=CountsOut)
     async def counts() -> CountsOut:
         return CountsOut.of(host.posts.counts())
+
+    @r.post(
+        "/posts/{post_id}/keep",
+        status_code=status.HTTP_201_CREATED,
+        response_model=KeepOut,
+        responses={200: {"model": KeepOut, "description": "The source's page was updated"}},
+    )
+    async def keep(post_id: int, body: KeepIn, idem: IdempotentCall = keyed) -> Response:
+        """Write the post's KB page now (201), or update the page for the same source (200);
+        the archive then runs in the background (``post.archive_state``). Refused whole,
+        with the cause, while the KB is unavailable (503)."""
+
+        async def run() -> Response:
+            takeaway = None
+            if body.takeaway is not None:
+                given = body.takeaway
+                takeaway = host.engage.resolve(post_id, given.session, given.text)
+            kept = await host.keeper.keep(post_id, body.note, body.tags, takeaway)
+            out = KeepOut(
+                page_id=kept.page_id,
+                path=kept.path.as_posix(),
+                created=kept.created,
+                post=PostOut.of(host.posts.get(post_id)),
+            )
+            code = status.HTTP_201_CREATED if kept.created else status.HTTP_200_OK
+            return JSONResponse(jsonable_encoder(out), status_code=code)
+
+        return await idem.run(lambda: _guarded(run))
+
+    @r.post(
+        "/posts/{post_id}/archive", status_code=status.HTTP_202_ACCEPTED, response_model=PostOut
+    )
+    async def retry_archive(post_id: int, idem: IdempotentCall = keyed) -> Response:
+        """Archive a kept post's page again (Retry after "Archive incomplete")."""
+
+        async def run() -> PostOut:
+            return PostOut.of(host.keeper.retry(post_id))
+
+        return await idem.run(lambda: _respond(run, status.HTTP_202_ACCEPTED))
+
+    @r.post(
+        "/posts/{post_id}/engage", status_code=status.HTTP_201_CREATED, response_model=SessionOut
+    )
+    async def engage(post_id: int, body: EngageIn, idem: IdempotentCall = keyed) -> Response:
+        """A read-only agent session about the post; chat in it through ``/api/agents``."""
+
+        async def run() -> SessionOut:
+            return SessionOut.of(await host.engage.start(post_id, body.runner))
+
+        return await idem.run(lambda: _respond(run, status.HTTP_201_CREATED))
+
+    @r.post("/sessions/{session_id}/takeaway", response_model=TakeawayOut)
+    async def takeaway(session_id: str, idem: IdempotentCall = keyed) -> Response:
+        """Ask the engaged agent for a 1–3 sentence takeaway, for the author to edit and
+        send with Keep; nothing is written."""
+
+        async def run() -> TakeawayOut:
+            return TakeawayOut.of(await host.engage.takeaway(session_id))
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.get("/settings", response_model=SettingsBody)
+    async def get_settings() -> SettingsBody:
+        return SettingsBody.of(host.settings())
+
+    @r.put("/settings", response_model=SettingsBody)
+    async def put_settings(body: SettingsBody, idem: IdempotentCall = keyed) -> Response:
+        """Save Settings → RSS to ``config.toml``; the prune job and the next Keep use the
+        new values without a restart."""
+
+        async def run() -> SettingsBody:
+            wanted = validate_settings(body.retention, body.source_folder)
+            return SettingsBody.of(host.update_settings(wanted))
+
+        return await idem.run(lambda: _respond(run))
 
     return r
 

@@ -4,7 +4,8 @@
 The owner (install token) may call any tool. A Jesinia-launched session may call write
 tools only if the app pre-authorized them for that session (e.g. ``notes_save`` when the
 user clicked "Save note"); anything else becomes a pending write the user approves or
-rejects in the PWA.
+rejects in the PWA. A read-only session may not write at all: its writes are refused, never
+queued for approval.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ class SessionWriteGate:
             session = self.sessions.get(principal.session_id)
         except SessionNotFound:
             return GateDecision("deny", reason="unknown session")
+        if session.read_only:
+            return GateDecision("deny", reason="this session is read-only: it cannot write")
         if tool.name in session.preauthorized:
             return GateDecision("allow")
         pending = await self.sessions.request_write(session.id, tool, args)

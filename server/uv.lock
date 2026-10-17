@@ -883,6 +883,7 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "import-linter" },
+    { name = "markdown-it-py" },
     { name = "mypy" },
     { name = "pip-audit" },
     { name = "pytest" },
@@ -912,6 +913,7 @@ requires-dist = [
 dev = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "import-linter", specifier = ">=2.5" },
+    { name = "markdown-it-py", specifier = ">=4.0" },
     { name = "mypy", specifier = ">=1.18" },
     { name = "pip-audit", specifier = ">=2.9" },
     { name = "pytest", specifier = ">=8.4" },

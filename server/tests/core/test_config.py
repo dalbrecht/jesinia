@@ -21,7 +21,8 @@ def test_defaults_and_token_created_0600(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "config.toml")
     assert cfg.port == 5374 and cfg.kbsync_interval == timedelta(hours=4)
     assert cfg.kbsync_quiet == timedelta(seconds=30)
-    assert cfg.kb_path is None and dict(cfg.folders) == {"note": "Notes"}
+    assert cfg.kb_path is None and dict(cfg.folders) == {"note": "Notes", "source": "Sources"}
+    assert cfg.rss_retention == timedelta(days=30)
     assert len(cfg.token) >= 43
     assert stat.S_IMODE((tmp_path / "config.toml").stat().st_mode) == 0o600
 
@@ -133,13 +134,15 @@ def test_config_is_frozen(tmp_path: Path) -> None:
         ("4h", timedelta(hours=4)),
         ("30s", timedelta(seconds=30)),
         ("2h15m10s", timedelta(seconds=8110)),
+        ("30d", timedelta(days=30)),
+        ("1d2h", timedelta(days=1, hours=2)),
     ],
 )
 def test_duration_round_trip(text: str, td: timedelta) -> None:
     assert parse_duration(text) == td and format_duration(td) == text
 
 
-@pytest.mark.parametrize("bad", ["", "4", "h", "4d", "-1h", "1.5h"])
+@pytest.mark.parametrize("bad", ["", "4", "h", "d", "4h1d", "-1h", "1.5h", "1.5d"])
 def test_parse_duration_rejects(bad: str) -> None:
     with pytest.raises(ConfigError):
         parse_duration(bad)
@@ -165,7 +168,8 @@ def test_minimal_file_uses_defaults(tmp_path: Path) -> None:
     p.write_text('[server]\ntoken = "abc"\n')
     cfg = load_config(p)
     assert cfg.token == "abc" and cfg.port == 5374 and cfg.kb_path is None
-    assert cfg.kbsync_interval == timedelta(hours=4) and dict(cfg.folders) == {"note": "Notes"}
+    assert cfg.kbsync_interval == timedelta(hours=4)
+    assert dict(cfg.folders) == {"note": "Notes", "source": "Sources"}
 
 
 @pytest.mark.parametrize("text", ["server = 5\n", "[server]\nport = 1\n", '[server]\ntoken = ""\n'])
@@ -206,3 +210,28 @@ def test_wrong_value_types_rejected(tmp_path: Path, body: str) -> None:
     p.write_text(text)
     with pytest.raises(ConfigError, match="must be a"):
         load_config(p)
+
+
+def test_rss_retention_round_trips_in_whole_days(tmp_path: Path) -> None:
+    p = tmp_path / "config.toml"
+    load_config(p)
+    assert set_value(p, "rss.retention", "90d").rss_retention == timedelta(days=90)
+    assert load_config(p).rss_retention == timedelta(days=90)
+    assert '[rss]\nretention = "90d"' in p.read_text()
+
+
+@pytest.mark.parametrize("raw", ["0d", "366d", "36h", "soon"])
+def test_rss_retention_must_be_1_to_365_days(tmp_path: Path, raw: str) -> None:
+    p = tmp_path / "config.toml"
+    load_config(p)
+    with pytest.raises(ConfigError):
+        set_value(p, "rss.retention", raw)
+
+
+def test_rss_section_rejects_unknown_keys_and_types(tmp_path: Path) -> None:
+    p = tmp_path / "config.toml"
+    token = load_config(p).token
+    for bad in ("[rss]\nnope = 1\n", "[rss]\nretention = 30\n"):
+        p.write_text(f'[server]\ntoken = "{token}"\n{bad}')
+        with pytest.raises(ConfigError):
+            load_config(p)

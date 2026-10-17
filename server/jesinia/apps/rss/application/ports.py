@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Protocol
 
 from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedFeed, ParsedItem
+from jesinia.apps.rss.domain.kept import ArchiveState
 from jesinia.apps.rss.domain.post import Counts, Cursor, PostView, View
 from jesinia.services.fetch.application.ports import Article
 from jesinia.services.fetch.application.service import FetchResult
@@ -37,6 +38,22 @@ class ArticleFetcher(Protocol):
 
     async def article(self, url: str) -> Article | None:
         """The page's main text, or None if it has none; raises ``FetchError``."""
+        ...
+
+
+class ArticleConverter(Protocol):
+    """The ``fetch`` service's extractor applied to HTML already in hand (no request)."""
+
+    async def convert(self, html: bytes, url: str) -> Article | None:
+        """``html`` as Markdown, sanitised like a fetched article; raises ``FetchError``."""
+        ...
+
+
+class ImageFetcher(Protocol):
+    """The ``fetch`` service's guarded GET (SSRF checks on every hop), size-capped."""
+
+    async def get(self, url: str, *, max_bytes: int) -> FetchResult:
+        """Fetch ``url``; raises ``FetchError`` when it is blocked or over ``max_bytes``."""
         ...
 
 
@@ -167,3 +184,21 @@ class PostStore(Protocol):
         ...
 
     def counts(self) -> Counts: ...
+
+    def set_kept(self, post_id: int, page_id: str) -> None:
+        """Record the KB page the post was kept to."""
+        ...
+
+    def page_archive_state(self, page_id: str) -> ArchiveState | None:
+        """How far the page's archive got, by any post kept to it: ``done`` if one finished,
+        else ``archiving``, else ``failed``; None when no post here knows the page."""
+        ...
+
+    def set_archive_state(self, page_id: str, state: ArchiveState, error: str | None) -> None:
+        """Set the archive state (and error) of every post kept to the page."""
+        ...
+
+    def archiving(self) -> list[tuple[str, int]]:
+        """``(page id, post id)`` for each page whose archive was left running, one post
+        per page."""
+        ...

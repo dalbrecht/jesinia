@@ -328,3 +328,23 @@ async def test_restart_fails_writes_stranded_mid_approval(tmp_path: Path) -> Non
     assert stuck is not None and stuck.state == "failed" and "restarted" in str(stuck.result)
     assert again.store.events(s.id)[-1].kind == "pending_resolved"
     assert (await again.approve(s.id, p.id)).state == "failed"
+
+
+async def test_read_only_session_turns_offer_only_read_tools(tmp_path: Path) -> None:
+    fake = FakeRunner([TextDelta("ok"), TurnDone("f", None)])
+    svc = make(tmp_path, fake)
+    s = await svc.create(SUBJ, "fake", pack(), read_only=True)
+    assert s.read_only
+    await svc.send(s.id, "hi")
+    await svc.wait_idle(s.id)
+    assert fake.requests[-1].allowed_tools == ["kb_read"]
+    # The flag is stored: a restarted server still treats the session as read-only.
+    again = make(tmp_path, fake)
+    assert again.get(s.id).read_only
+    assert not (await svc.create(SUBJ, "fake", pack())).read_only
+
+
+async def test_read_only_session_cannot_be_preauthorized_to_write(tmp_path: Path) -> None:
+    svc = make(tmp_path, FakeRunner([]))
+    with pytest.raises(ValueError, match="read-only"):
+        await svc.create(SUBJ, "fake", pack(), read_only=True, preauthorized_tools={"kb_write"})

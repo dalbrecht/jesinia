@@ -16,10 +16,11 @@ _WS = re.compile(r"\s+")
 
 
 def sanitize_title(title: str) -> str:
-    """NFC; path separators, ``:`` and control chars → space; collapse; trim trailing dots."""
+    """NFC; path separators, ``:`` and control chars → space; collapse; trim dots at both
+    ends (a leading one would make a hidden file the tree and index skip)."""
     text = unicodedata.normalize("NFC", title)
     text = "".join(" " if ch in "/\\:" or unicodedata.category(ch) == "Cc" else ch for ch in text)
-    text = _WS.sub(" ", text).strip().rstrip(". ").strip()
+    text = _WS.sub(" ", text).strip(". ")
     return text or "Untitled"
 
 

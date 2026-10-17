@@ -883,6 +883,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rss/posts/{post_id}/keep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Keep
+         * @description Write the post's KB page now (201), or update the page for the same source (200);
+         *     the archive then runs in the background (``post.archive_state``). Refused whole,
+         *     with the cause, while the KB is unavailable (503).
+         */
+        post: operations["keep_api_rss_posts__post_id__keep_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/posts/{post_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Archive
+         * @description Archive a kept post's page again (Retry after "Archive incomplete").
+         */
+        post: operations["retry_archive_api_rss_posts__post_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/posts/{post_id}/engage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Engage
+         * @description A read-only agent session about the post; chat in it through ``/api/agents``.
+         */
+        post: operations["engage_api_rss_posts__post_id__engage_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/sessions/{session_id}/takeaway": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Takeaway
+         * @description Ask the engaged agent for a 1–3 sentence takeaway, for the author to edit and
+         *     send with Keep; nothing is written.
+         */
+        post: operations["takeaway_api_rss_sessions__session_id__takeaway_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Settings */
+        get: operations["get_settings_api_rss_settings_get"];
+        /**
+         * Put Settings
+         * @description Save Settings → RSS to ``config.toml``; the prune job and the next Keep use the
+         *     new values without a restart.
+         */
+        put: operations["put_settings_api_rss_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -934,6 +1039,11 @@ export interface components {
             /** Folders */
             folders: components["schemas"]["UnreadOut"][];
             views: components["schemas"]["ViewCountsOut"];
+        };
+        /** EngageIn */
+        EngageIn: {
+            /** Runner */
+            runner: string;
         };
         /** FeedIn */
         FeedIn: {
@@ -1021,6 +1131,34 @@ export interface components {
             existing: number;
             /** Failed */
             failed: components["schemas"]["ImportFailureOut"][];
+        };
+        /** KeepIn */
+        KeepIn: {
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Tags
+             * @description Tags for the page; one not in the catalog yet is added to it
+             */
+            tags?: string[];
+            /** @description From Engage: written to the page's AI section */
+            takeaway?: components["schemas"]["TakeawayIn"] | null;
+        };
+        /** KeepOut */
+        KeepOut: {
+            /** Page Id */
+            page_id: string;
+            /** Path */
+            path: string;
+            /**
+             * Created
+             * @description False when the source's page existed and was updated
+             */
+            created: boolean;
+            post: components["schemas"]["PostOut"];
         };
         /** MarkedOut */
         MarkedOut: {
@@ -1254,6 +1392,11 @@ export interface components {
             error: string;
             /** Detail */
             detail: string;
+            /**
+             * Near
+             * @description For NearDuplicate: the existing tags it is close to
+             */
+            near?: string[] | null;
         };
         /** SaveIn */
         SaveIn: {
@@ -1298,6 +1441,33 @@ export interface components {
             /** Preauthorized Tools */
             preauthorized_tools?: string[];
         };
+        /** SessionOut */
+        SessionOut: {
+            /** Id */
+            id: string;
+            /** Runner */
+            runner: string;
+            /** Status */
+            status: string;
+            /** Model */
+            model: string | null;
+            /** Read Only */
+            read_only: boolean;
+            subject: components["schemas"]["SubjectOut"];
+        };
+        /** SettingsBody */
+        SettingsBody: {
+            /**
+             * Retention
+             * @description Days an unkept post is kept after publication
+             */
+            retention: number;
+            /**
+             * Source Folder
+             * @description The KB folder kept posts are written to
+             */
+            source_folder: string;
+        };
         /** StartIn */
         StartIn: {
             /** Page Id */
@@ -1307,6 +1477,15 @@ export interface components {
         };
         /** SubjectIn */
         SubjectIn: {
+            /** Kind */
+            kind: string;
+            /** Ref */
+            ref: string;
+            /** Title */
+            title: string;
+        };
+        /** SubjectOut */
+        SubjectOut: {
             /** Kind */
             kind: string;
             /** Ref */
@@ -1392,6 +1571,30 @@ export interface components {
         TagNameIn: {
             /** Tag */
             tag: string;
+        };
+        /** TakeawayIn */
+        TakeawayIn: {
+            /**
+             * Text
+             * @description The takeaway as the author left it
+             */
+            text: string;
+            /**
+             * Session
+             * @description The Engage session it came from
+             */
+            session: string;
+        };
+        /** TakeawayOut */
+        TakeawayOut: {
+            /** Text */
+            text: string;
+            /** Agent */
+            agent: string;
+            /** Model */
+            model: string;
+            /** Session */
+            session: string;
         };
         /** TreeOut */
         TreeOut: {
@@ -3152,6 +3355,15 @@ export interface operations {
                     "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
         };
     };
     add_feed_api_rss_feeds_post: {
@@ -3224,6 +3436,15 @@ export interface operations {
                     "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
         };
     };
     remove_feed_api_rss_feeds__feed_id__delete: {
@@ -3285,6 +3506,15 @@ export interface operations {
             };
             /** @description Bad Gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3366,6 +3596,15 @@ export interface operations {
                     "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
         };
     };
     rename_folder_api_rss_folders__folder_id__patch: {
@@ -3440,6 +3679,15 @@ export interface operations {
                     "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
         };
     };
     export_opml_api_rss_opml_get: {
@@ -3489,6 +3737,15 @@ export interface operations {
             };
             /** @description Bad Gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3568,6 +3825,15 @@ export interface operations {
                     "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
         };
     };
     refresh_api_rss_refresh_post: {
@@ -3629,6 +3895,15 @@ export interface operations {
             };
             /** @description Bad Gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3707,6 +3982,15 @@ export interface operations {
                     "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
         };
     };
     search_posts_api_rss_posts_search_get: {
@@ -3767,6 +4051,15 @@ export interface operations {
             };
             /** @description Bad Gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3848,6 +4141,15 @@ export interface operations {
                     "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
         };
     };
     read_above_api_rss_posts_read_above_post: {
@@ -3913,6 +4215,15 @@ export interface operations {
             };
             /** @description Bad Gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3987,6 +4298,15 @@ export interface operations {
                     "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
         };
     };
     counts_api_rss_counts_get: {
@@ -4036,6 +4356,494 @@ export interface operations {
             };
             /** @description Bad Gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    keep_api_rss_posts__post_id__keep_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                post_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KeepIn"];
+            };
+        };
+        responses: {
+            /** @description The source's page was updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeepOut"];
+                };
+            };
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeepOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    retry_archive_api_rss_posts__post_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                post_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    engage_api_rss_posts__post_id__engage_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                post_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EngageIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    takeaway_api_rss_sessions__session_id__takeaway_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TakeawayOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    get_settings_api_rss_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    put_settings_api_rss_settings_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
