@@ -380,16 +380,18 @@ class IssueClient:
         return tuple(text(mapping(label, path), "name") for label in list_of(data, path))
 
     async def remove_label(self, repo: str, n: int, name: str) -> tuple[str, ...]:
-        """Remove one label and return the labels left. A label that isn't on the issue (a
-        404 while the issue exists) is a no-op; a missing issue raises GitHub's 404."""
+        """Remove one label and return the labels left. A label that isn't on the issue or
+        pull request (a 404 while it exists) is a no-op; a missing one raises GitHub's 404."""
         path = f"{_issue_path(repo, n)}/labels/{_label_segment(name)}"
         try:
             data = await self._github.write("DELETE", path)
         except GitHubRequestError as exc:
             if exc.status != 404:
                 raise
-            # Raises the issue's own 404 when the issue is what's missing.
-            return (await self.get(repo, n)).labels
+            # Raises the issue's own 404 when the issue is what's missing. Read through the
+            # issues endpoint without ``get``'s refusal: label moves cover pull requests too.
+            path = _issue_path(repo, n)
+            return _label_names(mapping(await get_json(self._github, path), path))
         return tuple(text(mapping(label, path), "name") for label in list_of(data, path))
 
     async def add_sub_issue(

@@ -17,6 +17,7 @@ from jesinia.apps.issues.domain.labels import (
     LabelOp,
     LabelPlan,
     LabelPlanKind,
+    skip_cause,
 )
 from jesinia.apps.issues.domain.schema import (
     MAX_ALIASES,
@@ -299,7 +300,8 @@ class LabelApplyIn(BaseModel):
 class LabelOpOut(BaseModel):
     """One step: ``create`` (``name``, ``color``, ``description``) or ``delete`` (``name``).
     A delete with a ``replacement`` first moves every issue and pull request carrying the label
-    to it (listed live at apply time); ``members`` is what the preview listed."""
+    to it (listed live at apply time); ``members`` is what the preview listed. ``skip_cause``
+    says why the step will be skipped whatever happens (a name GitHub can't list by)."""
 
     op: Literal["create", "delete"]
     name: str
@@ -307,6 +309,7 @@ class LabelOpOut(BaseModel):
     description: str | None
     replacement: str | None
     members: list[int]
+    skip_cause: str | None
 
     @classmethod
     def of(cls, op: LabelOp) -> LabelOpOut:
@@ -318,6 +321,7 @@ class LabelOpOut(BaseModel):
                 description=op.description,
                 replacement=None,
                 members=[],
+                skip_cause=None,
             )
         return cls(
             op="delete",
@@ -326,6 +330,7 @@ class LabelOpOut(BaseModel):
             description=None,
             replacement=op.replacement,
             members=list(op.members),
+            skip_cause=skip_cause(op),
         )
 
 

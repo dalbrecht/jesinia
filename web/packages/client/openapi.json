@@ -8949,6 +8949,17 @@
             },
             "type": "array",
             "title": "Members"
+          },
+          "skip_cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skip Cause"
           }
         },
         "type": "object",
@@ -8958,10 +8969,11 @@
           "color",
           "description",
           "replacement",
-          "members"
+          "members",
+          "skip_cause"
         ],
         "title": "LabelOpOut",
-        "description": "One step: ``create`` (``name``, ``color``, ``description``) or ``delete`` (``name``).\nA delete with a ``replacement`` first moves every issue and pull request carrying the label\nto it (listed live at apply time); ``members`` is what the preview listed."
+        "description": "One step: ``create`` (``name``, ``color``, ``description``) or ``delete`` (``name``).\nA delete with a ``replacement`` first moves every issue and pull request carrying the label\nto it (listed live at apply time); ``members`` is what the preview listed. ``skip_cause``\nsays why the step will be skipped whatever happens (a name GitHub can't list by)."
       },
       "LabelPlanIn": {
         "properties": {

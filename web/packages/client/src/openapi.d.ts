@@ -2002,7 +2002,8 @@ export interface components {
          * LabelOpOut
          * @description One step: ``create`` (``name``, ``color``, ``description``) or ``delete`` (``name``).
          *     A delete with a ``replacement`` first moves every issue and pull request carrying the label
-         *     to it (listed live at apply time); ``members`` is what the preview listed.
+         *     to it (listed live at apply time); ``members`` is what the preview listed. ``skip_cause``
+         *     says why the step will be skipped whatever happens (a name GitHub can't list by).
          */
         LabelOpOut: {
             /**
@@ -2020,6 +2021,8 @@ export interface components {
             replacement: string | null;
             /** Members */
             members: number[];
+            /** Skip Cause */
+            skip_cause: string | null;
         };
         /** LabelPlanIn */
         LabelPlanIn: {

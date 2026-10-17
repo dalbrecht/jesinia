@@ -47,6 +47,7 @@ from jesinia.apps.issues.domain.labels import (
     migration_aliases,
     plan_migration,
     plan_setup,
+    skip_cause,
 )
 from jesinia.apps.issues.domain.schema import label_key
 from jesinia.apps.issues.domain.triage import RepoNotWatchedError, triage
@@ -68,10 +69,6 @@ Pause = Callable[[float], Awaitable[None]]
 OnRateLimit = Callable[[datetime | None], None]
 
 WRITE_INTERVAL = timedelta(seconds=1)
-COMMA_CAUSE = (
-    "not deleted: GitHub can't list the issues carrying a label whose name has a comma, so "
-    "they can't be moved first; delete it by hand after checking"
-)
 
 
 @dataclass(frozen=True)
@@ -239,8 +236,8 @@ class LabelExecutor:
                 at = index
                 if isinstance(op, CreateLabel):
                     results[index] = await self._step(op, partial(run.create, op))
-                elif op.replacement is not None and "," in op.name:
-                    results[index] = OpResult(op, "skipped", COMMA_CAUSE)
+                elif (cause := skip_cause(op)) is not None:
+                    results[index] = OpResult(op, "skipped", cause)
                 elif op.replacement is not None:
                     failed = await self._step(op, partial(self._moved, run, op, op.replacement))
                     if failed.state == "failed":
@@ -364,18 +361,22 @@ class LabelPlanner:
         labels = await self._github.labels(state.repo)
         return await self._migration(state, labels)
 
-    async def _migration(self, state: RepoState, labels: Sequence[Label]) -> MigrationPlan:
+    async def _migration(
+        self, state: RepoState, labels: Sequence[Label], *, with_members: bool = True
+    ) -> MigrationPlan:
         names = [label.name for label in labels]
         members: dict[str, list[int]] = {}
         for alias, _ in migration_aliases(state.schema, names):
-            if "," not in alias:
+            if with_members and "," not in alias:
                 members[alias] = [i.number for i in await self._github.labeled(state.repo, alias)]
         return plan_migration(state.schema, names, members)
 
     async def current(
-        self, repo: str, kind: LabelPlanKind
+        self, repo: str, kind: LabelPlanKind, *, with_members: bool = True
     ) -> tuple[tuple[LabelOp, ...], list[Label]]:
         """The ops ``kind`` would run now, and the fresh read of the labels they came from.
+        ``with_members=False`` skips listing each alias's members: an apply's shape check
+        ignores them (the executor lists them live itself).
 
         Raises:
             as ``setup``.
@@ -384,7 +385,8 @@ class LabelPlanner:
         labels = await self._github.labels(state.repo)
         if kind == "setup":
             return tuple(plan_setup(state.schema, [label.name for label in labels])), labels
-        return tuple((await self._migration(state, labels)).ops()), labels
+        plan = await self._migration(state, labels, with_members=with_members)
+        return tuple(plan.ops()), labels
 
 
 class LabelSetupService:
@@ -419,10 +421,10 @@ class LabelSetupService:
         self._on_rate_limit(until)
 
     async def _current(
-        self, repo: str, kind: LabelPlanKind
+        self, repo: str, kind: LabelPlanKind, *, with_members: bool = True
     ) -> tuple[tuple[LabelOp, ...], list[Label]]:
         try:
-            return await self.planner.current(repo, kind)
+            return await self.planner.current(repo, kind, with_members=with_members)
         except GitHubRateLimitedError as exc:
             self._rate_limited(exc.reset_at)
             raise
@@ -462,7 +464,7 @@ class LabelSetupService:
                 )
             # Kind and expiry first, before asking GitHub; then against the repo as it is now.
             plan.check(kind, self._clock(), plan.ops)
-            ops, labels = await self._current(name, kind)
+            ops, labels = await self._current(name, kind, with_members=False)
             plan.check(kind, self._clock(), ops)
             run: LabelRun | None = None
             try:

@@ -349,6 +349,7 @@ async def test_label_preview_and_apply_shapes(env: Env) -> None:
         "description": None,
         "replacement": "design-needed",
         "members": [1],
+        "skip_cause": None,
     }
     assert env.github.writes == []
 
@@ -602,3 +603,14 @@ async def test_settings_schema_strings_are_bounded(env: Env) -> None:
         REPO_PATH, json={"watched": True, "settings_schema": prefixes}, headers=keyed()
     )
     assert refused.status_code == 422
+
+
+async def test_the_preview_says_which_deletes_will_be_skipped(env: Env) -> None:
+    env.github.files[(REPO, LABELS_YML)] = (
+        'priority:\n  - name: "priority: high"\n    aliases: ["p, high"]\n'
+    )
+    env.github.set_labels("p, high", "priority: high")
+    await env.watch_and_sync()
+    plan = (await env.client.post(f"{LABELS}/preview", json={"kind": "migrate"})).json()
+    assert [op["name"] for op in plan["ops"]] == ["p, high"]
+    assert "comma" in plan["ops"][0]["skip_cause"] and "by hand" in plan["ops"][0]["skip_cause"]

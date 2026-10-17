@@ -238,6 +238,20 @@ def plan_migration(
     return MigrationPlan(tuple(create), tuple(delete))
 
 
+COMMA_CAUSE = (
+    "not deleted: GitHub can't list the issues carrying a label whose name has a comma, so "
+    "they can't be moved first; delete it by hand after checking"
+)
+
+
+def skip_cause(op: LabelOp) -> str | None:
+    """Why the executor will skip ``op`` whatever happens (shown in the preview, so what the
+    author approves is what runs), or ``None``."""
+    if isinstance(op, DeleteLabel) and op.replacement is not None and "," in op.name:
+        return COMMA_CAUSE
+    return None
+
+
 def _shape(op: LabelOp) -> LabelOp:
     return replace(op, members=()) if isinstance(op, DeleteLabel) else op
 

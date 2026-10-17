@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +24,7 @@ from jesinia.apps.issues.application.labels import (
 )
 from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
 from jesinia.apps.issues.domain.labels import (
+    COMMA_CAUSE,
     PLAN_TTL,
     CreateLabel,
     DeleteLabel,
@@ -31,6 +32,7 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlanKindMismatchError,
     LabelPlanNotFoundError,
     LabelPlanOutdatedError,
+    skip_cause,
 )
 from jesinia.apps.issues.domain.triage import RepoNotWatchedError
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
@@ -76,6 +78,9 @@ class FakeGitHub(FakeIssues):
         self.fail: dict[str, Exception] = {}
         self.labels_error: Exception | None = None
         self.prs: dict[int, tuple[str, ...]] = {}
+        # Called before each ``labeled`` answer with the name and how many times it was listed
+        # (1-based): mutate the repo to race the batch.
+        self.before_labeled: Callable[[str, int], None] | None = None
 
     def label_names(self) -> list[str]:
         return [label.name for label in self.repo_labels.get(REPO, [])]
@@ -107,6 +112,8 @@ class FakeGitHub(FakeIssues):
     async def labeled(self, repo: str, name: str) -> list[LabeledItem]:
         self.calls.append(("labeled", (repo, name)))
         validate_label_filter(name)
+        if self.before_labeled is not None:
+            self.before_labeled(name, self.calls.count(("labeled", (repo, name))))
         error = self.fail.get(f"labeled:{name}")
         if error is not None:
             raise error
@@ -693,3 +700,75 @@ async def test_an_apply_that_breaks_mid_batch_is_still_logged(
     with pytest.raises(RuntimeError):
         await labels.apply(REPO, "migrate", plan.id)
     assert f"plan={plan.id} did not finish" in caplog.text
+
+
+# The recheck right before each delete (IR31, re-review N1) ------------------------------
+
+
+async def test_a_member_labelled_during_the_batch_is_moved_before_the_delete(
+    github: FakeGitHub,
+) -> None:
+    github.set_labels("old", "new", "gone")
+    github.put(issue(1, labels=("old",)))
+
+    def label_late(name: str, count: int) -> None:
+        if name == "old" and count == 2:  # after the first pass moved #1
+            github.put(issue(7, labels=("old", "bug")))
+            github.prs[8] = ("old",)
+
+    github.before_labeled = label_late
+    run = await executor(github).run(REPO, [DeleteLabel("old", "new"), DeleteLabel("gone", "new")])
+    assert run.complete
+    assert github.issues[(REPO, 7)].labels == ("bug", "new")
+    assert github.prs[8] == ("new",)
+    writes = [(name, args) for name, args in github.writes]
+    assert writes.index(("remove_label", (7, "old"))) < writes.index(("delete_label", ("old",)))
+    assert writes.index(("remove_label", (8, "old"))) < writes.index(("delete_label", ("old",)))
+
+
+async def test_a_failed_recheck_move_blocks_that_delete_and_later_ones(
+    github: FakeGitHub,
+) -> None:
+    github.set_labels("old", "older", "new")
+    github.put(issue(1, labels=("old",)), issue(2, labels=("older",)))
+
+    def label_late(name: str, count: int) -> None:
+        if name == "old" and count == 2:
+            github.put(issue(7, labels=("old",)))
+
+    github.before_labeled = label_late
+    github.fail["add_labels:7"] = GitHubRequestError(403, "Resource not accessible")
+    run = await executor(github).run(REPO, [DeleteLabel("old", "new"), DeleteLabel("older", "new")])
+    assert [r.state for r in run.results] == ["failed", "skipped"]
+    assert run.results[0].failed_issues == (7,)
+    assert run.results[1].cause == run.note and run.note is not None
+    assert not any(name == "delete_label" for name, _ in github.writes)
+    # The first pass still moved the members it found.
+    assert github.issues[(REPO, 2)].labels == ("new",)
+
+
+async def test_the_apply_shape_check_lists_no_members(
+    labels: LabelSetupService, github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    github.set_labels("design needed", "apple", "area:apple", "design-needed")
+    github.put(issue(1, labels=("design needed",)))
+    await synced(github, store, clock)
+    plan = await labels.preview(REPO, "migrate")
+    assert github.call_names().count("labeled") == 2  # the preview lists each alias once
+    github.calls.clear()
+    run = await labels.apply(REPO, "migrate", plan.id)
+    assert run.complete
+    # Only the executor's two live listings per alias: the re-plan lists none.
+    assert github.call_names().count("labeled") == 4
+
+
+async def test_a_comma_alias_previews_as_a_delete_that_will_be_skipped(
+    labels: LabelSetupService, github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    github.files[(REPO, LABELS_YML)] = (
+        'priority:\n  - name: "priority: high"\n    aliases: ["p, high"]\n'
+    )
+    github.set_labels("p, high", "priority: high")
+    await synced(github, store, clock)
+    plan = await labels.preview(REPO, "migrate")
+    assert [skip_cause(op) for op in plan.ops] == [COMMA_CAUSE]

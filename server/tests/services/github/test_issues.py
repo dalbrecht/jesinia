@@ -665,3 +665,14 @@ async def test_labeled_refuses_a_name_githubs_filter_cannot_express(issues: Issu
     # ``labels=`` is a comma-separated list: "priority, high" would match other labels.
     with pytest.raises(InvalidLabelError, match="comma"):
         await issues.labeled("acme/api", "priority, high")
+
+
+@respx.mock
+async def test_remove_label_404_on_a_pull_request_reads_its_labels(issues: IssueClient) -> None:
+    # Someone removed the label from the PR first: a no-op, not a "pull request" refusal.
+    respx.delete(f"{API}/repos/acme/api/issues/11/labels/gone").mock(
+        return_value=Response(404, json={"message": "Label does not exist"})
+    )
+    pr = {"number": 11, "labels": [{"name": "review:bot"}], "pull_request": {"url": "x"}}
+    respx.get(f"{API}/repos/acme/api/issues/11").mock(return_value=Response(200, json=pr))
+    assert await issues.remove_label("acme/api", 11, "gone") == ("review:bot",)
