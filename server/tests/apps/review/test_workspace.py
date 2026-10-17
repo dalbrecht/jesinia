@@ -16,7 +16,9 @@ import pytest
 
 from jesinia.apps.review.application.ports import KeepProvider, Workspace
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
+from jesinia.apps.review.domain.coverage import coverage, parse_unified_diff
 from jesinia.apps.review.domain.workspace import (
+    DiffTooLargeError,
     GitCommandError,
     GitOutputError,
     GitTimeoutError,
@@ -910,3 +912,50 @@ async def test_prune_ignores_keep_entries_that_are_not_full_shas(
         return {fixture.head, "HEAD", ""}
 
     assert await ws.prune(keep) == 0
+
+
+# --- the diff cap (PR 1 final review M8) and real diffs through the coverage parser -------------
+
+
+async def test_a_diff_over_the_cap_is_a_typed_error_not_a_huge_buffer(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = GitWorkspace(
+        tmp_path / "data" / "review" / "repos", lambda repo: str(fixture.remote), diff_limit=40
+    )
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/main", "refs/heads/feature"])
+    with pytest.raises(DiffTooLargeError, match="over 40 bytes") as raised:
+        await ws.diff(REPO, fixture.base, fixture.head)
+    assert isinstance(raised.value, WorkspaceError) and raised.value.limit == 40
+    with pytest.raises(DiffTooLargeError):
+        await ws.patch_ids(REPO, fixture.base, fixture.head)
+    assert workspace_module.DIFF_LIMIT == 32 * 1024 * 1024
+
+
+async def test_real_git_diffs_parse_for_coverage(tmp_path: Path, fixture: Fixture) -> None:
+    work = tmp_path / "parse-work"
+    subprocess.run(["git", "clone", "-q", str(fixture.remote), str(work)], check=True)
+    git(work, "checkout", "-q", "-b", "parse", fixture.base)
+    git(work, "mv", "a.txt", "renamed a.txt")
+    git(work, "rm", "-q", "b.txt")
+    (work / "blob.bin").write_bytes(bytes(range(256)))
+    (work / "café.py").write_text("x = 1\n")
+    (work / "uv.lock").write_text("lock\n")
+    head = commit_all(work, "parse")
+    git(work, "push", "-q", "origin", "parse")
+    ws = make_workspace(tmp_path, fixture)
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/parse"])
+    diff = parse_unified_diff(await ws.diff(REPO, fixture.base, head))
+    by_path = {f.path: f for f in diff.files}
+    assert by_path["renamed a.txt"].status == "renamed" and by_path["renamed a.txt"].hunks == ()
+    assert by_path["b.txt"].status == "deleted" and by_path["b.txt"].changed_lines == 1
+    assert by_path["blob.bin"].is_binary
+    assert by_path["café.py"].status == "added" and by_path["café.py"].changed_lines == 1
+    result = coverage(diff, [], [])
+    assert {(skip.path, skip.reason) for skip in result.not_walked} >= {
+        ("renamed a.txt", "rename_only"),
+        ("blob.bin", "binary"),
+        ("uv.lock", "lockfile"),
+    }

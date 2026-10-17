@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
+from jesinia.apps.review.domain.coverage import Coverage
 from jesinia.apps.review.domain.gates import Depth
 from jesinia.apps.review.domain.workspace import canonical_repo
 from jesinia.services.github.domain.pr import CheckState, PrCommit, PullRequest
@@ -32,8 +33,12 @@ CorrectnessOutcome = Literal["clean", "issues", "missing"]
 
 EVIDENCE_RULE = (
     "the evidence rule allows approve only with green CI on the head and a completed "
-    "correctness pass without critical or important findings"
+    "correctness pass without critical or important findings that read the changed code"
 )
+# A deep correctness pass must have read at least this share of the reviewable changed lines
+# (those Jesinia doesn't skip itself, like lockfiles) before anything is approved.
+DEEP_COVERAGE_FLOOR = 90.0
+_SEVERITY_RANK = {"minor": 0, "important": 1, "critical": 2}
 
 # ``Co-Authored-By`` trailers naming one of these mark a commit as agent-written.
 _TRAILER = re.compile(r"^[ \t]*co-authored-by:[ \t]*(.+?)[ \t]*$", re.IGNORECASE | re.MULTILINE)
@@ -57,7 +62,8 @@ AGENT_LOGINS = frozenset(
 
 
 class ReviewJobError(Exception):
-    """Base for a review agent job that could not produce its result."""
+    """Base for a review agent job, or the round it belongs to, that could not produce its
+    result."""
 
 
 class JobKind(StrEnum):
@@ -113,21 +119,33 @@ def correctness_depth(proposed: Depth, agent_authored: bool) -> Depth:
 @dataclass(frozen=True)
 class Evidence:
     """What the recommendation rests on (spec §3.2); ``as_json`` is the ``evidence``
-    artifact, whose ``ci``, ``tests`` and ``findings`` the queue row shows."""
+    artifact, whose ``ci``, ``tests`` and ``findings`` the queue row shows. ``depth`` is the
+    correctness pass's, and ``coverage`` what it read of the diff (Jesinia's count)."""
 
     ci: str
     checks: tuple[tuple[str, str], ...]
     tests: str | None
     findings: Mapping[str, int]
     correctness: CorrectnessOutcome
+    depth: Depth | None = None
+    coverage: Coverage | None = None
 
     def as_json(self) -> dict[str, object]:
+        read = self.coverage
         return {
             "ci": self.ci,
             "checks": [{"name": name, "status": status} for name, status in self.checks],
             "tests": self.tests,
             "findings": dict(self.findings),
             "correctness": self.correctness,
+            "depth": self.depth,
+            "correctness_coverage": None
+            if read is None
+            else {
+                "pct": read.pct,
+                "reviewable_pct": read.reviewable_pct,
+                "complete": read.complete,
+            },
         }
 
 
@@ -142,6 +160,11 @@ class Recommendation:
 class _Finding:
     group: str
     severity: str
+    where: tuple[str, int, int] | None = None  # path and line range, when well-formed
+
+
+def _line(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _finding(item: object) -> _Finding | None:
@@ -150,7 +173,27 @@ def _finding(item: object) -> _Finding | None:
     group, severity = item.get("group"), item.get("severity")
     if group not in FINDING_GROUPS or severity not in SEVERITIES:
         return None
-    return _Finding(str(group), str(severity))
+    path, start, end = item.get("path"), _line(item.get("start_line")), _line(item.get("end_line"))
+    where = (path, start, end) if isinstance(path, str) and start and end else None
+    return _Finding(str(group), str(severity), where)
+
+
+def _deduplicated(findings: Iterable[_Finding]) -> list[_Finding]:
+    """One finding per group and place (the correctness pass and the findings job often
+    report the same issue), kept at its most severe. Findings without a place stay apart."""
+    kept: list[_Finding] = []
+    placed: dict[tuple[str, tuple[str, int, int]], int] = {}
+    for finding in findings:
+        if finding.where is None:
+            kept.append(finding)
+            continue
+        key = (finding.group, finding.where)
+        if key not in placed:
+            placed[key] = len(kept)
+            kept.append(finding)
+        elif _SEVERITY_RANK[finding.severity] > _SEVERITY_RANK[kept[placed[key]].severity]:
+            kept[placed[key]] = finding
+    return kept
 
 
 def _findings(items: object) -> list[_Finding] | None:
@@ -177,18 +220,47 @@ def _counts(findings: Iterable[_Finding]) -> dict[str, int]:
     return {group: counts[group] for group in FINDING_GROUPS if group in counts}
 
 
+def _coverage_blockers(coverage: Coverage | None, depth: Depth) -> list[str]:
+    """Why what the correctness pass read of the diff isn't enough to approve, if it isn't."""
+    if coverage is None:
+        return ["the correctness pass's coverage of the diff is unknown"]
+    blockers: list[str] = []
+    if not coverage.complete:
+        why = coverage.incomplete_reason or "it is incomplete"
+        blockers.append(f"the diff could not be read in full ({why}), so not all of it was checked")
+    if coverage.lines_covered == 0 and coverage.reviewable_pct < 100.0:
+        blockers.append("the correctness pass read none of the changed lines")
+    elif depth == "deep" and coverage.reviewable_pct < DEEP_COVERAGE_FLOOR:
+        blockers.append(
+            f"the deep correctness pass read {coverage.reviewable_pct}% of the changed lines; "
+            f"at least {DEEP_COVERAGE_FLOOR:g}% is needed"
+        )
+    return blockers
+
+
 def recommend(
     ci: CheckState | None,
     correctness: Mapping[str, object] | None,
-    findings: Sequence[object],
+    findings: Sequence[object] | None,
     suggested: object = None,
+    *,
+    depth: Depth,
+    coverage: Coverage | None,
 ) -> Recommendation:
     """The verdict for a round, from its evidence; the agent's ``suggested`` verdict is an
     input, never the answer.
 
+    Args:
+        findings: the findings job's findings; ``None`` when it produced none (it failed).
+        depth: the correctness pass's depth (deep for agent-written PRs).
+        coverage: what the correctness pass read of the diff, computed by Jesinia from its
+            ``checked`` ranges; ``None`` when that couldn't be computed.
+
     - **approve** only when the agent suggests it **and** CI is passing **and** the
-      correctness pass completed with no critical or important finding **and** no
-      correctness finding from the findings job is critical or important;
+      correctness pass completed with no critical or important finding, having read some
+      of the changed lines (at a deep depth, at least ``DEEP_COVERAGE_FLOOR`` percent, of a
+      diff read in full) **and** no correctness finding from the findings job is critical
+      or important;
     - **request_changes** whenever the agent suggests it (it never approves anything);
     - otherwise **needs_closer_look**, with the reasons.
 
@@ -202,7 +274,7 @@ def recommend(
         if correctness is not None and isinstance(checked, list) and checked
         else None
     )
-    extra = _findings(list(findings))
+    extra = None if findings is None else _findings(list(findings))
     blockers: list[str] = []
     state = "none" if ci is None else ci.state
     if state != "passing":
@@ -211,6 +283,8 @@ def recommend(
         blockers.append("the correctness pass did not complete")
     elif any(f.severity in BLOCKING_SEVERITIES for f in pass_findings):
         blockers.append("the correctness pass found critical or important issues")
+    if pass_findings is not None:
+        blockers += _coverage_blockers(coverage, depth)
     if extra is None:
         blockers.append("the findings could not be read")
     elif any(f.group == "correctness" and f.severity in BLOCKING_SEVERITIES for f in extra):
@@ -226,8 +300,10 @@ def recommend(
         ci=state,
         checks=() if ci is None else tuple((check.name, check.status) for check in ci.checks),
         tests=_tests(correctness),
-        findings=_counts([*(pass_findings or []), *(extra or [])]),
+        findings=_counts(_deduplicated([*(pass_findings or []), *(extra or [])])),
         correctness=outcome,
+        depth=depth,
+        coverage=coverage,
     )
     agent = suggested if isinstance(suggested, str) and suggested in VERDICTS else None
     if agent == "request_changes":

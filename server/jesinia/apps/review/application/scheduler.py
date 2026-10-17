@@ -19,7 +19,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from jesinia.apps.review.application.ports import PrunableWorkspace, QueueStore
-from jesinia.apps.review.domain.gates import DEFAULT_GATES, Depth, GateSettings, PrState, gate
+from jesinia.apps.review.domain.gates import (
+    DEFAULT_GATES,
+    Depth,
+    GateResult,
+    GateSettings,
+    PrState,
+    gate,
+)
 from jesinia.apps.review.domain.queue import (
     PreReviewMode,
     PreReviewState,
@@ -42,6 +49,22 @@ MAX_INTERRUPTIONS = 3
 _LOADED_GATES = GateSettings(debounce=timedelta(0))
 _STOPPED = "Jesinia stopped during this pre-review"
 _INTERRUPTED = "Jesinia stopped during this pre-review (it was restarted or crashed)"
+
+
+def gate_for(
+    stored: StoredPr, config: RepoConfig | None, now: datetime, *, immediate: bool
+) -> GateResult:
+    """The gates on a cached PR's head. ``immediate``: the author asked for it now (loaded
+    or opened), so there is no debounce; CI and automated reviews still hold it back."""
+    pr = stored.pr
+    state = PrState(
+        ci_state=pr.ci_state,
+        automated_reviewer=None if config is None else config.automated_reviewer,
+        auto_review_landed=pr.auto_review_state == "landed",
+        last_head_change_at=stored.last_head_change_at,
+        fetch_error=stored.fetch_error,
+    )
+    return gate(state, now, _LOADED_GATES if immediate else DEFAULT_GATES)
 
 
 class SchedulerConfigError(ValueError):
@@ -94,6 +117,11 @@ class Scheduler:
         self._pending: dict[PrRef, tuple[StoredPr, PreReviewMode]] = {}
         self._running: dict[PrRef, asyncio.Task[None]] = {}
 
+    @property
+    def runs_pre_reviews(self) -> bool:
+        """Whether a runner is set (without one, ready PRs only show as queued)."""
+        return self._run is not None
+
     def recover(self) -> int:
         """Mark rounds a crash left unfinished as interrupted, so the next tick queues their
         heads again (call once at start, before any tick)."""
@@ -127,14 +155,7 @@ class Scheduler:
         default_mode: PreReviewMode,
     ) -> None:
         pr = stored.pr
-        state = PrState(
-            ci_state=pr.ci_state,
-            automated_reviewer=None if config is None else config.automated_reviewer,
-            auto_review_landed=pr.auto_review_state == "landed",
-            last_head_change_at=stored.last_head_change_at,
-            fetch_error=stored.fetch_error,
-        )
-        result = gate(state, now, _LOADED_GATES if stored.loaded else DEFAULT_GATES)
+        result = gate_for(stored, config, now, immediate=stored.loaded)
         if result.state != "ready":
             self._store.set_state(pr.ref, pr.head_sha, result.state, result.reason)
             return

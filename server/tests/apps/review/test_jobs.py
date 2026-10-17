@@ -30,7 +30,9 @@ from jesinia.apps.review.application.jobs import (
     schema_for,
 )
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
+from jesinia.apps.review.domain.coverage import Coverage
 from jesinia.apps.review.domain.jobs import (
+    DEEP_COVERAGE_FLOOR,
     JobKind,
     Recommendation,
     ReviewJobError,
@@ -70,6 +72,27 @@ GREEN = CheckState("passing", [Check("ci", "passing", None)])
 RED = CheckState("failing", [Check("ci", "failing", None)])
 CHECKED = [{"path": "src/app.py", "start_line": 1, "end_line": 9}]
 CLEAN = {"summary": "Read every changed line.", "checked": CHECKED, "findings": [], "tests": []}
+FULL = Coverage(100.0, 1, 1, [], lines_covered=9, lines_total=9)
+
+
+def judge(
+    ci: CheckState | None,
+    correctness: object,
+    findings: Sequence[object] | None,
+    suggested: object = None,
+    *,
+    depth: str = "quick",
+    coverage: Coverage | None = FULL,
+) -> Recommendation:
+    """``recommend`` for a pass that read every changed line, unless told otherwise."""
+    return recommend(
+        ci,
+        correctness,  # type: ignore[arg-type]  # malformed evidence is part of the test
+        findings,
+        suggested,
+        depth=depth,  # type: ignore[arg-type]
+        coverage=coverage,
+    )
 
 
 def finding(severity: str = "important", group: str = "correctness") -> dict[str, object]:
@@ -445,31 +468,32 @@ async def test_injected_approve_cannot_bypass_evidence_rule(env: Env) -> None:
         (GREEN, {**CLEAN, "findings": [finding("critical", "design")]}, []),
         (GREEN, CLEAN, [finding("critical")]),  # a correctness finding from the findings job
         (GREEN, CLEAN, ["not a finding"]),
+        (GREEN, CLEAN, None),  # the findings job produced nothing
         (GREEN, CLEAN, [{"group": "security", "severity": "minor"}]),  # an unknown group
     ):
-        result = recommend(ci, correctness, findings, suggested["verdict"])
+        result = judge(ci, correctness, findings, suggested["verdict"])
         assert result.verdict == "needs_closer_look", (ci, correctness, findings)
         assert any("evidence rule" in reason for reason in result.reasons)
 
-    approved = recommend(GREEN, CLEAN, [finding("minor"), finding("critical", "style")], "approve")
+    approved = judge(GREEN, CLEAN, [finding("minor"), finding("critical", "style")], "approve")
     assert approved.verdict == "approve"
 
 
 def test_a_correctness_pass_that_checked_nothing_did_not_complete() -> None:
     empty = {**CLEAN, "checked": []}
-    result = recommend(GREEN, empty, [], "approve")
+    result = judge(GREEN, empty, [], "approve")
     assert result.verdict == "needs_closer_look"
     assert "the correctness pass did not complete" in result.reasons
     assert result.evidence.correctness == "missing"
 
 
 def test_recommend_never_guesses_an_approve() -> None:
-    assert recommend(GREEN, CLEAN, [], None).verdict == "needs_closer_look"
-    assert recommend(GREEN, CLEAN, [], "ship it").verdict == "needs_closer_look"
-    closer = recommend(GREEN, CLEAN, [], "needs_closer_look")
+    assert judge(GREEN, CLEAN, [], None).verdict == "needs_closer_look"
+    assert judge(GREEN, CLEAN, [], "ship it").verdict == "needs_closer_look"
+    closer = judge(GREEN, CLEAN, [], "needs_closer_look")
     assert closer.verdict == "needs_closer_look"
     # Asking for changes is always allowed: it never approves anything.
-    assert recommend(RED, None, [], "request_changes").verdict == "request_changes"
+    assert judge(RED, None, [], "request_changes").verdict == "request_changes"
 
 
 def test_recommend_reports_its_evidence() -> None:
@@ -479,7 +503,7 @@ def test_recommend_reports_its_evidence() -> None:
         "tests": [{"path": "t.py", "name": "x"}],
     }
     findings = [finding("minor", "style"), finding("important", "design")]
-    result = recommend(GREEN, correctness, findings, "approve")
+    result = judge(GREEN, correctness, findings, "approve")
     assert isinstance(result, Recommendation)
     evidence = result.evidence.as_json()
     assert evidence["ci"] == "passing"
@@ -487,14 +511,14 @@ def test_recommend_reports_its_evidence() -> None:
     assert evidence["tests"] == "1 test covers the change"
     assert evidence["findings"] == {"correctness": 1, "design": 1, "style": 1}
     assert evidence["correctness"] == "clean"
-    assert recommend(GREEN, {**CLEAN, "tests": []}, [], None).evidence.tests == (
+    assert judge(GREEN, {**CLEAN, "tests": []}, [], None).evidence.tests == (
         "no tests found for the change"
     )
     two = {**CLEAN, "tests": [{"path": "a", "name": "b"}, {"path": "c", "name": "d"}]}
-    assert recommend(GREEN, two, [], None).evidence.tests == "2 tests cover the change"
-    missing = recommend(None, None, [], None).evidence.as_json()
+    assert judge(GREEN, two, [], None).evidence.tests == "2 tests cover the change"
+    missing = judge(None, None, [], None).evidence.as_json()
     assert (missing["ci"], missing["tests"], missing["correctness"]) == ("none", None, "missing")
-    issues = recommend(GREEN, {**CLEAN, "findings": [finding()]}, [], None).evidence
+    issues = judge(GREEN, {**CLEAN, "findings": [finding()]}, [], None).evidence
     assert issues.correctness == "issues"
 
 
@@ -803,3 +827,64 @@ def test_line_numbers_must_be_json_integers(line: object) -> None:
     walk = {"steps": [{"title": "t", "body": "b", "hunks": [{"path": "a", "hunk": line}]}]}
     with pytest.raises(InvalidAgentOutput):
         parse_job_output(json.dumps({**walk, "skipped": []}), schema_for(JobKind.WALKTHROUGH))
+
+
+# --- depth, coverage and duplicates in the evidence rule (Task 6 carry b) ----------------------
+
+
+def test_low_coverage_on_a_deep_pr_cannot_be_approved() -> None:
+    thin = Coverage(40.0, 1, 3, [], lines_covered=40, lines_total=100, reviewable_pct=40.0)
+    deep = judge(GREEN, CLEAN, [], "approve", depth="deep", coverage=thin)
+    assert deep.verdict == "needs_closer_look"
+    assert any("read 40.0% of the changed lines" in reason for reason in deep.reasons)
+    # A quick pass needn't read everything, but it must have read something.
+    assert judge(GREEN, CLEAN, [], "approve", depth="quick", coverage=thin).verdict == "approve"
+    nothing = Coverage(0.0, 0, 3, [], lines_covered=0, lines_total=100, reviewable_pct=0.0)
+    blind = judge(GREEN, CLEAN, [], "approve", depth="quick", coverage=nothing)
+    assert "the correctness pass read none of the changed lines" in blind.reasons
+    # Lockfiles don't count against the floor: reviewable lines do.
+    locked = Coverage(10.0, 1, 2, [], lines_covered=10, lines_total=100, lines_auto_skipped=90,
+                      reviewable_pct=100.0)  # fmt: skip
+    assert judge(GREEN, CLEAN, [], "approve", depth="deep", coverage=locked).verdict == "approve"
+    floor = Coverage(DEEP_COVERAGE_FLOOR, 1, 1, [], lines_covered=9, lines_total=10,
+                     reviewable_pct=DEEP_COVERAGE_FLOOR)  # fmt: skip
+    assert judge(GREEN, CLEAN, [], "approve", depth="deep", coverage=floor).verdict == "approve"
+
+
+def test_unknown_or_incomplete_coverage_never_approves() -> None:
+    unknown = judge(GREEN, CLEAN, [], "approve", coverage=None)
+    assert unknown.verdict == "needs_closer_look"
+    assert "the correctness pass's coverage of the diff is unknown" in unknown.reasons
+    cut = Coverage(99.0, 3, 4, [], lines_covered=99, lines_total=100, reviewable_pct=99.0,
+                   complete=False, incomplete_reason="the diff is over 32 MiB")  # fmt: skip
+    partial = judge(GREEN, CLEAN, [], "approve", coverage=cut)
+    assert partial.verdict == "needs_closer_look"
+    assert any("the diff is over 32 MiB" in reason for reason in partial.reasons)
+
+
+def test_evidence_carries_depth_and_the_passs_coverage() -> None:
+    result = judge(GREEN, CLEAN, [], "approve", depth="deep").evidence.as_json()
+    assert result["depth"] == "deep"
+    assert result["correctness_coverage"] == {
+        "pct": 100.0,
+        "reviewable_pct": 100.0,
+        "complete": True,
+    }
+    assert judge(GREEN, CLEAN, [], coverage=None).evidence.as_json()["correctness_coverage"] is None
+
+
+def test_findings_are_deduplicated_before_counting() -> None:
+    """The correctness pass and the findings job often report the same issue: it counts
+    once, at its most severe."""
+    pass_findings = [finding("minor"), finding("minor", "style")]
+    correctness = {**CLEAN, "findings": pass_findings}
+    findings = [
+        finding("important"),  # the same correctness issue, rated higher
+        finding("minor", "style"),  # the same style issue
+        {**finding("minor", "style"), "start_line": 9, "end_line": 9},  # another place
+        {"group": "design", "severity": "minor"},  # no location: never merged
+        {"group": "design", "severity": "minor"},
+    ]
+    result = judge(GREEN, correctness, findings, "approve")
+    assert result.evidence.findings == {"correctness": 1, "design": 2, "style": 2}
+    assert result.verdict == "needs_closer_look"  # the important one still blocks

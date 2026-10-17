@@ -70,3 +70,42 @@ async def test_jobs_need_the_agents_service(cfg: Config, tmp_path: Path) -> None
     with pytest.raises(HTTPException, match="not started"):
         _ = module.jobs
     conn.close()
+
+
+async def test_the_pipeline_needs_agents_and_github_and_runs_the_pre_reviews(
+    cfg: Config, tmp_path: Path
+) -> None:
+    from jesinia.apps.review.application.pipeline import Pipeline
+    from jesinia.services.github.application.service import GitHubService
+
+    async def no_token() -> str | None:
+        return None
+
+    class NoCache:
+        def get(self, key: str) -> None:
+            return None
+
+        def put(self, key: str, etag: str, status: int, data: object) -> None:
+            return None
+
+        def prune(self, older_than: object) -> int:
+            return 0
+
+    module = ReviewModule()
+    with pytest.raises(HTTPException, match="not started"):
+        _ = module.pipeline
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    with pytest.raises(HTTPException, match="agents service and the github service"):
+        _ = module.pipeline
+    await module.stop()
+
+    conn = open_db(tmp_path / "agents", SESSIONS_DB)
+    agents = SessionService(SqliteSessionStore(conn), {}, tmp_path / "s", "http://x/mcp", dict)
+    ctx = AppContext(cfg, EventBus(), Scheduler())
+    ctx.services["agents"] = agents
+    ctx.services["github"] = GitHubService(no_token, NoCache())
+    await module.start(ctx)
+    assert isinstance(module.pipeline, Pipeline)
+    assert module.scheduler.runs_pre_reviews
+    await module.stop()
+    conn.close()

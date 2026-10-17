@@ -37,6 +37,7 @@ from pathlib import Path
 from jesinia.apps.review.application.ports import KeepProvider
 from jesinia.apps.review.domain.repo_access import CappedOutput, RegexDialect
 from jesinia.apps.review.domain.workspace import (
+    DiffTooLargeError,
     GitCommandError,
     GitOutputError,
     GitTimeoutError,
@@ -51,7 +52,7 @@ from jesinia.apps.review.domain.workspace import (
     parse_repo,
 )
 
-__all__ = ["EMPTY_TREE", "GitWorkspace", "github_remote_url"]
+__all__ = ["DIFF_LIMIT", "EMPTY_TREE", "GitWorkspace", "github_remote_url"]
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +120,9 @@ _DIFF_OPTIONS = (
     "--diff-algorithm=myers",
     "--indent-heuristic",
 )
+# Bytes of diff output read before git is stopped: room for a 5,000-line PR with a 2 MB
+# lockfile many times over, and a bound on what one huge binary or generated file can cost.
+DIFF_LIMIT = 32 * 1024 * 1024
 _KEEP_PREFIX = "refs/jesinia/keep/"
 # The remote's default branch (its HEAD) as last fetched: where the repo's review standards
 # are read from (R39). Outside the keep prefix, so a prune never drops it.
@@ -141,6 +145,8 @@ class GitWorkspace:
             (``github_remote_url`` in production, a local path in tests).
         command_timeout: seconds any git command but ``fetch`` may run.
         fetch_timeout: seconds a ``fetch`` may run.
+        diff_limit: bytes of diff output ``diff`` and ``patch_ids`` read before they stop
+            git and raise ``DiffTooLargeError``.
     """
 
     def __init__(
@@ -150,8 +156,10 @@ class GitWorkspace:
         *,
         command_timeout: float = 60.0,
         fetch_timeout: float = 300.0,
+        diff_limit: int = DIFF_LIMIT,
     ) -> None:
         self.root = root
+        self._diff_limit = diff_limit
         self._remote_url = remote_url
         self._command_timeout = command_timeout
         self._fetch_timeout = fetch_timeout
@@ -255,13 +263,20 @@ class GitWorkspace:
             return path
 
     async def diff(self, repo: str, base_sha: str, head_sha: str) -> str:
-        return await self._git(
+        """The unified diff ``base_sha..head_sha``.
+
+        Raises:
+            DiffTooLargeError: it is over the workspace's ``diff_limit`` bytes.
+        """
+        out = await self._run(
             _bare(self._mirror(repo)),
             "diff",
             *_DIFF_OPTIONS,
             check_sha(base_sha),
             check_sha(head_sha),
+            output_limit=self._diff_limit,
         )
+        return out.decode(errors="replace")
 
     async def merge_base(self, repo: str, a: str, b: str) -> str:
         out = await self._git(_bare(self._mirror(repo)), "merge-base", check_sha(a), check_sha(b))
@@ -273,13 +288,19 @@ class GitWorkspace:
         Conservative by design: context lines are hashed, so a base change within three
         lines of a hunk, or to a renamed file's old content, changes the ID. Callers see
         that as "content differs" and re-review, never as a missed change.
+
+        Raises:
+            DiffTooLargeError: the (binary) patch is over the workspace's ``diff_limit``.
         """
         mirror = _bare(self._mirror(repo))
         base, head = check_sha(base_sha), check_sha(head_sha)
         options = (*_DIFF_OPTIONS, "--binary")  # binary edits hash by content
-        names = await self._run(mirror, "diff", *options, "--name-only", "-z", base, head)
+        cap = self._diff_limit
+        names = await self._run(
+            mirror, "diff", *options, "--name-only", "-z", base, head, output_limit=cap
+        )
         paths = [os.fsdecode(name) for name in names.split(b"\0") if name]
-        patch = await self._run(mirror, "diff", *options, base, head)
+        patch = await self._run(mirror, "diff", *options, base, head, output_limit=cap)
         chunks = [chunk for chunk in _FILE_HEADER.split(patch) if chunk]
         if len(paths) != len(chunks):
             raise GitOutputError(
@@ -510,9 +531,16 @@ class GitWorkspace:
         *args: str,
         stdin: bytes | None = None,
         timeout: float | None = None,
+        output_limit: int | None = None,
     ) -> bytes:
-        """Run git at ``location`` (``--git-dir`` for the mirror, ``-C`` for a worktree)."""
-        argv, out, err, code, _ = await self._execute(location, args, stdin=stdin, timeout=timeout)
+        """Run git at ``location`` (``--git-dir`` for the mirror, ``-C`` for a worktree).
+        With ``output_limit``, only diffs are run: past it git is stopped and
+        ``DiffTooLargeError`` raised."""
+        argv, out, err, code, truncated = await self._execute(
+            location, args, stdin=stdin, timeout=timeout, output_limit=output_limit
+        )
+        if truncated:
+            raise DiffTooLargeError(argv, output_limit or 0)
         if code:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
         return out

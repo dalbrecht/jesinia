@@ -499,6 +499,38 @@ class SqliteReviewStore:
             for repo, number, head, verdict, evidence, coverage in rows
         }
 
+    def latest_round_on_head(self, ref: PrRef, head_sha: str) -> tuple[int, RoundStatus] | None:
+        """The newest round on ``(ref, head_sha)`` with its status, or ``None``."""
+        row = self._conn.execute(
+            "SELECT id, finished_at IS NOT NULL, error, interrupted FROM rounds "
+            "WHERE repo = ? AND number = ? AND head_sha = ? ORDER BY id DESC LIMIT 1",
+            (ref.repo, ref.number, head_sha),
+        ).fetchone()
+        if row is None:
+            return None
+        round_id, finished, error, interrupted = row
+        return round_id, RoundStatus(bool(finished), error, bool(interrupted))
+
+    def set_depth(self, ref: PrRef, head_sha: str, round_id: int, depth: Depth) -> None:
+        """Record the depth a round runs at, on the round and (while the PR is still at
+        ``head_sha``) on its queue row."""
+        with transaction(self._conn):
+            self._conn.execute("UPDATE rounds SET depth = ? WHERE id = ?", (depth, round_id))
+            self._conn.execute(
+                "UPDATE prs SET depth = ? WHERE repo = ? AND number = ? AND head_sha = ?",
+                (depth, ref.repo, ref.number, head_sha),
+            )
+
+    def set_verdict(self, round_id: int, verdict: str) -> None:
+        self._conn.execute("UPDATE rounds SET verdict = ? WHERE id = ?", (verdict, round_id))
+
+    def artifacts(self, round_id: int) -> dict[str, object]:
+        """Every artifact of a round, by kind."""
+        rows = self._conn.execute(
+            "SELECT kind, json FROM artifacts WHERE round_id = ?", (round_id,)
+        )
+        return {kind: json.loads(data) for kind, data in rows}
+
     def put_artifact(self, round_id: int, kind: str, data: object) -> None:
         self._conn.execute(
             "INSERT INTO artifacts (round_id, kind, json) VALUES (?, ?, ?) "

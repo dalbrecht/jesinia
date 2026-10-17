@@ -250,3 +250,18 @@ class QueueStore(Protocol):
     def keep_shas(self) -> set[tuple[str, str]]:
         """(repo, sha) of the head and base of every queued PR, of rounds still running, and
         of each queued PR's latest finished round unless it is done."""
+
+
+class PipelineStore(QueueStore, Protocol):
+    """What the review pipeline adds to the queue's store."""
+
+    def artifacts(self, round_id: int) -> dict[str, object]:
+        """Every artifact of a round, by kind."""
+
+    def latest_round_on_head(self, ref: PrRef, head_sha: str) -> tuple[int, RoundStatus] | None:
+        """The newest round on ``(ref, head_sha)`` and its status (``interruptions`` is not
+        counted here)."""
+
+    def set_depth(self, ref: PrRef, head_sha: str, round_id: int, depth: Depth) -> None: ...
+
+    def set_verdict(self, round_id: int, verdict: str) -> None: ...

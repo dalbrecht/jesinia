@@ -58,6 +58,17 @@ class GitCommandError(WorkspaceError):
         self.stderr = stderr
 
 
+class DiffTooLargeError(WorkspaceError):
+    """A diff printed more than the workspace reads (``limit`` bytes); git was stopped rather
+    than buffered. Callers state the cap (coverage marks the diff incomplete)."""
+
+    def __init__(self, argv: tuple[str, ...], limit: int) -> None:
+        span = "..".join(arg[:12] for arg in argv[-2:])
+        super().__init__(f"the diff {span} is over {limit} bytes")
+        self.argv = argv
+        self.limit = limit
+
+
 class GitOutputError(WorkspaceError):
     """git's output did not have the shape the workspace relies on."""
 

@@ -22,3 +22,17 @@ class JobFailed(ReviewJobError):
         super().__init__(f"the {job.value} job failed: {cause}")
         self.job = job
         self.cause = cause
+
+
+class RoundPreparationError(ReviewJobError):
+    """A review round couldn't be prepared: the PR, its commits or its diff couldn't be read
+    (``cause``, also chained as ``__cause__``), or its head moved on. No job ran."""
+
+    def __init__(self, message: str, cause: BaseException | None = None) -> None:
+        super().__init__(message if cause is None else f"{message}: {cause}")
+        self.cause = cause
+
+
+class HeadMovedOnError(RoundPreparationError):
+    """The PR's head is no longer the one this round was started for; the new head gets a
+    round of its own once it settles."""

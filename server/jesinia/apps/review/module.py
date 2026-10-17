@@ -15,9 +15,15 @@ from fastapi import APIRouter, HTTPException, status
 
 from jesinia.apps.review.api.tools import build_tools
 from jesinia.apps.review.application.jobs import JobRunner
+from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
 from jesinia.apps.review.application.repo_tools import RepoTools
-from jesinia.apps.review.application.scheduler import PRUNE_INTERVAL, Scheduler, WorkspacePruner
+from jesinia.apps.review.application.scheduler import (
+    PRUNE_INTERVAL,
+    PreReviewRequest,
+    Scheduler,
+    WorkspacePruner,
+)
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
@@ -56,6 +62,7 @@ class ReviewModule:
         self._scheduler: Scheduler | None = None
         self._pruner: WorkspacePruner | None = None
         self._jobs: JobRunner | None = None
+        self._pipeline: Pipeline | None = None
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -95,6 +102,21 @@ class ReviewModule:
         return self._jobs
 
     @property
+    def pipeline(self) -> Pipeline:
+        """Pre-reviews and opening PRs (needs the agents and github services)."""
+        if self._pipeline is None:
+            if self._workspace is not None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "reviews require the agents service and the github service",
+                )
+            raise _not_started()
+        return self._pipeline
+
+    async def _prereview(self, request: PreReviewRequest) -> None:
+        await self.pipeline.prereview(request)
+
+    @property
     def scheduler(self) -> Scheduler:
         if self._scheduler is None:
             raise _not_started()
@@ -128,14 +150,16 @@ class ReviewModule:
         )
         self.sessions.use_tree_locks(self._workspace.tree_lock)
         store = SqliteReviewStore(self._conn)
-        # The review pipeline (plan Task 6) supplies the pre-review runner; until then the
-        # gates are applied and ready PRs show as queued.
-        self._scheduler = Scheduler(store, _utc_now)
+        agents = ctx.services.get("agents")
+        github = ctx.services.get("github")
+        reviews = isinstance(agents, SessionService) and isinstance(github, GitHubService)
+        # The review pipeline runs the pre-reviews; without agents and GitHub the gates are
+        # still applied and ready PRs show as queued.
+        self._scheduler = Scheduler(store, _utc_now, run=self._prereview if reviews else None)
         if interrupted := self._scheduler.recover():
             log.info("re-queued %d review rounds left running by a stop", interrupted)
         self._pruner = WorkspacePruner(store, self._workspace, self.sessions.bound_trees)
         ctx.scheduler.every(PRUNE_JOB, PRUNE_INTERVAL, self.prune_workspace, at_start=True)
-        agents = ctx.services.get("agents")
         if isinstance(agents, SessionService):
             self._jobs = JobRunner(
                 agents,
@@ -144,16 +168,27 @@ class ReviewModule:
                 registry=self.sessions,
                 store=store,
             )
-        github = ctx.services.get("github")
         if isinstance(github, GitHubService):
-            self._queue = QueueService(
-                PrClient(github), store, _utc_now, on_change=self._scheduler.tick
-            )
+            prs = PrClient(github)
+            self._queue = QueueService(prs, store, _utc_now, on_change=self._scheduler.tick)
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_queue, at_start=True)
+            if self._jobs is not None:
+                self._pipeline = Pipeline(
+                    github=prs,
+                    files=self._queue,
+                    workspace=self._workspace,
+                    jobs=self._jobs,
+                    store=store,
+                    bus=ctx.bus,
+                    clock=_utc_now,
+                )
 
     async def stop(self) -> None:
+        if self._pipeline is not None:
+            await self._pipeline.stop()
         if self._scheduler is not None:
             await self._scheduler.stop()
+        self._pipeline = None
         self._scheduler = None
         self._jobs = None
         self._queue = None

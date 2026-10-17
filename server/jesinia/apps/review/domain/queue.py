@@ -56,6 +56,11 @@ class PrNotOpenError(QueueDomainError):
     """Only open PRs can be loaded for review."""
 
 
+class ReviewNotAllowedError(QueueDomainError):
+    """The author hasn't consented to running agents on this PR's code: it is in a suggested
+    repo (someone else's) and wasn't loaded (ruling R29a)."""
+
+
 class PrHeadMovedError(QueueDomainError):
     """The PR's head is no longer the commit asked for (it was pushed to since)."""
 
