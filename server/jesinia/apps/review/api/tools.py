@@ -14,6 +14,7 @@ from jesinia.apps.review.domain.repo_access import (
     GREP_MAX_MATCHES,
     GREP_MAX_PATTERN_CHARS,
     READ_LINES_PER_CALL,
+    REGEX_MAX_REPEAT,
 )
 from jesinia.core.module import CallContext, ToolDef
 
@@ -96,9 +97,11 @@ def build_tools(host: RepoToolsHost) -> Sequence[ToolDef]:
         ),
         ToolDef(
             "repo_grep",
-            f"Search the PR's tracked files with an extended regex, optionally limited by a "
-            f"glob. At most {GREP_MAX_MATCHES} matches; matched lines count against the "
-            f"per-file allowance. {scope}",
+            "Search the PR's tracked files: plain text literally, otherwise as an extended "
+            "regex (\\w, \\s and \\d work; backreferences, nested quantifiers and repeat "
+            f"counts over {REGEX_MAX_REPEAT} are refused). Optionally limited by a glob. At most "
+            f"{GREP_MAX_MATCHES} matches; matched lines count against the per-file allowance. "
+            f"{scope}",
             RepoGrepIn,
             repo_grep,
             False,
@@ -115,7 +118,10 @@ def build_tools(host: RepoToolsHost) -> Sequence[ToolDef]:
             "Read the PR's history: git log (--oneline, --stat, -p, --follow, --name-only, "
             "--name-status, -n <k>, --since=, --author=), show (--oneline, --stat, -p, "
             "--name-only, --name-status, <rev>, <rev>:<path>) or blame (-L <a>,<b>, [<rev>] "
-            "<path>). Put paths after '--'. Other options are refused. " + scope,
+            "<path>). Revisions must name commits; put paths after '--'. Other options are "
+            "refused. File content (show <commit>:<path>, blame) obeys repo_read's skip rules "
+            "and per-file allowance; -p diffs cover every changed file, auto-skipped ones "
+            "included, within the per-call caps. " + scope,
             RepoGitIn,
             repo_git,
             False,

@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Sequence
+import unicodedata
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import BinaryIO, NotRequired, TypedDict
 
 from jesinia.apps.review.application.ports import TreeGit
 from jesinia.apps.review.domain.repo_access import (
@@ -33,13 +34,16 @@ from jesinia.apps.review.domain.repo_access import (
     FileLineAllowance,
     InvalidReadRangeError,
     NoReviewSessionError,
+    NotACommitError,
     RepoGitError,
     RepoPathNotFoundError,
     UnsafePathError,
     check_glob,
     check_pattern,
+    is_plain_text,
     normalize_relative_path,
     plan_git_command,
+    posix_ere,
 )
 from jesinia.apps.review.domain.skip import auto_skip_reason, directory_skip_reason
 from jesinia.apps.review.domain.workspace import GitCommandError, WorkspaceError
@@ -122,25 +126,70 @@ def _is_binary(sample: bytes) -> bool:
     return b"\0" in sample[:_BINARY_SNIFF_BYTES]
 
 
+def _logical_lines(handle: BinaryIO) -> Iterator[bytes]:
+    """Each line of ``handle``, cut to ``READ_MAX_BYTES + 1`` bytes; the rest of an
+    over-long line is skipped without ever being held in memory whole."""
+    while raw := handle.readline(READ_MAX_BYTES + 1):
+        if len(raw) > READ_MAX_BYTES and not raw.endswith(b"\n"):
+            while (rest := handle.readline(READ_MAX_BYTES)) and not rest.endswith(b"\n"):
+                pass
+        yield raw
+
+
 def _read_lines(path: Path, first: int, count: int) -> tuple[list[str], bool, bool]:
     """Lines ``first``.. (at most ``count``) of ``path``, whether more follow, and whether
     the byte cap stopped the read. A single line longer than the cap is cut to it."""
     lines: list[str] = []
     size = 0
-    byte_capped = False
     with path.open("rb") as handle:
-        for number, raw in enumerate(handle, start=1):
+        for number, raw in enumerate(_logical_lines(handle), start=1):
             if number < first:
                 continue
             if len(lines) == count:
-                return lines, True, byte_capped
+                return lines, True, False
             if size + len(raw) > READ_MAX_BYTES:
                 if not lines:
                     lines.append(raw[:READ_MAX_BYTES].decode(errors="replace"))
                 return lines, True, True
             lines.append(raw.decode(errors="replace"))
             size += len(raw)
-    return lines, False, byte_capped
+    return lines, False, False
+
+
+def _allowance_key(root: Path, rel: str) -> str:
+    """The allowance key of a worktree path: the file's identity on disk, so case, Unicode
+    normalization, symlink and hardlink spellings of one file share one allowance. A path
+    with no file on disk (deleted in the PR) is keyed by its folded spelling."""
+    try:
+        stat = (root / rel).stat()
+    except OSError:
+        return "path:" + unicodedata.normalize("NFC", rel).casefold()
+    return f"inode:{stat.st_dev}:{stat.st_ino}"
+
+
+def _parse_grep(data: bytes) -> list[tuple[str, int, bytes]]:
+    """``git grep -n -z`` records as ``(path, line, text)``.
+
+    Parsed NUL-first: a path may contain a newline, but the matched text can't (it is one
+    line), so each field after a line number is ``<text>\n<next path>``. A final record cut
+    mid-way is dropped.
+
+    Raises:
+        RepoGitError: output that isn't in that shape (a NUL inside matched text).
+    """
+    fields = data.split(b"\0")
+    records: list[tuple[str, int, bytes]] = []
+    path = fields[0]
+    for index in range(1, len(fields) - 1, 2):
+        line, rest = fields[index], fields[index + 1]
+        text, newline, following = rest.partition(b"\n")
+        if not newline:
+            break
+        if not line.isdigit():
+            raise RepoGitError("could not parse git grep output; narrow the search with a glob")
+        records.append((os.fsdecode(path), int(line), text))
+        path = following
+    return records
 
 
 class RepoTools:
@@ -161,6 +210,7 @@ class RepoTools:
         self._sessions_to_worktree = sessions_to_worktree
         self._git = git
         self._allowance = allowance
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def read(
         self, session_id: str | None, path: str, start: int | None = None, end: int | None = None
@@ -185,22 +235,26 @@ class RepoTools:
         with target.open("rb") as handle:
             sample = handle.read(_BINARY_SNIFF_BYTES)
         self._refuse_skipped(rel, _is_binary(sample))
-        remaining = self._remaining(session, rel)
-        wanted = last - first + 1
-        budget = min(wanted, READ_LINES_PER_CALL, remaining)
-        lines, has_more, byte_capped = await asyncio.to_thread(_read_lines, target, first, budget)
-        self._allowance.take(session, rel, len(lines))
-        truncated = has_more and len(lines) < wanted
+        key = _allowance_key(root, rel)
+        wanted = min(last - first + 1, READ_LINES_PER_CALL)
+        granted = await self._reserve(session, key, rel, wanted)
+        lines: list[str] = []
+        try:
+            lines, has_more, byte_capped = await asyncio.to_thread(
+                _read_lines, target, first, granted
+            )
+        finally:
+            self._allowance.refund(session, key, granted - len(lines))
+        truncated = has_more and len(lines) < last - first + 1
+        remaining = self._allowance.remaining(session, key)
         cap = (
             f"repo_read returns at most {READ_LINES_PER_CALL} lines per call (and at most "
             f"{READ_MAX_BYTES // 1024} KB), and {FILE_LINES_PER_SESSION} lines per file per "
-            "review session; "
-            f"{self._allowance.remaining(session, rel)} lines of {rel} remain in this "
-            "session's allowance."
+            f"review session; {remaining} lines of {rel} remain in this session's allowance."
         )
         if truncated and byte_capped:
             cap += f" This read stopped at {READ_MAX_BYTES} bytes."
-        elif truncated and budget == remaining < min(wanted, READ_LINES_PER_CALL):
+        elif truncated and granted < wanted:
             cap += " This read stopped at what remained of the per-file allowance."
         elif truncated:
             cap += " This read stopped at the per-call line cap; ask for the next range."
@@ -211,14 +265,15 @@ class RepoTools:
             "text": "".join(f"{first + i}\t{line}" for i, line in enumerate(lines)),
             "has_more": has_more,
             "truncated": truncated,
-            "allowance_remaining": self._allowance.remaining(session, rel),
+            "allowance_remaining": remaining,
             "cap": cap,
         }
 
     async def grep(
         self, session_id: str | None, pattern: str, glob: str | None = None
     ) -> GrepResult:
-        """Search the PR's tracked files with an extended regex (``git grep -E``).
+        """Search the PR's tracked files: literally for plain text, else as an extended
+        regex (``git grep -F`` / ``-E``).
 
         Binary and auto-skipped files are left out; matched lines count against each file's
         allowance.
@@ -230,8 +285,9 @@ class RepoTools:
         # --cached: search the checked-out commit's blobs, never files (or symlink targets)
         # on disk; --no-column: a user's grep.column=true would change the record format.
         args = ["grep", "--cached", "-I", "-n", "-z", "--no-column", "--no-color"]
-        args += ["--no-textconv", "-E"]
-        args += ["-e", check_pattern(pattern)]
+        plain = is_plain_text(check_pattern(pattern))
+        args += ["--no-textconv", "-F" if plain else "-E"]
+        args += ["-e", pattern if plain else posix_ere(pattern)]
         if glob is not None:
             args += ["--", check_glob(glob)]
         output = await self._run_git(
@@ -241,34 +297,31 @@ class RepoTools:
             glob_pathspecs=glob is not None,
             accept_exit_codes=frozenset({0, 1}),  # 1: nothing matched
         )
-        records = output.data.split(b"\n")
-        if output.truncated:
-            records.pop()  # the last record was cut mid-line
         matches: list[GrepMatch] = []
         skipped: set[str] = set()
+        keys: dict[str, str] = {}
         withheld = 0
         size = 0
         truncated = output.truncated
-        for record in filter(None, records):
-            raw_path, _, rest = record.partition(b"\0")
-            raw_line, _, raw_text = rest.partition(b"\0")
-            rel = os.fsdecode(raw_path)
-            if auto_skip_reason(rel, False) is not None:
+        for rel, line, raw_text in _parse_grep(output.data):
+            # repo_read refuses control characters in paths, so they are skipped here too.
+            if auto_skip_reason(rel, False) is not None or any(ord(c) < 32 for c in rel):
                 skipped.add(rel)
                 continue
             text = raw_text.decode(errors="replace")
-            entry_size = len(raw_path) + min(len(text), GREP_MAX_LINE_CHARS) + 16
+            entry_size = len(rel) + min(len(text), GREP_MAX_LINE_CHARS) + 16
             if len(matches) >= GREP_MAX_MATCHES or size + entry_size > GREP_MAX_BYTES:
                 truncated = True
                 continue
-            if self._allowance.take(session, rel, 1) == 0:
+            key = keys.setdefault(rel, _allowance_key(root, rel))
+            if self._allowance.take(session, key, 1) == 0:
                 withheld += 1
                 continue
             size += entry_size
             matches.append(
                 {
                     "path": rel,
-                    "line": int(raw_line),
+                    "line": line,
                     "text": text[:GREP_MAX_LINE_CHARS],
                     "line_truncated": len(text) > GREP_MAX_LINE_CHARS,
                 }
@@ -328,51 +381,62 @@ class RepoTools:
         }
 
     async def git(self, session_id: str | None, cmd: str, args: Sequence[str]) -> GitResult:
-        """``git log|show|blame`` with allowlisted options, revisions and PR paths.
+        """``git log|show|blame`` with allowlisted options, commits and PR paths.
 
-        ``show <rev>:<path>`` and ``blame`` print a file's content, so they obey the same
-        skip rules and per-file allowance as ``repo_read``.
+        Every revision must name a commit, so file content is reachable only as
+        ``show <commit>:<path>`` or ``blame``; those obey the same skip rules and per-file
+        allowance as ``repo_read``. Paths are checked with ``safe_path`` but passed to git
+        as written, because git looks them up in commits, where symlinks aren't followed.
 
         Raises:
-            NoReviewSessionError, UnsafeGitArgumentError, UnsafePathError,
+            NoReviewSessionError, UnsafeGitArgumentError (NotACommitError), UnsafePathError,
             AutoSkippedFileError, AllowanceExhaustedError, RepoGitError.
         """
         session, root = self._session(session_id)
         plan = plan_git_command(cmd, args)
-        paths = [_relative(root, safe_path(root, p)) for p in plan.paths]
-        blobs = [(rev, _relative(root, safe_path(root, p))) for rev, p in plan.blobs]
+        for path in (*plan.paths, *(blob_path for _, blob_path in plan.blobs)):
+            safe_path(root, path)
+        revisions = [await self._commit(root, revision) for revision in plan.revisions]
+        blobs = [(await self._commit(root, rev), path) for rev, path in plan.blobs]
         # The one file whose content this command prints, if any.
-        content_of = blobs[0][1] if blobs else paths[0] if cmd == "blame" else None
-        line_cap = GIT_MAX_LINES
+        content_of = blobs[0][1] if blobs else plan.paths[0] if cmd == "blame" else None
+        key = None
+        granted = GIT_MAX_LINES
         if content_of is not None:
             self._refuse_skipped(content_of, False)
-            line_cap = min(line_cap, self._remaining(session, content_of))
+            self._refuse_skipped(_relative(root, safe_path(root, content_of)), False)
+            key = _allowance_key(root, content_of)
+            granted = await self._reserve(session, key, content_of, GIT_MAX_LINES)
         if cmd == "blame":
-            revision = plan.revisions[0] if plan.revisions else "HEAD"
+            revision = revisions[0] if revisions else "HEAD"
             argv = ["blame", "--no-ext-diff", "--no-textconv", *plan.options]
-            argv += ["--end-of-options", revision, paths[0]]
+            argv += ["--end-of-options", revision, plan.paths[0]]
         else:
             argv = [cmd, "--no-ext-diff", "--no-textconv", "--no-color", *plan.options]
-            argv += ["--end-of-options", *plan.revisions, *(f"{r}:{p}" for r, p in blobs)]
-            argv += ["--", *paths]
-        output = await self._run_git(root, argv, output_limit=GIT_MAX_BYTES)
-        data = output.data
-        if output.truncated:
-            data = data[: data.rfind(b"\n") + 1]  # whole lines only
-        if content_of is not None:
-            self._refuse_skipped(content_of, _is_binary(data))
-        lines = data.decode(errors="replace").splitlines(keepends=True)
-        truncated = output.truncated or len(lines) > line_cap
-        lines = lines[:line_cap]
+            argv += ["--end-of-options", *revisions, *(f"{r}:{p}" for r, p in blobs)]
+            argv += ["--", *plan.paths]
+        lines: list[str] = []
+        try:
+            output = await self._run_git(root, argv, output_limit=GIT_MAX_BYTES)
+            data = output.data
+            if output.truncated:
+                data = data[: data.rfind(b"\n") + 1]  # whole lines only
+            if content_of is not None:
+                self._refuse_skipped(content_of, _is_binary(data))
+            every_line = data.decode(errors="replace").splitlines(keepends=True)
+            lines = every_line[: min(granted, GIT_MAX_LINES)]
+        finally:
+            if key is not None:
+                self._allowance.refund(session, key, granted - len(lines))
+        truncated = output.truncated or len(every_line) > len(lines)
         cap = (
             f"repo_git returns at most {GIT_MAX_LINES} lines and {GIT_MAX_BYTES // 1024} KB "
-            "per call"
+            "per call, -p diffs included"
         )
-        if content_of is not None:
-            self._allowance.take(session, content_of, len(lines))
+        if key is not None:
             cap += (
                 f"; {content_of} content counts against its {FILE_LINES_PER_SESSION}-line "
-                f"allowance ({self._allowance.remaining(session, content_of)} lines remain)"
+                f"allowance ({self._allowance.remaining(session, key)} lines remain)"
             )
         return {"cmd": cmd, "output": "".join(lines), "truncated": truncated, "cap": cap}
 
@@ -388,14 +452,44 @@ class RepoTools:
             raise NoReviewSessionError("the worktree for this review session no longer exists")
         return session_id, tree.resolve()
 
-    def _remaining(self, session: str, rel: str) -> int:
-        remaining = self._allowance.remaining(session, rel)
-        if remaining <= 0:
+    async def _reserve(self, session: str, key: str, rel: str, lines: int) -> int:
+        """Reserve up to ``lines`` of a file's allowance before reading anything.
+
+        Reserving up front, then refunding what wasn't returned, is what stops parallel
+        tool calls from each seeing the same remaining allowance. The per-session lock
+        keeps the check and the reservation one step even if this ever needs to await.
+
+        Raises:
+            AllowanceExhaustedError: nothing of the file's allowance is left.
+        """
+        async with self._locks.setdefault(session, asyncio.Lock()):
+            granted = self._allowance.take(session, key, lines)
+        if granted == 0:
             raise AllowanceExhaustedError(
                 f"this review session has read its {FILE_LINES_PER_SESSION} lines per file "
                 f"of {rel}; work from what you have read"
             )
-        return remaining
+        return granted
+
+    async def _commit(self, root: Path, revision: str) -> str:
+        """The commit ``revision`` names, as a full id.
+
+        Raises:
+            NotACommitError: a blob, a tree, or nothing.
+        """
+        output = await self._run_git(
+            root,
+            ["rev-parse", "--verify", "-q", "--end-of-options", f"{revision}^{{commit}}"],
+            output_limit=4096,
+            accept_exit_codes=frozenset({0, 1}),  # 1: not a commit
+        )
+        commit = output.data.decode(errors="replace").strip()
+        if not commit:
+            raise NotACommitError(
+                f"{revision!r} does not name a commit. Read file content with repo_read, "
+                "or with show <commit>:<path>"
+            )
+        return commit
 
     @staticmethod
     def _refuse_skipped(rel: str, is_binary: bool) -> None:

@@ -30,7 +30,12 @@ from jesinia.apps.review.domain.workspace import (
     check_sha,
     parse_repo,
 )
-from jesinia.apps.review.infrastructure.workspace import GitWorkspace, github_remote_url
+from jesinia.apps.review.infrastructure import workspace as workspace_module
+from jesinia.apps.review.infrastructure.workspace import (
+    EMPTY_TREE,
+    GitWorkspace,
+    github_remote_url,
+)
 
 REPO = "acme/widget"
 SPAWN = "jesinia.apps.review.infrastructure.workspace.spawn"
@@ -619,3 +624,55 @@ async def test_a_broken_tree_inside_another_repo_has_no_head(tmp_path: Path) -> 
     broken.mkdir(parents=True)
     assert git(broken, "rev-parse", "HEAD")  # plain git does find the outer repo
     assert await ws._head_of(broken) is None
+
+
+def test_empty_tree_is_gits_own() -> None:
+    out = subprocess.run(
+        ["git", "hash-object", "-t", "tree", "/dev/null"], check=True, capture_output=True
+    )
+    assert out.stdout.decode().strip() == EMPTY_TREE
+
+
+async def test_every_repository_command_ignores_in_tree_attributes(
+    tmp_path: Path, fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded: list[tuple[str, ...]] = []
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+
+    async def recording_spawn(*argv: str, **kwargs: Any) -> Any:
+        recorded.append(argv)
+        return await real_spawn(*argv, **kwargs)
+
+    monkeypatch.setattr(SPAWN, recording_spawn)
+    ws = await fetched(tmp_path, fixture)
+    await ws.worktree(REPO, fixture.head)
+    await ws.diff(REPO, fixture.base, fixture.head)
+    await ws.patch_ids(REPO, fixture.base, fixture.head)
+    repository_commands = [argv for argv in recorded if "init" not in argv]
+    assert repository_commands
+    assert all(f"--attr-source={EMPTY_TREE}" in argv for argv in repository_commands)
+
+
+async def test_kill_treats_eperm_as_nothing_left_to_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # macOS answers EPERM for a process group whose only members are zombies.
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+    proc: asyncio.subprocess.Process = await real_spawn("true", start_new_session=True)
+    await asyncio.sleep(0.05)
+
+    def refuse(pid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("os.killpg", refuse)
+    await workspace_module._kill(proc)
+    assert proc.returncode == 0
+
+
+async def test_stderr_is_read_with_a_cap() -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"e" * 100_000)
+    reader.feed_eof()
+    kept = await workspace_module._read_capped(reader, 1000)
+    assert kept == b"e" * 1000
+    assert reader.at_eof()  # the rest was drained, so git never blocks on a full pipe

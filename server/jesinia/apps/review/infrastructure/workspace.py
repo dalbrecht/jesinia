@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
 import re
@@ -46,7 +47,7 @@ from jesinia.apps.review.domain.workspace import (
     parse_repo,
 )
 
-__all__ = ["GitWorkspace", "github_remote_url"]
+__all__ = ["EMPTY_TREE", "GitWorkspace", "github_remote_url"]
 
 log = logging.getLogger(__name__)
 
@@ -76,14 +77,26 @@ _GIT_OPTIONS = (
     *("-c", "submodule.recurse=false"),
     *("-c", "protocol.ext.allow=never"),
 )
-# For the repo tools' reads: no colour codes from the user's config, no gpg run on a PR's
-# (untrusted) commit signatures, and git's default regex flavour for `log --author=` (a
-# user's `grep.patternType=perl` would allow backtracking patterns).
+# The empty tree's id, as `git hash-object -t tree /dev/null` prints it (SHA-1, which is
+# what GitHub repositories use). Every command in a repository runs with it as
+# `--attr-source`, so a PR's own .gitattributes can't mark source as binary (hiding it from
+# grep and diffs), change line endings or encodings on checkout, or pick diff drivers.
+# Needs git 2.40 or later; older git fails with a typed GitCommandError naming the option.
+EMPTY_TREE = hashlib.sha1(b"tree 0\0", usedforsecurity=False).hexdigest()
+# For the repo tools' reads: no colour codes from the user's config; no gpg run on a PR's
+# (untrusted) commit signatures; ERE for `log --author=` (the repo tools validate it as
+# ERE, and a user's grep.patternType=perl would allow backtracking); and no PR-supplied
+# files consulted through the user's global config: .git-blame-ignore-revs could hide
+# authorship, and .mailmap could rewrite the authors shown and matched.
 _TREE_READ_OPTIONS = (
     *("-c", "color.ui=never"),
     *("-c", "log.showSignature=false"),
-    *("-c", "grep.patternType=basic"),
+    *("-c", "grep.patternType=extended"),
+    *("-c", "blame.ignoreRevsFile="),
+    *("-c", "log.mailmap=false"),
 )
+# git's stderr kept for error messages; the rest is drained and dropped.
+_STDERR_LIMIT = 64 * 1024
 # Pinned so the user's diff.* settings never change what later steps parse.
 _DIFF_OPTIONS = (
     "--no-color",
@@ -327,7 +340,9 @@ class GitWorkspace:
         output_limit: int | None = None,
     ) -> tuple[tuple[str, ...], bytes, bytes, int, bool]:
         """Run git; return its argv, stdout, stderr, exit code and whether stdout was cut."""
-        argv = ("git", *_GIT_OPTIONS, *location, *args)
+        # Only `init` runs outside a repository, and it reads no attributes.
+        attributes = (f"--attr-source={EMPTY_TREE}",) if location else ()
+        argv = ("git", *_GIT_OPTIONS, *attributes, *location, *args)
         env = {k: v for k, v in os.environ.items() if k not in _INHERITED_REPO_VARIABLES}
         env |= _GIT_ENV | {"GIT_CEILING_DIRECTORIES": str(self.root.resolve())}
         env |= extra_env or {}
@@ -365,7 +380,7 @@ async def _communicate_capped(
     """Read at most ``limit`` bytes of stdout; past that, kill git rather than buffer more."""
     stdout, stderr = proc.stdout, proc.stderr
     assert stdout is not None and stderr is not None  # spawned with PIPE
-    errors = asyncio.ensure_future(stderr.read())
+    errors = asyncio.ensure_future(_read_capped(stderr, _STDERR_LIMIT))
     try:
         try:
             out = (await stdout.readexactly(limit + 1))[:limit]
@@ -379,11 +394,22 @@ async def _communicate_capped(
         errors.cancel()  # a no-op once read; stops the reader if we were cancelled
 
 
+async def _read_capped(stream: asyncio.StreamReader, limit: int) -> bytes:
+    """Keep the first ``limit`` bytes of ``stream`` and drain the rest, so the writer never
+    blocks on a full pipe."""
+    kept = b""
+    while chunk := await stream.read(65536):
+        kept += chunk[: max(0, limit - len(kept))]
+    return kept
+
+
 async def _kill(proc: asyncio.subprocess.Process) -> None:
     """Kill git's whole process group and reap it.
 
     macOS answers EPERM, not ESRCH, when the group's only members are zombies (git already
-    exited and is waiting to be reaped), so both mean "nothing left to kill".
+    exited and is waiting to be reaped), so both mean "nothing left to kill". EPERM can't
+    mean a recycled pgid belonging to someone else: the group is git's own session (its pid),
+    and that pid can't be reused until ``proc.wait()`` below reaps it.
     """
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)

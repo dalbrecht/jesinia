@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from jesinia.apps.review.api.tools import RepoGitIn, RepoGrepIn, RepoLsIn, RepoReadIn, build_tools
 from jesinia.apps.review.application.ports import TreeGit
-from jesinia.apps.review.application.repo_tools import RepoTools, safe_path
+from jesinia.apps.review.application.repo_tools import RepoTools, _parse_grep, safe_path
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.domain.repo_access import (
     FILE_LINES_PER_SESSION,
@@ -30,19 +30,25 @@ from jesinia.apps.review.domain.repo_access import (
     READ_MAX_BYTES,
     AllowanceExhaustedError,
     AutoSkippedFileError,
+    CappedOutput,
     FileLineAllowance,
     InvalidSearchError,
     NoReviewSessionError,
+    NotACommitError,
+    RepoGitError,
     RepoPathNotFoundError,
     RepoToolError,
     UnsafeGitArgumentError,
     UnsafePathError,
     check_glob,
+    check_pattern,
     check_revision,
     normalize_relative_path,
     plan_git_command,
+    posix_ere,
+    regex_problem,
 )
-from jesinia.apps.review.infrastructure.workspace import GitWorkspace
+from jesinia.apps.review.infrastructure.workspace import EMPTY_TREE, GitWorkspace
 from jesinia.apps.review.module import ReviewModule
 from jesinia.core.config import Config
 from jesinia.core.events import EventBus
@@ -106,7 +112,18 @@ def tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Tree]:
         git(work, "checkout", "-q", "-b", "main")
         (work / "src").mkdir()
         (work / "src" / "app.py").write_text("def hello():\n    return 'needle'\n")
+        (work / "old.txt").write_text("old content\n")
         first = commit_all(work, "first")
+
+        (work / "old.txt").unlink()
+        # The PR tries to hide two source files from search and from diffs.
+        (work / ".gitattributes").write_text("hidden.py -diff\nhidden2.py binary\n")
+        (work / "hidden.py").write_text("secretive_marker = 1\n")
+        (work / "hidden2.py").write_text("secretive_marker = 2\n")
+        (work / "caf\u00e9.txt").write_text("accent\n")  # NFC spelling on disk
+        (work / "evil\nsrc").mkdir()
+        (work / "evil\nsrc" / "x.py").write_text("newline_marker\n")
+        (work / "alias.txt").symlink_to("big.txt")
 
         (work / "src" / "app.py").write_text("def hello():\n    return 'needle v2'\n")
         (work / "big.txt").write_text("".join(f"line {i}\n" for i in range(1, 5001)))
@@ -300,6 +317,12 @@ def test_file_line_allowance_is_per_session_and_path() -> None:
     allowance.drop("never-seen")
     assert allowance.remaining("s1", "a") == 5
     assert allowance.take("s1", "a", -1) == 0 and allowance.remaining("s1", "a") == 5
+    allowance.take("s1", "a", 4)
+    allowance.refund("s1", "a", 10)  # never refunds more than was used
+    assert allowance.remaining("s1", "a") == 5
+    allowance.refund("s1", "never-read", 3)
+    allowance.refund("nobody", "a", 3)
+    assert allowance.remaining("s1", "never-read") == 5
 
 
 # --- repo_read -------------------------------------------------------------------------------
@@ -378,6 +401,9 @@ async def test_read_stops_at_the_byte_cap(tools: RepoTools, tree: Tree) -> None:
         one = await tools.read(SESSION, "wide.txt")
         assert one["end"] == 1 and one["truncated"] is True
         assert len(one["text"]) == READ_MAX_BYTES + 2  # "1\t" prefix
+        wide.write_text("z" * 600_000 + "\nsecond\n")  # the over-long line is skipped
+        after = await tools.read(SESSION, "wide.txt", start=2)
+        assert after["text"] == "2\tsecond\n"
     finally:
         huge.unlink()
         wide.unlink()
@@ -403,7 +429,8 @@ async def test_caps_are_reported(tools: RepoTools) -> None:
 async def test_grep_matches_count_against_the_file_allowance(
     tools: RepoTools, registry: ReviewSessionRegistry
 ) -> None:
-    registry.allowance.take(SESSION, "many.txt", FILE_LINES_PER_SESSION - 100)
+    for _ in range(13):  # 13 x 300 lines: 100 of the 4000 remain
+        await tools.read(SESSION, "many.txt")
     found = await tools.grep(SESSION, "needle", glob="many.txt")
     assert len(found["matches"]) == 100
     assert found["withheld_by_allowance"] == 200
@@ -567,7 +594,8 @@ async def test_repo_git_runs_allowlisted_log_show_and_blame(tools: RepoTools, tr
 async def test_repo_git_output_counts_against_the_file_allowance(
     tools: RepoTools, registry: ReviewSessionRegistry
 ) -> None:
-    registry.allowance.take(SESSION, "big.txt", FILE_LINES_PER_SESSION - 5)
+    await tools.read(SESSION, "big.txt", start=1, end=2000)
+    await tools.read(SESSION, "big.txt", start=1, end=1995)
     shown = await tools.git(SESSION, "show", ["HEAD:big.txt"])
     assert shown["output"].count("\n") == 5 and shown["truncated"] is True
     with pytest.raises(AllowanceExhaustedError):
@@ -584,10 +612,10 @@ async def test_repo_git_output_is_capped(tools: RepoTools, monkeypatch: pytest.M
 
 
 async def test_repo_git_failures_keep_gits_explanation(tools: RepoTools) -> None:
-    with pytest.raises(RepoToolError) as caught:
-        await tools.git(SESSION, "log", ["no-such-branch"])
+    with pytest.raises(RepoGitError) as caught:
+        await tools.git(SESSION, "log", ["--follow", "--", "a.py", "b.py"])
     assert caught.value.__cause__ is not None
-    assert "no-such-branch" in str(caught.value)
+    assert "follow" in str(caught.value)
 
 
 async def test_repo_git_runs_hardened(
@@ -602,8 +630,8 @@ async def test_repo_git_runs_hardened(
 
     monkeypatch.delenv("GIT_CONFIG_NOSYSTEM")
     monkeypatch.setattr(SPAWN, recording_spawn)
-    await tools.git(SESSION, "log", ["-p", "HEAD"])
-    await tools.git(SESSION, "show", ["HEAD"])
+    await tools.git(SESSION, "log", ["-p"])
+    await tools.git(SESSION, "show", [])
     await tools.git(SESSION, "blame", ["src/app.py"])
     await tools.grep(SESSION, "needle", glob="*.py")
     await tools.grep(SESSION, "needle")
@@ -612,12 +640,15 @@ async def test_repo_git_runs_hardened(
         assert env["GIT_CONFIG_NOSYSTEM"] == "1"
         assert "--no-pager" in argv and "core.hooksPath=/dev/null" in argv
         assert "log.showSignature=false" in argv and "color.ui=never" in argv
+        assert f"--attr-source={EMPTY_TREE}" in argv  # the PR's .gitattributes are ignored
+        assert "blame.ignoreRevsFile=" in argv and "log.mailmap=false" in argv
         assert argv[argv.index("-C") + 1] == str(tree.path)
     for argv, _ in seen[:3]:
         assert "--no-textconv" in argv and "--no-ext-diff" in argv
         assert "--end-of-options" in argv
-    assert "grep.patternType=basic" in seen[0][0]
+    assert "grep.patternType=extended" in seen[0][0]
     assert "--cached" in seen[3][0] and "--no-column" in seen[3][0]
+    assert "-F" in seen[3][0] and "-E" not in seen[3][0]  # a plain word is searched literally
     assert seen[3][1]["GIT_LITERAL_PATHSPECS"] == "0"  # only for the :(glob) pathspec
     assert seen[4][1]["GIT_LITERAL_PATHSPECS"] == "1"
     blame = seen[2][0]
@@ -651,3 +682,191 @@ async def test_review_module_registers_the_repo_tools(cfg: Config) -> None:
     with pytest.raises(NoReviewSessionError):
         await tool.handler(RepoReadIn(path="a"), CallContext(SESSION))
     await module.stop()
+
+
+# --- fix round 1: bypasses found in review ------------------------------------------------
+
+
+async def test_concurrent_reads_never_exceed_the_allowance(tools: RepoTools) -> None:
+    reads = await asyncio.gather(
+        *(tools.read(SESSION, "big.txt", start=1, end=2000) for _ in range(10)),
+        return_exceptions=True,
+    )
+    returned = 0
+    for r in reads:
+        if isinstance(r, BaseException):
+            assert isinstance(r, AllowanceExhaustedError)
+        else:
+            returned += r["end"] - r["start"] + 1
+    assert returned == FILE_LINES_PER_SESSION
+
+
+async def test_concurrent_git_reads_never_exceed_the_allowance(tools: RepoTools) -> None:
+    shows = await asyncio.gather(
+        *(tools.git(SESSION, "show", ["HEAD:big.txt"]) for _ in range(5)),
+        return_exceptions=True,
+    )
+    returned = sum(r["output"].count("\n") for r in shows if not isinstance(r, BaseException))
+    assert 0 < returned <= FILE_LINES_PER_SESSION
+
+
+async def test_spelling_aliases_share_the_allowance(tools: RepoTools, tree: Tree) -> None:
+    await tools.read(SESSION, "big.txt", start=1, end=2000)
+    await tools.read(SESSION, "alias.txt", start=1, end=1000)  # a symlink to big.txt
+    third = await tools.read(SESSION, "./big.txt", start=1, end=500)
+    assert third["allowance_remaining"] == FILE_LINES_PER_SESSION - 3500
+    if (tree.path / "BIG.TXT").exists():  # case-insensitive filesystem (APFS default)
+        upper = await tools.read(SESSION, "BIG.TXT", start=1, end=10)
+        assert upper["allowance_remaining"] == FILE_LINES_PER_SESSION - 3510
+    nfc, nfd = "caf\u00e9.txt", "cafe\u0301.txt"
+    first = await tools.read(SESSION, nfc)
+    assert first["allowance_remaining"] == FILE_LINES_PER_SESSION - 1
+    if (tree.path / nfd).exists():  # normalization-insensitive filesystem
+        second = await tools.read(SESSION, nfd)
+        assert second["allowance_remaining"] == FILE_LINES_PER_SESSION - 2
+
+
+async def test_show_refuses_blobs_and_trees(tools: RepoTools, tree: Tree) -> None:
+    blob = git(tree.path, "rev-parse", "HEAD:pnpm-lock.yaml")
+    for revision in (blob, blob[:10], "HEAD^{tree}", git(tree.path, "rev-parse", "HEAD^{tree}")):
+        with pytest.raises(NotACommitError, match="repo_read"):
+            await tools.git(SESSION, "show", [revision])
+    with pytest.raises(NotACommitError):
+        await tools.git(SESSION, "show", [f"{blob}:x"])
+    with pytest.raises(NotACommitError):
+        await tools.git(SESSION, "log", [blob])
+    with pytest.raises(NotACommitError):
+        await tools.git(SESSION, "blame", [blob, "src/app.py"])
+    commit = await tools.git(SESSION, "show", ["--stat", "HEAD~1"])
+    assert "first" in commit["output"]
+
+
+async def test_show_of_a_deleted_file_counts_against_its_allowance(
+    tools: RepoTools, tree: Tree
+) -> None:
+    shown = await tools.git(SESSION, "show", [f"{tree.first}:old.txt"])
+    assert shown["output"] == "old content\n"
+    assert f"({FILE_LINES_PER_SESSION - 1} lines remain)" in shown["cap"]
+
+
+async def test_git_paths_are_passed_as_written_not_as_resolved(tools: RepoTools) -> None:
+    # inner is a symlink in the tree: git's <rev>:<path> doesn't follow it.
+    with pytest.raises(RepoGitError):
+        await tools.git(SESSION, "show", ["HEAD:inner/app.py"])
+    assert (await tools.git(SESSION, "show", ["HEAD:src/app.py"]))["output"].startswith("def")
+
+
+async def test_pr_gitattributes_cannot_hide_files(tools: RepoTools) -> None:
+    found = await tools.grep(SESSION, "secretive_marker")
+    assert {m["path"] for m in found["matches"]} == {"hidden.py", "hidden2.py"}
+    log = await tools.git(SESSION, "log", ["-p", "-n", "1", "--", "hidden.py"])
+    assert "+secretive_marker = 1" in log["output"]
+    show = await tools.git(SESSION, "show", ["-p", "--", "hidden2.py"])
+    assert "+secretive_marker = 2" in show["output"]
+
+
+async def test_a_newline_in_a_filename_is_handled(tools: RepoTools) -> None:
+    found = await tools.grep(SESSION, "newline_marker")
+    assert found["matches"] == []
+    assert found["skipped_files"] == ["evil\nsrc/x.py"]
+    # Ordinary matches before and after it are unaffected.
+    both = await tools.grep(SESSION, "(newline|secretive)_marker")
+    assert {m["path"] for m in both["matches"]} == {"hidden.py", "hidden2.py"}
+
+
+async def test_garbled_grep_output_is_a_typed_error(
+    tools: RepoTools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def garbled(*_: Any, **__: Any) -> CappedOutput:
+        return CappedOutput(b"a.py\0notanumber\0text\n", False)
+
+    monkeypatch.setattr(tools, "_run_git", garbled)
+    with pytest.raises(RepoGitError, match="could not parse"):
+        await tools.grep(SESSION, "text")
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "((a{1,255}){1,255}){1,40}b",
+        "x(a{1,255}){1,255}",
+        "(a{1,99}){1,99}b",
+        "a{51}",
+        "a{,51}",
+        "a{60,}",
+        "(a+)+",
+        "(a*b)*",
+        "((ab)+c){2}",
+        "a+*",
+        "a{2}{3}",
+        "(a)\\1",
+        "x" * 201,
+    ],
+)
+def test_pathological_patterns_are_refused(pattern: str) -> None:
+    assert regex_problem(pattern) is not None
+    with pytest.raises(InvalidSearchError):
+        check_pattern(pattern)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "foo\\(",
+        "def \\w+",
+        "a|b",
+        "(a|b)+",
+        "a{1,50}",
+        "a{3}",
+        "x{",
+        "{}",
+        "a{,}",
+        "[(+]+",
+        "[^]a]+",
+        "[]a]*",
+        "[[:alpha:]]+",
+        "[[:alpha]+",
+        "[abc",
+        "(unclosed",
+        "closed)+",
+        "\\",
+    ],
+)
+def test_ordinary_patterns_pass_the_regex_check(pattern: str) -> None:
+    assert regex_problem(pattern) is None
+
+
+async def test_ordinary_patterns_still_search(tools: RepoTools) -> None:
+    for pattern, path in (("def \\w+", "src/app.py"), ("hello\\(", "src/app.py")):
+        found = await tools.grep(SESSION, pattern)
+        assert path in {m["path"] for m in found["matches"]}, pattern
+    either = await tools.grep(SESSION, "secretive_marker = 1|old content")
+    assert [m["path"] for m in either["matches"]] == ["hidden.py"]
+    with pytest.raises(InvalidSearchError):
+        await tools.grep(SESSION, "(a+)+$")
+
+
+async def test_author_patterns_get_the_same_regex_check(tools: RepoTools) -> None:
+    with pytest.raises(UnsafeGitArgumentError, match="quantif"):
+        await tools.git(SESSION, "log", ["--author=(a{1,50}){1,50}"])
+    found = await tools.git(SESSION, "log", ["--oneline", "--author=Te(s|x)t"])
+    assert "second" in found["output"]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        ("def \\w+", "def [[:alnum:]_]+"),
+        ("\\s\\S\\d\\D\\W", "[[:space:]][^[:space:]][[:digit:]][^[:digit:]][^[:alnum:]_]"),
+        ("[\\w]\\(", "[\\w]\\("),
+        ("end\\", "end\\"),
+    ],
+)
+def test_posix_ere_spells_out_shorthand_classes(pattern: str, expected: str) -> None:
+    assert posix_ere(pattern) == expected
+
+
+def test_grep_output_cut_mid_record_drops_that_record() -> None:
+    cut = b"a.py\x001\x00one\nb\nc.py\x002\x00two\nd.py\x003\x00thr"
+    assert _parse_grep(cut) == [("a.py", 1, b"one"), ("b\nc.py", 2, b"two")]
+    assert _parse_grep(b"") == []

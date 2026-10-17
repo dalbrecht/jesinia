@@ -47,6 +47,10 @@ _REVISION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/~^@{}+-]{0,199}")
 _COUNT = re.compile(r"[1-9][0-9]{0,5}")
 # `-L <start>,<end>` only: no `:funcname` regex, no `/regex/` ranges.
 _LINE_SPAN = re.compile(r"([0-9]{1,9}),([0-9]{1,9})")
+# An ERE interval: {n}, {n,}, {n,m} or {,m}. A "{" that isn't one is an ordinary character.
+_INTERVAL = re.compile(r"\{([0-9]*)(,([0-9]*))?\}")
+REGEX_MAX_REPEAT = 50
+_REGEX_METACHARACTERS = frozenset(".[]()*+?{}|^$\\")
 
 _FLAGS: dict[str, frozenset[str]] = {
     "log": frozenset({"--oneline", "--stat", "-p", "--follow", "--name-only", "--name-status"}),
@@ -99,6 +103,10 @@ class UnsafeGitArgumentError(RepoToolError):
     """A ``repo_git`` command, option or revision is outside the allowlist."""
 
 
+class NotACommitError(UnsafeGitArgumentError):
+    """A ``repo_git`` revision names a blob, a tree or nothing, not a commit."""
+
+
 class InvalidSearchError(RepoToolError):
     """A ``repo_grep`` pattern or glob is refused before running."""
 
@@ -145,11 +153,22 @@ class FileLineAllowance:
         return self.per_file - self._used.get(session_id, {}).get(path, 0)
 
     def take(self, session_id: str, path: str, lines: int) -> int:
-        """Record up to ``lines`` read lines and return how many the allowance granted."""
+        """Reserve up to ``lines`` lines and return how many the allowance granted.
+
+        ``path`` is any stable key for the file (the repo tools use its inode). Callers
+        reserve before they read and ``refund`` what they didn't return, so concurrent
+        calls can never hand out more than the allowance.
+        """
         granted = max(0, min(lines, self.remaining(session_id, path)))
         used = self._used.setdefault(session_id, {})
         used[path] = used.get(path, 0) + granted
         return granted
+
+    def refund(self, session_id: str, path: str, lines: int) -> None:
+        """Give back reserved lines that were not returned to the agent."""
+        used = self._used.get(session_id, {})
+        if path in used:
+            used[path] -= max(0, min(lines, used[path]))
 
     def drop(self, session_id: str) -> None:
         """Forget a session (it ended or was unbound)."""
@@ -190,20 +209,127 @@ def check_revision(revision: str) -> str:
     return revision
 
 
-def check_pattern(pattern: str) -> str:
-    """Return a ``repo_grep`` pattern if it is short and single-line.
+def _bracket_end(pattern: str, start: int) -> int:
+    """The index of the ``]`` closing the bracket expression at ``start`` (or the end)."""
+    index = start + 1
+    if pattern[index : index + 1] == "^":
+        index += 1
+    if pattern[index : index + 1] == "]":
+        index += 1  # a leading ] is a literal member
+    while index < len(pattern) and pattern[index] != "]":
+        if pattern[index] == "[" and pattern[index + 1 : index + 2] in (":", "=", "."):
+            close = pattern.find(pattern[index + 1] + "]", index + 2)
+            index = len(pattern) if close == -1 else close + 2
+            continue
+        index += 1
+    return index
 
-    Long patterns are refused because a regex is the one input that can make matching slow;
-    the search also runs under git's time limit.
+
+def regex_problem(pattern: str) -> str | None:
+    """Why an extended regex (``git grep -E``, ``log --author=``) is refused, or ``None``.
+
+    The length cap alone doesn't bound what the regex engine builds: bounded repetition
+    expands into copies, so ``(a{1,255}){1,255}`` costs gigabytes. Refused: patterns over
+    ``GREP_MAX_PATTERN_CHARS``, an interval bound over ``REGEX_MAX_REPEAT``, a quantifier on
+    a group that already contains one (or on another quantifier), and backreferences.
+
+    Examples:
+        >>> regex_problem("def \\w+") is None
+        True
+        >>> regex_problem("(a+)+")
+        'a quantified group may not contain a quantifier'
+    """
+    if len(pattern) > GREP_MAX_PATTERN_CHARS:
+        return f"the pattern is limited to {GREP_MAX_PATTERN_CHARS} characters"
+    groups = [False]  # per open group: does it contain a quantifier?
+    last = ""  # what the previous token was: "", "atom", "quantified-group" or "quantifier"
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        interval = _INTERVAL.match(pattern, index) if char == "{" else None
+        if interval is not None and not (interval[1] or interval[3]):
+            interval = None  # "{}" and "{,}" are not intervals
+        if char == "\\":
+            if pattern[index + 1 : index + 2] in tuple("123456789"):
+                return "backreferences are refused"
+            index, last = index + 2, "atom"
+        elif char == "[":
+            index, last = _bracket_end(pattern, index) + 1, "atom"
+        elif char == "(":
+            groups.append(False)
+            index, last = index + 1, ""
+        elif char == ")" and len(groups) > 1:
+            inner = groups.pop()
+            groups[-1] = groups[-1] or inner
+            index, last = index + 1, "quantified-group" if inner else "atom"
+        elif char in "*+?" or interval is not None:
+            bounds = [interval[1], interval[3]] if interval is not None else []
+            if any(bound and int(bound) > REGEX_MAX_REPEAT for bound in bounds):
+                return f"repetition bounds are limited to {REGEX_MAX_REPEAT}"
+            if last == "quantifier":
+                return "a quantifier may not follow another quantifier"
+            if last == "quantified-group":
+                return "a quantified group may not contain a quantifier"
+            groups[-1] = True
+            index, last = index + (len(interval[0]) if interval is not None else 1), "quantifier"
+        else:
+            index, last = index + 1, "atom"
+    return None
+
+
+_SHORTHAND_CLASSES = {
+    "w": "[[:alnum:]_]",
+    "W": "[^[:alnum:]_]",
+    "s": "[[:space:]]",
+    "S": "[^[:space:]]",
+    "d": "[[:digit:]]",
+    "D": "[^[:digit:]]",
+}
+
+
+def posix_ere(pattern: str) -> str:
+    """``pattern`` with ``\\w``, ``\\s``, ``\\d`` (and their negations) spelled as POSIX
+    classes: agents write them, and the macOS regex library git uses doesn't know them.
+
+    Example:
+        >>> posix_ere("def \\w+")
+        'def [[:alnum:]_]+'
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "[":
+            end = _bracket_end(pattern, index) + 1
+            out.append(pattern[index:end])
+            index = end
+        elif char == "\\":
+            escaped = pattern[index : index + 2]
+            out.append(_SHORTHAND_CLASSES.get(escaped[1:], escaped))
+            index += 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+def is_plain_text(pattern: str) -> bool:
+    """Whether ``pattern`` has no regex metacharacters, so it can be searched literally."""
+    return not _REGEX_METACHARACTERS.intersection(pattern)
+
+
+def check_pattern(pattern: str) -> str:
+    """Return a ``repo_grep`` pattern if it is one line and passes ``regex_problem``.
 
     Raises:
-        InvalidSearchError: empty, longer than ``GREP_MAX_PATTERN_CHARS``, or with control
-            characters (including newlines).
+        InvalidSearchError: empty, with control characters (including newlines), or refused
+            by ``regex_problem``.
     """
     if not pattern or _has_control_characters(pattern):
         raise InvalidSearchError("the pattern must be one non-empty line")
-    if len(pattern) > GREP_MAX_PATTERN_CHARS:
-        raise InvalidSearchError(f"the pattern is limited to {GREP_MAX_PATTERN_CHARS} characters")
+    problem = regex_problem(pattern)
+    if problem is not None:
+        raise InvalidSearchError(problem)
     return pattern
 
 
@@ -236,7 +362,10 @@ def _option(cmd: str, token: str, following: str | None) -> tuple[tuple[str, ...
     if equals and name in _VALUED_OPTIONS[cmd]:
         if not value or len(value) > _MAX_OPTION_VALUE_CHARS:
             raise UnsafeGitArgumentError(f"{name} needs a value of 1-100 characters")
-        return (token,), 1
+        problem = regex_problem(value) if name == "--author" else None
+        if problem is not None:
+            raise UnsafeGitArgumentError(f"--author: {problem}")
+        return (f"{name}={posix_ere(value)}" if name == "--author" else token,), 1
     joined = token[2:]
     if cmd == "log" and token.startswith("-n"):
         count, used = (joined, 1) if joined else (following, 2)
