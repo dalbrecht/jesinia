@@ -117,3 +117,9 @@ def test_should_leave_indented_code_lists_and_continuations_untouched() -> None:
 def test_should_keep_a_heading_followed_by_a_blank_line() -> None:
     markdown = "## Heading\n\n    indented code after a blank line"
     assert normalize_markdown(markdown) == markdown
+
+
+def test_should_join_an_empty_heading_with_an_external_link_line() -> None:
+    guide = "[Read the guide](https://example.org/guide)"
+    assert normalize_markdown(f"## \n   {guide}\n \nBody.") == f"## {guide}\n \nBody."
+    assert normalize_markdown(f"## \n{guide}") == f"## {guide}"

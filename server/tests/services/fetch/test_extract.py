@@ -6,6 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import httpx
+import lxml.html
 import pytest
 import respx
 import trafilatura
@@ -18,7 +19,12 @@ from jesinia.core.config import Config
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.fetch.application.ports import Article, CachedFetch
 from jesinia.services.fetch.application.service import FetchError, FetchService
-from jesinia.services.fetch.infrastructure.extract import TrafilaturaExtractor, _clean_tree
+from jesinia.services.fetch.infrastructure.extract import (
+    BLANK_CODE_LINE,
+    TrafilaturaExtractor,
+    _clean_tree,
+    _mark_blank_code_lines,
+)
 from jesinia.services.fetch.module import FetchModule
 from tests.conftest import lifespan_client
 
@@ -108,6 +114,11 @@ def test_extract_returns_none_when_the_page_has_no_article_text() -> None:
 _FILLER = (
     "<p>An article long enough for the extractor to keep it as the main text of the page, "
     "with a few more words added so it clearly counts as prose and not navigation.</p>"
+)
+# Different words, so the extractor does not drop it as a repeat of _FILLER.
+_OTHER_FILLER = (
+    "<p>A second paragraph with different words in it, so that the extractor keeps both "
+    "pieces of prose on the page instead of dropping one of them as a duplicate.</p>"
 )
 # Every way a remote page might smuggle a script or data target into the Markdown.
 HOSTILE_BODIES = {
@@ -525,3 +536,86 @@ def test_extract_leaves_a_page_that_already_uses_the_blank_line_symbol_alone() -
     fences, markdown = _fences_of("<p>The ␀ symbol stands for NUL.</p><pre>a\n\nb</pre>")
     assert "The ␀ symbol stands for NUL." in markdown
     assert fences == ["a\nb\n"], markdown  # trafilatura's own handling of the blank line
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<pre><code><span class="k">x</span> = 1  <span class="comment"># explain</span>\n'
+        "y = 2</code></pre>",
+        '<pre><span class="k">x</span> = 1  <span class="comment"># explain</span>\ny = 2</pre>',
+        '<pre><code><div class="sidebar">x = 1  # explain</div>\ny = 2</code></pre>',
+    ],
+    ids=["pre-code", "bare-pre", "block-in-code"],
+)
+def test_extract_never_treats_code_as_clutter(body: str) -> None:
+    fences, markdown = _fences_of(body)
+    assert len(fences) == 1 and "# explain" in fences[0], markdown
+    assert "y = 2" in fences[0], markdown
+
+
+HEADING_LINKS = {
+    "fragment": ('<h2><a href="#guide">\n  Read the guide\n</a></h2>', "## Read the guide"),
+    "page url and fragment": (
+        f'<h2><a href="{ARTICLE_URL}#guide">Read the guide</a></h2>',
+        "## Read the guide",
+    ),
+    "external": (
+        '<h2><a href="https://example.org/guide">\n   Read the guide\n </a></h2>',
+        "## [Read the guide](https://example.org/guide)",
+    ),
+    "other page on the site": (
+        '<h2><a href="/2026/other#part">Read the guide</a></h2>',
+        "## [Read the guide](https://news.example/2026/other#part)",
+    ),
+    "mixed": (
+        '<h2>Notes on\n  <a href="https://example.org/guide">the guide</a>\n today</h2>',
+        "## Notes on [the guide](https://example.org/guide) today",
+    ),
+}
+
+
+@pytest.mark.parametrize(("heading", "expected"), HEADING_LINKS.values(), ids=HEADING_LINKS.keys())
+def test_extract_unwraps_only_self_anchors_in_headings(heading: str, expected: str) -> None:
+    body = f"<h1>Links</h1>{_FILLER}{heading}{_OTHER_FILLER}"
+    page = f"<html><body><article>{body}</article></body></html>"
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    assert expected in article.markdown.splitlines(), article.markdown
+
+
+def test_extract_keeps_whitespace_only_lines_in_code_exactly() -> None:
+    fences, markdown = _fences_of("<pre><code>a\n    \n\t\nb\n\nc</code></pre><pre>d\n  \ne</pre>")
+    assert fences == ["a\n    \n\t\nb\n\nc\n", "d\n  \ne\n"], markdown
+
+
+def test_mark_blank_code_lines_marks_empty_and_whitespace_only_lines() -> None:
+    tree = lxml.html.document_fromstring(
+        "<html><body><pre><code>a\n    \nb\n\nc</code></pre><p>x\n  \ny</p></body></html>"
+    )
+    assert _mark_blank_code_lines(tree)
+    assert tree.find(".//code").text == f"a\n    {BLANK_CODE_LINE}\nb\n{BLANK_CODE_LINE}\nc"
+    assert tree.find(".//p").text == "x\n  \ny"
+
+
+def test_extract_keeps_a_wrapper_holding_most_of_the_page_whatever_its_class() -> None:
+    page = (
+        '<html><body><div class="recent-post"><h1>Wrapped</h1>'
+        f"{_FILLER}{_OTHER_FILLER}</div><nav><p>Home and about links.</p></nav></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    assert "A second paragraph with different words" in article.markdown, article.markdown
+    assert "Home and about links" not in article.markdown
+
+
+def test_extract_drops_a_heading_that_is_only_whitespace() -> None:
+    page = (
+        f"<html><body><article><h1>Spaces</h1>{_FILLER}<h3> <em> </em> </h3>"
+        f"{_OTHER_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    tokens = MarkdownIt("commonmark").parse(article.markdown)
+    headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == "heading_open"]
+    assert headings == ["Spaces"], article.markdown
