@@ -437,3 +437,6 @@ class ReviewErrorOut(BaseModel):
     event: ReviewEvent | None = Field(
         default=None, description="For EarlierReviewPosted: that review's event"
     )
+    retry_after: int | None = Field(
+        default=None, description="For PostingStillUncertain: seconds before retrying"
+    )

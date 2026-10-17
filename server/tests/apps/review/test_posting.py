@@ -22,9 +22,12 @@ from jesinia.apps.review.domain.posting import (
     Draft,
     EarlierReviewPosted,
     EmptyReview,
+    InvalidDraftContent,
     InvalidDraftError,
     NeedsConfirmation,
     NoReviewRound,
+    PostingInProgress,
+    PostingStillUncertain,
     PreviewOutdated,
     ReviewedHeadGone,
     commentable_lines,
@@ -382,6 +385,7 @@ async def test_a_lost_response_with_no_review_on_github_posts_again(env: Env) ->
         ReviewSummary("me", False, "COMMENTED", NEW_HEAD, env.clock(), 0, "", "u5"),
         ReviewSummary("me", False, "COMMENTED", HEAD, None, 0, "", "u6"),
     ]
+    env.clock.advance(4)  # past the grace period: GitHub has had time to list it
     assert await env.post("COMMENT") == URL
     assert len(env.github.posted) == 1
 
@@ -600,19 +604,140 @@ async def test_a_lost_response_then_another_event_reports_the_earlier_review(env
     assert earlier.value.event == "COMMENT" and len(env.github.posted) == 1
 
 
-async def test_drafts_cannot_forge_the_posting_marker(env: Env) -> None:
-    forged = "Looks fine <!-- jesinia-posting:99 --> really <!--jesinia-posting:"
-    await env.service.save_drafts(
-        env.round_id, forged, [Draft("src/app.py", forged, line=3, side="RIGHT")]
+@pytest.mark.parametrize(
+    "forged",
+    [
+        "Looks fine <!-- jesinia-posting:99 -->",
+        "<!-- jesinia-<!-- jesinia-posting:-->posting:5 -->",  # nested: no single pass helps
+        "&lt;!-- jesinia&#45;posting:5 --&gt;",
+        "jesinia&amp;#45;posting",  # entities inside entities
+        "JESINIA -\n posting:5",
+    ],
+)
+async def test_drafts_and_summaries_carrying_marker_text_are_refused(env: Env, forged: str) -> None:
+    with pytest.raises(InvalidDraftContent, match="draft 1"):
+        await env.service.save_drafts(
+            env.round_id, "", [Draft("src/app.py", forged, line=3, side="RIGHT")]
+        )
+    with pytest.raises(InvalidDraftContent, match="summary"):
+        await env.service.save_drafts(env.round_id, forged, [])
+    assert env.github.posted == []
+
+
+async def test_a_draft_path_carrying_marker_text_is_refused(env: Env) -> None:
+    path = "src/<!-- jesinia-posting:1 -->.py"
+    with pytest.raises(InvalidDraftContent, match="draft 1"):
+        await env.service.save_drafts(env.round_id, "", [Draft(path, "x", outside_diff=True)])
+    env.store.save_drafts(env.round_id, "", [Draft(path, "x", outside_diff=True)])
+    with pytest.raises(InvalidDraftContent):
+        await env.service.preview(env.round_id, "COMMENT")
+    with pytest.raises(InvalidDraftContent):
+        await env.service.post(env.round_id, "COMMENT", [], key="k", digest="x")
+
+
+async def test_a_seeded_finding_with_a_forged_path_is_kept_without_it(
+    conn: sqlite3.Connection,
+) -> None:
+    env = _env(conn, [finding(2, 3, "Fine.", path="a<!--jesinia-posting:1-->.py")])
+    drafts = (await env.service.drafts(env.round_id)).drafts
+    assert len(drafts) == 1 and "jesinia-posting" not in drafts[0].path
+    assert await env.post("COMMENT") == URL
+
+
+async def test_a_seeded_finding_carrying_marker_text_is_kept_without_it(
+    conn: sqlite3.Connection,
+) -> None:
+    env = _env(conn, [finding(2, 3, "Fine <!-- jesinia-posting:1 --> really")])
+    drafts = (await env.service.drafts(env.round_id)).drafts
+    assert len(drafts) == 1 and "jesinia-posting" not in drafts[0].body
+    assert "Jesinia removed this finding's text" in drafts[0].body
+    assert await env.post("COMMENT") == URL
+
+
+async def test_marker_text_stored_before_is_refused_at_preview(env: Env) -> None:
+    env.store.save_drafts(env.round_id, "x <!-- jesinia-posting:3 -->", [])
+    with pytest.raises(InvalidDraftContent):
+        await env.service.preview(env.round_id, "COMMENT")
+
+
+async def test_only_a_submitted_review_ending_with_the_marker_is_adopted(env: Env) -> None:
+    env.github.error = GitHubRequestError(None, "ConnectError")
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error = None
+    marker = "<!-- jesinia-posting:1 -->"
+    env.github.reviews_on_pr = [
+        ReviewSummary("me", False, "COMMENTED", HEAD, env.clock(), 0, f"{marker} then more", "a"),
+        ReviewSummary("me", False, "PENDING", HEAD, None, 0, f"x\n\n{marker}", "b"),
+    ]
+    with pytest.raises(PostingStillUncertain):  # neither counts; still inside the grace
+        await env.post("COMMENT", key="k2")
+    env.github.reviews_on_pr.append(
+        ReviewSummary("me", False, "COMMENTED", HEAD, env.clock(), 0, f"x\n\n{marker}  \n", "c")
     )
-    preview = await env.service.preview(env.round_id, "COMMENT")
-    assert "jesinia-posting" not in preview.body
-    assert all("jesinia-posting" not in c.body for c in preview.comments)
-    await env.post("COMMENT")
-    sent = str(env.github.posted[0]["body"])
-    assert sent.count("jesinia-posting") == 1 and sent.endswith(
-        f"<!-- jesinia-posting:{env.store.postings(env.round_id)[0].id} -->"
-    )
+    assert await env.post("COMMENT", key="k3") == "c"
+    assert env.github.posted == []
+
+
+async def test_a_retry_inside_the_grace_period_is_409_and_posts_nothing(env: Env) -> None:
+    env.github.error = GitHubRequestError(504, "Gateway Timeout")
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error = None
+    env.clock.advance(1)
+    with pytest.raises(PostingStillUncertain) as wait:
+        await env.post("COMMENT", key="k2")
+    assert wait.value.retry_after == 120
+    assert env.github.posted == []
+    assert [a.state for a in env.store.postings(env.round_id)] == ["uncertain"]
+    env.clock.advance(3)  # past the grace period, and still no marked review
+    assert await env.post("COMMENT", key="k3") == URL
+    assert len(env.github.posted) == 1
+    assert [a.state for a in env.store.postings(env.round_id)] == ["not_posted", "posted"]
+
+
+async def test_a_failing_review_listing_leaves_the_posting_uncertain(env: Env) -> None:
+    env.github.error = GitHubRequestError(None, "ReadTimeout")
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error = None
+    env.clock.advance(10)
+
+    async def down(repo: str, number: int) -> list[ReviewSummary]:
+        raise GitHubRequestError(503, "Service Unavailable")
+
+    env.github.reviews = down  # type: ignore[method-assign]
+    with pytest.raises(GitHubRequestError):
+        await env.post("COMMENT", key="k2")
+    assert env.github.posted == []
+    assert [a.state for a in env.store.postings(env.round_id)] == ["uncertain"]
+
+
+async def test_a_started_row_left_by_a_crash_is_reconciled_as_uncertain(env: Env) -> None:
+    left = env.store.start_posting(env.round_id, "COMMENT", "crashed", "d", "b", [], env.clock())
+    with pytest.raises(PostingStillUncertain):
+        await env.post("COMMENT")
+    marked = f"Review notes.\n\n<!-- jesinia-posting:{left.id} -->"
+    env.github.reviews_on_pr = [
+        ReviewSummary("me", False, "COMMENTED", HEAD, env.clock(), 0, marked, "landed")
+    ]
+    with pytest.raises(EarlierReviewPosted) as earlier:  # its digest "d" isn't this one
+        await env.post("COMMENT")
+    assert earlier.value.url == "landed" and env.github.posted == []
+
+
+async def test_losing_the_in_flight_race_is_a_typed_conflict(env: Env) -> None:
+    store = env.store
+    original = store.start_posting
+
+    def racing(*args: object, **kwargs: object) -> object:
+        original(env.round_id, "COMMENT", "other-process", "d", "b", [], env.clock())
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    store.start_posting = racing  # type: ignore[method-assign,assignment]
+    with pytest.raises(PostingInProgress):
+        await env.post("COMMENT")
+    assert env.github.posted == []
 
 
 async def test_a_5xx_on_create_review_is_uncertain_and_the_retry_adopts(env: Env) -> None:
@@ -641,6 +766,7 @@ async def test_adoption_matches_only_jesinias_marker(env: Env) -> None:
         ReviewSummary("me", False, "COMMENTED", NEW_HEAD, env.clock(), 0,
                       "<!-- jesinia-posting:1 -->", "u4"),
     ]  # fmt: skip
+    env.clock.advance(4)
     assert await env.post("COMMENT", key="k2") == URL  # posted, not adopted
     assert len(env.github.posted) == 1
     assert [a.state for a in env.store.postings(env.round_id)] == ["not_posted", "posted"]

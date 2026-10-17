@@ -13,9 +13,10 @@ Exactly once (rulings R43, R44): a post is recorded (``postings``) before GitHub
 and the body it sends ends with the attempt's invisible marker. A lost response, a timeout
 or any 5xx leaves the attempt ``uncertain``, and while a round has one nothing new is
 posted: the next post, whatever its key or digest, first lists the PR's reviews. A review by
-the viewer on the round's commit carrying that marker is adopted (and its URL returned);
-otherwise the attempt is ``not_posted`` and the post goes on. Nothing else (time, body or
-state) ever makes a review count as Jesinia's, so a review posted by hand is never adopted.
+the viewer on the round's commit, submitted, whose body ends with that marker is adopted;
+within ``POSTING_GRACE`` of the attempt a missing review means "retry later"
+(``PostingStillUncertain``), after it the attempt is ``not_posted`` and the post goes on
+(R48, R49). Drafts can't carry the marker's name at all, so no review can pass for one.
 
 Drafts are read from the store only (carry f): where each one posts is worked out from the
 cached file list on each read, and reported as pending when GitHub's list isn't cached.
@@ -28,9 +29,11 @@ from __future__ import annotations
 import asyncio
 import builtins
 import logging
+import math
+import sqlite3
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from jesinia.apps.review.domain.posting import (
@@ -38,6 +41,7 @@ from jesinia.apps.review.domain.posting import (
     DRAFTS_MAX,
     MARKER_NOTE,
     REVIEW_EVENTS,
+    SUBMITTED_STATES,
     UNSETTLED,
     CommentableLines,
     CommentOnlyOnOwnPr,
@@ -48,11 +52,14 @@ from jesinia.apps.review.domain.posting import (
     NeedsConfirmation,
     NoReviewRound,
     Posting,
+    PostingInProgress,
     PostingState,
+    PostingStillUncertain,
     PostWarning,
     PreviewOutdated,
     Review,
     ReviewedHeadGone,
+    check_review_text,
     commentable_lines,
     compose_review,
     marked_body,
@@ -82,6 +89,8 @@ from jesinia.services.github.domain.pr import (
 log = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
+# How long after an attempt began a missing review may still appear on GitHub (R49).
+POSTING_GRACE = timedelta(minutes=3)
 _FILE_ERRORS = (GitHubError, GitHubPayloadError, PullRequestDomainError, QueueDomainError)
 
 
@@ -276,6 +285,7 @@ class PostingService:
             raise InvalidDraftError(f"a review takes at most {DRAFTS_MAX} drafts")
         if len(summary) > BODY_MAX:
             raise InvalidDraftError(f"the summary is at most {BODY_MAX} characters")
+        check_review_text(summary, drafts)
         self._store.save_drafts(round_id, summary, drafts)
         return self._draft_set(rnd)
 
@@ -429,15 +439,20 @@ class PostingService:
         for earlier in self._store.postings(rnd.id):
             if earlier.state == "posted" and earlier.digest == preview.digest:
                 return earlier.review_url or _pr_url(rnd)  # this very review, posted
-        attempt = self._store.start_posting(
-            rnd.id,
-            event,
-            key,
-            preview.digest,
-            preview.body,
-            [asdict(comment) for comment in preview.comments],
-            self._clock(),
-        )
+        try:
+            attempt = self._store.start_posting(
+                rnd.id,
+                event,
+                key,
+                preview.digest,
+                preview.body,
+                [asdict(comment) for comment in preview.comments],
+                self._clock(),
+            )
+        except sqlite3.IntegrityError as exc:  # another process's attempt is in flight
+            raise PostingInProgress(
+                "another attempt to post this review is in progress; retry shortly"
+            ) from exc
         if attempt.state == "posted":  # the key of a posted attempt: never sent again
             return attempt.review_url or _pr_url(rnd)
         return await self._send(rnd, attempt, preview)
@@ -489,6 +504,7 @@ class PostingService:
         viewer = (self._store.viewer() or await self._github.viewer()).lower()
         reviews = await self._github.reviews(rnd.ref.repo, rnd.ref.number)
         adopted = None
+        now = self._clock()
         for attempt in unsettled:
             marker = posting_marker(attempt.id)
             found = next(
@@ -497,11 +513,17 @@ class PostingService:
                     for r in reviews
                     if r.author.lower() == viewer
                     and r.commit_sha == rnd.head_sha
-                    and marker in r.body
+                    and r.state in SUBMITTED_STATES
+                    and r.body.rstrip().endswith(marker)
                 ),
                 None,
             )
             if found is None:
+                waited = now - attempt.started_at
+                if waited < POSTING_GRACE:
+                    # GitHub may still be storing it, or its list may lag (R49).
+                    left = POSTING_GRACE - waited
+                    raise PostingStillUncertain(max(1, math.ceil(left.total_seconds())))
                 self._store.settle_posting(attempt.id, "not_posted", "not on GitHub")
                 continue
             # GitHub's list may lack a review's page; the PR's page then stands in for it.

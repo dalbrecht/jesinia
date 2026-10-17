@@ -318,7 +318,9 @@ def build_review_tools(host: ReviewToolsHost) -> Sequence[ToolDef]:
             "round_head_sha": None if found is None else found.head_sha,
             "stale": view.stale,
             "verdict": None if found is None else found.verdict,
-            "posted_review_url": None if found is None else found.posted_review_url,
+            "posted_review_url": None
+            if found is None or found.posted_review_url is None
+            else _untrusted(f"{where}:posted", found.posted_review_url),
             "done": found is not None and found.done,
             "review": None
             if found is None

@@ -4494,6 +4494,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -4513,16 +4523,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -4606,6 +4606,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -4625,16 +4635,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -4733,6 +4733,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -4752,16 +4762,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -4850,6 +4850,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -4869,16 +4879,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -4985,6 +4985,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5011,16 +5021,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OpenOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -5130,6 +5130,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5156,16 +5166,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OpenOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -5275,6 +5275,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5301,16 +5311,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OpenOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -5402,6 +5402,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5421,16 +5431,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       },
@@ -5545,6 +5545,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5564,16 +5574,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -5672,6 +5672,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5691,16 +5701,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -5817,6 +5817,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5836,16 +5846,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -5952,6 +5952,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -5971,16 +5981,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -6032,6 +6032,16 @@
               }
             },
             "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
           },
           "502": {
             "content": {
@@ -6133,6 +6143,16 @@
             },
             "description": "Conflict"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -6152,16 +6172,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
@@ -8132,6 +8142,18 @@
             ],
             "title": "Event",
             "description": "For EarlierReviewPosted: that review's event"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry After",
+            "description": "For PostingStillUncertain: seconds before retrying"
           }
         },
         "type": "object",

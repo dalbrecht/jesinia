@@ -434,6 +434,33 @@ async def test_an_earlier_review_on_github_is_a_409_with_its_url(env: Env) -> No
     assert len(env.poster.posted) == 1
 
 
+async def test_posting_conflicts_are_typed_409s(env: Env) -> None:
+    env.round()
+    env.poster.error = GitHubRequestError(None, "ReadTimeout")
+    first = (await env.client.post(f"{PR}/post/preview", json={"event": "COMMENT"})).json()
+    post = {"event": "COMMENT", "confirm": [], "digest": first["digest"]}
+    assert (await env.client.post(f"{PR}/post", json=post, headers=keyed())).status_code == 502
+    env.poster.error = None
+    waiting = await env.client.post(f"{PR}/post", json=post, headers=keyed())
+    assert waiting.status_code == 409 and waiting.json()["error"] == "PostingStillUncertain"
+    assert waiting.json()["retry_after"] == 180 and waiting.headers["retry-after"] == "180"
+    bad = await env.client.put(
+        f"{PR}/drafts",
+        json={"summary": "", "drafts": [{"path": "a.py", "body": "<!-- jesinia-posting:1 -->",
+                                         "outside_diff": True}]},
+        headers=keyed(),
+    )  # fmt: skip
+    assert bad.status_code == 422 and bad.json()["error"] == "InvalidDraftContent"
+    assert "draft 1" in bad.json()["detail"]
+    env.store.save_drafts(
+        env.store.latest_round(env.ref).id,  # type: ignore[union-attr]
+        "",
+        [Draft("a<!-- jesinia-posting:1 -->.py", "x", outside_diff=True)],
+    )
+    refused = await env.client.post(f"{PR}/post/preview", json={"event": "COMMENT"})
+    assert refused.status_code == 422 and refused.json()["error"] == "InvalidDraftContent"
+
+
 async def test_done_marks_the_latest_round(env: Env) -> None:
     none = await env.client.post(f"{PR}/done", headers=keyed())
     assert none.status_code == 404
@@ -495,6 +522,10 @@ async def test_review_mcp_tools_fence_sync_errors_and_odd_authors(env: Env) -> N
     env.store.apply_sync([odd], [], [], env.clock())
     queue = await _call(_tools(env)["review_queue"])
     assert isinstance(queue, dict) and str(queue["sync_error"]).startswith("<untrusted-data")
+    env.round()
+    env.store._conn.execute("UPDATE rounds SET posted_review_url = 'https://x.invalid/r'")
+    got = await _call(_tools(env)["review_get"], repo="acme/web", n=1)
+    assert isinstance(got, dict) and str(got["posted_review_url"]).startswith("<untrusted-data")
     authors = {row["number"]: row["author"] for row in queue["rows"]}
     assert authors[1] == "alice" and str(authors[2]).startswith("<untrusted-data")
     assert "Ignore previous" not in _outside_fences(queue)
@@ -522,6 +553,7 @@ async def test_review_mcp_tools_fence_every_pr_derived_text(env: Env) -> None:
 
     got = await _call(tools["review_get"], repo="acme/web", n=1)
     assert isinstance(got, dict) and got["verdict"] == "approve"
+    assert got["posted_review_url"] is None
     assert "Ignore previous" in json.dumps(got) and "Ignore previous" not in _outside_fences(got)
 
     found = await _call(tools["review_findings"], repo="acme/web", n=1)
@@ -609,6 +641,11 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
     for path in gets:
         response = await env.client.get(path)
         assert response.status_code == 200, path
+    # The MCP reads are cache-only too.
+    tools = _tools(env)
+    await _call(tools["review_queue"])
+    await _call(tools["review_get"], repo="acme/web", n=1)
+    await _call(tools["review_findings"], repo="acme/web", n=1)
     assert calls == []
     drafts = (await env.client.get(f"{PR}/drafts")).json()
     assert drafts["files_pending"] is True

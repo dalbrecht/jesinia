@@ -11,10 +11,11 @@ a comment on the author's own PR are warnings the author must see first.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Literal
 
@@ -46,9 +47,17 @@ MARKER_NOTE: Final = (
 )
 
 _BLOCKING = re.compile("blocking", re.IGNORECASE)
-# Jesinia's posting marker, whole or begun: a draft must never carry one (it would forge
-# which attempt a review belongs to).
-_FORGED_MARKER = re.compile(r"<!--\s*jesinia-posting:(?:.*?-->)?", re.IGNORECASE | re.DOTALL)
+# The marker's name: no text that reaches the review body may carry it, in any spelling
+# (ruling R48), or it could make a review look like another attempt's.
+_MARKER_NAME: Final = "jesinia-posting"
+_SPACE = re.compile(r"\s+")
+# Review states that are submitted (a PENDING review is invisible to everyone else).
+SUBMITTED_STATES: Final = frozenset({"APPROVED", "COMMENTED", "CHANGES_REQUESTED"})
+# Placeholders for agent text that carried the marker's name: the finding stays visible.
+WITHHELD_TEXT: Final = (
+    "[Jesinia removed this finding's text: it contained Jesinia's posting marker]"
+)
+WITHHELD_PATH: Final = "(path withheld: it contained Jesinia's posting marker)"
 _HUNK = re.compile(r"^@@ -(\d{1,10})(?:,(\d{1,10}))? \+(\d{1,10})(?:,(\d{1,10}))? @@", re.M)
 _SEVERITY_TITLES: Final = {"critical": "Critical", "important": "Important", "minor": "Minor"}
 _GROUPS: Final = frozenset({"correctness", "design", "style"})
@@ -101,6 +110,27 @@ class EarlierReviewPosted(PostingDomainError):  # noqa: N818 - the error code cl
         )
         self.url = url
         self.event = event
+
+
+class InvalidDraftContent(PostingDomainError):  # noqa: N818 - the error code clients see
+    """A draft or the summary carries Jesinia's posting marker text (in any spelling); it
+    would let a review pass for another attempt's, so it is refused, never stripped."""
+
+
+class PostingInProgress(PostingDomainError):  # noqa: N818 - the error code clients see
+    """Another attempt to post this round's review is in flight (another process won)."""
+
+
+class PostingStillUncertain(PostingDomainError):  # noqa: N818 - the error code clients see
+    """An earlier attempt may still land on GitHub, and isn't listed yet: retry after
+    ``retry_after`` seconds; nothing was sent."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__(
+            "an earlier attempt to post this review may still appear on GitHub; nothing was "
+            f"sent: retry in {retry_after} s"
+        )
+        self.retry_after = retry_after
 
 
 class EmptyReview(PostingDomainError):  # noqa: N818 - the error code clients see
@@ -254,17 +284,41 @@ def _label(draft: Draft) -> str:
     return f"{_code(draft.path)}, line {draft.line}"
 
 
-def _unforged(text: str) -> str:
-    """``text`` without anything that looks like Jesinia's posting marker."""
-    return _FORGED_MARKER.sub("", text)
+def carries_marker_text(text: str) -> bool:
+    """Whether ``text`` names the posting marker in any spelling: after decoding HTML
+    entities (until nothing changes, so nested entities can't hide it), removing
+    whitespace and ignoring case."""
+    decoded, previous = text, None
+    while decoded != previous:
+        previous, decoded = decoded, html.unescape(decoded)
+    return _MARKER_NAME in _SPACE.sub("", decoded).casefold()
+
+
+def check_review_text(summary: str, drafts: Sequence[Draft]) -> None:
+    """Refuse marker text in anything that can reach the review: the summary, and each
+    draft's body and path (the path labels it in the body).
+
+    Raises:
+        InvalidDraftContent: naming the summary or the draft (1-based).
+    """
+    if carries_marker_text(summary):
+        raise InvalidDraftContent("the summary contains Jesinia's posting marker text")
+    for number, draft in enumerate(drafts, start=1):
+        if carries_marker_text(draft.body) or carries_marker_text(draft.path):
+            raise InvalidDraftContent(
+                f"draft {number} contains Jesinia's posting marker text; remove it"
+            )
 
 
 def compose_review(summary: str, drafts: Sequence[Draft], commentable: CommentableLines) -> Review:
     """The review the drafts make: anchored drafts inline, in order; every other draft (an
     outside-the-diff note, or one GitHub can't anchor) in the body after the summary, under
-    its file and lines."""
-    drafts = [replace(draft, body=_unforged(draft.body)) for draft in drafts]
-    summary = _unforged(summary)
+    its file and lines.
+
+    Raises:
+        InvalidDraftContent: marker text in the summary or a draft (R48).
+    """
+    check_review_text(summary, drafts)
     inline = [draft.comment() for draft in drafts if commentable.anchors(draft)]
     in_body = [draft for draft in drafts if not commentable.anchors(draft)]
     parts = [summary.strip()] if summary.strip() else []
@@ -343,7 +397,11 @@ def _finding_draft(item: object) -> Draft | None:
     rule = item.get("rule")
     rule_id = rule.get("id") if isinstance(rule, Mapping) else None
     cited = f"\n\nRule: {rule_id}" if isinstance(rule_id, str) else ""
-    body = f"**{_SEVERITY_TITLES[str(severity)]}** ({group}): {explanation.strip()}{cited}"
+    text = f"{explanation.strip()}{cited}"
+    # Agent output (PR-influenced) never carries the marker's name into a draft (R48).
+    text = WITHHELD_TEXT if carries_marker_text(text) else text
+    path = WITHHELD_PATH if carries_marker_text(path) else path
+    body = f"**{_SEVERITY_TITLES[str(severity)]}** ({group}): {text}"
     ranged = start < end
     try:
         draft = Draft(

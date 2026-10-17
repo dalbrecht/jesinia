@@ -1973,6 +1973,11 @@ export interface components {
              * @description For EarlierReviewPosted: that review's event
              */
             event?: ("APPROVE" | "REQUEST_CHANGES" | "COMMENT") | null;
+            /**
+             * Retry After
+             * @description For PostingStillUncertain: seconds before retrying
+             */
+            retry_after?: number | null;
         };
         /** ReviewRepoSettingBody */
         ReviewRepoSettingBody: {
@@ -5640,13 +5645,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -5721,13 +5726,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -5800,13 +5805,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -5878,13 +5883,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -5968,13 +5973,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -6058,13 +6063,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -6148,13 +6153,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -6226,13 +6231,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -6311,13 +6316,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -6393,13 +6398,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -6478,13 +6483,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -6559,13 +6564,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */
@@ -6626,6 +6631,15 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6705,13 +6719,13 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Content */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
             /** @description Bad Gateway */

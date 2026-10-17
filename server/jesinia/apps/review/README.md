@@ -21,7 +21,10 @@ It uses the `github` service (`services/github/`) for pull request data and for 
   - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `newer_head`, `own_pr_comment_only`) and a digest.
   - A post must carry that digest and confirm every warning. It goes out as one atomic review on the round's head. Drafts GitHub can't anchor go in the body.
   - Each attempt is recorded before GitHub is called, and its body ends with an invisible marker (`<!-- jesinia-posting:<id> -->`).
-  - A lost response, a timeout or a 5xx leaves the attempt `uncertain`. Until it is reconciled, nothing else is posted for that round. The next post first looks for a review carrying that marker and adopts it, or marks the attempt `not_posted`. A review posted by hand is never adopted.
+  - A lost response, a timeout or a 5xx leaves the attempt `uncertain`. Until it is reconciled, nothing else is posted for that round. The next post first looks for a submitted review whose body ends with that marker and adopts it.
+    - If the adopted review isn't the one being posted (another digest or event), the post is refused with `EarlierReviewPosted` (409, with the URL).
+    - Within 3 minutes of the attempt, a missing review means "retry later" (`PostingStillUncertain`, 409 with `retry_after`). After that, the attempt is marked `not_posted` and the post goes on.
+  - Drafts and summaries may not contain the marker's name in any spelling (`InvalidDraftContent`, 422), so a review posted by hand is never adopted.
   - `GET …/drafts` reads the cache only: `files_pending` says where drafts post isn't known yet.
   - Bodies and tokens are never logged.
 - **MCP, read-only:** `review_queue`, `review_get` and `review_findings`. They read the cache only. Every PR-derived text comes back inside `<untrusted-data>` fences.

@@ -43,10 +43,13 @@ from jesinia.apps.review.domain.posting import (
     CommentOnlyOnOwnPr,
     EarlierReviewPosted,
     EmptyReview,
+    InvalidDraftContent,
     InvalidDraftError,
     NeedsConfirmation,
     NoReviewRound,
     PostingDomainError,
+    PostingInProgress,
+    PostingStillUncertain,
     PreviewOutdated,
     ReviewedHeadGone,
 )
@@ -105,6 +108,9 @@ _STATUS: dict[type[Exception], int] = {
     PreviewOutdated: status.HTTP_409_CONFLICT,
     CommentOnlyOnOwnPr: status.HTTP_409_CONFLICT,
     EarlierReviewPosted: status.HTTP_409_CONFLICT,
+    PostingInProgress: status.HTTP_409_CONFLICT,
+    PostingStillUncertain: status.HTTP_409_CONFLICT,
+    InvalidDraftContent: status.HTTP_422_UNPROCESSABLE_CONTENT,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -123,7 +129,7 @@ _TYPED = (
 )
 # ``Any`` is FastAPI's own type for ``responses`` (free-form OpenAPI fragments).
 _ERRORS: dict[int | str, dict[str, Any]] = {
-    code: {"model": ReviewErrorOut} for code in (400, 404, 409, 502, 503)
+    code: {"model": ReviewErrorOut} for code in (400, 404, 409, 422, 502, 503)
 }
 
 Owner = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
@@ -145,8 +151,12 @@ def _error(exc: Exception) -> JSONResponse:
         warnings=warnings,
         review_url=None if earlier is None else earlier.url,
         event=None if earlier is None else earlier.event,
+        retry_after=exc.retry_after if isinstance(exc, PostingStillUncertain) else None,
     )
-    return JSONResponse(body.model_dump(exclude_none=True), status_code=_status_of(exc))
+    headers = None if body.retry_after is None else {"Retry-After": str(body.retry_after)}
+    return JSONResponse(
+        body.model_dump(exclude_none=True), status_code=_status_of(exc), headers=headers
+    )
 
 
 async def _respond(
