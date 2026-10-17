@@ -15,7 +15,6 @@ repo tools is checked here before anything touches the filesystem or git:
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -49,8 +48,8 @@ _COUNT = re.compile(r"[1-9][0-9]{0,5}")
 # `-L <start>,<end>` only: no `:funcname` regex, no `/regex/` ranges.
 _LINE_SPAN = re.compile(r"([0-9]{1,9}),([0-9]{1,9})")
 # An ERE interval: {n}, {n,}, {n,m} or {,m}. A "{" that isn't one is an ordinary character.
-_INTERVAL = re.compile(r"\{([0-9]*)(,([0-9]*))?\}")
 REGEX_MAX_REPEAT = 50
+REGEX_MAX_ALTERNATIVES = 20
 _REGEX_METACHARACTERS = frozenset(".[]()*+?{}|^$\\")
 
 _FLAGS: dict[str, frozenset[str]] = {
@@ -155,15 +154,10 @@ class FileLineAllowance:
     def __init__(self, per_file: int) -> None:
         self.per_file = per_file
         self._used: dict[str, dict[str, int]] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
-
-    def lock(self, session_id: str) -> asyncio.Lock:
-        """The lock that makes a session's check-and-reserve one step."""
-        return self._locks.setdefault(session_id, asyncio.Lock())
 
     def tracks(self, session_id: str) -> bool:
-        """Whether any state (reads or a lock) is held for ``session_id``."""
-        return session_id in self._used or session_id in self._locks
+        """Whether any read state is held for ``session_id``."""
+        return session_id in self._used
 
     def remaining(self, session_id: str, path: str) -> int:
         return self.per_file - self._used.get(session_id, {}).get(path, 0)
@@ -187,9 +181,8 @@ class FileLineAllowance:
             used[path] -= max(0, min(lines, used[path]))
 
     def drop(self, session_id: str) -> None:
-        """Forget a session (it ended or was unbound): its reads and its lock."""
+        """Forget a session (it ended or was unbound)."""
         self._used.pop(session_id, None)
-        self._locks.pop(session_id, None)
 
 
 def _has_control_characters(text: str) -> bool:
@@ -242,56 +235,97 @@ def _bracket_end(pattern: str, start: int) -> int:
     return index
 
 
-def regex_problem(pattern: str) -> str | None:
-    """Why an extended regex (``git grep -E``, ``log --author=``) is refused, or ``None``.
+_REGEX_SUBSET = (
+    "Allowed: literal text; \\w \\s \\d \\b and \\W \\S \\D; escaped punctuation (\\( \\. \\{); "
+    ". [classes] ^ $; * + ? {m} {m,n} (n <= 50) right after one character, class, escape "
+    "or .; (groups) that are never repeated; and up to 20 | alternatives."
+)
+# m and n of an interval; anything else after "{" isn't one.
+_REPEAT = re.compile(r"\{([0-9]{1,3})(?:,([0-9]{1,3}))?\}")
 
-    The length cap alone doesn't bound what the regex engine builds: bounded repetition
-    expands into copies, so ``(a{1,255}){1,255}`` costs gigabytes. Refused: patterns over
-    ``GREP_MAX_PATTERN_CHARS``, an interval bound over ``REGEX_MAX_REPEAT``, a quantifier on
-    a group that already contains one (or on another quantifier), and backreferences.
+
+def regex_problem(pattern: str) -> str | None:
+    """Why an extended regex (``git grep -E``, ``log --author=``) is outside the allowed
+    subset, or ``None`` if it is inside it.
+
+    An allowlist, not a denylist: the regex engine's memory grows with how a pattern
+    repeats and alternates (``(a|b|...|()){50}`` costs gigabytes), so only shapes whose cost
+    is linear in the pattern are accepted. Repeats apply to a single atom; groups are never
+    repeated and never empty; there are at most ``REGEX_MAX_ALTERNATIVES`` alternatives
+    and at most ``GREP_MAX_PATTERN_CHARS`` characters.
 
     Examples:
-        >>> regex_problem("def \\w+") is None
+        >>> regex_problem("(foo|bar)baz") is None
         True
-        >>> regex_problem("(a+)+")
-        'a quantified group may not contain a quantifier'
+        >>> regex_problem("(ab)+").startswith("groups can't be repeated")
+        True
     """
     if len(pattern) > GREP_MAX_PATTERN_CHARS:
         return f"the pattern is limited to {GREP_MAX_PATTERN_CHARS} characters"
-    groups = [False]  # per open group: does it contain a quantifier?
-    last = ""  # what the previous token was: "", "atom", "quantified-group" or "quantifier"
+    depth = 0
+    alternatives = 1
+    previous = "start"  # "start" (of a branch), "atom", "anchor", "group" or "repeat"
     index = 0
     while index < len(pattern):
         char = pattern[index]
-        interval = _INTERVAL.match(pattern, index) if char == "{" else None
-        if interval is not None and not (interval[1] or interval[3]):
-            interval = None  # "{}" and "{,}" are not intervals
+        step = 1
         if char == "\\":
-            if pattern[index + 1 : index + 2] in tuple("123456789"):
-                return "backreferences are refused"
-            index, last = index + 2, "atom"
+            escaped = pattern[index + 1 : index + 2]
+            if escaped == "b":
+                previous = "anchor"
+            elif escaped in tuple("wsdWSD") or (escaped and _is_punctuation(escaped)):
+                previous = "atom"
+            else:
+                return f"\\{escaped} is not supported. {_REGEX_SUBSET}"
+            step = 2
         elif char == "[":
-            index, last = _bracket_end(pattern, index) + 1, "atom"
+            end = _bracket_end(pattern, index)
+            if end == len(pattern):
+                return f"a [class] is not closed. {_REGEX_SUBSET}"
+            previous, step = "atom", end - index + 1
+        elif char in "^$":
+            previous = "anchor"
         elif char == "(":
-            groups.append(False)
-            index, last = index + 1, ""
-        elif char == ")" and len(groups) > 1:
-            inner = groups.pop()
-            groups[-1] = groups[-1] or inner
-            index, last = index + 1, "quantified-group" if inner else "atom"
-        elif char in "*+?" or interval is not None:
-            bounds = [interval[1], interval[3]] if interval is not None else []
-            if any(bound and int(bound) > REGEX_MAX_REPEAT for bound in bounds):
-                return f"repetition bounds are limited to {REGEX_MAX_REPEAT}"
-            if last == "quantifier":
-                return "a quantifier may not follow another quantifier"
-            if last == "quantified-group":
-                return "a quantified group may not contain a quantifier"
-            groups[-1] = True
-            index, last = index + (len(interval[0]) if interval is not None else 1), "quantifier"
+            depth, previous = depth + 1, "start"
+        elif char == ")":
+            if depth == 0:
+                return f"a ) has no matching (; escape it as \\). {_REGEX_SUBSET}"
+            if previous == "start":
+                return f"empty groups and empty alternatives are refused. {_REGEX_SUBSET}"
+            depth, previous = depth - 1, "group"
+        elif char == "|":
+            alternatives += 1
+            if previous == "start":
+                return f"empty groups and empty alternatives are refused. {_REGEX_SUBSET}"
+            if alternatives > REGEX_MAX_ALTERNATIVES:
+                return f"at most {REGEX_MAX_ALTERNATIVES} alternatives. {_REGEX_SUBSET}"
+            previous = "start"
+        elif char in "*+?{":
+            repeat = _REPEAT.match(pattern, index) if char == "{" else None
+            if char == "{" and repeat is None:
+                return f"{{ starts a repeat {{m}} or {{m,n}}; escape it as \\{{. {_REGEX_SUBSET}"
+            if repeat is not None:
+                low, high = int(repeat[1]), int(repeat[2] or repeat[1])
+                if not low <= high <= REGEX_MAX_REPEAT:
+                    return f"repeats are limited to {{m,n}} with m <= n <= {REGEX_MAX_REPEAT}"
+                step = len(repeat[0])
+            if previous == "group":
+                return f"groups can't be repeated. {_REGEX_SUBSET}"
+            if previous != "atom":
+                return f"a repeat must follow one character, class, escape or '.'. {_REGEX_SUBSET}"
+            previous = "repeat"
         else:
-            index, last = index + 1, "atom"
+            previous = "atom"  # a literal, ".", or a lone "]" or "}" (literals in ERE)
+        index += step
+    if depth:
+        return f"a ( is not closed. {_REGEX_SUBSET}"
+    if previous == "start" and alternatives > 1:
+        return f"empty groups and empty alternatives are refused. {_REGEX_SUBSET}"
     return None
+
+
+def _is_punctuation(char: str) -> bool:
+    return char.isascii() and char.isprintable() and not char.isalnum()
 
 
 _SHORTHAND_CLASSES = {
@@ -320,6 +354,14 @@ def posix_ere(pattern: str) -> str:
             end = _bracket_end(pattern, index) + 1
             out.append(pattern[index:end])
             index = end
+        elif char == "\\" and pattern[index + 1 : index + 2] == "b":
+            # macOS regex has no \b; its word-start and word-end anchors need picking. After
+            # a word character (or a repeat of one) it ends a word, otherwise it starts one.
+            ends_word = index > 0 and (
+                pattern[index - 1].isalnum() or pattern[index - 1] in "_+*?}]"
+            )
+            out.append("[[:>:]]" if ends_word else "[[:<:]]")
+            index += 2
         elif char == "\\":
             escaped = pattern[index : index + 2]
             out.append(_SHORTHAND_CLASSES.get(escaped[1:], escaped))

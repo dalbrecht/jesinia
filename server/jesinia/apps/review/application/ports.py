@@ -57,7 +57,10 @@ class TreeGit(Protocol):
         output_limit: int,
         glob_pathspecs: bool = False,
         accept_exit_codes: frozenset[int] = frozenset({0}),
+        without_worktree: bool = False,
     ) -> CappedOutput:
         """Run ``git <args>`` in ``tree``; stdout is cut (and the process killed) past
         ``output_limit`` bytes. ``glob_pathspecs`` lets ``:(glob)`` pathspecs work, which
-        are otherwise literal. An exit code outside ``accept_exit_codes`` raises."""
+        are otherwise literal. An exit code outside ``accept_exit_codes`` raises.
+        ``without_worktree`` runs against the tree's repository only, so no file in the
+        checkout (``.mailmap``) is read; revisions must then be full commit ids."""

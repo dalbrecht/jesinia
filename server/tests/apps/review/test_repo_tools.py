@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +131,8 @@ def tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Tree]:
         # A NUL past git's 8000-byte binary sniff, in a line that matches: text, to git.
         (work / "aaa-nul.txt").write_bytes(b"pad\n" * 2500 + b"nul_marker\0tail\n")
         (work / "zzz-normal.txt").write_text("nul_marker ok\n")
+        # The PR renames its author in blame output, if blame honours this.
+        (work / ".mailmap").write_text("Mallory <m@example.invalid> Test <test@example.invalid>\n")
 
         (work / "src" / "app.py").write_text("def hello():\n    return 'needle v2'\n")
         (work / "big.txt").write_text("".join(f"line {i}\n" for i in range(1, 5001)))
@@ -647,24 +650,39 @@ async def test_repo_git_runs_hardened(
     await tools.git(SESSION, "blame", ["src/app.py"])
     await tools.grep(SESSION, "needle", glob="*.py")
     await tools.grep(SESSION, "needle")
-    assert len(seen) == 5
+    by_cmd: dict[str, list[tuple[tuple[str, ...], dict[str, str]]]] = {}
     for argv, env in seen:
+        command = next(
+            a for a in argv if a in {"log", "show", "blame", "grep", "rev-parse", "merge-base"}
+        )
+        by_cmd.setdefault(command, []).append((argv, env))
         assert env["GIT_CONFIG_NOSYSTEM"] == "1"
         assert "--no-pager" in argv and "core.hooksPath=/dev/null" in argv
         assert "log.showSignature=false" in argv and "color.ui=never" in argv
         assert f"--attr-source={EMPTY_TREE}" in argv  # the PR's .gitattributes are ignored
         assert "blame.ignoreRevsFile=" in argv and "log.mailmap=false" in argv
-        assert argv[argv.index("-C") + 1] == str(tree.path)
-    for argv, _ in seen[:3]:
+        assert "mailmap.file=" in argv and "mailmap.blob=" in argv
+    assert sorted(len(runs) for runs in by_cmd.values()) == [1, 1, 1, 1, 1, 2]
+    for command in ("log", "show", "blame"):
+        ((argv, _),) = by_cmd[command]
         assert "--no-textconv" in argv and "--no-ext-diff" in argv
         assert "--end-of-options" in argv
-    assert "grep.patternType=extended" in seen[0][0]
-    assert "--cached" in seen[3][0] and "--no-column" in seen[3][0]
-    assert "-F" in seen[3][0] and "-E" not in seen[3][0]  # a plain word is searched literally
-    assert seen[3][1]["GIT_LITERAL_PATHSPECS"] == "0"  # only for the :(glob) pathspec
-    assert seen[4][1]["GIT_LITERAL_PATHSPECS"] == "1"
-    blame = seen[2][0]
-    assert blame[blame.index("--end-of-options") + 1 :] == ("HEAD", "src/app.py")
+    for command in ("log", "show", "grep", "rev-parse", "merge-base"):
+        assert all(argv[argv.index("-C") + 1] == str(tree.path) for argv, _ in by_cmd[command])
+    ((log, _),) = by_cmd["log"]
+    assert "grep.patternType=extended" in log
+    (glob_grep, glob_env), (plain_grep, plain_env) = by_cmd["grep"]
+    assert "--cached" in glob_grep and "--no-column" in glob_grep
+    assert "-F" in glob_grep and "-E" not in glob_grep  # a plain word is searched literally
+    assert glob_env["GIT_LITERAL_PATHSPECS"] == "0"  # only for the :(glob) pathspec
+    assert plain_env["GIT_LITERAL_PATHSPECS"] == "1"
+    # blame runs on the mirror, with no worktree whose .mailmap it could read, at the
+    # worktree's HEAD resolved to a full id.
+    ((blame, _),) = by_cmd["blame"]
+    assert "-C" not in blame
+    mirror = tree.path.parent.parent / "mirror.git"
+    assert blame[blame.index("--git-dir") + 1] == str(mirror.resolve())
+    assert blame[blame.index("--end-of-options") + 1 :] == (tree.head, "src/app.py")
 
 
 async def test_tree_reads_refuse_trees_outside_the_workspace(tree: Tree, tmp_path: Path) -> None:
@@ -797,28 +815,56 @@ async def test_garbled_grep_output_is_a_typed_error(
         await tools.grep(SESSION, "text")
 
 
+# The re-review's bypasses: quantified alternation (with an empty branch) cost 5.2 GB in git.
+GREP_BLOWUP = "(" + "|".join("abcdefghijklmnopqrstuvwxyz0123456789ABCD") + "|()){50}"
+AUTHOR_BLOWUP = "(" + "|".join("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN") + "|()){50}"
+
+
 @pytest.mark.parametrize(
     "pattern",
     [
+        GREP_BLOWUP,
+        AUTHOR_BLOWUP,
+        "(.|()){50}",
+        "(ab)+",
+        "(a|b){3}",
+        "(a|b)+",
+        "()",
+        "(|a)",
+        "a|",
+        "a{1,100}",
         "((a{1,255}){1,255}){1,40}b",
         "x(a{1,255}){1,255}",
-        "(a{1,99}){1,99}b",
         "a{51}",
-        "a{,51}",
-        "a{60,}",
+        "a{,5}",
+        "a{5,}",
+        "a{5,2}",
         "(a+)+",
-        "(a*b)*",
-        "((ab)+c){2}",
         "a+*",
         "a{2}{3}",
+        "*a",
+        "^*",
+        "\\b+",
         "(a)\\1",
+        "\\q",
+        "\\B",
+        "\\",
+        "x{",
+        "{}",
+        "[abc",
+        "[[:alpha]+",
+        "(unclosed",
+        "closed)",
+        "|".join("abcdefghijklmnopqrstu"),  # 21 alternatives
         "x" * 201,
     ],
 )
-def test_pathological_patterns_are_refused(pattern: str) -> None:
+def test_patterns_outside_the_allowed_regex_subset_are_refused(pattern: str) -> None:
+    started = time.perf_counter()
     assert regex_problem(pattern) is not None
     with pytest.raises(InvalidSearchError):
         check_pattern(pattern)
+    assert time.perf_counter() - started < 0.1
 
 
 @pytest.mark.parametrize(
@@ -827,29 +873,34 @@ def test_pathological_patterns_are_refused(pattern: str) -> None:
         "foo\\(",
         "def \\w+",
         "a|b",
-        "(a|b)+",
+        "(foo|bar)baz",
+        "x{2,5}",
+        "[A-Z]+_id",
+        "a{0}",
         "a{1,50}",
-        "a{3}",
-        "x{",
-        "{}",
-        "a{,}",
+        "^start.*end$",
+        "\\bword\\b",
+        "\\W\\S\\D\\.\\{\\}",
         "[(+]+",
         "[^]a]+",
         "[]a]*",
         "[[:alpha:]]+",
-        "[[:alpha]+",
-        "[abc",
-        "(unclosed",
-        "closed)+",
-        "\\",
+        "a]b}c",
+        "((a|b)c|d)e",
+        "|".join("abcdefghijklmnopqrst"),  # 20 alternatives
     ],
 )
-def test_ordinary_patterns_pass_the_regex_check(pattern: str) -> None:
+def test_patterns_in_the_allowed_regex_subset_pass(pattern: str) -> None:
     assert regex_problem(pattern) is None
 
 
 async def test_ordinary_patterns_still_search(tools: RepoTools) -> None:
-    for pattern, path in (("def \\w+", "src/app.py"), ("hello\\(", "src/app.py")):
+    for pattern, path in (
+        ("def \\w+", "src/app.py"),
+        ("hello\\(", "src/app.py"),
+        ("\\bhello\\b", "src/app.py"),
+        ("(def|class) hel", "src/app.py"),
+    ):
         found = await tools.grep(SESSION, pattern)
         assert path in {m["path"] for m in found["matches"]}, pattern
     either = await tools.grep(SESSION, "secretive_marker = 1|old content")
@@ -859,8 +910,9 @@ async def test_ordinary_patterns_still_search(tools: RepoTools) -> None:
 
 
 async def test_author_patterns_get_the_same_regex_check(tools: RepoTools) -> None:
-    with pytest.raises(UnsafeGitArgumentError, match="quantif"):
-        await tools.git(SESSION, "log", ["--author=(a{1,50}){1,50}"])
+    for author in ("(a{1,50}){1,50}", AUTHOR_BLOWUP):
+        with pytest.raises(UnsafeGitArgumentError, match="--author"):
+            await tools.git(SESSION, "log", [f"--author={author}"])
     found = await tools.git(SESSION, "log", ["--oneline", "--author=Te(s|x)t"])
     assert "second" in found["output"]
 
@@ -872,6 +924,9 @@ async def test_author_patterns_get_the_same_regex_check(tools: RepoTools) -> Non
         ("\\s\\S\\d\\D\\W", "[[:space:]][^[:space:]][[:digit:]][^[:digit:]][^[:alnum:]_]"),
         ("[\\w]\\(", "[\\w]\\("),
         ("end\\", "end\\"),
+        ("\\bword\\b", "[[:<:]]word[[:>:]]"),
+        ("\\b\\w+ \\b(x)", "[[:<:]][[:alnum:]_]+ [[:<:]](x)"),
+        ("\\w+\\b", "[[:alnum:]_]+[[:>:]]"),
     ],
 )
 def test_posix_ere_spells_out_shorthand_classes(pattern: str, expected: str) -> None:
@@ -944,3 +999,10 @@ async def test_a_nul_in_a_matched_line_never_hides_later_matches(tools: RepoTool
     ]
     assert found["matches"][0]["text"] == "nul_marker\x00tail"
     assert found["truncated"] is False
+
+
+async def test_blame_ignores_the_prs_mailmap(tools: RepoTools) -> None:
+    blame = await tools.git(SESSION, "blame", ["src/app.py"])
+    assert "Test" in blame["output"] and "Mallory" not in blame["output"]
+    log = await tools.git(SESSION, "log", ["-n", "1"])
+    assert "Mallory" not in log["output"]

@@ -87,13 +87,16 @@ EMPTY_TREE = hashlib.sha1(b"tree 0\0", usedforsecurity=False).hexdigest()
 # (untrusted) commit signatures; ERE for `log --author=` (the repo tools validate it as
 # ERE, and a user's grep.patternType=perl would allow backtracking); and no PR-supplied
 # files consulted through the user's global config: .git-blame-ignore-revs could hide
-# authorship, and .mailmap could rewrite the authors shown and matched.
+# authorship, and .mailmap could rewrite the authors shown and matched (mailmap.* also
+# empties the extra mailmap sources).
 _TREE_READ_OPTIONS = (
     *("-c", "color.ui=never"),
     *("-c", "log.showSignature=false"),
     *("-c", "grep.patternType=extended"),
     *("-c", "blame.ignoreRevsFile="),
     *("-c", "log.mailmap=false"),
+    *("-c", "mailmap.file="),
+    *("-c", "mailmap.blob="),
 )
 # git's stderr kept for error messages; the rest is drained and dropped.
 _STDERR_LIMIT = 64 * 1024
@@ -246,13 +249,23 @@ class GitWorkspace:
         output_limit: int,
         glob_pathspecs: bool = False,
         accept_exit_codes: frozenset[int] = frozenset({0}),
+        without_worktree: bool = False,
     ) -> CappedOutput:
         """``TreeGit`` for the repo tools: read-only git inside a worktree under the root."""
+        inside = self._inside(tree)
+        # blame reads the worktree's .mailmap unconditionally (log.mailmap doesn't reach
+        # it), so it runs on the tree's mirror instead, where there is no worktree and the
+        # empty mailmap.blob stops a bare repo's default HEAD:.mailmap.
+        location = (
+            _bare(self._inside(inside.parent.parent / "mirror.git"))
+            if without_worktree
+            else ("-C", str(inside))
+        )
         env = {"GIT_CONFIG_NOSYSTEM": "1"}  # local reads need no credential helper
         if glob_pathspecs:
             env["GIT_LITERAL_PATHSPECS"] = "0"
         argv, out, err, code, truncated = await self._execute(
-            ("-C", str(self._inside(tree)), *_TREE_READ_OPTIONS),
+            (*location, *_TREE_READ_OPTIONS),
             args,
             extra_env=env,
             output_limit=output_limit,

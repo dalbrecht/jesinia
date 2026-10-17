@@ -247,7 +247,7 @@ class RepoTools:
         self._refuse_skipped(rel, _is_binary(sample))
         key = _allowance_key(root, rel)
         wanted = min(last - first + 1, READ_LINES_PER_CALL)
-        granted = await self._reserve(session, key, rel, wanted)
+        granted = self._reserve(session, key, rel, wanted)
         lines: list[str] = []
         try:
             lines, has_more, byte_capped = await asyncio.to_thread(
@@ -419,9 +419,10 @@ class RepoTools:
             self._refuse_skipped(content_of, False)
             self._refuse_skipped(_relative(root, safe_path(root, content_of)), False)
             key = _allowance_key(root, content_of)
-            granted = await self._reserve(session, key, content_of, GIT_MAX_LINES)
+            granted = self._reserve(session, key, content_of, GIT_MAX_LINES)
         if cmd == "blame":
-            revision = revisions[0] if revisions else "HEAD"
+            # Run without the worktree (see TreeGit), so HEAD is resolved here first.
+            revision = revisions[0] if revisions else await self._commit(root, "HEAD")
             argv = ["blame", "--no-ext-diff", "--no-textconv", *plan.options]
             argv += ["--end-of-options", revision, plan.paths[0]]
         else:
@@ -430,7 +431,9 @@ class RepoTools:
             argv += ["--", *plan.paths]
         lines: list[str] = []
         try:
-            output = await self._run_git(root, argv, output_limit=GIT_MAX_BYTES)
+            output = await self._run_git(
+                root, argv, output_limit=GIT_MAX_BYTES, without_worktree=cmd == "blame"
+            )
             data = output.data
             if output.truncated:
                 data = data[: data.rfind(b"\n") + 1]  # whole lines only
@@ -465,18 +468,17 @@ class RepoTools:
             raise NoReviewSessionError("the worktree for this review session no longer exists")
         return session_id, tree.resolve()
 
-    async def _reserve(self, session: str, key: str, rel: str, lines: int) -> int:
+    def _reserve(self, session: str, key: str, rel: str, lines: int) -> int:
         """Reserve up to ``lines`` of a file's allowance before reading anything.
 
         Reserving up front, then refunding what wasn't returned, is what stops parallel
-        tool calls from each seeing the same remaining allowance. The per-session lock
-        keeps the check and the reservation one step even if this ever needs to await.
+        tool calls from each seeing the same remaining allowance. There is no await
+        between the check and the take; on one event loop, that is the atomicity.
 
         Raises:
             AllowanceExhaustedError: nothing of the file's allowance is left.
         """
-        async with self._allowance.lock(session):
-            granted = self._allowance.take(session, key, lines)
+        granted = self._allowance.take(session, key, lines)
         if granted == 0:
             raise AllowanceExhaustedError(
                 f"this review session has read its {FILE_LINES_PER_SESSION} lines per file "
@@ -532,6 +534,7 @@ class RepoTools:
         output_limit: int,
         glob_pathspecs: bool = False,
         accept_exit_codes: frozenset[int] = frozenset({0}),
+        without_worktree: bool = False,
     ) -> CappedOutput:
         try:
             return await self._git.read_in_tree(
@@ -540,6 +543,7 @@ class RepoTools:
                 output_limit=output_limit,
                 glob_pathspecs=glob_pathspecs,
                 accept_exit_codes=accept_exit_codes,
+                without_worktree=without_worktree,
             )
         except WorkspaceError as exc:
             detail = exc.stderr.strip() if isinstance(exc, GitCommandError) else str(exc)
