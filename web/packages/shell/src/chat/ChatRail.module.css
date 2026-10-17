@@ -45,6 +45,14 @@
   flex: 1;
   min-height: 0;
 }
+/* Agent Markdown: long URLs and code wrap inside the rail; blocks scroll on their own. */
+.transcript :where(p, li, a, code) {
+  overflow-wrap: anywhere;
+}
+.transcript pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
 .footer {
   display: flex;
   flex-direction: column;

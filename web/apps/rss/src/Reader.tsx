@@ -42,6 +42,8 @@ export type ReaderProps = {
   onToggleRead: () => void;
   /** The post changed on the server (an archive retry). */
   onChanged: (post: Post) => void;
+  /** Runs a request that starts an archive, so live archive news that beat its answer wins. */
+  trackArchive: (work: () => Promise<Post>) => Promise<Post>;
   /** Keep (n) and Engage (e); without a handler the button shows but is unavailable. */
   onKeep?: () => void;
   onEngage?: () => void;
@@ -75,7 +77,7 @@ export function Reader(props: ReaderProps) {
     setRetrying(true);
     setRetryError(null);
     try {
-      props.onChanged(await retryArchive(client, post.id));
+      props.onChanged(await props.trackArchive(() => retryArchive(client, post.id)));
     } catch (e) {
       setRetryError(causeOf(e));
     } finally {
@@ -138,7 +140,7 @@ export function Reader(props: ReaderProps) {
             </div>
           ) : null}
           {article.state === "done" ? (
-            <SafeMarkdown markdown={article.markdown} base={post.url} />
+            <SafeMarkdown images markdown={article.markdown} base={post.url} />
           ) : post.content_html ? (
             <SafeHtml html={post.content_html} base={post.url} />
           ) : (

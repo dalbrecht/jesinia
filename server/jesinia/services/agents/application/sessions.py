@@ -231,8 +231,9 @@ class SessionService:
     async def send(self, session_id: str, text: str) -> None:
         await self._start_turn(session_id, text)
 
-    async def _start_turn(self, session_id: str, text: str) -> int:
-        """Start a turn in the background; the sequence number of its ``user_message``."""
+    async def _start_turn(self, session_id: str, text: str, purpose: str | None = None) -> int:
+        """Start a turn in the background; the sequence number of its ``user_message``.
+        ``purpose`` marks a prompt the app sent, not the author (shown apart in chats)."""
         session = self.get(session_id)
         task = self._tasks.get(session_id)
         if session.status == "running" or (task is not None and not task.done()):
@@ -243,18 +244,24 @@ class SessionService:
         ):
             raise SessionClosed(session_id)
         self.store.set_status(session_id, "running")
-        message = await self._append(session_id, "user_message", {"text": text})
+        data: dict[str, object] = {"text": text}
+        if purpose is not None:
+            data["purpose"] = purpose
+        message = await self._append(session_id, "user_message", data)
         self._tasks[session_id] = asyncio.create_task(
             self._turn(session_id, text), name=f"turn:{session_id}"
         )
         return message.seq
 
-    async def ask(self, session_id: str, prompt: str, *, timeout: float = 45.0) -> str:
+    async def ask(
+        self, session_id: str, prompt: str, *, timeout: float = 45.0, purpose: str | None = None
+    ) -> str:
         """Run one turn in an existing session (resuming the agent's own session) and
         return the text it replied with. Raises ``SessionNotFound``, ``SessionBusy``,
         ``TurnFailed`` (the agent reported an error) or ``TimeoutError``; a timed-out turn
-        is stopped and marked failed so the session can be used again."""
-        after = await self._start_turn(session_id, prompt)
+        is stopped and marked failed so the session can be used again. ``purpose`` marks the
+        turn's ``user_message`` as the app's prompt rather than the author's words."""
+        after = await self._start_turn(session_id, prompt, purpose)
         try:
             async with asyncio.timeout(timeout):
                 return await self._reply_after(session_id, after)

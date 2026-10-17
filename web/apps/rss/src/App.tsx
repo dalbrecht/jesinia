@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // The RSS reader (spec §2): feeds, list and reader in three panes; on a narrow screen a
 // drill-down from feeds to list to a full-screen reader.
-import type { JesiniaClient } from "@jesinia/client";
+import { subscribe, type JesiniaClient } from "@jesinia/client";
 import { Button, Input, relativeTime, useToast, VisuallyHidden } from "@jesinia/design";
 import { AppShell, ChatRail, useClient, type ChatState, type Runners } from "@jesinia/shell";
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MutableRefObject } from "react";
 import {
   askTakeaway,
   capCount,
@@ -50,11 +50,6 @@ function useNarrow(): boolean {
 
 function causeOf(e: unknown): string {
   return sentence(e instanceof Error ? e.message : String(e));
-}
-
-/** Whitespace folded, as the server folds a takeaway. */
-function oneLine(text: string): string {
-  return text.split(/\s+/).filter(Boolean).join(" ");
 }
 
 function titleOf(scope: Scope, feeds: Feed[], query: string): string {
@@ -136,7 +131,17 @@ type WorkspaceProps = {
 };
 
 /** The Keep popover, open for one post; after Engage it carries the takeaway. */
-type Keeping = { postId: number; note: string; takeaway: { text: string; session: string } | null };
+type Keeping = {
+  postId: number;
+  note: string;
+  takeaway: { text: string; session: string } | null;
+  /** Each opening is a fresh popover, even for the same post and session. */
+  openId: number;
+  /** How many archive events had arrived when it opened (see `freshen`). */
+  since: number;
+};
+/** An archive state change from the server (`rss.post_changed`, R22). */
+type PostChanged = { id: number; archive_state: Post["archive_state"]; archive_error: Post["archive_error"] };
 /**
  * The conversation about one post; `tried` once a session was asked for on opening. Closing
  * the rail (or Done on the sheet) only hides it: the chat keeps its state until another post
@@ -175,11 +180,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   const [takingAway, setTakingAway] = useState(false);
   /** The post the conversation is about: a session that starts after another post opened is let go. */
   const engagedPost = useRef<number | null>(null);
-  /**
-   * The takeaway is one more turn in the session, so afterwards the chat's last message is the
-   * takeaway prompt. Asking again right after uses the author's note from before it.
-   */
-  const lastTakeaway = useRef<{ session: string; reply: string; note: string } | null>(null);
+  const openings = useRef(0);
   const runner = Object.entries(runners ?? {}).find(([, r]) => r.available)?.[0] ?? null;
   const hasAgent = runners === null || runner !== null;
 
@@ -209,6 +210,42 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     loadFeeds();
     loadCounts();
   }, [loadFeeds, loadCounts]);
+
+  // Archives finish in the background: their state arrives live (R22). A short archive can
+  // finish before the answer to the Keep (or Retry) that started it arrives, so the latest
+  // news per post is remembered, and an answer never takes a post back to an older state.
+  const archiveEvents = useRef(0);
+  const archiveNews = useRef(new Map<number, { at: number; change: PostChanged }>());
+  useEffect(
+    () =>
+      subscribe<PostChanged>(
+        "/api/events?topics=rss.post_changed",
+        ({ data }) => {
+          archiveEvents.current += 1;
+          archiveNews.current.set(data.id, { at: archiveEvents.current, change: data });
+          setPosts((prev) =>
+            prev.map((p) =>
+              p.id === data.id ? { ...p, archive_state: data.archive_state, archive_error: data.archive_error } : p,
+            ),
+          );
+        },
+        { events: ["rss.post_changed"] },
+      ),
+    [],
+  );
+  /** `post` as answered, unless archive news for it arrived after `since`. */
+  const freshen = useCallback((post: Post, since: number): Post => {
+    const news = archiveNews.current.get(post.id);
+    if (!news || news.at <= since) return post;
+    return { ...post, archive_state: news.change.archive_state, archive_error: news.change.archive_error };
+  }, []);
+  const trackArchive = useCallback(
+    async (work: () => Promise<Post>) => {
+      const since = archiveEvents.current;
+      return freshen(await work(), since);
+    },
+    [freshen],
+  );
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(query.trim()), SEARCH_DEBOUNCE_MS);
@@ -386,8 +423,14 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     void startSession(engaged.postId, runner);
   }, [engaged, runner, startSession]);
 
+  const openKeep = (next: Omit<Keeping, "openId" | "since">) => {
+    openings.current += 1;
+    setKeeping({ ...next, openId: openings.current, since: archiveEvents.current });
+    // On a narrow screen the chat is a sheet over the reader: it steps aside for the popover.
+    if (narrow) setEngaged((e) => (e ? { ...e, open: false } : e));
+  };
   const keep = () => {
-    if (selected) setKeeping({ postId: selected.id, note: "", takeaway: null });
+    if (selected) openKeep({ postId: selected.id, note: "", takeaway: null });
   };
   const engage = () => {
     if (!selected) return;
@@ -399,21 +442,19 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     setEngaged({ postId: selected.id, session: null, tried: false, open: true });
   };
   const closeChat = () => setEngaged((e) => (e ? { ...e, open: false } : e));
-  const kept = (result: Kept) => {
-    replace(result.post);
+  const kept = (result: Kept, since: number) => {
+    replace(freshen(result.post, since));
     setKeeping(null);
     loadCounts();
     toast.show({ tone: "success", message: `Kept to ${result.path}.` });
   };
   const keepWithConversation = async (chat: ChatState, postId: number, session: string) => {
-    const previous = lastTakeaway.current;
-    const afterTakeaway = previous?.session === session && oneLine(chat.lastReply?.text ?? "") === previous.reply;
-    const note = afterTakeaway ? previous.note : chat.lastUserText;
+    // The author's own last message: the takeaway prompt's turn is marked and never counts (R26).
+    const note = chat.lastUserText;
     setTakingAway(true);
     try {
       const takeaway = await askTakeaway(client, session);
-      lastTakeaway.current = { session, reply: oneLine(takeaway.text), note };
-      setKeeping({ postId, note, takeaway: { text: takeaway.text, session } });
+      openKeep({ postId, note, takeaway: { text: takeaway.text, session } });
     } catch (e) {
       fail("get a takeaway", e);
     } finally {
@@ -536,6 +577,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
             onNext={() => move(1)}
             onToggleRead={() => markRead(selected, !selected.read)}
             onChanged={replace}
+            trackArchive={trackArchive}
             onKeep={keep}
             onEngage={engage}
             engaged={chatOpen}
@@ -543,12 +585,12 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
           >
             {keeping && keeping.postId === selected.id ? (
               <KeepPopover
-                key={keeping.takeaway?.session ?? "quick"}
+                key={keeping.openId}
                 post={selected}
                 initialNote={keeping.note}
                 takeaway={keeping.takeaway}
                 hasAgent={hasAgent}
-                onKept={kept}
+                onKept={(result) => kept(result, keeping.since)}
                 onCancel={() => setKeeping(null)}
               />
             ) : null}
@@ -592,7 +634,12 @@ type EngageChatProps = {
 
 /** Engage (spec §3.2): the chat rail beside the reader, or a sheet over it on a narrow screen. */
 function EngageChat(props: EngageChatProps) {
-  const { session } = props;
+  const { session, open, narrow } = props;
+  const slot = useRef<HTMLDivElement>(null);
+  // The sheet covers the reader: it takes focus to its message box.
+  useEffect(() => {
+    if (open && narrow) slot.current?.querySelector("textarea")?.focus();
+  }, [open, narrow]);
   const rail = (
     <ChatRail
       className={props.narrow ? s.sheetChat : s.chatRail}
@@ -638,9 +685,19 @@ function EngageChat(props: EngageChatProps) {
   // One tree for both layouts, so a resize across the breakpoint keeps the transcript.
   return (
     <div
+      ref={slot}
       className={props.narrow ? s.sheet : s.railSlot}
       hidden={!props.open}
-      {...(props.narrow ? { role: "dialog", "aria-label": "Chat about this post" } : {})}
+      {...(props.narrow
+        ? {
+            role: "dialog",
+            "aria-label": "Chat about this post",
+            // Esc is Done.
+            onKeyDown: (e: KeyboardEvent) => {
+              if (e.key === "Escape") props.onClose();
+            },
+          }
+        : {})}
     >
       {props.narrow ? (
         <div className={s.grab} aria-hidden="true">

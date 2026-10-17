@@ -11,13 +11,18 @@ import { useClient } from "../context";
 import { renderMarkdown } from "../safe-markdown";
 import type { Runners } from "../types";
 import s from "./ChatRail.module.css";
-import { EMPTY, EVENT_KINDS, markApproving, reduce, type AgentEvent, type ChatState } from "./events";
+import { EMPTY, EVENT_KINDS, markApproving, markAwaiting, reduce, type AgentEvent, type ChatState } from "./events";
 
-type Action = { type: "event"; event: AgentEvent } | { type: "approving"; id: string } | { type: "reset" };
+type Action =
+  | { type: "event"; event: AgentEvent }
+  | { type: "approving"; id: string }
+  | { type: "awaiting"; id: string }
+  | { type: "reset" };
 
 function reducer(state: ChatState, a: Action): ChatState {
   if (a.type === "reset") return EMPTY;
   if (a.type === "approving") return markApproving(state, a.id);
+  if (a.type === "awaiting") return markAwaiting(state, a.id);
   return reduce(state, a.event);
 }
 
@@ -81,7 +86,15 @@ export function ChatRail(props: ChatRailProps) {
     const path = approve
       ? "/api/agents/sessions/{id}/pending/{pid}/approve"
       : "/api/agents/sessions/{id}/pending/{pid}/reject";
-    await client.POST(path, { params: { path: { id: session, pid } } });
+    const r = await client.POST(path, { params: { path: { id: session, pid } } });
+    if (r.response.ok) return;
+    // Refused (the write gate, a gone session): say why, and offer the decision again.
+    if (approve) dispatch({ type: "awaiting", id: pid });
+    const what = approve ? "approve" : "reject";
+    toast.show({
+      tone: "danger",
+      message: `Couldn't ${what} the change: ${errorText((r as { error?: unknown }).error, `HTTP ${r.response.status}`)}`,
+    });
   };
 
   const runnerInfo = {

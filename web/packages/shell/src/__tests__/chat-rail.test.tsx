@@ -182,6 +182,29 @@ describe("ChatRail", () => {
     expect(await retried[0]?.json()).toEqual({ text: "hi" });
   });
 
+  it("says why an approval failed and offers it again", async () => {
+    const { calls } = setup({
+      initial: "s1",
+      routes: {
+        "POST /api/agents/sessions/s1/pending/w1/approve": () =>
+          Response.json({ detail: "write gate closed" }, { status: 409 }),
+        "POST /api/agents/sessions/s1/pending/w1/reject": () => Response.json({ detail: "gone" }, { status: 404 }),
+      },
+    });
+    agent("pending_write", {
+      pending_id: "w1",
+      tool: "kb_write",
+      args: { body: "x" },
+      target: { action: "create", path: "N.md" },
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Approve change" }));
+    expect((await screen.findAllByText("Couldn't approve the change: write gate closed")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Approve change" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+    expect((await screen.findAllByText("Couldn't reject the change: gone")).length).toBeGreaterThan(0);
+    expect(calls.filter((c) => c.url.includes("/pending/"))).toHaveLength(2);
+  });
+
   it("explains when no agent is available, and shows the app's own actions", () => {
     setup({ runners: { codex: { available: false, version: null, detail: "x" } }, actions: <button>Done</button> });
     expect(

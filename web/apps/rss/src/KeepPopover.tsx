@@ -2,10 +2,11 @@
 // Keep (n), spec §3.1: a small popover over the reader with a note, tags from the catalog
 // (TagPicker: suggested in the background, near-duplicates caught) and, after Engage, the
 // agent's takeaway to edit. ⌘↵ keeps, Esc cancels. Keeping is always the author's action.
+// It is modal while open (the app's keys are off): focus stays inside and Esc works anywhere.
 import { Button, Input } from "@jesinia/design";
-import { TagPicker, useClient } from "@jesinia/shell";
+import { TagPicker, useClient, type TagPickerHandle } from "@jesinia/shell";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { keepPost, type Kept, type KeepRequest, type Post } from "./api";
+import { keepPost, TAKEAWAY_MAX, type Kept, type KeepRequest, type Post } from "./api";
 import { sentence } from "./Reader";
 import s from "./rss.module.css";
 
@@ -21,6 +22,9 @@ export type KeepPopoverProps = {
   onCancel: () => void;
 };
 
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+const FOCUSABLE = "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select, [href]";
+
 function causeOf(e: unknown): string {
   return sentence(e instanceof Error ? e.message : String(e));
 }
@@ -32,29 +36,59 @@ export function KeepPopover({ post, initialNote = "", takeaway = null, hasAgent,
   const [takeawayText, setTakeawayText] = useState(takeaway?.text ?? "");
   const [keeping, setKeeping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const root = useRef<HTMLDivElement>(null);
   const noteBox = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+  const picker = useRef<TagPickerHandle>(null);
+  /** In flight: a second ⌘↵ before React re-renders must not send again. */
+  const busy = useRef(false);
+  /** The idempotency key of the intended action, with the request it was for (R25). */
+  const intent = useRef<{ key: string; request: string } | null>(null);
+  const cancel = useRef(onCancel);
+  cancel.current = onCancel;
 
   useEffect(() => {
-    // Back to where the reader was when the popover closes.
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     noteBox.current?.focus();
-    return () => opener?.focus();
+    // Esc cancels even when focus has strayed (a click elsewhere); the app's keys are off.
+    const onEscape = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented) cancel.current();
+    };
+    document.addEventListener("keydown", onEscape);
+    const popover = root.current;
+    return () => {
+      document.removeEventListener("keydown", onEscape);
+      // Back to where the reader was, unless the author already moved on (clicked a row).
+      const active = document.activeElement;
+      if (active === null || active === document.body || popover?.contains(active)) opener?.focus();
+    };
   }, []);
 
   const keep = async () => {
-    if (keeping) return;
+    if (busy.current) return;
+    busy.current = true;
     setKeeping(true);
     setError(null);
+    // A tag still typed in the box counts (R23); a near-match or an invalid tag stops here.
+    const chosen = (await picker.current?.commitDraft()) ?? null;
+    if (chosen === null) {
+      busy.current = false;
+      setKeeping(false);
+      return;
+    }
     const text = takeawayText.trim();
     const request: KeepRequest = {
       note: note.trim(),
-      tags,
+      tags: chosen,
       ...(takeaway && text ? { takeaway: { text, session: takeaway.session } } : {}),
     };
+    // The same request again is a retry of the same action; any edit makes a new one.
+    const body = JSON.stringify(request);
+    if (intent.current?.request !== body) intent.current = { key: crypto.randomUUID(), request: body };
     try {
-      onKept(await keepPost(client, post.id, request));
+      onKept(await keepPost(client, post.id, request, intent.current.key));
     } catch (e) {
       setError(causeOf(e));
+      busy.current = false;
       setKeeping(false);
     }
   };
@@ -62,16 +96,34 @@ export function KeepPopover({ post, initialNote = "", takeaway = null, hasAgent,
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Escape") {
       e.preventDefault();
-      e.stopPropagation();
       onCancel();
     } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
       e.preventDefault();
       void keep();
+    } else if (e.key === "Tab") {
+      // Modal: Tab and Shift+Tab cycle through the popover's own controls.
+      const controls = [...(root.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first?.focus();
+      } else if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last?.focus();
+      }
     }
   };
 
   return (
-    <div className={s.keep} role="dialog" aria-modal="false" aria-labelledby="rss-keep-title" onKeyDown={onKeyDown}>
+    <div
+      ref={root}
+      className={s.keep}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="rss-keep-title"
+      onKeyDown={onKeyDown}
+    >
       <h2 id="rss-keep-title" className={s.keepTitle}>
         Keep this post
       </h2>
@@ -86,6 +138,7 @@ export function KeepPopover({ post, initialNote = "", takeaway = null, hasAgent,
       <div className={s.keepTags}>
         <span className={s.keepLabel}>Tags</span>
         <TagPicker
+          ref={picker}
           text={[post.title, post.snippet, takeaway?.text ?? ""].filter(Boolean).join("\n\n")}
           context={String(post.id)}
           value={tags}
@@ -98,7 +151,8 @@ export function KeepPopover({ post, initialNote = "", takeaway = null, hasAgent,
         <Input
           label="Takeaway"
           multiline
-          help="From the conversation, written to the page's AI section. Clear it to leave it out."
+          maxLength={TAKEAWAY_MAX}
+          help={`From the conversation, written to the page's AI section (up to ${TAKEAWAY_MAX} characters). Clear it to leave it out.`}
           value={takeawayText}
           onChange={(e) => setTakeawayText(e.target.value)}
         />
@@ -112,8 +166,17 @@ export function KeepPopover({ post, initialNote = "", takeaway = null, hasAgent,
         <Button variant="ghost" size="sm" onClick={onCancel}>
           Cancel
         </Button>
-        <Button variant="primary" size="sm" loading={keeping} onClick={() => void keep()}>
-          Keep <kbd className={s.kbd}>⌘↵</kbd>
+        <Button
+          variant="primary"
+          size="sm"
+          loading={keeping}
+          aria-keyshortcuts="Meta+Enter Control+Enter"
+          onClick={() => void keep()}
+        >
+          Keep
+          <kbd className={s.kbd} aria-hidden="true">
+            {IS_MAC ? "⌘↵" : "Ctrl+↵"}
+          </kbd>
         </Button>
       </div>
     </div>

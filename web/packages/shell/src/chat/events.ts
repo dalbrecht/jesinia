@@ -23,6 +23,7 @@ export type ChatState = {
   busy: boolean;
   /** The last completed agent reply, for the rail's footer (Save note, Keep with this conversation). */
   lastReply: { text: string; model: string } | null;
+  /** The author's last message (never an app prompt, see `purpose`). */
   lastUserText: string;
   attached: boolean;
 };
@@ -130,6 +131,9 @@ export function reduce(state: ChatState, e: AgentEvent, now = new Date().toISOSt
   const last = messages[messages.length - 1];
   switch (e.kind) {
     case "user_message": {
+      // A prompt the app sent (e.g. RSS's takeaway) is not the author's message: hidden, and
+      // never what Save note or Keep with this conversation take as the author's words.
+      if (e.data.purpose !== undefined) return { ...state, busy: true };
       const text = str(e.data.text);
       messages.push({ id: `e${e.seq}`, kind: "user", text, at: now });
       // A new turn: Save note must never pair this question with an earlier answer.
@@ -229,5 +233,13 @@ export function markApproving(state: ChatState, id: string): ChatState {
   return {
     ...state,
     messages: state.messages.map((m) => (m.kind === "pending-write" && m.id === id ? { ...m, state: "approving" } : m)),
+  };
+}
+
+/** Put a pending write back to awaiting (the server refused the decision). */
+export function markAwaiting(state: ChatState, id: string): ChatState {
+  return {
+    ...state,
+    messages: state.messages.map((m) => (m.kind === "pending-write" && m.id === id ? { ...m, state: "awaiting" } : m)),
   };
 }

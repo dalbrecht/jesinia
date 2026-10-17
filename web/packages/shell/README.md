@@ -34,9 +34,13 @@ kept current over `/api/events`.
   the first message) and `footer(chat)`, the app's own actions (Save note, Keep with this
   conversation). Agent replies render through `renderMarkdown`.
 - `SafeMarkdown` / `renderMarkdown` / `safeHttpUrl` (ruling R17): untrusted Markdown through
-  react-markdown with raw HTML skipped and http(s)-only URLs; never `innerHTML`.
+  react-markdown with raw HTML skipped and http(s)-only URLs; never `innerHTML`. Images are off
+  unless `images` is set (feed article views only). With them off, an image is its alt text
+  and host as plain text. `renderMarkdown`, the chat's renderer, also shows each link's host
+  and full href (R24), so agent output never loads anything.
 - `TagPicker`: tag chips with catalog suggestions and near-duplicate checks;
-  `suggestOnOpen` asks for suggestions once as it opens (RSS Keep).
+  `suggestOnOpen` asks for suggestions once as it opens (RSS Keep). Its ref
+  (`TagPickerHandle.commitDraft`) adds a still-typed tag before a save.
 - Test helpers: `fakeClient`, `baseRoutes`, `syncStatus`.
 
 ## Development

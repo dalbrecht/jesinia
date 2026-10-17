@@ -13,6 +13,9 @@ export type Takeaway = components["schemas"]["TakeawayOut"];
 export type EngageSession = components["schemas"]["SessionOut"];
 export type View = "unread" | "kept" | "all";
 
+/** The server's cap on a takeaway (`TAKEAWAY_MAX`). */
+export const TAKEAWAY_MAX = 2000;
+
 /** What Keep writes (spec §3.1); `takeaway` only from Engage, as the author left it. */
 export type KeepRequest = { note: string; tags: string[]; takeaway?: { text: string; session: string } };
 
@@ -109,10 +112,14 @@ export async function refreshFeeds(client: JesiniaClient): Promise<void> {
   unwrap(await client.POST("/api/rss/refresh", { params: { header: withIdempotency() } }));
 }
 
-/** Write the post's KB page now; the archive then follows in the background (`post.archive_state`). */
-export async function keepPost(client: JesiniaClient, id: number, keep: KeepRequest): Promise<Kept> {
+/**
+ * Write the post's KB page now; the archive then follows in the background
+ * (`post.archive_state`). `key` names the intended action: a retry of the same request reuses
+ * it, so a lost answer never keeps (and appends the note) twice.
+ */
+export async function keepPost(client: JesiniaClient, id: number, keep: KeepRequest, key: string): Promise<Kept> {
   const r = await client.POST("/api/rss/posts/{post_id}/keep", {
-    params: { path: { post_id: id }, header: withIdempotency() },
+    params: { path: { post_id: id }, header: withIdempotency(key) },
     body: keep,
   });
   return unwrap(r);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Moved with the chat from Notes (Task 14): the shared rail's event reducer.
 import { describe, expect, it } from "vitest";
-import { EMPTY, lineDiff, markApproving, reduce, type AgentEvent, type ChatState } from "../index";
+import { EMPTY, lineDiff, markApproving, markAwaiting, reduce, type AgentEvent, type ChatState } from "../index";
 
 let seq = 0;
 const ev = (kind: string, data: Record<string, unknown> = {}): AgentEvent => ({
@@ -147,5 +147,23 @@ describe("chat events", () => {
     s = run([ev("error", {}), ev("attached"), ev("mystery")], s);
     expect(s.attached).toBe(true);
     expect(s.messages[2]).toMatchObject({ message: "The agent stopped." });
+  });
+
+  it("an app prompt (purpose) is hidden and never becomes the author's last message", () => {
+    let s = run([ev("user_message", { text: "Mine" }), ev("text", { text: "A" }), ev("turn_done", { model: "m" })]);
+    s = run([ev("user_message", { text: "Sum it up", purpose: "takeaway" })], s);
+    expect(s.busy).toBe(true);
+    expect(s.lastUserText).toBe("Mine");
+    expect(s.messages.filter((m) => m.kind === "user")).toHaveLength(1);
+    s = run([ev("error", { message: "timed out" })], s);
+    expect(s.lastUserText).toBe("Mine");
+    expect(s.lastReply).toEqual({ text: "A", model: "m" }); // the author's turn still counts
+  });
+
+  it("markAwaiting puts a pending write back when the server refused the decision", () => {
+    let s = run([ev("pending_write", { pending_id: "p1", tool: "x", args: {} })]);
+    s = markApproving(s, "p1");
+    s = markAwaiting(s, "p1");
+    expect(s.messages[0]).toMatchObject({ state: "awaiting" });
   });
 });

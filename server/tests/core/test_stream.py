@@ -54,6 +54,17 @@ async def test_events_route_replays_after_id(cfg: Config) -> None:
         assert bad.status_code == 400 and "not streamable" in bad.text
 
 
+async def test_rss_post_changes_are_streamed(cfg: Config) -> None:
+    app = create_app(cfg, [], static_root=None)
+    async with lifespan_client(app) as c:
+        payload = {"id": 7, "archive_state": "done", "archive_error": None}
+        await app.state.ctx.bus.publish(Event("rss.post_changed", payload))
+        c.headers.update(bearer(cfg.token))
+        r = await c.get("/api/events", params={"topics": "rss.post_changed", "follow": "false"})
+        assert r.status_code == 200
+        assert 'event: rss.post_changed\ndata: {"id": 7, "archive_state": "done"' in r.text
+
+
 async def test_events_follow_delivers_live_and_keeps_alive(cfg: Config, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from jesinia.core import stream
 
