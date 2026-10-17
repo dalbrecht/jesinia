@@ -53,6 +53,9 @@ REGEX_MAX_ALTERNATIVES = 20
 # CPU budget: each open-ended repeat multiplies the backtracking work of the next, so
 # `.*.*...Q` costs roughly cubically; finite repeats cost their bound in copies.
 REGEX_MAX_UNBOUNDED = 4
+# Every variable repeat (? * + {m,n} with m < n) adds a branch point; ? alone, chained,
+# pins cores too. A fixed {m} doesn't vary, so it isn't counted.
+REGEX_MAX_VARIABLE = 8
 REGEX_MAX_BOUND_TOTAL = 100
 _REGEX_METACHARACTERS = frozenset(".[]()*+?{}|^$\\")
 
@@ -258,8 +261,9 @@ def _bracket_end(pattern: str, start: int) -> int:
 _REGEX_SUBSET = (
     "Allowed: literal text; \\w \\s \\d \\b and \\W \\S \\D; escaped punctuation (\\( \\. \\{); "
     ". [classes] ^ $; * + ? {m} {m,n} (n <= 50) right after one character, class, escape "
-    "or .; at most 4 open-ended repeats (* +) and finite {m,n} bounds summing to 100 or "
-    "less; (groups) that are never repeated; and up to 20 | alternatives."
+    "or .; at most 8 variable repeats (? * + {m,n}), of which at most 4 open-ended (* +), "
+    "and finite {m,n} bounds summing to 100 or less; (groups) that are never repeated; and "
+    "up to 20 | alternatives."
 )
 # m and n of an interval; anything else after "{" isn't one.
 _REPEAT = re.compile(r"\{([0-9]{1,3})(?:,([0-9]{1,3}))?\}")
@@ -274,8 +278,8 @@ def regex_problem(pattern: str, dialect: RegexDialect) -> str | None:
     is linear in the pattern are accepted. Repeats apply to a single atom; groups are never
     repeated and never empty; there are at most ``REGEX_MAX_ALTERNATIVES`` alternatives
     and at most ``GREP_MAX_PATTERN_CHARS`` characters. CPU is budgeted too: at most
-    ``REGEX_MAX_UNBOUNDED`` open-ended repeats, and finite upper bounds summing to at most
-    ``REGEX_MAX_BOUND_TOTAL``.
+    ``REGEX_MAX_VARIABLE`` variable repeats, ``REGEX_MAX_UNBOUNDED`` of them open-ended, and
+    finite upper bounds summing to at most ``REGEX_MAX_BOUND_TOTAL``.
 
     Examples:
         >>> regex_problem("(foo|bar)baz", BSD_REGEX) is None
@@ -288,6 +292,7 @@ def regex_problem(pattern: str, dialect: RegexDialect) -> str | None:
     depth = 0
     alternatives = 1
     unbounded = 0
+    variable = 0
     bound_total = 0
     previous = "start"  # "start" (of a branch), "atom", "anchor", "group" or "repeat"
     index = 0
@@ -335,8 +340,15 @@ def regex_problem(pattern: str, dialect: RegexDialect) -> str | None:
                     return f"repeats are limited to {{m,n}} with m <= n <= {REGEX_MAX_REPEAT}"
                 step = len(repeat[0])
                 bound_total += high
-            elif char in "*+":
-                unbounded += 1
+                variable += low < high
+            else:
+                variable += 1
+                unbounded += char in "*+"
+            if variable > REGEX_MAX_VARIABLE:
+                return (
+                    f"at most {REGEX_MAX_VARIABLE} variable repeats (? * + {{m,n}}). "
+                    + _REGEX_SUBSET
+                )
             if unbounded > REGEX_MAX_UNBOUNDED:
                 return f"at most {REGEX_MAX_UNBOUNDED} open-ended repeats (* +). {_REGEX_SUBSET}"
             if bound_total > REGEX_MAX_BOUND_TOTAL:

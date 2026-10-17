@@ -37,6 +37,7 @@ class ReviewSessionRegistry:
         if self._trees.get(session_id, path) != path:
             self.allowance.drop(session_id)
         self._trees[session_id] = path
+        self._git_slots.setdefault(session_id, asyncio.Semaphore(1))
 
     def unbind(self, session_id: str) -> None:
         """End ``session_id``'s access and forget its allowance and git slot; unknown ids
@@ -49,5 +50,15 @@ class ReviewSessionRegistry:
         return self._trees.get(session_id)
 
     def git_slot(self, session_id: str) -> asyncio.Semaphore:
-        """The session's one git slot: its repo tool calls run git one at a time."""
-        return self._git_slots.setdefault(session_id, asyncio.Semaphore(1))
+        """The session's one git slot: its repo tool calls run git one at a time.
+
+        Slots are made only by ``bind``, so a call still in flight after ``unbind`` can't
+        bring one back.
+
+        Raises:
+            NoReviewSessionError: the session isn't bound (any more).
+        """
+        slot = self._git_slots.get(session_id)
+        if slot is None:
+            raise NoReviewSessionError(f"session {session_id!r} is not reviewing a PR")
+        return slot

@@ -872,6 +872,9 @@ AUTHOR_BLOWUP = "(" + "|".join("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN") + "|(
         "a*b+c*d+e*",  # a 5th unbounded repeat
         "x{1,50}y{1,50}z{1}",  # finite bounds summing to 101
         "x{50}y{50}z?{1}",
+        ".?" * 9,  # every variable repeat counts, ? included
+        "\\w?" * 66,
+        ".{0,5}" * 9,
     ],
 )
 @pytest.mark.parametrize("dialect", [BSD_REGEX, GNU_REGEX])
@@ -911,6 +914,8 @@ def test_patterns_outside_the_allowed_regex_subset_are_refused(
         "a.*b.*c.*d",  # 3 unbounded repeats
         "a*b+c*d+e?f?",  # 4 unbounded; ? is bounded
         "x{1,50}y{1,50}",  # bounds summing to 100
+        "a?b?c?d?e?f?g?h?",  # 8 variable repeats
+        "a{3}b{3}c{3}d{3}e{3}f{3}g{3}h{3}i{3}",  # fixed repeats aren't variable
     ],
 )
 @pytest.mark.parametrize("dialect", [BSD_REGEX, GNU_REGEX])
@@ -1179,4 +1184,38 @@ def test_unbind_releases_the_sessions_git_slot(tmp_path: Path) -> None:
     slot = sessions.git_slot("s")
     assert sessions.git_slot("s") is slot
     sessions.unbind("s")
+    with pytest.raises(NoReviewSessionError):
+        sessions.git_slot("s")
+    with pytest.raises(NoReviewSessionError):
+        sessions.git_slot("never-bound")
+    sessions.bind("s", tmp_path)
     assert sessions.git_slot("s") is not slot
+
+
+async def test_a_call_racing_an_unbind_leaves_no_slot_behind(
+    tree: Tree, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions = ReviewSessionRegistry()
+    sessions.bind(SESSION, tree.path)
+    first_git = asyncio.Event()
+    release = asyncio.Event()
+    real = tree.workspace.read_in_tree
+
+    async def paused(tree_path: Path, args: Sequence[str], **kwargs: Any) -> CappedOutput:
+        first_git.set()
+        await release.wait()
+        return await real(tree_path, args, **kwargs)
+
+    monkeypatch.setattr(tree.workspace, "read_in_tree", paused)
+    tools = RepoTools(
+        sessions.worktree_for, tree.workspace, sessions.allowance, git_slots=sessions.git_slot
+    )
+    # rev-parse, then merge-base, then log: the unbind lands while the first git runs.
+    call = asyncio.create_task(tools.git(SESSION, "log", ["--oneline", "HEAD~1"]))
+    await first_git.wait()
+    sessions.unbind(SESSION)
+    release.set()
+    with pytest.raises(NoReviewSessionError):
+        await call
+    with pytest.raises(NoReviewSessionError):
+        sessions.git_slot(SESSION)
