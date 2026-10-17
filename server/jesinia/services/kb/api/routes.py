@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 from typing import Protocol
 
 from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from jesinia.core.module import CallContext, ToolDef
@@ -28,12 +28,14 @@ from jesinia.services.kb.api.schemas import (
     WriteToolIn,
 )
 from jesinia.services.kb.application.errors import (
+    AssetNotFound,
     KbError,
     KbUnavailable,
     PageNotFound,
     PathOutsideKb,
     ReservedPath,
     StaleWrite,
+    UnsupportedAssetType,
 )
 from jesinia.services.kb.application.service import KbService, PageDraft
 from jesinia.services.kb.domain.page import PageId
@@ -59,7 +61,13 @@ _STATUS: dict[type[KbError], int] = {
     StaleWrite: status.HTTP_409_CONFLICT,
     PathOutsideKb: status.HTTP_400_BAD_REQUEST,
     ReservedPath: status.HTTP_400_BAD_REQUEST,
+    AssetNotFound: status.HTTP_404_NOT_FOUND,
+    UnsupportedAssetType: status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
 }
+# Asset names are content hashes, but a name can be rewritten in place: cache for a while,
+# in this browser only (the bytes are the user's).
+ASSET_CACHE = "private, max-age=3600"
+_IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif")
 
 
 def _http(exc: KbError) -> HTTPException:
@@ -79,6 +87,21 @@ def build_router(host: KbHost) -> APIRouter:
     @r.get("/pages/{id}")
     async def get_page(id: str) -> PageOut:
         return PageOut.of(await _guard(lambda: host.service.read(PageId(id))))
+
+    @r.get(
+        "/assets/{page_id}/{file}",
+        response_class=Response,
+        responses={200: {"content": {t: {} for t in _IMAGE_TYPES}}},
+    )
+    async def get_asset(page_id: str, file: str) -> Response:
+        """A page's local image (``_assets/<page_id>/<file>``), typed by its bytes: raster
+        images only (415 for anything else, SVG included), never through a symlink."""
+        asset = await _guard(lambda: host.service.read_asset(page_id, file))
+        return Response(
+            asset.data,
+            media_type=asset.media_type,
+            headers={"Cache-Control": ASSET_CACHE, "X-Content-Type-Options": "nosniff"},
+        )
 
     @r.put("/pages")
     async def put_page(body: PageIn) -> PageOut:

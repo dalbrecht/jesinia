@@ -77,7 +77,9 @@ test("add the fixture feed, skim with j, keep a post with a note and a suggested
   await page.goto("/notes/");
   await page.getByRole("searchbox", { name: "Search notes" }).fill("fixture");
   await page.getByTestId("search-results").getByRole("button", { name: "Fixture post two" }).first().click();
-  await expect(page.getByRole("heading", { name: "Fixture post two", level: 1 })).toBeVisible();
+  // The page title; a kept post opens in the Read view, whose article may repeat it.
+  await expect(page.getByRole("heading", { name: "Fixture post two", level: 1 }).first()).toBeVisible();
+  await expect(page.getByRole("article", { name: "Read view" })).toContainText("A note kept from the fixture feed.");
 });
 
 test("rename #fixture to #fixtures in Settings → Tags: the kept page follows", async ({ page }) => {

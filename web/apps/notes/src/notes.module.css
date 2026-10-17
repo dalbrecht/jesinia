@@ -163,3 +163,98 @@
   font-family: var(--jx-font-mono);
   font-size: var(--jx-text-xs);
 }
+.headTools {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-3);
+}
+.viewToggle {
+  display: inline-flex;
+  gap: 2px;
+}
+/* The Read view: the serif reading style shared with the RSS reader (ADR 0008; --jx-*-read*). */
+.read {
+  font-family: var(--jx-font-read);
+  max-width: var(--jx-read-measure);
+  overflow-wrap: anywhere;
+  padding: var(--jx-space-4) 0 var(--jx-space-8);
+}
+.read h1 {
+  font-size: var(--jx-text-read-xl);
+  line-height: var(--jx-leading-read-xl);
+  font-weight: var(--jx-weight-semibold);
+  margin: 0 0 var(--jx-space-2);
+  text-wrap: balance;
+}
+.read h2,
+.read h3,
+.read h4 {
+  font-size: var(--jx-text-read-lg);
+  line-height: var(--jx-leading-read-lg);
+  font-weight: var(--jx-weight-semibold);
+  margin: var(--jx-space-5) 0 var(--jx-space-2);
+}
+.read p,
+.read li,
+.read blockquote {
+  font-size: var(--jx-text-read);
+  line-height: var(--jx-leading-read);
+}
+.read p,
+.read ul,
+.read ol,
+.read blockquote,
+.read pre {
+  margin: 0 0 var(--jx-space-3);
+}
+.read blockquote {
+  padding-left: var(--jx-space-3);
+  color: var(--jx-fg-muted);
+  font-style: italic;
+}
+.read pre {
+  background: var(--jx-surface-sunken);
+  border-radius: var(--jx-radius-md);
+  padding: var(--jx-space-3);
+  font-size: var(--jx-text-sm);
+  overflow-x: auto;
+}
+.read code {
+  font-family: var(--jx-font-mono);
+  font-size: 0.9em;
+}
+.read img {
+  max-width: 100%;
+  height: auto;
+}
+.read a {
+  color: var(--jx-accent-text);
+}
+.tag {
+  display: inline-block;
+  padding: 0 var(--jx-badge-pad-x);
+  border-radius: var(--jx-badge-radius);
+  background: var(--jx-badge-neutral-bg);
+  color: var(--jx-badge-neutral-fg);
+  font-family: var(--jx-font-ui);
+  font-size: var(--jx-badge-text);
+  line-height: 1.6;
+  vertical-align: 0.1em;
+}
+.ai {
+  margin: 0 0 var(--jx-space-3);
+  padding: var(--jx-space-3) var(--jx-space-4);
+  border-radius: var(--jx-radius-md);
+  background: var(--jx-ai);
+}
+.ai > :last-child {
+  margin-bottom: 0;
+}
+.read .aiLabel {
+  margin: 0 0 var(--jx-space-1);
+  font-family: var(--jx-font-ui);
+  font-size: var(--jx-text-xs);
+  line-height: var(--jx-leading-xs);
+  font-weight: var(--jx-weight-medium);
+  color: var(--jx-fg-muted);
+}

@@ -203,3 +203,18 @@ def test_volume_without_hard_links(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     fs.write_atomic("c.md", b"c", create=True)
     with pytest.raises(FileExistsError):
         fs.rename("c.md", "b.md")
+
+
+def test_read_regular_refuses_a_link_planted_after_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fs = LocalFiles(tmp_path)
+    (tmp_path / "real.png").write_bytes(b"x")
+    os.symlink(tmp_path / "real.png", tmp_path / "link.png")
+    assert fs.read_regular("real.png") == b"x"
+    # The race: the link appears between the walk and the open; O_NOFOLLOW still refuses it.
+    monkeypatch.setattr(fs, "_refuse_links", lambda disk: None)
+    with pytest.raises(PathOutsideKb):
+        fs.read_regular("link.png")
+    with pytest.raises(FileNotFoundError):
+        fs.read_regular("missing/x.png")

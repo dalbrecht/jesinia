@@ -80,7 +80,10 @@ class LocalOriginGuard:
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message["headers"] = [*message.get("headers", []), *extra]
+                # A header the response already set (an asset's nosniff) is not sent twice.
+                headers = list(message.get("headers", []))
+                present = {name.lower() for name, _ in headers}
+                message["headers"] = [*headers, *(h for h in extra if h[0] not in present)]
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

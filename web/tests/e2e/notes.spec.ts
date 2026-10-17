@@ -84,3 +84,28 @@ test("a change on disk during an unsaved edit offers Keep mine", async ({ page }
   await expect.poll(() => readFileSync(ROUND_TRIP, "utf8"), { timeout: 10_000 }).toContain("Unsaved local.");
   expect(readFileSync(ROUND_TRIP, "utf8").startsWith(FRONT)).toBe(true);
 });
+
+test("a kept page opens in the Read view: rendered headings, its local image, an AI callout", async ({ page }) => {
+  await login(page);
+  await page.goto("/notes/page/0199e000-0000-7000-8000-000000000002");
+  await expect(page.getByRole("heading", { name: "Kept fixture", level: 1 })).toBeVisible({ timeout: 10_000 });
+  const read = page.getByRole("article", { name: "Read view" });
+  await expect(read.getByRole("heading", { name: "Article", level: 2 })).toBeVisible();
+  await expect(read).not.toContainText("##");
+  await expect(read).not.toContainText("source/rss");
+  const image = read.getByRole("img", { name: "A red square" });
+  await expect(image).toHaveAttribute("src", "/api/kb/assets/0199e000-0000-7000-8000-000000000002/red.png");
+  await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(16);
+  await expect(read).toContainText("a remote chart (img.example)");
+  for (const src of await read.locator("img").evaluateAll((imgs) => imgs.map((i) => i.getAttribute("src")))) {
+    expect(src).toMatch(/^\/api\/kb\/assets\//);
+  }
+  await expect(read.getByRole("note", { name: "Written by an agent" })).toContainText("AI · claude-code · m");
+
+  // ⌘E / Ctrl+E switches to the editor and back.
+  await page.keyboard.press("ControlOrMeta+e");
+  await expect(page.getByRole("textbox", { name: "Edit Kept fixture" })).toBeVisible();
+  await page.getByRole("button", { name: "Read" }).click();
+  await read.getByRole("link", { name: "a sibling page" }).click();
+  await expect(page.getByRole("heading", { name: "Round Trip", level: 1 })).toBeVisible();
+});

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
@@ -58,6 +59,27 @@ class LocalFiles:
 
     def read(self, disk: str) -> bytes:
         return self._abs(disk).read_bytes()
+
+    def read_regular(self, disk: str) -> bytes:
+        self._refuse_links(disk)
+        self._abs(disk)  # containment
+        try:
+            # The path as named, not resolved, with O_NOFOLLOW: a link planted after the
+            # check above is refused, not followed.
+            fd = os.open(self.root / disk, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            if isinstance(exc, FileNotFoundError | NotADirectoryError):
+                raise FileNotFoundError(disk) from exc
+            raise PathOutsideKb(f"{disk}: refused ({exc.strerror})") from exc
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise FileNotFoundError(f"{disk} is not a regular file")
+            chunks: list[bytes] = []
+            while chunk := os.read(fd, 1 << 20):
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            os.close(fd)
 
     def exists(self, disk: str) -> bool:
         return self._abs(disk).exists()
