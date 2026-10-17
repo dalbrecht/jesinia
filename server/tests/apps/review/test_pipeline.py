@@ -11,7 +11,7 @@ import asyncio
 import json
 import sqlite3
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
@@ -343,6 +343,15 @@ def env(conn: sqlite3.Connection) -> Env:
     return Env(store, clock, github, files, workspace, jobs, events, pipeline, scheduler)
 
 
+async def wait_until(condition: Callable[[], bool], timeout: float = 10.0) -> None:
+    """Wait for background work by condition, not by a count of loop turns: the pipeline hands
+    diff parsing and coverage to threads, so how many turns it needs depends on the machine."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition() and loop.time() < deadline:
+        await asyncio.sleep(0.005)
+
+
 async def prereview(env: Env) -> None:
     await env.scheduler.tick()
     await env.scheduler.drain()
@@ -515,10 +524,7 @@ async def test_open_while_a_pre_review_runs_repeats_none_of_its_jobs(env: Env) -
     env.jobs.hold = asyncio.Event()
     await env.scheduler.tick()
     await asyncio.sleep(0)
-    for _ in range(20):
-        if env.jobs.ran:
-            break
-        await asyncio.sleep(0)
+    await wait_until(lambda: bool(env.jobs.ran))
     result = await env.pipeline.open(ref)
     # The open lists what the round lacks; the pre-review's jobs are joined, not repeated.
     assert set(result.jobs) == {*TRIAGE_JOBS, JobKind.OVERVIEW, JobKind.WALKTHROUGH}
@@ -800,10 +806,7 @@ async def test_stop_cancels_an_open_and_marks_its_round_interrupted(env: Env) ->
     ref = env.add()
     env.jobs.hold = asyncio.Event()
     result = await env.pipeline.open(ref)
-    for _ in range(20):
-        if env.jobs.ran:
-            break
-        await asyncio.sleep(0)
+    await wait_until(lambda: bool(env.jobs.ran))
     await env.pipeline.stop()
     status = env.store.latest_round_on_head(ref, HEAD)
     assert status is not None and status[0] == result.round_id
@@ -928,10 +931,7 @@ async def test_a_restart_resumes_the_round_and_runs_only_its_unfinished_jobs(
     ref = env.add()
     env.jobs.stuck = {JobKind.RECOMMENDATION}
     await env.scheduler.tick()
-    for _ in range(200):
-        if JobKind.RECOMMENDATION in env.jobs.ran:
-            break
-        await asyncio.sleep(0)
+    await wait_until(lambda: JobKind.RECOMMENDATION in env.jobs.ran)
     assert env.jobs.ran == [JobKind.CORRECTNESS, JobKind.FINDINGS, JobKind.RECOMMENDATION]
     round_id, _ = latest(env, ref)
     edited = Draft(path="src/app.py", body="Rename this.", line=2, side="RIGHT")
@@ -977,10 +977,7 @@ async def test_a_round_interrupted_three_times_fails_with_its_cause(env: Env) ->
         scheduler = Scheduler(env.store, env.clock, run=env.pipeline.prereview)
         scheduler.recover()
         await scheduler.tick()
-        for _ in range(200):
-            if env.jobs.ran:
-                break
-            await asyncio.sleep(0)
+        await wait_until(lambda: bool(env.jobs.ran))
         env.jobs.ran.clear()
         await scheduler.stop()
     scheduler = Scheduler(env.store, env.clock, run=env.pipeline.prereview)
@@ -1069,10 +1066,7 @@ async def test_opens_go_through_the_schedulers_two_slots(env: Env) -> None:
     opened_ref = env.add(replace(env.github.pr, repo="acme/api", number=3))
     env.jobs.hold = asyncio.Event()
     await env.scheduler.tick()
-    for _ in range(200):
-        if len(env.jobs.rounds) == 2:
-            break
-        await asyncio.sleep(0)
+    await wait_until(lambda: len(env.jobs.rounds) == 2)
     opened = await env.pipeline.open(opened_ref)
     assert opened.state == "started"
     for _ in range(50):
@@ -1094,10 +1088,7 @@ async def test_an_open_stopped_while_it_waits_for_a_slot_gives_it_back(env: Env)
     refs = [env.add(replace(env.github.pr, number=n)) for n in (1, 2, 3)]
     env.jobs.hold = asyncio.Event()
     running = [await env.pipeline.open(ref) for ref in refs[:2]]
-    for _ in range(200):
-        if len(env.jobs.rounds) == 2:
-            break
-        await asyncio.sleep(0)
+    await wait_until(lambda: len(env.jobs.rounds) == 2)
     waiting = await env.pipeline.open(refs[2])
     for _ in range(20):
         await asyncio.sleep(0)
@@ -1122,10 +1113,7 @@ async def test_a_shutdown_starts_nothing_and_counts_each_round_once(env: Env) ->
     queued = env.add(replace(env.github.pr, number=3))  # triage: a pre-review waits
     env.jobs.hold = asyncio.Event()
     opens = [await env.pipeline.open(ref) for ref in opened_refs]
-    for _ in range(200):
-        if len(env.jobs.rounds) == 2:
-            break
-        await asyncio.sleep(0)
+    await wait_until(lambda: len(env.jobs.rounds) == 2)
     await env.scheduler.tick()  # both slots taken: the pre-review stays queued
     assert env.store.latest_round_on_head(queued, HEAD) is None
 

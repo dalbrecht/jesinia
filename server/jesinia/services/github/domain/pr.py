@@ -12,13 +12,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from jesinia.services.github.domain.repo import InvalidRepoError
+from jesinia.services.github.domain.repo import validate_repo as validate_any_repo
+
 CheckStatus = Literal["pending", "passing", "failing"]
 RollupState = Literal["pending", "passing", "failing", "none"]
 ReviewEvent = Literal["APPROVE", "REQUEST_CHANGES", "COMMENT"]
 ReviewSide = Literal["LEFT", "RIGHT"]
 
 _SIDES: frozenset[str] = frozenset({"LEFT", "RIGHT"})
-_REPO = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}")
 _SHA = re.compile(r"[0-9a-fA-F]{7,40}")
 _PASSING_CONCLUSIONS: frozenset[str] = frozenset({"success", "neutral", "skipped"})
 _BOT_SUFFIX = "[bot]"
@@ -200,11 +202,12 @@ def rollup_checks(checks: Sequence[Check]) -> CheckState:
 
 
 def validate_repo(repo: str) -> str:
-    """Return ``repo`` if it is a plain ``owner/name``, so it can't steer a request path."""
-    name = repo.partition("/")[2]
-    if not _REPO.fullmatch(repo) or name in {".", ".."}:
-        raise InvalidPullRequestReferenceError(f"repo must be owner/name, got {repo!r}")
-    return repo
+    """Return ``repo`` if it is a plain ``owner/name``, so it can't steer a request path; a PR
+    reference's error type, with the neutral ``InvalidRepoError`` as its cause."""
+    try:
+        return validate_any_repo(repo)
+    except InvalidRepoError as exc:
+        raise InvalidPullRequestReferenceError(str(exc)) from exc
 
 
 def validate_pull_number(number: int) -> int:
