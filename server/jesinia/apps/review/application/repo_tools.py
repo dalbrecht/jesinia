@@ -35,6 +35,7 @@ from jesinia.apps.review.domain.repo_access import (
     NoReviewSessionError,
     NotACommitError,
     OutsidePrHistoryError,
+    ReadLog,
     RegexDialect,
     RepoGitError,
     RepoPathNotFoundError,
@@ -259,6 +260,10 @@ class RepoTools:
         allowance: per-session, per-file line allowance shared by every tool.
         tree_key: the canonical ``(repo, sha)`` of a worktree path (the workspace's), so
             results can name what they were read from.
+        reads: where the lines ``repo_read`` and ``repo_grep`` return from the head are
+            recorded per session (the registry's), so the correctness pass's claims can be
+            checked against them. ``repo_git`` output isn't recorded: its line numbers
+            belong to other commits.
     """
 
     def __init__(
@@ -269,8 +274,10 @@ class RepoTools:
         *,
         git_slots: Callable[[str], asyncio.Semaphore] | None = None,
         tree_key: Callable[[Path], tuple[str, str] | None] | None = None,
+        reads: ReadLog | None = None,
     ) -> None:
         self._sessions_to_worktree = sessions_to_worktree
+        self._reads = reads
         self._git = git
         self._allowance = allowance
         self._tree_key = tree_key
@@ -318,6 +325,8 @@ class RepoTools:
             )
         finally:
             self._allowance.refund(session, key, granted - len(lines))
+        if self._reads is not None:
+            self._reads.record(session, rel, first, first + len(lines) - 1)
         truncated = has_more and len(lines) < last - first + 1
         remaining = self._allowance.remaining(session, key)
         cap = (
@@ -405,6 +414,8 @@ class RepoTools:
                 withheld += 1
                 continue
             size += entry_size
+            if self._reads is not None:
+                self._reads.record(session, rel, line, line)
             matches.append(
                 {
                     "path": rel,

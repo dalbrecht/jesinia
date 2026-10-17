@@ -241,6 +241,12 @@ class Coverage:
     incomplete_reason: str | None = None
     not_walked_total: int = 0
 
+    @property
+    def nothing_to_walk(self) -> bool:
+        """The diff, read in full, changes no line (only renames, binaries, modes): its
+        100% means there was nothing to cover, which the UI says instead (M3)."""
+        return self.complete and self.lines_total == 0
+
     def as_json(self) -> dict[str, object]:
         return {
             "pct": self.pct,
@@ -258,6 +264,7 @@ class Coverage:
                 for skip in self.not_walked
             ],
             "not_walked_total": self.not_walked_total,
+            "nothing_to_walk": self.nothing_to_walk,
         }
 
 
@@ -654,6 +661,28 @@ def _overlap(intervals: tuple[list[int], list[int]], start: int, end: int) -> in
     return total
 
 
+def verified_ranges(claimed: Sequence[LineRange], read: Sequence[LineRange]) -> list[LineRange]:
+    """The parts of the ``claimed`` ranges that were also ``read``: what a correctness pass
+    says it checked, kept only where its tools actually returned those lines (M7). Lines
+    read but never claimed don't count either. Sorted by path, then line."""
+    read_by_path: dict[str, list[LineRange]] = {}
+    for item in read:
+        read_by_path.setdefault(item.path, []).append(item)
+    claimed_by_path: dict[str, list[LineRange]] = {}
+    for item in claimed:
+        claimed_by_path.setdefault(item.path, []).append(item)
+    verified: list[LineRange] = []
+    for path in sorted(claimed_by_path.keys() & read_by_path.keys()):
+        read_starts, read_ends = _merged(read_by_path[path])
+        for start, end in zip(*_merged(claimed_by_path[path]), strict=True):
+            position = bisect_left(read_ends, start)
+            while position < len(read_starts) and read_starts[position] <= end:
+                low, high = max(start, read_starts[position]), min(end, read_ends[position])
+                verified.append(LineRange(path, low, high))
+                position += 1
+    return verified
+
+
 def checked_coverage(diff: ParsedDiff, checked: Sequence[LineRange]) -> Coverage:
     """The correctness pass's coverage: the changed lines inside the ranges it read. Ranges
     are in new-file lines (a removed run counts when the new line it sat in front of was
@@ -729,10 +758,11 @@ def skips_from_json(data: object) -> list[Skip]:
     return skips
 
 
-def ranges_from_json(data: object) -> list[LineRange]:
-    """The well-formed ``checked`` ranges of a ``correctness`` artifact."""
+def ranges_from_json(data: object, key: str = "checked") -> list[LineRange]:
+    """The well-formed ranges under ``key``: a ``correctness`` artifact's ``checked`` (the
+    agent's claim), or Jesinia's ``correctness_reads`` record's ``read``."""
     ranges: list[LineRange] = []
-    for item in _items(data, "checked"):
+    for item in _items(data, key):
         path, start, end = (
             item.get("path"),
             _int(item.get("start_line")),

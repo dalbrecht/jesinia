@@ -147,6 +147,7 @@ class ReviewModule:
             self.sessions.allowance,
             git_slots=self.sessions.git_slot,
             tree_key=self._workspace.tree_key,
+            reads=self.sessions.reads,
         )
         self.sessions.use_tree_locks(self._workspace.tree_lock)
         store = SqliteReviewStore(self._conn)

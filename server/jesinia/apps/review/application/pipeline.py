@@ -38,6 +38,7 @@ from jesinia.apps.review.application.errors import (
     JobFailed,
     RoundPreparationError,
 )
+from jesinia.apps.review.application.jobs import CORRECTNESS_READS
 from jesinia.apps.review.application.ports import PipelineStore
 from jesinia.apps.review.application.scheduler import PreReviewRequest, gate_for
 from jesinia.apps.review.domain.coverage import (
@@ -51,6 +52,7 @@ from jesinia.apps.review.domain.coverage import (
     ranges_from_json,
     skips_from_json,
     steps_from_json,
+    verified_ranges,
 )
 from jesinia.apps.review.domain.gates import Depth, GateState, propose_depth
 from jesinia.apps.review.domain.jobs import JobKind, Round, recommend
@@ -637,11 +639,14 @@ class Pipeline:
         found = self._store.artifact(round_id, "findings")
         findings = found.get("findings") if isinstance(found, Mapping) else None
         suggestion = self._store.artifact(round_id, "recommendation")
-        read = (
-            await asyncio.to_thread(checked_coverage, prepared.diff, ranges_from_json(correctness))
-            if isinstance(correctness, Mapping)
-            else None
-        )
+        read = claimed = None
+        if isinstance(correctness, Mapping):
+            # The pass's claim counts only where its tools returned those lines (M7).
+            checked = ranges_from_json(correctness)
+            record = self._store.artifact(round_id, CORRECTNESS_READS)
+            verified = verified_ranges(checked, ranges_from_json(record, key="read"))
+            claimed = await asyncio.to_thread(checked_coverage, prepared.diff, checked)
+            read = await asyncio.to_thread(checked_coverage, prepared.diff, verified)
         result = recommend(
             prepared.ci,
             correctness if isinstance(correctness, Mapping) else None,
@@ -649,6 +654,7 @@ class Pipeline:
             suggestion.get("verdict") if isinstance(suggestion, Mapping) else None,
             depth=prepared.correctness_depth,
             coverage=read,
+            claimed=claimed,
         )
         jobs = self._store.artifact(round_id, "jobs")
         failed = [
@@ -664,7 +670,7 @@ class Pipeline:
             round_id, "verdict", {"verdict": result.verdict, "reasons": reasons}
         )
         self._store.set_verdict(round_id, result.verdict)
-        self._put_coverage(prepared, correctness=read)
+        self._put_coverage(prepared, correctness=read, claimed=claimed)
         return result.verdict
 
     async def _walkthrough(self, prepared: _Prepared, output: Mapping[str, object]) -> None:
@@ -679,15 +685,19 @@ class Pipeline:
         *,
         walkthrough: Coverage | None = None,
         correctness: Coverage | None = None,
+        claimed: Coverage | None = None,
     ) -> None:
         """Merge into the round's ``coverage`` artifact (no await in between, so concurrent
         writers can't lose each other's part). Its ``pct``, which the queue row shows, is
-        the walkthrough's once there is one, else the correctness pass's."""
+        the walkthrough's once there is one, else the correctness pass's (what it verifiably
+        read; ``correctness_claimed`` is what it said it checked). ``nothing_to_walk``: the
+        diff changes no line, so the UI says so rather than showing 100% (M3)."""
         round_id, pr = prepared.round.id, prepared.round.pr
         old = self._store.artifact(round_id, "coverage")
         before = old if isinstance(old, Mapping) else {}
         walk = walkthrough.as_json() if walkthrough else before.get("walkthrough")
         read = correctness.as_json() if correctness else before.get("correctness")
+        said = claimed.as_json() if claimed else before.get("correctness_claimed")
         headline = walk if isinstance(walk, Mapping) else read
         pct = headline.get("pct") if isinstance(headline, Mapping) else None
         self._store.put_artifact(
@@ -700,8 +710,10 @@ class Pipeline:
                 "incomplete_reason": prepared.diff.incomplete_reason,
                 "files_truncated": pr.files_truncated,
                 "commits_truncated": pr.commits_truncated,
+                "nothing_to_walk": prepared.diff.complete and prepared.diff.changed_lines == 0,
                 "walkthrough": walk,
                 "correctness": read,
+                "correctness_claimed": said,
             },
         )
 

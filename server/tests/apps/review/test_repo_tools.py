@@ -54,6 +54,7 @@ from jesinia.apps.review.domain.repo_access import (
     NoReviewSessionError,
     NotACommitError,
     OutsidePrHistoryError,
+    ReadLog,
     RegexDialect,
     RepoGitError,
     RepoPathNotFoundError,
@@ -1456,3 +1457,40 @@ async def test_repo_tool_errors_are_fenced_too(tree: Tree, registry: ReviewSessi
     # Without a bound session there is no tree to name: the plain refusal is Jesinia's own.
     with pytest.raises(NoReviewSessionError, match="only inside a review session"):
         await tool.handler(RepoReadIn(path="x"), CallContext(None))
+
+
+# --- M7: what each session's tools actually read is recorded -----------------------------------
+
+
+def test_read_log_merges_ranges_per_session_and_path() -> None:
+    log = ReadLog()
+    log.record("s", "a.py", 10, 19)
+    log.record("s", "a.py", 20, 25)  # adjacent: merged
+    log.record("s", "a.py", 1, 3)
+    log.record("s", "a.py", 2, 12)  # overlapping: merged
+    log.record("s", "b.py", 7, 7)
+    log.record("s", "b.py", 9, 8)  # empty: ignored
+    log.record("t", "a.py", 1, 1)
+    assert log.ranges("s") == [("a.py", 1, 25), ("b.py", 7, 7)]
+    log.drop("s")
+    assert log.ranges("s") == [] and log.ranges("t") == [("a.py", 1, 1)]
+
+
+async def test_read_and_grep_record_the_lines_a_session_saw(
+    tree: Tree, registry: ReviewSessionRegistry
+) -> None:
+    tools = RepoTools(
+        registry.worktree_for, tree.workspace, registry.allowance, reads=registry.reads
+    )
+    await tools.read(SESSION, "big.txt", 10, 19)
+    await tools.read(SESSION, "inner/app.py")  # through a symlink: the real path
+    await tools.grep(SESSION, "needle 250", "many.txt")
+    with pytest.raises(UnsafePathError):
+        await tools.read(SESSION, "secret-link")
+    assert registry.reads_of(SESSION) == [
+        ("big.txt", 10, 19),
+        ("many.txt", 250, 250),
+        ("src/app.py", 1, 2),
+    ]
+    registry.unbind(SESSION)
+    assert registry.reads_of(SESSION) == []

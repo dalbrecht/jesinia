@@ -210,6 +210,41 @@ class FileLineAllowance:
         self._used.pop(session_id, None)
 
 
+class ReadLog:
+    """Which lines of which files each review session's tools actually returned to it.
+
+    Jesinia's own record, not the agent's: a correctness pass may claim to have checked any
+    range, but only the lines its tools read count towards approving (ruling R12's per-
+    session records, used for the Task 6 carry M7). Ranges are kept merged per path, so the
+    record is bounded by what the per-file allowance lets a session read.
+    """
+
+    def __init__(self) -> None:
+        self._read: dict[str, dict[str, list[tuple[int, int]]]] = {}
+
+    def record(self, session_id: str, path: str, start: int, end: int) -> None:
+        """Note that lines ``start``..``end`` (1-based, inclusive) of ``path`` were read;
+        an empty range is ignored."""
+        if end < start:
+            return
+        merged: list[tuple[int, int]] = []
+        for low, high in sorted([*self._read.get(session_id, {}).get(path, []), (start, end)]):
+            if merged and low <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], high))
+            else:
+                merged.append((low, high))
+        self._read.setdefault(session_id, {})[path] = merged
+
+    def ranges(self, session_id: str) -> list[tuple[str, int, int]]:
+        """Every range ``session_id`` read, as ``(path, start, end)``, sorted."""
+        paths = self._read.get(session_id, {})
+        return [(path, low, high) for path in sorted(paths) for low, high in paths[path]]
+
+    def drop(self, session_id: str) -> None:
+        """Forget a session (it ended or was unbound)."""
+        self._read.pop(session_id, None)
+
+
 def _has_control_characters(text: str) -> bool:
     return any(ord(char) < 32 or ord(char) == 127 for char in text)
 

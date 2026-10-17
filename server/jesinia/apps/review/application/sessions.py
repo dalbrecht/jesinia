@@ -11,6 +11,7 @@ from jesinia.apps.review.domain.repo_access import (
     FILE_LINES_PER_SESSION,
     FileLineAllowance,
     NoReviewSessionError,
+    ReadLog,
 )
 
 
@@ -20,6 +21,9 @@ class ReviewSessionRegistry:
     Review jobs bind a session when they start it and unbind it when it ends; the repo tools
     refuse any session that is not bound. Each session's per-file read allowance lives here
     too, so it is dropped with the binding.
+
+    What each session's tools actually read is recorded in ``reads`` for as long as it is
+    bound, so a job can check its agent's claims against it before it unbinds.
 
     Jobs bind with ``attach``, which takes the workspace's lock for the tree's repo (set
     with ``use_tree_locks``): the prune holds the same lock while it decides what to keep,
@@ -31,6 +35,7 @@ class ReviewSessionRegistry:
         self._git_slots: dict[str, asyncio.Semaphore] = {}
         self._tree_lock: Callable[[Path], asyncio.Lock | None] | None = None
         self.allowance = FileLineAllowance(FILE_LINES_PER_SESSION)
+        self.reads = ReadLog()
 
     def use_tree_locks(self, tree_lock: Callable[[Path], asyncio.Lock | None]) -> None:
         """Have ``attach`` take ``tree_lock(path)`` (the workspace's per-repo lock)."""
@@ -60,15 +65,22 @@ class ReviewSessionRegistry:
             raise NoReviewSessionError("a review session needs an id")
         if self._trees.get(session_id, path) != path:
             self.allowance.drop(session_id)
+            self.reads.drop(session_id)
         self._trees[session_id] = path
         self._git_slots.setdefault(session_id, asyncio.Semaphore(1))
 
     def unbind(self, session_id: str) -> None:
-        """End ``session_id``'s access and forget its allowance and git slot; unknown ids
-        are ignored."""
+        """End ``session_id``'s access and forget its allowance, its read record and its git
+        slot; unknown ids are ignored."""
         self._trees.pop(session_id, None)
         self._git_slots.pop(session_id, None)
         self.allowance.drop(session_id)
+        self.reads.drop(session_id)
+
+    def reads_of(self, session_id: str) -> list[tuple[str, int, int]]:
+        """What ``session_id``'s repo tools returned to it, as ``(path, start, end)`` line
+        ranges of the reviewed head; empty once it is unbound."""
+        return self.reads.ranges(session_id)
 
     def worktree_for(self, session_id: str) -> Path | None:
         return self._trees.get(session_id)

@@ -30,6 +30,7 @@ from jesinia.apps.review.domain.coverage import (
     ranges_from_json,
     skips_from_json,
     steps_from_json,
+    verified_ranges,
 )
 from jesinia.apps.review.domain.workspace import DiffTooLargeError
 
@@ -529,3 +530,33 @@ def test_checked_coverage_reads_both_entries_of_a_type_change() -> None:
     diff = parse_unified_diff(TYPE_CHANGE)
     read = checked_coverage(diff, [LineRange("link", 1, 2)])
     assert read.lines_covered == 3 and read.files_covered == 2
+
+
+# --- M7: claimed ranges count only where the agent's tools actually read -----------------------
+
+
+def test_verified_ranges_keep_only_what_was_read() -> None:
+    claimed = [LineRange("a.py", 1, 100), LineRange("b.py", 5, 9), LineRange("c.py", 1, 3)]
+    read = [LineRange("a.py", 1, 10), LineRange("a.py", 50, 200), LineRange("b.py", 1, 5)]
+    read.append(LineRange("d.py", 1, 50))  # read but never claimed: not counted
+    assert verified_ranges(claimed, read) == [
+        LineRange("a.py", 1, 10),
+        LineRange("a.py", 50, 100),
+        LineRange("b.py", 5, 5),
+    ]
+    assert verified_ranges(claimed, []) == []
+
+
+def test_read_ranges_come_from_jesinias_own_record() -> None:
+    record = {"read": [{"path": "a.py", "start_line": 3, "end_line": 4}, {"path": 1}]}
+    assert ranges_from_json(record, key="read") == [LineRange("a.py", 3, 4)]
+    assert ranges_from_json(None, key="read") == []
+
+
+def test_nothing_to_walk_is_flagged_when_the_diff_changes_no_lines() -> None:
+    renamed = coverage(parse_unified_diff(RENAME + BINARY), [], [])
+    assert renamed.nothing_to_walk and renamed.as_json()["nothing_to_walk"] is True
+    assert renamed.pct == 100.0
+    assert not coverage(parse_unified_diff(APP), [], []).nothing_to_walk
+    cut = ParsedDiff((), complete=False, incomplete_reason="too big", expected_lines=0)
+    assert not coverage(cut, [], []).nothing_to_walk

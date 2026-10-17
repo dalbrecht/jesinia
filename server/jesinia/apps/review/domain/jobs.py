@@ -125,7 +125,9 @@ def correctness_depth(proposed: Depth, agent_authored: bool) -> Depth:
 class Evidence:
     """What the recommendation rests on (spec §3.2); ``as_json`` is the ``evidence``
     artifact, whose ``ci``, ``tests`` and ``findings`` the queue row shows. ``depth`` is the
-    correctness pass's, and ``coverage`` what it read of the diff (Jesinia's count)."""
+    correctness pass's, ``coverage`` what it verifiably read of the diff (its claimed
+    ranges where its tools returned those lines; Jesinia's count), and ``claimed`` what it
+    said it checked, shown beside it."""
 
     ci: str
     checks: tuple[tuple[str, str], ...]
@@ -134,9 +136,10 @@ class Evidence:
     correctness: CorrectnessOutcome
     depth: Depth | None = None
     coverage: Coverage | None = None
+    claimed: Coverage | None = None
 
     def as_json(self) -> dict[str, object]:
-        read = self.coverage
+        read, claimed = self.coverage, self.claimed
         return {
             "ci": self.ci,
             "checks": [{"name": name, "status": status} for name, status in self.checks],
@@ -150,6 +153,8 @@ class Evidence:
                 "pct": read.pct,
                 "reviewable_pct": read.reviewable_pct,
                 "complete": read.complete,
+                "claimed_pct": None if claimed is None else claimed.pct,
+                "claimed_reviewable_pct": None if claimed is None else claimed.reviewable_pct,
             },
         }
 
@@ -225,11 +230,18 @@ def _counts(findings: Iterable[_Finding]) -> dict[str, int]:
     return {group: counts[group] for group in FINDING_GROUPS if group in counts}
 
 
-def _coverage_blockers(coverage: Coverage | None, depth: Depth) -> list[str]:
+def _coverage_blockers(
+    coverage: Coverage | None, depth: Depth, claimed: Coverage | None
+) -> list[str]:
     """Why what the correctness pass read of the diff isn't enough to approve, if it isn't."""
     if coverage is None:
         return ["the correctness pass's coverage of the diff is unknown"]
     blockers: list[str] = []
+    if claimed is not None and claimed.reviewable_pct > coverage.reviewable_pct:
+        blockers.append(
+            f"the correctness pass claimed {claimed.reviewable_pct}% of the changed lines, "
+            f"but its tools read {coverage.reviewable_pct}%"
+        )
     if not coverage.complete:
         why = coverage.incomplete_reason or "it is incomplete"
         blockers.append(f"the diff could not be read in full ({why}), so not all of it was checked")
@@ -251,6 +263,7 @@ def recommend(
     *,
     depth: Depth,
     coverage: Coverage | None,
+    claimed: Coverage | None = None,
 ) -> Recommendation:
     """The verdict for a round, from its evidence; the agent's ``suggested`` verdict is an
     input, never the answer.
@@ -259,7 +272,10 @@ def recommend(
         findings: the findings job's findings; ``None`` when it produced none (it failed).
         depth: the correctness pass's depth (deep for agent-written PRs).
         coverage: what the correctness pass read of the diff, computed by Jesinia from its
-            ``checked`` ranges; ``None`` when that couldn't be computed.
+            ``checked`` ranges kept only where its repo tools returned those lines;
+            ``None`` when that couldn't be computed.
+        claimed: the same from its ``checked`` ranges as claimed, for the evidence (and a
+            reason when it claims more than it read); never what the rule counts.
 
     - **approve** only when the agent suggests it **and** CI is passing **and** the
       correctness pass completed with no critical or important finding, having read some
@@ -289,7 +305,7 @@ def recommend(
     elif any(f.severity in BLOCKING_SEVERITIES for f in pass_findings):
         blockers.append("the correctness pass found critical or important issues")
     if pass_findings is not None:
-        blockers += _coverage_blockers(coverage, depth)
+        blockers += _coverage_blockers(coverage, depth, claimed)
     if extra is None:
         blockers.append("the findings could not be read")
     elif any(f.group == "correctness" and f.severity in BLOCKING_SEVERITIES for f in extra):
@@ -309,6 +325,7 @@ def recommend(
         correctness=outcome,
         depth=depth,
         coverage=coverage,
+        claimed=claimed,
     )
     agent = suggested if isinstance(suggested, str) and suggested in VERDICTS else None
     if agent == "request_changes":

@@ -209,6 +209,8 @@ class FakeJobs:
     failing: dict[JobKind, Exception] = field(default_factory=dict)
     agent_authored: bool = False
     hold: asyncio.Event | None = None
+    # What the correctness session's tools read (Jesinia's record); its claim by default.
+    reads: dict[str, object] | None = None
 
     async def run(self, job: JobKind, round: Round) -> dict[str, object]:
         self.ran.append(job)
@@ -218,6 +220,9 @@ class FakeJobs:
         if job in self.failing:
             raise JobFailed(job, self.failing[job])
         output = self.outputs.get(job, {"ok": True})
+        if job is JobKind.CORRECTNESS:
+            reads = self.reads if self.reads is not None else {"read": output.get("checked", [])}
+            self.store.put_artifact(round.id, "correctness_reads", reads)
         self.store.put_artifact(round.id, job.value, output)
         return output
 
@@ -573,7 +578,8 @@ async def test_recommend_sees_depth_coverage_and_deduplicated_findings(env: Env)
     assert isinstance(evidence, dict)
     assert evidence["findings"] == {"design": 1} and evidence["depth"] == "deep"
     assert evidence["correctness_coverage"] == {
-        "pct": 42.9, "reviewable_pct": 60.0, "complete": True
+        "pct": 42.9, "reviewable_pct": 60.0, "complete": True,
+        "claimed_pct": 42.9, "claimed_reviewable_pct": 60.0,
     }  # fmt: skip
     assert artifacts["depth"] == {"proposed": "quick", "correctness": "deep", "lines": 15,
                                   "files": 2}  # fmt: skip
@@ -956,3 +962,66 @@ async def test_a_walkthrough_may_cite_the_second_entry_of_a_type_change(env: Env
     assert coverage["walkthrough"]["not_walked"] == [
         {"path": "link", "hunk": 0, "reason": "omitted"}
     ]
+
+
+# --- M7: a pass is credited only with what its tools actually read -----------------------------
+
+BIG_DIFF = (
+    "diff --git a/src/big.py b/src/big.py\nnew file mode 100644\n--- /dev/null\n"
+    "+++ b/src/big.py\n@@ -0,0 +1,100 @@\n" + "+x\n" * 100
+)
+
+
+async def test_an_agent_claiming_everything_but_reading_a_tenth_cannot_approve(env: Env) -> None:
+    env.workspace.diff_text = BIG_DIFF
+    env.jobs.agent_authored = True  # a deep correctness pass: 90% must be read
+    env.jobs.outputs[JobKind.CORRECTNESS] = {
+        **CLEAN,
+        "checked": [{"path": "src/big.py", "start_line": 1, "end_line": 100}],
+    }
+    env.jobs.reads = {"read": [{"path": "src/big.py", "start_line": 1, "end_line": 10}]}
+    ref = env.add()
+    await prereview(env)
+    round_id, _ = latest(env, ref)
+    artifacts = env.artifacts(round_id)
+    verdict = artifacts["verdict"]
+    assert isinstance(verdict, dict) and verdict["verdict"] == "needs_closer_look"
+    reasons = " ".join(verdict["reasons"])
+    assert "read 10.0% of the changed lines; at least 90% is needed" in reasons
+    assert "claimed 100.0% of the changed lines, but its tools read 10.0%" in reasons
+    evidence = artifacts["evidence"]
+    assert isinstance(evidence, dict)
+    assert evidence["correctness_coverage"] == {
+        "pct": 10.0,
+        "reviewable_pct": 10.0,
+        "complete": True,
+        "claimed_pct": 100.0,
+        "claimed_reviewable_pct": 100.0,
+    }
+    coverage = artifacts["coverage"]
+    assert isinstance(coverage, dict) and isinstance(coverage["correctness"], dict)
+    assert coverage["correctness"]["lines_covered"] == 10
+    assert isinstance(coverage["correctness_claimed"], dict)
+    assert coverage["correctness_claimed"]["lines_covered"] == 100
+
+
+async def test_a_pass_whose_reads_were_not_recorded_reads_nothing(env: Env) -> None:
+    env.jobs.reads = {}  # no record (e.g. none kept): nothing counts as read
+    ref = env.add()
+    await prereview(env)
+    round_id, _ = latest(env, ref)
+    verdict = env.artifacts(round_id)["verdict"]
+    assert isinstance(verdict, dict) and verdict["verdict"] == "needs_closer_look"
+    assert "the correctness pass read none of the changed lines" in verdict["reasons"]
+
+
+async def test_an_honest_pass_still_approves(env: Env) -> None:
+    ref = env.add()
+    await prereview(env)
+    round_id, _ = latest(env, ref)
+    verdict = env.artifacts(round_id)["verdict"]
+    assert isinstance(verdict, dict) and verdict["verdict"] == "approve"
+    evidence = env.artifacts(round_id)["evidence"]
+    assert isinstance(evidence, dict) and isinstance(evidence["correctness_coverage"], dict)
+    claimed = evidence["correctness_coverage"]
+    assert claimed["claimed_reviewable_pct"] == claimed["reviewable_pct"] == 100.0

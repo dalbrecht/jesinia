@@ -56,6 +56,7 @@ from jesinia.services.agents.domain.session import Session, Subject
 from jesinia.services.github.domain.pr import PrCommit
 
 __all__ = [
+    "CORRECTNESS_READS",
     "DEFAULT_RUNNER",
     "JOB_INSTRUCTIONS",
     "MAX_REPLY_CHARS",
@@ -70,6 +71,8 @@ log = logging.getLogger(__name__)
 # The only tools a job session may call (enforced by the agents service's gate).
 REPO_TOOL_NAMES = frozenset({"repo_read", "repo_grep", "repo_ls", "repo_git"})
 JOB_SUBJECT = "review-job"
+# The artifact holding what the correctness session's repo tools returned (Jesinia's record).
+CORRECTNESS_READS = "correctness_reads"
 # Seconds one agent turn of a job may take (a deep correctness pass reads a lot of code).
 JOB_TIMEOUT = 900.0
 # Bytes of commit messages read from the mirror when GitHub's commit list was cut short.
@@ -432,6 +435,15 @@ class JobRunner:
             except WorkspaceError as exc:
                 raise JobFailed(job, exc) from exc
             output = await self._ask(job, session.id, schema, _request(job, depth, schema))
+            # Before the unbind drops it: what the tools really returned to this session,
+            # against which the pass's claimed ranges are checked (M7). Stored first, so a
+            # stored pass always has its record.
+            if job is JobKind.CORRECTNESS:
+                read = [
+                    {"path": path, "start_line": start, "end_line": end}
+                    for path, start, end in self._registry.reads_of(session.id)
+                ]
+                self._store.put_artifact(round.id, CORRECTNESS_READS, {"read": read})
         finally:
             self._registry.unbind(session.id)
             await self._sessions.close(session.id)

@@ -869,6 +869,8 @@ def test_evidence_carries_depth_and_the_passs_coverage() -> None:
         "pct": 100.0,
         "reviewable_pct": 100.0,
         "complete": True,
+        "claimed_pct": None,
+        "claimed_reviewable_pct": None,
     }
     assert judge(GREEN, CLEAN, [], coverage=None).evidence.as_json()["correctness_coverage"] is None
 
@@ -938,3 +940,25 @@ async def test_a_summarised_file_in_the_hunk_index_is_noted_in_job_md(env: Env) 
     await env.jobs.run(JobKind.WALKTHROUGH, replace(a_round(), hunk_index=index))
     assert "1 file in the hunk index is summarised" in pack["job.md"]
     assert "uv.lock" not in pack["job.md"]
+
+
+# --- M7: the correctness pass's reads, recorded by Jesinia before the session ends -------------
+
+
+async def test_the_correctness_job_stores_what_its_tools_read(env: Env) -> None:
+    async def read_some(req: TurnRequest) -> None:
+        env.registry.reads.record(req.workdir.name, "src/app.py", 1, 2)
+
+    env.runner.on_turn = read_some
+    env.script(json.dumps(CLEAN))
+    await env.jobs.run(JobKind.CORRECTNESS, a_round())
+    assert env.store.artifacts[(11, "correctness_reads")] == {
+        "read": [{"path": "src/app.py", "start_line": 1, "end_line": 2}]
+    }
+    assert env.store.artifacts[(11, "correctness")] == CLEAN
+    # Other jobs' reads aren't evidence, and nothing is kept once the session ends.
+    env.runner.on_turn = read_some
+    env.script(json.dumps({"findings": []}))
+    await env.jobs.run(JobKind.FINDINGS, a_round())
+    assert (11, "findings_reads") not in env.store.artifacts
+    assert env.registry.reads.ranges(env.runner.requests[-1].workdir.name) == []
