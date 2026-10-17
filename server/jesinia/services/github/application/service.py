@@ -5,7 +5,8 @@ The token comes from ``gh`` or the Keychain and is held in memory only, for at m
 ``TOKEN_TTL_SECONDS``; it is never written anywhere or logged. A 401 drops it and retries
 once with a fresh one. One HTTP client (and its connection pool) serves every request until
 ``aclose``. A 304 answer is served from ``github.sqlite`` (304s do not count against the
-rate limit).
+rate limit). A rate-limited answer (429, or 403 with no quota left or a ``Retry-After``)
+raises ``GitHubRateLimitedError`` with the time GitHub says the limit resets.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import asyncio
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
@@ -51,6 +53,16 @@ class GitHubRequestError(GitHubError):
         self.github_message = github_message
 
 
+class GitHubRateLimitedError(GitHubRequestError):
+    """GitHub is rate limiting this token; ``reset_at`` is when it says to try again
+    (``None`` when it didn't say)."""
+
+    def __init__(self, status: int, github_message: str, reset_at: datetime | None) -> None:
+        until = f" (rate limited until {reset_at.isoformat()})" if reset_at else " (rate limited)"
+        super().__init__(status, github_message + until)
+        self.reset_at = reset_at
+
+
 @dataclass(frozen=True)
 class GitHubResponse:
     status: int
@@ -63,6 +75,31 @@ def _json(resp: httpx.Response) -> object:
         return resp.json()
     except ValueError:
         return resp.text
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _is_rate_limited(resp: httpx.Response) -> bool:
+    """429 always; 403 only with GitHub's rate-limit signs, since a plain 403 is a refusal."""
+    if resp.status_code == 429:
+        return True
+    return resp.status_code == 403 and (
+        resp.headers.get("x-ratelimit-remaining") == "0" or "retry-after" in resp.headers
+    )
+
+
+def _reset_at(resp: httpx.Response, now: datetime) -> datetime | None:
+    """``Retry-After`` (seconds from now) wins over ``x-ratelimit-reset`` (epoch seconds),
+    as GitHub's docs advise for secondary limits."""
+    retry_after = resp.headers.get("retry-after", "")
+    if retry_after.isdigit():
+        return now + timedelta(seconds=int(retry_after))
+    reset = resp.headers.get("x-ratelimit-reset", "")
+    if reset.isdigit():
+        return datetime.fromtimestamp(int(reset), UTC)
+    return None
 
 
 def _error_detail(error: object) -> str:
@@ -105,6 +142,7 @@ class GitHubService:
         cache: ETag cache for GETs.
         transport: an httpx transport for tests.
         clock: seconds, monotonic; for tests of the token's lifetime.
+        wall_clock: the current UTC time, to turn ``Retry-After`` into a reset time.
     """
 
     def __init__(
@@ -114,8 +152,10 @@ class GitHubService:
         transport: httpx.AsyncBaseTransport | None = None,
         *,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._token = token
+        self._wall_clock = wall_clock
         self._cache = cache
         self._transport = transport
         self._clock = clock
@@ -170,7 +210,7 @@ class GitHubService:
     ) -> httpx.Response:
         """One request, authorized with the in-memory token. A 401 drops the token and
         retries once with a fresh one; a network failure becomes a typed error that keeps
-        httpx's cause."""
+        httpx's cause, and a rate limit raises ``GitHubRateLimitedError``."""
         for attempt in range(2):
             token = await self._current_token(refresh=attempt > 0)
             try:
@@ -183,6 +223,12 @@ class GitHubService:
                 )
             except httpx.HTTPError as exc:
                 raise GitHubRequestError(None, str(exc) or type(exc).__name__) from exc
+            if _is_rate_limited(resp):
+                raise GitHubRateLimitedError(
+                    resp.status_code,
+                    github_error_message(_json(resp)),
+                    _reset_at(resp, self._wall_clock()),
+                )
             if resp.status_code != 401:
                 return resp
         raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")

@@ -19,6 +19,7 @@ from jesinia.services.github.application.prs import (
     PrClient,
 )
 from jesinia.services.github.application.service import (
+    GitHubRateLimitedError,
     GitHubRequestError,
     GitHubService,
     GitHubUnavailable,
@@ -741,3 +742,20 @@ async def test_file_lists_capped_by_github_are_flagged(
     assert len(files) == fetched
     assert flagged.files_truncated is truncated
     assert ("file list truncated" in caplog.text) is truncated
+
+
+@respx.mock
+async def test_inbox_reraises_a_rate_limit_instead_of_degrading_the_pr(prs: PrClient) -> None:
+    _mock_search("review-requested:@me", "search_review_requested")
+    _mock_search("author:@me", "search_authored")
+    _mock_search("reviewed-by:@me", "search_reviewed")
+    _mock_pulls()
+    respx.get(f"{API}/repos/acme/web/pulls/8").mock(
+        return_value=Response(
+            429, headers={"retry-after": "60"}, json={"message": "secondary rate limit"}
+        )
+    )
+
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        await prs.list_review_inbox(["acme/api", "acme/web"])
+    assert caught.value.reset_at is not None

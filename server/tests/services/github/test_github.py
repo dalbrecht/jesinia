@@ -19,6 +19,7 @@ from jesinia.core.module import AppContext
 from jesinia.core.scheduler import Scheduler
 from jesinia.services.github.application.service import (
     TOKEN_TTL_SECONDS,
+    GitHubRateLimitedError,
     GitHubRequestError,
     GitHubService,
     GitHubUnavailable,
@@ -308,3 +309,68 @@ async def test_the_client_is_closed_when_the_module_stops(cfg: Config) -> None:
     assert not service.closed
     await mod.stop()
     assert service.closed
+
+
+NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
+
+
+def _fixed_wall_clock() -> datetime:
+    return NOW
+
+
+@respx.mock
+async def test_a_429_is_rate_limited_until_retry_after(cache: SqliteGitHubCache) -> None:
+    async def token() -> str | None:
+        return "gho_test"
+
+    gh = GitHubService(token, cache, wall_clock=_fixed_wall_clock)
+    respx.get("https://api.github.com/user").mock(
+        return_value=Response(
+            429, headers={"retry-after": "90"}, json={"message": "secondary rate limit"}
+        )
+    )
+    with pytest.raises(GitHubRateLimitedError, match="secondary rate limit") as caught:
+        await gh.get("/user")
+    assert caught.value.status == 429
+    assert caught.value.reset_at == NOW + timedelta(seconds=90)
+    assert "12:01:30" in str(caught.value)
+
+
+@respx.mock
+async def test_a_403_without_remaining_quota_carries_the_reset_time(gh: GitHubService) -> None:
+    reset = datetime(2026, 10, 16, 13, 0, tzinfo=UTC)
+    respx.get("https://api.github.com/user").mock(
+        return_value=Response(
+            403,
+            headers={
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(int(reset.timestamp())),
+            },
+            json={"message": "API rate limit exceeded"},
+        )
+    )
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        await gh.get("/user")
+    assert isinstance(caught.value, GitHubRequestError)
+    assert caught.value.reset_at == reset and caught.value.status == 403
+
+
+@respx.mock
+async def test_a_rate_limit_without_a_reset_time_still_is_typed(gh: GitHubService) -> None:
+    respx.post("https://api.github.com/graphql").mock(
+        return_value=Response(429, headers={"retry-after": "soon"}, text="slow down")
+    )
+    with pytest.raises(GitHubRateLimitedError, match="slow down") as caught:
+        await gh.graphql("{ x }", {})
+    assert caught.value.reset_at is None
+
+
+@respx.mock
+async def test_a_plain_403_is_not_a_rate_limit(gh: GitHubService) -> None:
+    respx.get("https://api.github.com/secret").mock(
+        return_value=Response(
+            403, headers={"x-ratelimit-remaining": "4999"}, json={"message": "Forbidden"}
+        )
+    )
+    response = await gh.get("/secret")
+    assert response.status == 403

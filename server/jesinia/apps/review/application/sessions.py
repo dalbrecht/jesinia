@@ -49,6 +49,10 @@ class ReviewSessionRegistry:
     def worktree_for(self, session_id: str) -> Path | None:
         return self._trees.get(session_id)
 
+    def bound_trees(self) -> list[Path]:
+        """Every tree a live session may read, so a prune never deletes one under it."""
+        return list(self._trees.values())
+
     def git_slot(self, session_id: str) -> asyncio.Semaphore:
         """The session's one git slot: its repo tool calls run git one at a time.
 

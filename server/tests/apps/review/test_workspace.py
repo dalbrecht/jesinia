@@ -800,3 +800,36 @@ async def test_kill_never_waits_on_unread_output() -> None:
     await proc.stdout.readexactly(65537)
     await asyncio.wait_for(workspace_module._kill(proc), timeout=5)
     assert proc.returncode is not None
+
+
+async def test_prune_skips_a_broken_mirror_and_prunes_the_other_repos(
+    tmp_path: Path, fixture: Fixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    await ws.worktree(REPO, fixture.head)
+    stale = await ws.worktree(REPO, fixture.rebased_head)
+    # A crash in ensure_mirror can leave a mirror directory git never initialised; it sorts
+    # before acme/widget, so a prune that stopped at it would never reach the real repo.
+    (ws.root / "aaa" / "broken" / "mirror.git").mkdir(parents=True)
+
+    assert await ws.prune({(REPO, fixture.head)}) == 1
+
+    assert not stale.exists()
+    assert "aaa/broken" in caplog.text
+
+
+async def test_tree_key_names_the_repo_and_sha_of_a_worktree(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    ws = await fetched(tmp_path, fixture)
+    tree = await ws.worktree(REPO, fixture.head)
+    assert ws.tree_key(tree) == (REPO, fixture.head)
+    assert ws.tree_key(ws.root / "acme" / "widget" / "trees" / fixture.head) == (
+        REPO,
+        fixture.head,
+    )
+    assert ws.tree_key(tree / "c.txt") is None
+    assert ws.tree_key(ws.root / "acme" / "widget" / "trees" / "not-a-sha") is None
+    assert ws.tree_key(ws.root / "acme" / "widget" / "other" / fixture.head) is None
+    assert ws.tree_key(ws.root / "-x" / "widget" / "trees" / fixture.head) is None
+    assert ws.tree_key(tmp_path / "elsewhere" / "trees" / fixture.head) is None

@@ -17,6 +17,7 @@ from datetime import datetime
 from jesinia.services.github.application.service import (
     API,
     GitHubError,
+    GitHubRateLimitedError,
     GitHubRequestError,
     GitHubService,
     github_error_message,
@@ -345,11 +346,14 @@ class PrClient:
         self, hit: _SearchHit, viewer: str, limit: asyncio.Semaphore
     ) -> PullRequest:
         """The full PR, or, if that one fetch fails, the search hit carrying the cause, so
-        one inaccessible PR never empties the inbox."""
+        one inaccessible PR never empties the inbox. A rate limit is not one PR's problem:
+        it is raised, so the caller backs off instead of caching a page of empty rows."""
         (repo, number), item = hit
         try:
             async with limit:
                 return await self._pull(repo, number, viewer)
+        except GitHubRateLimitedError:
+            raise
         except (GitHubRequestError, GitHubPayloadError) as exc:
             return _pull_request_from_search(repo, item, str(exc))
 

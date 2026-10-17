@@ -329,16 +329,40 @@ class GitWorkspace:
             except WorkspacePathError as exc:
                 log.warning("review.prune skipped %s: %s", trees, exc)
                 continue
-            async with self._lock(repo):
-                for tree in sorted(trees.iterdir()) if trees.is_dir() else []:
-                    if tree.name.startswith(_TEMPORARY_PREFIX):
-                        await _remove(tree)  # left behind by a crash mid-checkout
-                    elif _is_valid(check_sha, tree.name) and (repo, tree.name) not in kept:
-                        await _remove(tree)
-                        removed += 1
-                await self._git(_bare(mirror), "worktree", "prune")
-                await self._drop_keep_refs(mirror, {sha for name, sha in kept if name == repo})
+            try:
+                removed += await self._prune_repo(repo, mirror, trees, kept)
+            except WorkspaceError as exc:
+                # A mirror git never initialised (a crash in ensure_mirror) must not stop
+                # the prune of every repo after it.
+                log.warning("review.prune skipped %s: %s", repo, exc)
         return removed
+
+    async def _prune_repo(
+        self, repo: str, mirror: Path, trees: Path, kept: set[tuple[str, str]]
+    ) -> int:
+        removed = 0
+        async with self._lock(repo):
+            for tree in sorted(trees.iterdir()) if trees.is_dir() else []:
+                if tree.name.startswith(_TEMPORARY_PREFIX):
+                    await _remove(tree)  # left behind by a crash mid-checkout
+                elif _is_valid(check_sha, tree.name) and (repo, tree.name) not in kept:
+                    await _remove(tree)
+                    removed += 1
+            await self._git(_bare(mirror), "worktree", "prune")
+            await self._drop_keep_refs(mirror, {sha for name, sha in kept if name == repo})
+        return removed
+
+    def tree_key(self, path: Path) -> tuple[str, str] | None:
+        try:
+            parts = path.resolve().relative_to(self.root.resolve()).parts
+        except ValueError:
+            return None
+        if len(parts) != 4 or parts[2] != "trees" or not _is_valid(check_sha, parts[3]):
+            return None
+        repo = f"{parts[0]}/{parts[1]}"
+        if not _is_valid(parse_repo, repo):
+            return None
+        return canonical_repo(repo), parts[3]
 
     async def _drop_keep_refs(self, mirror: Path, kept: set[str]) -> None:
         listed = await self._git(_bare(mirror), "for-each-ref", "--format=%(refname)", _KEEP_PREFIX)
