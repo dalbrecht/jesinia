@@ -704,3 +704,40 @@ async def test_commit_lists_capped_by_github_are_flagged(
     assert len(commits) == fetched
     assert flagged.commits_truncated is truncated
     assert ("commit list truncated" in caplog.text) is truncated
+
+
+def _mock_file_pages(repo: str, number: int, fetched: int) -> None:
+    items = [
+        {"filename": f"f{n}.py", "status": "added", "additions": 1, "deletions": 0}
+        for n in range(fetched)
+    ]
+
+    def page(request: httpx.Request) -> Response:
+        start = (int(request.url.params.get("page", "1")) - 1) * 100
+        return Response(200, json=items[start : start + 100])
+
+    respx.get(f"{API}/repos/{repo}/pulls/{number}/files").mock(side_effect=page)
+
+
+@pytest.mark.parametrize(
+    ("in_pr", "fetched", "truncated"), [(3001, 3000, True), (3000, 3000, False)]
+)
+@respx.mock
+async def test_file_lists_capped_by_github_are_flagged(
+    prs: PrClient, caplog: pytest.LogCaptureFixture, in_pr: int, fetched: int, truncated: bool
+) -> None:
+    respx.get(f"{API}/user").mock(return_value=Response(200, json=fixture("user")))
+    payload = fixture("pull_web_8")
+    assert isinstance(payload, dict)
+    respx.get(f"{API}/repos/acme/web/pulls/8").mock(
+        return_value=Response(200, json={**payload, "changed_files": in_pr})
+    )
+    _mock_file_pages("acme/web", 8, fetched)
+    pr = await prs.get("acme/web", 8)
+    assert pr.files_truncated is False
+
+    flagged, files = await prs.files_of(pr)
+
+    assert len(files) == fetched
+    assert flagged.files_truncated is truncated
+    assert ("file list truncated" in caplog.text) is truncated

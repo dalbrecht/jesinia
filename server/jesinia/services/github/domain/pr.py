@@ -67,6 +67,10 @@ class PullRequest:
     # (its commits endpoint stops at 250). Consumers must then treat authorship as unknown
     # and read trailers from the local mirror (`git log base..head`) instead.
     commits_truncated: bool = False
+    # Set by ``PrClient.files_of`` when GitHub listed fewer files than ``changed_files`` (its
+    # files endpoint stops at 3,000). Walkthrough coverage must then call the list
+    # incomplete, never "every file covered".
+    files_truncated: bool = False
 
 
 @dataclass(frozen=True)

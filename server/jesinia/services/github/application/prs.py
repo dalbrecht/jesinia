@@ -389,6 +389,22 @@ class PrClient:
             for item in await self._get_pages(path)
         ]
 
+    async def files_of(self, pr: PullRequest) -> tuple[PullRequest, list[PrFile]]:
+        """``pr``'s files, and ``pr`` with ``files_truncated`` set when GitHub listed fewer
+        than ``changed_files``: its files endpoint stops at 3,000, and a short last page
+        otherwise looks like the whole change."""
+        files = await self.files(pr.repo, pr.number)
+        truncated = pr.changed_files > len(files)
+        if truncated:
+            log.warning(
+                "github.pr file list truncated: %s#%d changes %d files, GitHub listed %d",
+                pr.repo,
+                pr.number,
+                pr.changed_files,
+                len(files),
+            )
+        return replace(pr, files_truncated=truncated), files
+
     async def commits(self, repo: str, number: int) -> list[PrCommit]:
         """The PR's commits, oldest first; ``author`` is the GitHub login when the commit is
         linked to an account, else the git author name."""

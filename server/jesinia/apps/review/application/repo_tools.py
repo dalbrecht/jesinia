@@ -46,7 +46,11 @@ from jesinia.apps.review.domain.repo_access import (
     plan_git_command,
     posix_ere,
 )
-from jesinia.apps.review.domain.skip import auto_skip_reason, directory_skip_reason
+from jesinia.apps.review.domain.skip import (
+    auto_skip_reason,
+    directory_skip_reason,
+    skip_pathspecs,
+)
 from jesinia.apps.review.domain.workspace import GitCommandError, WorkspaceError
 
 # Seconds a search (grep, log --author=) may run: regexes are the one input that can make
@@ -354,15 +358,16 @@ class RepoTools:
         plain = is_plain_text(check_pattern(pattern, dialect))
         args += ["--no-textconv", "-F" if plain else "-E"]
         args += ["-e", pattern if plain else posix_ere(pattern, dialect)]
-        if glob is not None:
-            args += ["--", check_glob(glob)]
+        # Skipped files are excluded by git itself, so a vendored flood of matches can't
+        # use up the raw output budget before the PR's own files are reached.
+        args += ["--", *([] if glob is None else [check_glob(glob)]), *skip_pathspecs()]
         output = await self._run_git(
             session,
             root,
             args,
             timeout=SEARCH_TIMEOUT,
             output_limit=GREP_RAW_BYTES,
-            glob_pathspecs=glob is not None,
+            glob_pathspecs=True,  # the :(glob) and :(exclude,glob,icase) pathspecs
             accept_exit_codes=frozenset({0, 1}),  # 1: nothing matched
         )
         matches: list[GrepMatch] = []

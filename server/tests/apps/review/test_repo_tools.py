@@ -152,6 +152,10 @@ def tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Tree]:
         # Output whose UTF-8 is much longer than its character count.
         (work / "emoji.txt").write_text(("emoji_marker " + "\U0001f600" * 450 + "\n") * 300)
         (work / "latin1.txt").write_bytes((b"\xe9" * 1000 + b"\n") * 600)
+        # 5 MB of matches in a vendored file, sorting before the one source match.
+        (work / "third_party").mkdir()
+        (work / "third_party" / "flood.js").write_text("flood_marker\n" * 400_000)
+        (work / "zzz_flood.py").write_text("flood_marker = 1\n")
         # The PR renames its author in blame output, if blame honours this.
         (work / ".mailmap").write_text("Mallory <m@example.invalid> Test <test@example.invalid>\n")
 
@@ -399,7 +403,8 @@ async def test_auto_skipped_files_are_refused(tools: RepoTools) -> None:
     found = await tools.grep(SESSION, "needle")
     paths = {match["path"] for match in found["matches"]}
     assert not paths & set(reasons)
-    assert found["skipped_files"] == ["dist/bundle.js", "pnpm-lock.yaml", "vendor/lib.py"]
+    # git itself leaves them out (exclude pathspecs), so they never reach the results.
+    assert not set(found["skipped_files"]) & set(reasons)
     for args in (["HEAD:pnpm-lock.yaml"], ["HEAD:image.png"]):
         with pytest.raises(AutoSkippedFileError):
             await tools.git(SESSION, "show", args)
@@ -720,8 +725,11 @@ async def test_repo_git_runs_hardened(
     (glob_grep, glob_env), (plain_grep, plain_env) = by_cmd["grep"]
     assert "--cached" in glob_grep and "--no-column" in glob_grep
     assert "-F" in glob_grep and "-E" not in glob_grep  # a plain word is searched literally
-    assert glob_env["GIT_LITERAL_PATHSPECS"] == "0"  # only for the :(glob) pathspec
-    assert plain_env["GIT_LITERAL_PATHSPECS"] == "1"
+    # Glob pathspecs for grep only: the user's glob and the skip-rule exclusions.
+    assert glob_env["GIT_LITERAL_PATHSPECS"] == "0" and plain_env["GIT_LITERAL_PATHSPECS"] == "0"
+    assert ":(exclude,glob,icase)**/vendor/**" in plain_grep
+    ((log_argv, log_env),) = by_cmd["log"]
+    assert log_env["GIT_LITERAL_PATHSPECS"] == "1"
     # blame runs on the mirror, with no worktree whose .mailmap it could read, at the
     # worktree's HEAD resolved to a full id.
     ((blame, _),) = by_cmd["blame"]
@@ -1380,3 +1388,11 @@ def test_listing_names_are_made_json_safe() -> None:
     entry: LsEntry = {"name": "caf\\xe9.txt", "kind": "file"}
     assert _mark_escaped(entry, True)["escaped"] is True
     assert "escaped" not in _mark_escaped({"name": "a", "kind": "file"}, False)
+
+
+async def test_skipped_files_never_use_up_the_search_budget(tools: RepoTools) -> None:
+    found = await tools.grep(SESSION, "flood_marker")
+    assert [m["path"] for m in found["matches"]] == ["zzz_flood.py"]
+    assert found["truncated"] is False
+    globbed = await tools.grep(SESSION, "flood_marker", glob="*.js")
+    assert globbed["matches"] == [] and globbed["truncated"] is False
