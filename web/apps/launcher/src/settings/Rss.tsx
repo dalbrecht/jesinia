@@ -12,10 +12,20 @@ type Feed = components["schemas"]["FeedOut"];
 type RssSettings = components["schemas"]["SettingsBody"];
 type ImportResult = components["schemas"]["ImportResultOut"];
 type PollSummary = components["schemas"]["PollSummaryOut"];
-type Imported = { file: string; result: ImportResult } | { file: string; error: string };
+type Imported = { result: ImportResult } | { error: string };
 
 /** The usual retention choices (days); a value set elsewhere (1–365) is offered too. */
 export const RETENTION_CHOICES = [7, 14, 30, 90, 180, 365] as const;
+/** The server's cap on an OPML document (`OPML_MAX`, 5 MB): checked before reading the file. */
+export const OPML_MAX_BYTES = 5_000_000;
+const OPML_MAX_MB = OPML_MAX_BYTES / 1_000_000;
+/** The next step when a request never got an answer (§9: the cause, then the fix). */
+const UNREACHABLE = "Check that Jesinia is running, then try again.";
+const SPLIT = "Export again with fewer feeds, or split the file.";
+
+const failure = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** "cause." with a sentence's full stop, so the next step can follow it. */
+const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -30,30 +40,46 @@ function pollSummary({ polled, new_items, failed }: PollSummary): string {
   return `Polled ${count(polled, "feed")}: ${news}${failures}.`;
 }
 
-function ImportOutcome({ imported }: { imported: Imported }) {
-  if ("error" in imported) {
-    return (
-      <p className={s.error} role="alert">
-        Couldn't import {imported.file}: {imported.error}
-      </p>
-    );
-  }
-  const { added, existing, failed } = imported.result;
+/** What an import did, in a live region that always exists so its change is announced. */
+function ImportOutcome({ imported }: { imported: Imported | null }) {
+  const done = imported && "result" in imported ? imported.result : null;
   return (
-    <div role="status" className={s.outcome}>
-      Added {count(added, "feed")}.{existing ? ` ${count(existing, "was", "were")} already followed.` : ""}
-      {failed.length ? ` ${failed.length} couldn't be added:` : ""}
-      {failed.length ? (
-        <ul className={s.plainList}>
-          {failed.map((f) => (
-            <li key={f.url}>
-              <span className={s.mono}>{f.url}</span> <span className={s.muted}>{f.cause}</span>
-            </li>
-          ))}
-        </ul>
+    <>
+      <div role="status" className={s.outcome}>
+        {done ? (
+          <>
+            Added {count(done.added, "feed")}.
+            {done.existing ? ` ${count(done.existing, "was", "were")} already followed.` : ""}
+            {done.failed.length ? ` ${done.failed.length} couldn't be added:` : ""}
+            {done.failed.length ? (
+              <ul className={s.plainList}>
+                {done.failed.map((f, i) => (
+                  <li key={`${i}:${f.url}`}>
+                    <span className={s.mono}>{f.url}</span> <span className={s.muted}>{f.cause}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      {imported && "error" in imported ? (
+        <p className={s.error} role="alert">
+          {imported.error}
+        </p>
       ) : null}
-    </div>
+    </>
   );
+}
+
+/** Why the server refused an import, in plain words with the next step. */
+function refusal(file: string, status: number, error: unknown): string {
+  // 413 from a proxy, 422 from the server's size cap: the file is too big (it isn't empty).
+  if (status === 413 || status === 422) {
+    return `Couldn't import ${file}: it is larger than the ${OPML_MAX_MB} MB Jesinia imports. ${SPLIT}`;
+  }
+  const cause = sentence(errorText(error, `HTTP ${status}`));
+  return `Couldn't import ${file}: ${cause} Export the list from your reader as OPML, then choose that file.`;
 }
 
 export function RssSection() {
@@ -92,28 +118,41 @@ export function RssSection() {
 
   const changeRetention = async (current: RssSettings, days: number) => {
     setSettings({ ...current, retention: days }); // shown at once; put back if it fails
-    const r = await save({ ...current, retention: days });
-    if (r.data) {
-      setSettings(r.data);
-      toast.show({ tone: "success", message: `Unread posts are kept for ${count(r.data.retention, "day")}.` });
-    } else {
-      setSettings(current);
-      toast.show({ tone: "danger", message: `Couldn't save the retention: ${errorText(r.error)}` });
+    let message: string;
+    try {
+      const r = await save({ ...current, retention: days });
+      if (r.data) {
+        setSettings(r.data);
+        toast.show({ tone: "success", message: `Unread posts are kept for ${count(r.data.retention, "day")}.` });
+        return;
+      }
+      message = errorText(r.error);
+    } catch (e) {
+      message = `${sentence(failure(e))} ${UNREACHABLE}`;
     }
+    setSettings(current);
+    toast.show({ tone: "danger", message: `Couldn't save the retention: ${message}` });
   };
 
   const saveFolder = async (e: FormEvent, current: RssSettings) => {
     e.preventDefault();
     setSavingFolder(true);
     setFolderError(null);
-    const r = await save({ ...current, source_folder: folder.trim() });
-    setSavingFolder(false);
-    if (r.data) {
-      setSettings(r.data);
-      setFolder(r.data.source_folder);
-      toast.show({ tone: "success", message: `Kept posts now go to ${r.data.source_folder}/.` });
-    } else {
-      setFolderError(errorText(r.error, "Couldn't use that folder."));
+    try {
+      const r = await save({ ...current, source_folder: folder.trim() });
+      if (r.data) {
+        setSettings(r.data);
+        setFolder(r.data.source_folder);
+        toast.show({ tone: "success", message: `Kept posts now go to ${r.data.source_folder}/.` });
+      } else {
+        setFolderError(
+          errorText(r.error, "Couldn't use that folder. Choose a folder inside your KB, such as Sources."),
+        );
+      }
+    } catch (err) {
+      setFolderError(`Couldn't save the folder: ${sentence(failure(err))} ${UNREACHABLE}`);
+    } finally {
+      setSavingFolder(false);
     }
   };
 
@@ -121,29 +160,52 @@ export function RssSection() {
     const input = e.target;
     const file = input.files?.[0];
     if (!file) return; // the chooser was cancelled
-    setImporting(true);
-    setImported(null);
-    const r = await client.POST("/api/rss/opml", {
-      params: { header: withIdempotency() },
-      body: { opml: await file.text() },
-    });
-    setImporting(false);
     // The same file can be chosen again (after fixing it, say).
     input.value = "";
-    if (r.data) {
-      setImported({ file: file.name, result: r.data });
-      await loadFeeds();
-    } else {
-      setImported({ file: file.name, error: errorText(r.error) });
+    setImported(null);
+    if (file.size > OPML_MAX_BYTES) {
+      const mb = Math.ceil(file.size / 1_000_000);
+      setImported({ error: `${file.name} is ${mb} MB; Jesinia imports OPML files up to ${OPML_MAX_MB} MB. ${SPLIT}` });
+      return;
+    }
+    if (file.size === 0) {
+      setImported({ error: `${file.name} is empty. Choose the OPML file your reader exported.` });
+      return;
+    }
+    setImporting(true);
+    try {
+      let opml: string;
+      try {
+        opml = await file.text();
+      } catch (err) {
+        setImported({ error: `Couldn't read ${file.name}: ${sentence(failure(err))} Choose the file again.` });
+        return;
+      }
+      const r = await client.POST("/api/rss/opml", { params: { header: withIdempotency() }, body: { opml } });
+      if (r.data) {
+        setImported({ result: r.data });
+        await loadFeeds();
+      } else {
+        setImported({ error: refusal(file.name, r.response.status, r.error) });
+      }
+    } catch (err) {
+      setImported({ error: `Couldn't import ${file.name}: ${sentence(failure(err))} ${UNREACHABLE}` });
+    } finally {
+      setImporting(false);
     }
   };
 
   const refresh = async () => {
     setRefreshing(true);
-    const r = await client.POST("/api/rss/refresh", { params: { header: withIdempotency() } });
-    setRefreshing(false);
-    if (r.data) toast.show({ message: pollSummary(r.data) });
-    else toast.show({ tone: "danger", message: `Couldn't refresh: ${errorText(r.error)}` });
+    try {
+      const r = await client.POST("/api/rss/refresh", { params: { header: withIdempotency() } });
+      if (r.data) toast.show({ message: pollSummary(r.data) });
+      else toast.show({ tone: "danger", message: `Couldn't refresh: ${errorText(r.error)}` });
+    } catch (e) {
+      toast.show({ tone: "danger", message: `Couldn't refresh: ${sentence(failure(e))} ${UNREACHABLE}` });
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const retentionChoices = settings
@@ -166,7 +228,9 @@ export function RssSection() {
       }
     >
       {loadError ? (
-        <p className={s.muted}>Couldn't load the RSS settings: {loadError}</p>
+        <p className={s.muted}>
+          Couldn't load the RSS settings: {sentence(loadError)} Restart Jesinia; <code>jesinia status</code> shows why.
+        </p>
       ) : !settings ? (
         <p className={s.muted}>Loading…</p>
       ) : (
@@ -178,7 +242,7 @@ export function RssSection() {
                 From another reader. Folders are kept (one level); feeds you already follow are skipped.
               </p>
             </div>
-            <label className={s.fileButton} aria-busy={importing || undefined}>
+            <label className={s.fileButton}>
               {importing ? "Importing…" : "Choose file…"}
               <input
                 type="file"
@@ -189,7 +253,7 @@ export function RssSection() {
               />
             </label>
           </div>
-          {imported ? <ImportOutcome imported={imported} /> : null}
+          <ImportOutcome imported={imported} />
           <div className={s.setting}>
             <div>
               <h3 className={s.settingTitle}>Export OPML</h3>

@@ -159,7 +159,9 @@ describe("Settings → RSS", () => {
       "GET /api/rss/feeds": () => Response.json({ detail: "rss module not started" }, { status: 503 }),
     });
     const rss = await section();
-    expect(await rss.findByText("Couldn't load the RSS settings: rss module not started")).toBeInTheDocument();
+    expect(
+      await rss.findByText(/^Couldn't load the RSS settings: rss module not started\. Restart Jesinia;/),
+    ).toHaveTextContent("Restart Jesinia; jesinia status shows why.");
     expect(rss.queryByRole("combobox", { name: "Keep unread posts for" })).toBeNull();
   });
 
@@ -219,8 +221,138 @@ describe("Settings → RSS", () => {
     const rss = await section();
     await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<html/>"));
     expect(await rss.findByRole("alert")).toHaveTextContent(
-      "Couldn't import feeds.opml: not an OPML document: no body",
+      "Couldn't import feeds.opml: not an OPML document: no body. Export the list from your reader as OPML, then choose that file.",
     );
+  });
+
+  it("refuses an oversize file before reading or sending it, in plain words", async () => {
+    const calls = renderRss();
+    const rss = await section();
+    const big = opmlFile("<opml/>");
+    Object.defineProperty(big, "size", { value: 12_000_000 });
+    Object.defineProperty(big, "name", { value: "big.opml" });
+    await userEvent.upload(rss.getByLabelText("Import OPML"), big);
+    expect(await rss.findByRole("alert")).toHaveTextContent(
+      "big.opml is 12 MB; Jesinia imports OPML files up to 5 MB. Export again with fewer feeds, or split the file.",
+    );
+    expect(sent(calls, "POST", "/api/rss/opml")).toHaveLength(0);
+    expect(rss.getByLabelText("Import OPML")).toBeEnabled();
+  });
+
+  it("refuses an empty file", async () => {
+    const calls = renderRss();
+    const rss = await section();
+    await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile(""));
+    expect(await rss.findByRole("alert")).toHaveTextContent(
+      "feeds.opml is empty. Choose the OPML file your reader exported.",
+    );
+    expect(sent(calls, "POST", "/api/rss/opml")).toHaveLength(0);
+  });
+
+  it("says the file is too large when the server refuses its size (422 or 413)", async () => {
+    let code = 422;
+    renderRss({
+      "POST /api/rss/opml": () =>
+        Response.json({ detail: [{ msg: "String should have at most 5000000 characters" }] }, { status: code }),
+    });
+    const rss = await section();
+    await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
+    const tooBig =
+      "Couldn't import feeds.opml: it is larger than the 5 MB Jesinia imports. Export again with fewer feeds, or split the file.";
+    expect(await rss.findByRole("alert")).toHaveTextContent(tooBig);
+    code = 413;
+    await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
+    await waitFor(() => expect(rss.getByRole("alert")).toHaveTextContent(tooBig));
+  });
+
+  it("re-enables the picker when the file can't be read", async () => {
+    const calls = renderRss();
+    const rss = await section();
+    const gone = opmlFile("<opml/>");
+    gone.text = () => Promise.reject(new Error("the file was moved"));
+    await userEvent.upload(rss.getByLabelText("Import OPML"), gone);
+    expect(await rss.findByRole("alert")).toHaveTextContent(
+      "Couldn't read feeds.opml: the file was moved. Choose the file again.",
+    );
+    expect(rss.getByLabelText("Import OPML")).toBeEnabled();
+    expect(rss.getByText("Choose file…")).toBeInTheDocument();
+    expect(sent(calls, "POST", "/api/rss/opml")).toHaveLength(0);
+  });
+
+  it("re-enables the picker when the server can't be reached", async () => {
+    renderRss({
+      "POST /api/rss/opml": () => Promise.reject(new TypeError("Failed to fetch")),
+    });
+    const rss = await section();
+    await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
+    expect(await rss.findByRole("alert")).toHaveTextContent(
+      "Couldn't import feeds.opml: Failed to fetch. Check that Jesinia is running, then try again.",
+    );
+    expect(rss.getByLabelText("Import OPML")).toBeEnabled();
+  });
+
+  it("keeps an empty live region for the outcome, so it is announced when it fills", async () => {
+    renderRss({ "POST /api/rss/opml": { added: 1, existing: 0, failed: [] } });
+    const rss = await section();
+    const status = rss.getByRole("status");
+    expect(status).toBeEmptyDOMElement();
+    await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
+    await waitFor(() => expect(status).toHaveTextContent("Added 1 feed."));
+  });
+
+  it("lists the same refused URL twice without a key clash", async () => {
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => errors.push(args);
+    try {
+      renderRss({
+        "POST /api/rss/opml": {
+          added: 0,
+          existing: 0,
+          failed: [
+            { url: "ftp://old.example/feed", cause: "only http(s) feed URLs are supported" },
+            { url: "ftp://old.example/feed", cause: "only http(s) feed URLs are supported" },
+          ],
+        },
+      });
+      const rss = await section();
+      await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
+      await waitFor(() => expect(rss.getAllByText("ftp://old.example/feed")).toHaveLength(2));
+    } finally {
+      console.error = original;
+    }
+    expect(errors.filter((e) => String(e).includes("same key"))).toHaveLength(0);
+  });
+
+  it("explains a refused folder even when the server gives no cause", async () => {
+    renderRss({ "PUT /api/rss/settings": () => Response.json({}, { status: 400 }) });
+    const rss = await section();
+    const folder = rss.getByLabelText("Folder for kept posts");
+    await waitFor(() => expect(folder).toHaveValue("Sources"));
+    await userEvent.click(rss.getByRole("button", { name: "Save folder" }));
+    expect(
+      await rss.findByText("Couldn't use that folder. Choose a folder inside your KB, such as Sources."),
+    ).toBeInTheDocument();
+  });
+
+  it("refresh and retention recover when the server can't be reached", async () => {
+    renderRss({
+      "POST /api/rss/refresh": () => Promise.reject(new TypeError("Failed to fetch")),
+      "PUT /api/rss/settings": () => Promise.reject(new TypeError("Failed to fetch")),
+    });
+    const rss = await section();
+    const refresh = rss.getByRole("button", { name: "Refresh all feeds now" });
+    await userEvent.click(refresh);
+    expect(
+      await toast("Couldn't refresh: Failed to fetch. Check that Jesinia is running, then try again."),
+    ).toBeDefined();
+    expect(refresh).not.toHaveAttribute("aria-busy");
+    const retention = rss.getByRole("combobox", { name: "Keep unread posts for" });
+    await userEvent.selectOptions(retention, "90");
+    expect(
+      await toast("Couldn't save the retention: Failed to fetch. Check that Jesinia is running, then try again."),
+    ).toBeDefined();
+    expect(retention).toHaveValue("30");
   });
 
   it("refreshes every feed now and says what came in", async () => {
