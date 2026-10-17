@@ -31,9 +31,12 @@ const dialog = () => screen.getByRole("dialog", { name: "Feeds" });
 const toast = async (text: string | RegExp) =>
   (await screen.findAllByText(text)).find((el) => el.closest("[data-toast]") !== null);
 
+/** The dialog once the feeds have loaded: its rows exist only then (never query before). */
 async function openManage() {
   await userEvent.click(await screen.findByRole("button", { name: "+ Add feed" }));
-  return within(dialog());
+  const manage = within(dialog());
+  await manage.findAllByRole("listitem");
+  return manage;
 }
 
 describe("Add feed", () => {

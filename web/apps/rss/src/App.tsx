@@ -199,6 +199,8 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   const [takingAway, setTakingAway] = useState(false);
   /** The post the conversation is about: a session that starts after another post opened is let go. */
   const engagedPost = useRef<number | null>(null);
+  /** The session of the conversation on screen, for answers that arrive later. */
+  const engagedSession = useRef<string | null>(null);
   const openings = useRef(0);
   const runner = Object.entries(runners ?? {}).find(([, r]) => r.available)?.[0] ?? null;
   const hasAgent = runners === null || runner !== null;
@@ -400,6 +402,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   };
 
   openPost.current = selectedId;
+  engagedSession.current = engaged?.session ?? null;
   shownPosts.current = posts;
   const index = posts.findIndex((p) => p.id === selectedId);
   const selected = index >= 0 ? posts[index] : undefined;
@@ -514,11 +517,14 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     // The author's own last message: the takeaway prompt's turn is marked and never counts (R26).
     const note = chat.lastUserText;
     setTakingAway(true);
+    // The answer belongs to this post's conversation: if another post (or session) took over
+    // while it was coming, it is dropped rather than opening Keep over the wrong post.
+    const current = () => engagedPost.current === postId && engagedSession.current === session;
     try {
       const takeaway = await askTakeaway(client, session);
-      openKeep({ postId, note, takeaway: { text: takeaway.text, session } });
+      if (current()) openKeep({ postId, note, takeaway: { text: takeaway.text, session } });
     } catch (e) {
-      fail("get a takeaway", e);
+      if (current()) fail("get a takeaway", e);
     } finally {
       setTakingAway(false);
     }

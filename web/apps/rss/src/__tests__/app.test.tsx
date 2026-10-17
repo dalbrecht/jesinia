@@ -63,7 +63,7 @@ describe("feeds pane", () => {
     setup();
     const nav = await screen.findByRole("navigation", { name: "Feeds" });
     const unread = await within(nav).findByRole("button", { name: /All unread/ });
-    expect(unread).toHaveTextContent("999+");
+    await waitFor(() => expect(unread).toHaveTextContent("999+")); // counts load on their own
     expect(within(nav).getByRole("button", { name: /In KB/ })).toHaveTextContent("31");
     // A folder's count shows while it is collapsed (its feeds carry their own).
     expect(within(nav).getByRole("button", { name: /^News/ })).not.toHaveTextContent("999+");

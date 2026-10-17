@@ -123,7 +123,7 @@ describe("Settings", () => {
     expect(await screen.findByText("not logged in: run codex login", { selector: "span span" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Check again" }));
     const conflicts = await go("Conflicts");
-    expect(conflicts.getByText("2 to review")).toBeInTheDocument();
+    expect(await conflicts.findByText("2 to review")).toBeInTheDocument();
     expect(conflicts.getByText("Notes/gone.md")).toBeInTheDocument();
     await go("Security");
     await userEvent.click(screen.getByRole("button", { name: "Rotate token…" }));

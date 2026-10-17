@@ -436,6 +436,35 @@ describe("Engage", () => {
     expect(writes(calls, "/api/rss/posts/1/engage")).toHaveLength(2);
   });
 
+  it("a takeaway that arrives after another post opened is dropped; that post's chat stays", async () => {
+    let answer: (r: Response) => void = () => {};
+    const { calls } = setup({
+      "POST /api/rss/sessions/s9/takeaway": () => new Promise<Response>((resolve) => (answer = resolve)),
+      "POST /api/rss/posts/2/engage": () =>
+        Response.json({ ...SESSION, id: "s10", subject: { kind: "rss", ref: "2", title: "Post 2" } }, { status: 201 }),
+    });
+    await openFirst();
+    await userEvent.click(screen.getByRole("button", { name: "Engage" }));
+    const rail = await screen.findByRole("complementary", { name: "Chat about this post" });
+    const keepWith = await within(rail).findByRole("button", { name: "Keep with this conversation" });
+    await waitFor(() => expect(FakeSource.all.some((s) => s.url.includes("/sessions/s9/"))).toBe(true));
+    agent("user_message", { text: "Tie this to my notes" });
+    agent("text", { text: "Done." });
+    agent("turn_done", { model: "m1" });
+    await waitFor(() => expect(keepWith).toBeEnabled());
+    await userEvent.click(keepWith);
+    await waitFor(() => expect(writes(calls, "/api/rss/sessions/s9/takeaway")).toHaveLength(1));
+    // Another post, and a chat about it, before the takeaway answers.
+    await userEvent.click(screen.getByRole("option", { name: /Post 2/ }));
+    await screen.findByRole("heading", { name: "Post 2", level: 1 });
+    await userEvent.click(screen.getByRole("button", { name: "Engage" }));
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/2/engage")).toHaveLength(1));
+    await act(async () => answer(Response.json({ text: "Late.", agent: "claude-code", model: "m1", session: "s9" })));
+    expect(screen.queryByRole("dialog", { name: "Keep this post" })).toBeNull();
+    expect(screen.getByRole("complementary", { name: "Chat about this post" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Post 2", level: 1 })).toBeInTheDocument();
+  });
+
   it("Keep with this conversation shows an editable takeaway", async () => {
     const { calls } = setup();
     await openFirst();
@@ -602,6 +631,40 @@ describe("Engage", () => {
       );
     });
     expect(writes(calls, "/api/rss/posts/1/engage")).toHaveLength(0);
+  });
+
+  it("on a narrow screen, a late takeaway for another post neither opens Keep nor hides the new chat", async () => {
+    vi.stubGlobal("matchMedia", () => ({
+      matches: true,
+      media: "(max-width: 767px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    let answer: (r: Response) => void = () => {};
+    const { calls } = setup({
+      "POST /api/rss/sessions/s9/takeaway": () => new Promise<Response>((resolve) => (answer = resolve)),
+      "POST /api/rss/posts/2/engage": () =>
+        Response.json({ ...SESSION, id: "s10", subject: { kind: "rss", ref: "2", title: "Post 2" } }, { status: 201 }),
+    });
+    await openFirst();
+    press("e");
+    const sheet = await screen.findByRole("dialog", { name: "Chat about this post" });
+    await waitFor(() => expect(FakeSource.all.some((s) => s.url.includes("/sessions/s9/"))).toBe(true));
+    agent("user_message", { text: "Tie this to my notes" });
+    agent("text", { text: "Done." });
+    agent("turn_done", { model: "m1" });
+    const keepWith = within(sheet).getByRole("button", { name: "Keep with this conversation" });
+    await waitFor(() => expect(keepWith).toBeEnabled());
+    await userEvent.click(keepWith);
+    await waitFor(() => expect(writes(calls, "/api/rss/sessions/s9/takeaway")).toHaveLength(1));
+    press("j"); // Post 2
+    await screen.findByRole("heading", { name: "Post 2", level: 1 });
+    press("e");
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/2/engage")).toHaveLength(1));
+    expect(await screen.findByRole("dialog", { name: "Chat about this post" })).toBeInTheDocument();
+    await act(async () => answer(Response.json({ text: "Late.", agent: "claude-code", model: "m1", session: "s9" })));
+    expect(screen.queryByRole("dialog", { name: "Keep this post" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Chat about this post" })).toBeInTheDocument();
   });
 
   it("on a narrow screen the chat is a sheet over the reader; Done returns", async () => {

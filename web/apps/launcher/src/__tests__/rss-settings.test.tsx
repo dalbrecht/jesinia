@@ -28,6 +28,12 @@ function renderRss(over = {}, hash = "#rss") {
 }
 
 const section = async () => within(await screen.findByRole("region", { name: "RSS" }));
+/** The section once its settings have loaded: its controls exist only then (never query before). */
+const loaded = async () => {
+  const rss = await section();
+  await rss.findByRole("combobox", { name: "Keep unread posts for" });
+  return rss;
+};
 const sent = (calls: Request[], method: string, path: string) =>
   calls.filter((c) => c.method === method && new URL(c.url).pathname === path);
 const toast = async (text: string) =>
@@ -86,7 +92,7 @@ describe("Settings layout (R27: one section per view)", () => {
 describe("Settings → RSS", () => {
   it("shows how many feeds and folders, the retention and the kept-posts folder", async () => {
     renderRss();
-    const rss = await section();
+    const rss = await loaded();
     expect(await rss.findByText("4 feeds in 2 folders")).toBeInTheDocument();
     expect(await rss.findByRole("combobox", { name: "Keep unread posts for" })).toHaveValue("30");
     expect(rss.getByText("Kept posts stay forever.")).toBeInTheDocument();
@@ -105,7 +111,7 @@ describe("Settings → RSS", () => {
     const calls = renderRss({
       "PUT /api/rss/settings": async (req: Request) => Response.json(await req.clone().json()),
     });
-    const rss = await section();
+    const rss = await loaded();
     const retention = await rss.findByRole("combobox", { name: "Keep unread posts for" });
     await waitFor(() => expect(retention).toHaveValue("30"));
     await userEvent.selectOptions(retention, "90");
@@ -130,7 +136,7 @@ describe("Settings → RSS", () => {
       detail: "Journal: Jesinia never writes pages in reserved, hidden or _assets folders",
     }, { status: 400 }); // prettier-ignore
     const calls = renderRss({ "PUT /api/rss/settings": () => answer });
-    const rss = await section();
+    const rss = await loaded();
     const folder = rss.getByLabelText("Folder for kept posts");
     await waitFor(() => expect(folder).toHaveValue("Sources"));
     await userEvent.clear(folder);
@@ -201,7 +207,7 @@ describe("Settings → RSS", () => {
         );
       },
     });
-    const rss = await section();
+    const rss = await loaded();
     const folder = rss.getByLabelText("Folder for kept posts");
     await waitFor(() => expect(folder).toHaveValue("Sources"));
     await userEvent.clear(folder);
@@ -220,6 +226,38 @@ describe("Settings → RSS", () => {
     expect(folder).toHaveValue("Reading");
   });
 
+  it("a failed write never takes back a newer choice queued behind it", async () => {
+    let stored = { ...SETTINGS };
+    const held: ((ok: boolean) => void)[] = [];
+    const calls = renderRss({
+      "PUT /api/rss/settings": async (req: Request) => {
+        const body = (await req.clone().json()) as typeof SETTINGS;
+        return new Promise<Response>((resolve) =>
+          held.push((ok) => {
+            if (!ok) return resolve(Response.json({ error: "InvalidSettings", detail: "no" }, { status: 400 }));
+            stored = body;
+            resolve(Response.json(body));
+          }),
+        );
+      },
+    });
+    const rss = await loaded();
+    const retention = await rss.findByRole("combobox", { name: "Keep unread posts for" });
+    await waitFor(() => expect(retention).toHaveValue("30"));
+    await userEvent.selectOptions(retention, "90"); // A, in flight
+    await waitFor(() => expect(held).toHaveLength(1));
+    await userEvent.selectOptions(retention, "14"); // B, queued behind it
+    await act(async () => held[0]?.(false)); // A fails
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => held[1]?.(true));
+    expect(await sent(calls, "PUT", "/api/rss/settings")[1]?.json()).toEqual({
+      retention: 14,
+      source_folder: "Sources",
+    });
+    expect(stored).toEqual({ retention: 14, source_folder: "Sources" });
+    expect(retention).toHaveValue("14");
+  });
+
   it("a refused folder doesn't ride along with a later retention change", async () => {
     const calls = renderRss({
       "PUT /api/rss/settings": async (req: Request) => {
@@ -229,7 +267,7 @@ describe("Settings → RSS", () => {
           : Response.json(body);
       },
     });
-    const rss = await section();
+    const rss = await loaded();
     const folder = rss.getByLabelText("Folder for kept posts");
     await waitFor(() => expect(folder).toHaveValue("Sources"));
     await userEvent.clear(folder);
@@ -270,7 +308,7 @@ describe("Settings → RSS", () => {
         });
       },
     });
-    const rss = await section();
+    const rss = await loaded();
     await rss.findByText("4 feeds in 2 folders");
     const opml = '<opml version="2.0"><body><outline text="Reading"/></body></opml>';
     await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile(opml));
@@ -287,7 +325,7 @@ describe("Settings → RSS", () => {
 
   it("says when an import added one feed and nothing else happened", async () => {
     renderRss({ "POST /api/rss/opml": { added: 1, existing: 0, failed: [] } });
-    const rss = await section();
+    const rss = await loaded();
     await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
     expect(await rss.findByRole("status")).toHaveTextContent(/^Added 1 feed\.$/);
   });
@@ -297,7 +335,7 @@ describe("Settings → RSS", () => {
       "POST /api/rss/opml": () =>
         Response.json({ error: "InvalidOpml", detail: "not an OPML document: no body" }, { status: 400 }),
     });
-    const rss = await section();
+    const rss = await loaded();
     await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<html/>"));
     expect(await rss.findByRole("alert")).toHaveTextContent(
       "Couldn't import feeds.opml: not an OPML document: no body. Export the list from your reader as OPML, then choose that file.",
@@ -306,7 +344,7 @@ describe("Settings → RSS", () => {
 
   it("refuses an oversize file before reading or sending it, in plain words", async () => {
     const calls = renderRss();
-    const rss = await section();
+    const rss = await loaded();
     const big = opmlFile("<opml/>");
     Object.defineProperty(big, "size", { value: 12_000_000 });
     Object.defineProperty(big, "name", { value: "big.opml" });
@@ -320,7 +358,7 @@ describe("Settings → RSS", () => {
 
   it("refuses an empty file", async () => {
     const calls = renderRss();
-    const rss = await section();
+    const rss = await loaded();
     await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile(""));
     expect(await rss.findByRole("alert")).toHaveTextContent(
       "feeds.opml is empty. Choose the OPML file your reader exported.",
@@ -334,7 +372,7 @@ describe("Settings → RSS", () => {
       "POST /api/rss/opml": () =>
         Response.json({ detail: [{ msg: "String should have at most 5000000 characters" }] }, { status: code }),
     });
-    const rss = await section();
+    const rss = await loaded();
     await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
     const tooBig =
       "Couldn't import feeds.opml: it is larger than the 5 MB Jesinia imports. Export again with fewer feeds, or split the file.";
@@ -346,7 +384,7 @@ describe("Settings → RSS", () => {
 
   it("re-enables the picker when the file can't be read", async () => {
     const calls = renderRss();
-    const rss = await section();
+    const rss = await loaded();
     const gone = opmlFile("<opml/>");
     gone.text = () => Promise.reject(new Error("the file was moved"));
     await userEvent.upload(rss.getByLabelText("Import OPML"), gone);
@@ -362,7 +400,7 @@ describe("Settings → RSS", () => {
     renderRss({
       "POST /api/rss/opml": () => Promise.reject(new TypeError("Failed to fetch")),
     });
-    const rss = await section();
+    const rss = await loaded();
     await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
     expect(await rss.findByRole("alert")).toHaveTextContent(
       "Couldn't import feeds.opml: Failed to fetch. Check that Jesinia is running, then try again.",
@@ -372,7 +410,7 @@ describe("Settings → RSS", () => {
 
   it("keeps an empty live region for the outcome, so it is announced when it fills", async () => {
     renderRss({ "POST /api/rss/opml": { added: 1, existing: 0, failed: [] } });
-    const rss = await section();
+    const rss = await loaded();
     const status = rss.getByRole("status");
     expect(status).toBeEmptyDOMElement();
     await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
@@ -394,7 +432,7 @@ describe("Settings → RSS", () => {
           ],
         },
       });
-      const rss = await section();
+      const rss = await loaded();
       await userEvent.upload(rss.getByLabelText("Import OPML"), opmlFile("<opml/>"));
       await waitFor(() => expect(rss.getAllByText("ftp://old.example/feed")).toHaveLength(2));
     } finally {
@@ -405,7 +443,7 @@ describe("Settings → RSS", () => {
 
   it("explains a refused folder even when the server gives no cause", async () => {
     renderRss({ "PUT /api/rss/settings": () => Response.json({}, { status: 400 }) });
-    const rss = await section();
+    const rss = await loaded();
     const folder = rss.getByLabelText("Folder for kept posts");
     await waitFor(() => expect(folder).toHaveValue("Sources"));
     await userEvent.click(rss.getByRole("button", { name: "Save folder" }));
@@ -419,7 +457,7 @@ describe("Settings → RSS", () => {
       "POST /api/rss/refresh": () => Promise.reject(new TypeError("Failed to fetch")),
       "PUT /api/rss/settings": () => Promise.reject(new TypeError("Failed to fetch")),
     });
-    const rss = await section();
+    const rss = await loaded();
     const refresh = rss.getByRole("button", { name: "Refresh all feeds now" });
     await userEvent.click(refresh);
     expect(
@@ -436,7 +474,7 @@ describe("Settings → RSS", () => {
 
   it("refreshes every feed now and says what came in", async () => {
     const calls = renderRss({ "POST /api/rss/refresh": { polled: 4, new_items: 7, failed: 1 } });
-    const rss = await section();
+    const rss = await loaded();
     await userEvent.click(rss.getByRole("button", { name: "Refresh all feeds now" }));
     expect(await toast("Polled 4 feeds: 7 new posts, 1 feed failed.")).toBeDefined();
     expect(sent(calls, "POST", "/api/rss/refresh")[0]?.headers.get("Idempotency-Key")).toMatch(/^[0-9a-f-]{36}$/);
@@ -445,7 +483,7 @@ describe("Settings → RSS", () => {
   it("refresh says when nothing came in, and when it failed", async () => {
     let answer = Response.json({ polled: 1, new_items: 0, failed: 0 });
     renderRss({ "POST /api/rss/refresh": () => answer });
-    const rss = await section();
+    const rss = await loaded();
     await userEvent.click(rss.getByRole("button", { name: "Refresh all feeds now" }));
     expect(await toast("Polled 1 feed: no new posts.")).toBeDefined();
     answer = Response.json({ detail: "rss module not started" }, { status: 503 });

@@ -149,13 +149,13 @@ export function RssSection() {
           // carries them).
           intended.current = { ...r.data, ...changedSince(sent as RssSettings) };
         } else {
-          takeBack(patch);
+          takeBack(patch, sent as RssSettings);
         }
         setSettings(intended.current);
         return r;
       },
       (e: unknown) => {
-        takeBack(patch);
+        takeBack(patch, sent);
         setSettings(intended.current);
         throw e;
       },
@@ -167,10 +167,15 @@ export function RssSection() {
       (Object.keys(want) as (keyof RssSettings)[]).filter((k) => want[k] !== sent[k]).map((k) => [k, want[k]]),
     );
   };
-  const takeBack = (patch: Partial<RssSettings>) => {
+  /**
+   * Take a failed change back out, field by field, only where nothing newer was chosen since
+   * it was sent: a retention picked while this write was in flight is the one that stands.
+   */
+  const takeBack = (patch: Partial<RssSettings>, sent: RssSettings | null) => {
     const back = confirmed.current as RssSettings;
-    const undo = Object.fromEntries((Object.keys(patch) as (keyof RssSettings)[]).map((k) => [k, back[k]]));
-    intended.current = { ...(intended.current as RssSettings), ...undo };
+    const want = intended.current as RssSettings;
+    const keys = (Object.keys(patch) as (keyof RssSettings)[]).filter((k) => sent === null || want[k] === sent[k]);
+    intended.current = { ...want, ...Object.fromEntries(keys.map((k) => [k, back[k]])) };
   };
 
   const changeRetention = async (days: number) => {
