@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import unicodedata
 from collections import defaultdict
 from collections.abc import Mapping
@@ -15,6 +16,7 @@ from typing import Literal
 
 from jesinia.core.events import Event, EventBus
 from jesinia.services.kb.application.errors import (
+    InvalidAssetName,
     KbError,
     KbUnavailable,
     PageNotFound,
@@ -86,11 +88,18 @@ def sha256(data: bytes) -> str:
 
 
 NEW_ID_PLACEHOLDER = "new page id"
+NO_KB_PATH = "no KB path is configured"
+ASSETS_FOLDER = "_assets"
+# One plain file name: no folders, no leading dot, no spaces or shell-special characters.
+_ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9]+)?")
+# What an asset folder's .gitignore holds when its files must stay on this machine.
+LOCAL_ONLY_GITIGNORE = b"*\n"
 
 
 class KbService:
     def __init__(self, files: PageFiles | None, index: PageIndex, bus: EventBus) -> None:
         self._files = files
+        self._problem: str | None = None
         self._index = index
         self._bus = bus
         self._locks: defaultdict[PageId, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -102,8 +111,13 @@ class KbService:
 
     def _fs(self) -> PageFiles:
         if self._files is None:
-            raise KbUnavailable("no KB path is configured")
+            raise KbUnavailable(self._problem or NO_KB_PATH)
         return self._files
+
+    def require_available(self) -> None:
+        """Raise ``KbUnavailable`` with the reason (the KB banner's message) when no KB can
+        be written; callers check this before acting so nothing is half-done or queued."""
+        self._fs()
 
     @property
     def files(self) -> PageFiles | None:
@@ -113,9 +127,11 @@ class KbService:
     def index(self) -> PageIndex:
         return self._index
 
-    def set_files(self, files: PageFiles | None) -> None:
-        """Point the service at a new KB root (``PUT /api/kb/path``)."""
+    def set_files(self, files: PageFiles | None, problem: str | None = None) -> None:
+        """Point the service at a new KB root (``PUT /api/kb/path``); with no files,
+        ``problem`` says why (it becomes the ``KbUnavailable`` message)."""
         self._files = files
+        self._problem = problem if files is None else None
 
     async def conflicts(self) -> list[Conflict]:
         return self._index.conflicts()
@@ -308,6 +324,33 @@ class KbService:
             )  # fmt: skip
         await self._emit(id, path, "moved" if path != row.path else "updated")
         return result
+
+    async def write_asset(
+        self, id: PageId, name: str, data: bytes, *, local_only: bool = False
+    ) -> PurePosixPath:
+        """Store a file for page ``id`` at ``_assets/<id>/<name>`` (replacing one of that
+        name) and return that KB-relative path. ``local_only`` gives the folder a
+        ``.gitignore`` of ``*``, so KB sync never commits its files.
+
+        Raises ``PageNotFound`` (the id must be an indexed page, which also keeps it a plain
+        path segment), ``InvalidAssetName`` or ``KbUnavailable``.
+        """
+        fs = self._fs()
+        if self._index.get(id) is None:
+            raise PageNotFound(id)
+        if not _ASSET_NAME.fullmatch(name):
+            raise InvalidAssetName(f"{name!r} is not a plain asset file name")
+        folder = PurePosixPath(ASSETS_FOLDER, id)
+        if local_only:
+            ignore = folder / ".gitignore"
+            fs.contain(ignore)
+            if not fs.exists(str(ignore)):
+                fs.write_atomic(str(ignore), LOCAL_ONLY_GITIGNORE)
+        path = folder / name
+        fs.contain(path)
+        # Up to megabytes with an fsync: keep it off the event loop.
+        await asyncio.to_thread(fs.write_atomic, str(path), data)
+        return path
 
     async def update_body(self, id: PageId, body: str, *, expected_rev: str) -> PageWithRev:
         """Replace only the body; the raw front-matter block stays byte-identical."""

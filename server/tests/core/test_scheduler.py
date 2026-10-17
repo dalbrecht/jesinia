@@ -107,3 +107,26 @@ def test_nonpositive_interval_rejected(interval: timedelta) -> None:
 
     with pytest.raises(ValueError, match="positive"):
         Scheduler().every("x", interval, job)
+
+
+async def test_a_job_can_also_run_once_at_start() -> None:
+    runs: list[str] = []
+
+    async def daily() -> None:
+        runs.append("daily")
+
+    async def later() -> None:
+        runs.append("later")
+
+    s = Scheduler()
+    s.every("daily", timedelta(days=1), daily, at_start=True)
+    s.every("later", timedelta(days=1), later)
+    await s.start()
+    for _ in range(100):
+        if runs:
+            break
+        await asyncio.sleep(0.001)
+    await s.stop()
+    # Once now (a restart or a sleeping Mac would otherwise postpone it forever), then
+    # daily; a job without at_start still waits a full interval.
+    assert runs == ["daily"]

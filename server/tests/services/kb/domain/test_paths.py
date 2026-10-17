@@ -25,6 +25,12 @@ def test_sanitize_and_nfc() -> None:
     assert sanitize_title("...") == "Untitled"
 
 
+def test_sanitize_never_makes_a_hidden_file_name() -> None:
+    # A leading dot would hide the page from the tree and the index (e.g. a feed title).
+    assert sanitize_title("../../../etc/passwd") == "etc passwd"
+    assert sanitize_title(".NET 9 is out") == "NET 9 is out"
+
+
 def test_collision_suffix_is_bracketed_id_prefix() -> None:
     assert filename_for("Note", A, [("note", B)]) == "Note.md"
     assert filename_for("Note", B, [("Note", A)]) == "Note [0192f7a8].md"

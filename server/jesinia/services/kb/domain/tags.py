@@ -26,14 +26,15 @@ _MARKS = _combining_mark_class()
 _TAG_CHAR = rf"[^\W_][{_MARKS}]*"
 # Single hyphens join tag characters; a trailing hyphen is never part of the tag.
 _TAG_BODY = rf"{_TAG_CHAR}(?:-?{_TAG_CHAR})*"
-# A tag cannot hug a preceding word character, combining mark, "/", "#", "?", "=" or "&", and
+# A tag cannot hug a preceding word character, combining mark, "/", "#", "?", "=", "&" or a
+# backslash (Markdown's escape: backslash-#a renders as "#a" but is text, not a tag), and
 # cannot be a Markdown link target "](#a)" (so "C#", URLs, link anchors, query strings like
 # "?q=#a", "&#38;" and "##" are never tags; "(#a)" in prose is). It must not run on into "_", a
 # word character or a mark, even across one hyphen, so "#machine_learning" and "#b_c" are not
 # tags at all rather than the tags "machine" and "b". Matching runs on the original text (never a
 # normalised copy) so match offsets are the text's own and a rename leaves everything else
 # byte-identical; the captured tag is NFC-normalised by ``normalise_tag``.
-_TAG = re.compile(rf"(?<![\w/#?=&{_MARKS}])(?<!\]\()#({_TAG_BODY})(?!-?[\w{_MARKS}])")
+_TAG = re.compile(rf"(?<![\w/#?=&\\{_MARKS}])(?<!\]\()#({_TAG_BODY})(?!-?[\w{_MARKS}])")
 _VALID_TAG = re.compile(_TAG_BODY)
 _HEADING_LINE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
 _FENCE_LINE = re.compile(r" {0,3}(`{3,}|~{3,})(?P<rest>.*)$", re.DOTALL)
@@ -143,6 +144,19 @@ def extract_tags(body: str) -> list[str]:
     for match in _TAG.finditer(_mask_ignored(body)):
         seen.setdefault(normalise_tag(match.group(1)), None)
     return list(seen)
+
+
+def escape_tags(body: str) -> str:
+    """``body`` with every tag escaped as ``\\#tag``: it still renders as ``#tag`` but is no
+    longer a tag (for quoted text, such as an archived article, whose hashtags aren't ours)."""
+    pieces: list[str] = []
+    cursor = 0
+    for match in _TAG.finditer(_mask_ignored(body)):
+        pieces.append(body[cursor : match.start()])
+        pieces.append("\\")
+        cursor = match.start()
+    pieces.append(body[cursor:])
+    return "".join(pieces)
 
 
 def replace_tag(body: str, old: str, new: str) -> str:

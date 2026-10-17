@@ -26,6 +26,10 @@ class ReservedPath(KbError):
     """The target is in a suite-reserved (``Journal``, ``Drafts``) or hidden folder."""
 
 
+class InvalidAssetName(KbError):
+    """An asset file name that is not one plain file name (no folders, no leading dot)."""
+
+
 class InvalidTag(KbError):
     """The text is not a usable tag (empty, or outside the ``#tag`` grammar)."""
 

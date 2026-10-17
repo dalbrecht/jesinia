@@ -56,7 +56,7 @@ declares a class:
 |---|---|---|
 | derived | `kb`, `search`, `notes` | rebuilt from the KB (`jesinia reindex`) |
 | cache | `github`, `fetch` | discarded; rows older than 30 days are pruned |
-| history | `sessions` | agent transcripts; included in `jesinia backup` |
+| history | `sessions`, `rss` | agent transcripts, feed read state; included in `jesinia backup` |
 
 ## Events
 

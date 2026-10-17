@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+  <title>Why SQLite Is Enough - Example News</title>
+  <meta property="og:title" content="Why SQLite Is Enough">
+</head>
+<body>
+  <nav><a href="/">Home</a> <a href="/about">About</a></nav>
+  <article>
+    <h1>Why SQLite Is Enough</h1>
+    <p>Most personal tools never outgrow a single file database, and SQLite keeps that file
+      safe with transactions, a write-ahead log and decades of testing behind it.</p>
+    <p>The <a href="/docs/wal">write-ahead log</a> lets readers keep reading while one writer
+      commits, which is exactly the shape of a feed reader polling in the background.</p>
+    <figure><img src="/img/wal-diagram.png" alt="WAL diagram"></figure>
+    <p>Backups are a file copy away, and the format is stable enough to outlive the tool that
+      wrote it, which matters for anything you want to keep for years.</p>
+    <p><a href="javascript:alert(1)">A sneaky link</a> sits next to the closing remarks so the
+      extractor has to keep its text but never the script it points to.</p>
+    <img src="https://cdn.example.org/sqlite-logo.png" alt="SQLite logo">
+  </article>
+  <footer>Copyright Example News</footer>
+</body>
+</html>

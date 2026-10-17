@@ -20,7 +20,7 @@ from jesinia.services.agents.domain.session import (
 
 _S = (
     "id, subject_kind, subject_ref, subject_title, runner, agent_session_id, model, status, "
-    "preauthorized, created_at"
+    "preauthorized, created_at, read_only"
 )
 
 
@@ -38,6 +38,7 @@ def _session(r: tuple[object, ...]) -> Session:
         status=r[7],  # type: ignore[arg-type]
         preauthorized=frozenset(json.loads(str(r[8]))),
         created_at=datetime.fromisoformat(str(r[9])),
+        read_only=bool(r[10]),
     )
 
 
@@ -48,7 +49,7 @@ class SqliteSessionStore:
     def add_session(self, s: Session) -> None:
         with transaction(self.conn):
             self.conn.execute(
-                f"INSERT INTO sessions ({_S}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO sessions ({_S}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s.id,
                     s.subject.kind,
@@ -60,6 +61,7 @@ class SqliteSessionStore:
                     s.status,
                     json.dumps(sorted(s.preauthorized)),
                     s.created_at.isoformat(),
+                    int(s.read_only),
                 ),
             )
 

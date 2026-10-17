@@ -29,6 +29,9 @@ a transcript. They live in `sessions.sqlite` (history class).
   checks) answer a single prompt and take no more turns. They get **no MCP token and no
   tools**: the pack is inlined into the prompt, the runner is started with an empty MCP
   configuration, and the server refuses a second turn.
+- **Read-only sessions** (`read_only`, used by RSS Engage, whose context is untrusted feed
+  text) are offered only the tools that do not write, and the write gate **refuses** any
+  write they call instead of queueing it for approval. They cannot be pre-authorized.
 - **Events** stream to the PWA over `GET /api/agents/sessions/{id}/events` (SSE,
   resumable by sequence id): `user_message`, `text`, `tool_use`, `tool_result`,
   `turn_done`, `error`, `pending_write`, `pending_resolved`, `attached`.

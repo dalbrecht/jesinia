@@ -29,6 +29,8 @@ class Session:
     created_at: datetime
     model: str | None = None
     preauthorized: frozenset[str] = field(default_factory=frozenset)
+    # No write tools at all: none offered to the agent, and the gate denies any it calls.
+    read_only: bool = False
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ import pytest
 
 from jesinia.core.events import Event
 from jesinia.services.kb.application.errors import (
+    InvalidAssetName,
     KbUnavailable,
     PageNotFound,
     PathOutsideKb,
@@ -272,3 +273,42 @@ async def test_failed_move_keeps_page_readable_at_old_path(
         await kb.move(p.page.id, N, title="After")
     r = await kb.read(p.page.id)
     assert r.page.path == PurePosixPath("Notes/Before.md") and r.page.title == "After"
+
+
+async def test_unavailable_carries_the_reason_given_with_the_files(kb_unset: KbService) -> None:
+    kb_unset.set_files(None, "KB folder not found: /Volumes/Gone")
+    with pytest.raises(KbUnavailable, match="KB folder not found: /Volumes/Gone"):
+        kb_unset.require_available()
+    with pytest.raises(KbUnavailable, match="KB folder not found"):
+        await kb_unset.write(PageDraft(None, "x", N, ""))
+    kb_unset.set_files(None)
+    with pytest.raises(KbUnavailable, match="no KB path is configured"):
+        kb_unset.require_available()
+
+
+async def test_write_asset_stores_beside_the_page_id_and_keeps_local_folders_out_of_git(
+    kb: KbService,
+) -> None:
+    page = await kb.write(PageDraft(None, "With picture", N, "x"))
+    kb.require_available()  # a configured KB passes
+    rel = await kb.write_asset(page.page.id, "ab12.png", b"\x89PNG", local_only=True)
+    assert rel == PurePosixPath(f"_assets/{page.page.id}/ab12.png")
+    folder = kb.root / "_assets" / page.page.id  # type: ignore[operator]
+    assert (folder / "ab12.png").read_bytes() == b"\x89PNG"
+    assert (folder / ".gitignore").read_text() == "*\n"
+    await kb.write_asset(page.page.id, "cd34.jpg", b"jpg")  # shared folder stays local
+    assert (folder / ".gitignore").read_text() == "*\n"
+
+
+@pytest.mark.parametrize(
+    "name", ["", ".gitignore", "../x.png", "a/b.png", ".hidden.png", "x.png/", "x\\y.png", "a b"]
+)
+async def test_write_asset_refuses_unsafe_names(kb: KbService, name: str) -> None:
+    page = await kb.write(PageDraft(None, "P", N, "x"))
+    with pytest.raises(InvalidAssetName):
+        await kb.write_asset(page.page.id, name, b"x")
+
+
+async def test_write_asset_needs_an_indexed_page(kb: KbService) -> None:
+    with pytest.raises(PageNotFound):
+        await kb.write_asset(PageId("../../etc"), "a.png", b"x")

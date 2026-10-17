@@ -1,12 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from jesinia.core.config import Config
+from jesinia.core.events import EventBus
+from jesinia.core.module import AppContext
+from jesinia.core.scheduler import Scheduler
 from jesinia.services.agents.application.runner import TurnRequest
 from jesinia.services.agents.domain.events import TextDelta, ToolResult, ToolUse, TurnDone
+from jesinia.services.fetch.application.service import FetchBlocked, FetchService
 from jesinia.testing import fake_runner_app
 from jesinia.testing.fake_runner_app import DRAFT, McpScriptRunner
 
@@ -82,3 +88,51 @@ async def test_tag_prompts_get_a_json_tag_list(tmp_path: Path) -> None:
     text = "".join(e.text for e in events if isinstance(e, TextDelta))
     assert json.loads(text) == ["fixture", "new-fixture-tag"]
     assert isinstance(events[-1], TurnDone)
+
+
+def test_loopback_fetch_needs_the_throwaway_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JESINIA_FAKE_RUNNER", raising=False)
+    monkeypatch.setenv("JESINIA_HOME", "/tmp/anything")
+    with pytest.raises(RuntimeError, match="tests only"):
+        fake_runner_app.fixture_fetch_module()
+    monkeypatch.setenv("JESINIA_FAKE_RUNNER", "1")
+    monkeypatch.delenv("JESINIA_HOME")
+    with pytest.raises(RuntimeError, match="tests only"):
+        fake_runner_app.fixture_fetch_module()
+
+
+def test_loopback_fetch_refuses_a_home_outside_the_temp_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("JESINIA_FAKE_RUNNER", "1")
+    outside = Path.home() / ".jesinia"
+    sneaky = Path(tempfile.gettempdir()) / ".." / "jesinia-home"
+    for home in (outside, sneaky, Path(tempfile.gettempdir())):
+        monkeypatch.setenv("JESINIA_HOME", str(home))
+        with pytest.raises(RuntimeError, match="temporary directory"):
+            fake_runner_app.fixture_fetch_module()
+    monkeypatch.setenv("JESINIA_HOME", str(tmp_path / "data"))  # need not exist yet
+    assert fake_runner_app.fixture_fetch_module().name == "fetch"
+
+
+async def test_loopback_fetch_allows_only_loopback_beyond_public(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cfg: Config
+) -> None:
+    monkeypatch.setenv("JESINIA_FAKE_RUNNER", "1")
+    monkeypatch.setenv("JESINIA_HOME", str(tmp_path))
+    module = fake_runner_app.fixture_fetch_module()
+    ctx = AppContext(cfg, EventBus(), Scheduler())
+    await module.start(ctx)
+    try:
+        fetch = ctx.services["fetch"]
+        assert isinstance(fetch, FetchService)
+        assert await fetch.check("http://127.0.0.1:5999/feed.xml") == "127.0.0.1"
+        assert await fetch.check("http://[::1]:5999/feed.xml") == "::1"
+        for blocked in ("http://10.0.0.5/", "http://169.254.169.254/", "http://localhost/"):
+            with pytest.raises(FetchBlocked):
+                await fetch.check(blocked)
+    finally:
+        await module.stop()
+    assert fake_runner_app.allow_loopback("93.184.216.34")
+    assert not fake_runner_app.allow_loopback("192.168.1.1")
+    assert not fake_runner_app.allow_loopback("not an address")

@@ -60,6 +60,7 @@ def test_config_set_and_get(cli: Cli, kb: Path) -> None:
     assert cli(["config", "get", "kbsync.interval"]).stdout.strip() == "4h"
     assert cli(["config", "get", "kbsync.quiet"]).stdout.strip() == "30s"
     assert cli(["config", "get", "folders.note"]).stdout.strip() == "Notes"
+    assert cli(["config", "get", "rss.retention"]).stdout.strip() == "30d"
     bad = cli(["config", "get", "server.token"])
     assert bad.exit_code == 1 and "token show" in bad.stderr
     assert cli(["config", "set", "server.port", "nope"]).exit_code == 2
@@ -385,6 +386,7 @@ def test_registry_runs_every_module_in_order() -> None:
         "github",
         "fetch",
         "notes",
+        "rss",
         "review",
     ]
 

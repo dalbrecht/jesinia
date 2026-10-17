@@ -72,6 +72,7 @@ def session_json(s: Session) -> dict[str, object]:
         "status": s.status,
         "created_at": s.created_at.isoformat(),
         "preauthorized": sorted(s.preauthorized),
+        "read_only": s.read_only,
     }
 
 
