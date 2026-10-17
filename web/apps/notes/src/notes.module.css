@@ -4,19 +4,36 @@
   grid-template-columns: 280px minmax(0, 1fr) minmax(320px, 400px);
   height: calc(100vh - 38px);
 }
-@media (max-width: 1000px) {
+/* Under 1024 px the page gets the screen; the chat becomes a sheet (see .sheet). */
+@media (max-width: 1023px) {
   .layout {
     grid-template-columns: 240px minmax(0, 1fr);
-  }
-  .chat {
-    grid-column: 1 / -1;
-    min-height: 60vh;
   }
 }
 @media (max-width: 640px) {
   .layout {
     grid-template-columns: 1fr;
     height: auto;
+  }
+  /* Phones: the title on its own line, the tools under it (wrapping), the chat button an icon. */
+  .main {
+    padding: var(--jx-space-3) var(--jx-space-3) 0;
+  }
+  .pageHead {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--jx-space-2);
+  }
+  .title,
+  .properties {
+    overflow-wrap: anywhere;
+  }
+  .headTools {
+    flex-wrap: wrap;
+    gap: var(--jx-space-2);
+  }
+  .askLabel {
+    display: none;
   }
 }
 .sidebar {
@@ -257,4 +274,27 @@
   line-height: var(--jx-leading-xs);
   font-weight: var(--jx-weight-medium);
   color: var(--jx-fg-muted);
+}
+/* The chat: a column beside the page; under 1024 px a sheet over it, opened from the page toolbar. */
+.railSlot {
+  display: contents; /* the rail is the grid's third column */
+}
+.sheet[hidden] {
+  display: none;
+}
+.sheet {
+  position: fixed;
+  inset: auto 0 0;
+  height: 70vh; /* at most 70%: the page stays in view above it */
+  z-index: 5;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  border-radius: var(--jx-radius-lg) var(--jx-radius-lg) 0 0;
+  background: var(--jx-bg);
+  box-shadow: var(--jx-panel-raised-shadow);
+}
+.sheet .chat {
+  border-left: 0;
+  min-height: 0;
 }

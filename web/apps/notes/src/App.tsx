@@ -2,14 +2,33 @@
 import type { JesiniaClient } from "@jesinia/client";
 import { Banner, Button } from "@jesinia/design";
 import { AppShell, lineDiff, useClient, type ServerStatus } from "@jesinia/shell";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { pageFromPath, search, type Page } from "./api";
-import { Chat } from "./Chat";
+import { Chat, type ChatHandle } from "./Chat";
 import { Editor } from "./Editor";
 import s from "./notes.module.css";
 import { isViewShortcut, loadView, pageKind, ReadView, saveView, viewShortcutLabel, type ViewMode } from "./read";
 import { Sidebar } from "./Sidebar";
 import { usePage } from "./usePage";
+
+/** Under 1024 px the page gets the screen; the chat is a sheet opened from the page toolbar. */
+export const CHAT_SHEET_QUERY = "(max-width: 1023px)";
+
+function mediaList(query: string): MediaQueryList | null {
+  return typeof window.matchMedia === "function" ? window.matchMedia(query) : null;
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => mediaList(query)?.matches ?? false);
+  useEffect(() => {
+    const mql = mediaList(query);
+    if (!mql) return;
+    const onChange = () => setMatches(mql.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
 
 const STATE_LABEL = {
   saved: "Saved",
@@ -63,6 +82,21 @@ function Workspace({ status }: { status: ServerStatus }) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [choose, view, page]);
+  const sheet = useMediaQuery(CHAT_SHEET_QUERY);
+  // Per-session UI state: the sheet starts closed on every load.
+  const [chatOpen, setChatOpen] = useState(false);
+  const asker = useRef<HTMLButtonElement | HTMLAnchorElement>(null);
+  const chat = useRef<ChatHandle>(null);
+  // On the wide layout the rail shows whatever chatOpen says; narrowing must not hide a chat in use.
+  const wasSheet = useRef(sheet);
+  useEffect(() => {
+    if (sheet && !wasSheet.current) setChatOpen(chat.current?.isInUse() ?? false);
+    wasSheet.current = sheet;
+  }, [sheet]);
+  const closeChat = useCallback(() => {
+    setChatOpen(false);
+    asker.current?.focus();
+  }, []);
   const findPages = useCallback(
     async (q: string) => (await search(client, q)).map((h) => ({ id: h.key, title: h.title })),
     [client],
@@ -94,6 +128,20 @@ function Workspace({ status }: { status: ServerStatus }) {
                     </Button>
                   ))}
                 </div>
+                {sheet ? (
+                  <Button
+                    ref={asker}
+                    size="sm"
+                    variant="secondary"
+                    aria-expanded={chatOpen}
+                    aria-controls="notes-chat"
+                    aria-label="Open the chat about this page"
+                    icon="?"
+                    onClick={() => setChatOpen(true)}
+                  >
+                    <span className={s.askLabel}>Ask about this page</span>
+                  </Button>
+                ) : null}
               </div>
             </header>
             <p className={s.properties}>
@@ -154,6 +202,10 @@ function Workspace({ status }: { status: ServerStatus }) {
           page={{ id: page.id, title: page.title }}
           runners={status.runners}
           onSaved={() => setTreeKey((k) => k + 1)}
+          sheet={sheet}
+          open={chatOpen}
+          onClose={closeChat}
+          handle={chat}
         />
       ) : null}
     </div>
