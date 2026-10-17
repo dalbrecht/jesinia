@@ -39,6 +39,24 @@ export class RssRequestError extends Error {
   }
 }
 
+/** The next step when Jesinia never answered (§9: the cause, then the fix). */
+export const UNREACHABLE = "Check that Jesinia is running, then try again.";
+
+function asSentence(text: string): string {
+  const t = text.trim();
+  return /[.!?]$/.test(t) ? t : `${t}.`;
+}
+
+/**
+ * Why a request failed, as a sentence: the server's cause, or (when no answer came, e.g. the
+ * server is restarting) that Jesinia didn't answer, with the original error and the fix.
+ */
+export function errorCause(e: unknown): string {
+  if (e instanceof RssRequestError) return asSentence(e.message);
+  const raw = e instanceof Error ? e.message : String(e);
+  return `Jesinia didn't answer (${raw}). ${UNREACHABLE}`;
+}
+
 type Result<T> = { data?: T; error?: unknown; response: Response };
 
 function unwrap<T>(r: Result<T>): T {

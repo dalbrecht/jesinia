@@ -5,7 +5,7 @@
 import { Button, Input, useToast } from "@jesinia/design";
 import { useClient } from "@jesinia/shell";
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { addFeed, moveFeed, refreshFeed, removeFeed, renameFolder, type Feed } from "./api";
+import { addFeed, errorCause, moveFeed, refreshFeed, removeFeed, renameFolder, type Feed } from "./api";
 import { sentence } from "./Reader";
 import s from "./rss.module.css";
 
@@ -13,9 +13,7 @@ import s from "./rss.module.css";
 export const FOLDER_NAMES_ID = "rss-folder-names";
 const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), [href]";
 
-function causeOf(e: unknown): string {
-  return sentence(e instanceof Error ? e.message : String(e));
-}
+const causeOf = errorCause;
 
 type FolderRef = { id: number; name: string };
 
@@ -163,10 +161,12 @@ type FeedRowProps = {
   onChanged: () => void;
   /** Unsubscribed: the row is about to go, so the dialog moves focus before it does. */
   onRemoved: (row: HTMLElement) => void;
+  /** Moved to another folder: the reload remounts the row there, and focus follows it. */
+  onMoved: () => void;
 };
 type RowFocus = "unsubscribe" | "confirm" | "pick" | null;
 
-function FeedRow({ feed, folders, onChanged, onRemoved }: FeedRowProps) {
+function FeedRow({ feed, folders, onChanged, onRemoved, onMoved }: FeedRowProps) {
   const client = useClient();
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
@@ -192,6 +192,7 @@ function FeedRow({ feed, folders, onChanged, onRemoved }: FeedRowProps) {
     }
     try {
       await moveFeed(client, feed.id, folder || null);
+      onMoved();
       onChanged();
     } catch (e) {
       toast.show({ tone: "danger", message: `Couldn't move ${feed.title}: ${causeOf(e)}` });
@@ -223,6 +224,7 @@ function FeedRow({ feed, folders, onChanged, onRemoved }: FeedRowProps) {
           <span className={s.muted}>Folder</span>
           <select
             ref={pick}
+            data-pick={feed.id}
             aria-label={`Folder for ${feed.title}`}
             value={feed.folder ?? ""}
             onChange={(e) => void move(e.target.value)}
@@ -241,8 +243,12 @@ function FeedRow({ feed, folders, onChanged, onRemoved }: FeedRowProps) {
             feed={feed}
             onDone={(moved) => {
               setNaming(false);
-              setFocusTo("pick");
-              if (moved) onChanged();
+              if (moved) {
+                onMoved();
+                onChanged();
+              } else {
+                setFocusTo("pick");
+              }
             }}
           />
         ) : null}
@@ -325,6 +331,15 @@ export function ManageFeeds({ feeds, onAdded, onChanged, onRemoved, onClose }: M
     setRenamed(null);
   }, [renamed, renaming]);
 
+  // A moved feed's row remounts under its new folder once the feeds reload: focus its folder
+  // select there, not on the row the move left behind.
+  const [moved, setMoved] = useState<{ id: number; from: Feed[] } | null>(null);
+  useEffect(() => {
+    if (moved === null || moved.from === feeds) return;
+    root.current?.querySelector<HTMLElement>(`[data-pick="${moved.id}"]`)?.focus();
+    setMoved(null);
+  }, [moved, feeds]);
+
   /** The unsubscribed row is about to go: focus the next row, else the one before, else the title. */
   const removed = (feedId: number, row: HTMLElement) => {
     const rows = [...(root.current?.querySelectorAll<HTMLElement>("[data-feed-row]") ?? [])];
@@ -379,6 +394,7 @@ export function ManageFeeds({ feeds, onAdded, onChanged, onRemoved, onClose }: M
           folders={folders}
           onChanged={onChanged}
           onRemoved={(row) => removed(feed.id, row)}
+          onMoved={() => setMoved({ id: feed.id, from: feeds })}
         />
       ))}
     </ul>

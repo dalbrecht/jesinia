@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Feed content on screen (ruling R17). The server sanitises `content_html`, but it is still
 // feed-supplied, so it never reaches the DOM as HTML: it is parsed off-document and rebuilt as
-// React elements through an allowlist. Every href and src must be http(s); anything else is
-// dropped. Markdown (a full article, an agent's reply) uses `SafeMarkdown` from the shell.
+// React elements through an allowlist. Every href must be http(s) and every image https
+// (anything else is dropped, an http: image shown as its alt text). Markdown (a full article,
+// an agent's reply) uses `SafeMarkdown` from the shell.
 import { IMG_PROPS, LINK_PROPS, resolveHttpUrl as resolve } from "@jesinia/shell";
 import { createElement, useMemo, type ReactNode } from "react";
 
@@ -45,7 +46,10 @@ function convert(node: Node, base: string, key: string): ReactNode {
   if (tag === "img") {
     const src = resolve(node.getAttribute("src"), base);
     if (src === null) return null;
-    return createElement("img", { key, src, alt: node.getAttribute("alt") ?? "", ...IMG_PROPS });
+    const alt = node.getAttribute("alt") ?? "";
+    // The reader's CSP loads https: images only: an http: one would only show as broken.
+    if (!src.startsWith("https:")) return alt;
+    return createElement("img", { key, src, alt, ...IMG_PROPS });
   }
   if (VOID.has(tag)) return createElement(tag, { key });
   return createElement(tag, { key }, ...children);

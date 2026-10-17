@@ -6,8 +6,7 @@
 import { Button, Input } from "@jesinia/design";
 import { TagPicker, useClient, type TagPickerHandle } from "@jesinia/shell";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { keepPost, TAKEAWAY_MAX, type Kept, type KeepRequest, type Post } from "./api";
-import { sentence } from "./Reader";
+import { errorCause, keepPost, TAKEAWAY_MAX, type Kept, type KeepRequest, type Post } from "./api";
 import s from "./rss.module.css";
 
 export type KeepPopoverProps = {
@@ -25,9 +24,7 @@ export type KeepPopoverProps = {
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const FOCUSABLE = "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select, [href]";
 
-function causeOf(e: unknown): string {
-  return sentence(e instanceof Error ? e.message : String(e));
-}
+const causeOf = errorCause;
 
 export function KeepPopover({ post, initialNote = "", takeaway = null, hasAgent, onKept, onCancel }: KeepPopoverProps) {
   const client = useClient();

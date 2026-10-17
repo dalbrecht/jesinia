@@ -9,11 +9,13 @@ import {
   askTakeaway,
   capCount,
   engagePost,
+  errorCause,
   getCounts,
   listFeeds,
   listPosts,
   markReadAbove,
   refreshFeeds,
+  RssRequestError,
   safeHttpUrl,
   searchPosts,
   setRead,
@@ -29,7 +31,7 @@ import { KeepPopover } from "./KeepPopover";
 import { KEY_HELP, useKeys } from "./keys";
 import { ManageFeeds } from "./ManageFeeds";
 import { PostList } from "./PostList";
-import { Reader, sentence } from "./Reader";
+import { Reader } from "./Reader";
 import s from "./rss.module.css";
 
 export const NARROW_QUERY = "(max-width: 767px)";
@@ -49,9 +51,19 @@ function useNarrow(): boolean {
   return narrow;
 }
 
-function causeOf(e: unknown): string {
-  return sentence(e instanceof Error ? e.message : String(e));
+/**
+ * `items` from a reload of the same list, with the open post kept where it was if the answer
+ * no longer has it (R30).
+ */
+export function keepOpen(prev: Post[], items: Post[], openId: number | null): Post[] {
+  if (openId === null || items.some((p) => p.id === openId)) return items;
+  const at = prev.findIndex((p) => p.id === openId);
+  const open = prev[at];
+  if (!open) return items;
+  return [...items.slice(0, at), open, ...items.slice(at)];
 }
+
+const causeOf = errorCause;
 
 function titleOf(scope: Scope, feeds: Feed[], query: string): string {
   if (query) return `Results for “${query}”`;
@@ -166,6 +178,11 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   const [listError, setListError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
+  /** The list (scope and search) whose answer is on screen: its reload never blanks it. */
+  const [loadedList, setLoadedList] = useState<string | null>(null);
+  /** The open post and the rows, for answers that arrive after a render. */
+  const openPost = useRef<number | null>(null);
+  const shownPosts = useRef<Post[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showKeys, setShowKeys] = useState(false);
   const [managing, setManaging] = useState(false);
@@ -187,7 +204,12 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   const hasAgent = runners === null || runner !== null;
 
   const fail = useCallback(
-    (what: string, e: unknown) => toast.show({ tone: "danger", message: `Couldn't ${what}: ${causeOf(e)}` }),
+    // §9: the cause, then what to do. A request that got no answer says so with its own fix.
+    (what: string, e: unknown, next?: string) =>
+      toast.show({
+        tone: "danger",
+        message: `Couldn't ${what}: ${causeOf(e)}${next && e instanceof RssRequestError ? ` ${next}` : ""}`,
+      }),
     [toast],
   );
   const loadCounts = useCallback(() => {
@@ -200,12 +222,12 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
         // Counts reload after every read; say why once, not on each retry.
         if (countsFailing.current) return;
         countsFailing.current = true;
-        fail("load unread counts", e);
+        fail("load unread counts", e, "They reload with the next ↻ Refresh.");
       },
     );
   }, [client, fail]);
   const loadFeeds = useCallback(() => {
-    listFeeds(client).then(setFeeds, (e: unknown) => fail("load feeds", e));
+    listFeeds(client).then(setFeeds, (e: unknown) => fail("load feeds", e, "Press ↻ Refresh to try again."));
   }, [client, fail]);
 
   useEffect(() => {
@@ -218,6 +240,11 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   // news per post is remembered, and an answer never takes a post back to an older state.
   const archiveEvents = useRef(0);
   const archiveNews = useRef(new Map<number, { at: number; change: PostChanged }>());
+  const resync = useRef(() => {});
+  resync.current = () => {
+    loadCounts();
+    setReload((n) => n + 1);
+  };
   useEffect(
     () =>
       subscribe<PostChanged>(
@@ -231,7 +258,9 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
             ),
           );
         },
-        { events: ["rss.post_changed"] },
+        // R29: events from while the stream was down (a restart, say) are gone; every
+        // (re)connect refetches what they would have changed.
+        { events: ["rss.post_changed"], onOpen: () => resync.current() },
       ),
     [],
   );
@@ -260,9 +289,11 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     setLoading(true);
     setListError(null);
     // A different list: drop the old one at once, so nothing in it can be acted on under the
-    // new scope (read-above, paging with its cursor). A reload of the same list keeps it.
+    // new scope (read-above, paging with its cursor). A reload of the same list keeps its rows
+    // on screen until the answer replaces them (R30).
     const listKey = JSON.stringify([scope, search]);
-    if (listKey !== shownList.current) {
+    const sameList = listKey === shownList.current;
+    if (!sameList) {
       shownList.current = listKey;
       setPosts([]);
       setNextBefore(null);
@@ -275,20 +306,28 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     page.then(
       (p) => {
         if (mine !== generation.current) return;
-        setPosts(p.items);
+        // The open post stays until the reader moves on, even if it no longer matches (read
+        // in All unread): Keep's typed note and the Engage chat belong to it (R30).
+        setPosts((prev) => (sameList ? keepOpen(prev, p.items, openPost.current) : p.items));
         setNextBefore(p.next_before);
         setAsOf(loadedAt);
+        setLoadedList(listKey);
         setLoading(false);
       },
       (e: unknown) => {
         if (mine !== generation.current) return;
+        setLoading(false);
+        if (sameList && shownPosts.current.length > 0) {
+          // A failed reload leaves what is on screen: say why and how to retry.
+          fail("reload posts", e, "Press ↻ Refresh to try again.");
+          return;
+        }
         setPosts([]);
         setNextBefore(null);
         setListError(causeOf(e));
-        setLoading(false);
       },
     );
-  }, [client, scope, search, reload]);
+  }, [client, scope, search, reload, fail]);
 
   const loadMore = useCallback(() => {
     if (loading || nextBefore === null || loadingMore.current) return;
@@ -309,7 +348,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
         // Stop paging; the error says why and a reload starts over.
         setNextBefore(null);
         loadingMore.current = false;
-        fail("load more posts", e);
+        fail("load more posts", e, "Press ↻ Refresh to start the list again.");
       },
     );
   }, [client, scope, nextBefore, loading, fail]);
@@ -323,7 +362,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
       setReload((n) => n + 1);
       onRefreshed(new Date().toISOString());
     } catch (e) {
-      fail("refresh", e);
+      fail("refresh", e, "Try again in a moment.");
     } finally {
       onRefreshing(false);
     }
@@ -355,16 +394,19 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
       },
       (e: unknown) => {
         if (latest()) setReadFlags(new Map([[post.id, !read]]));
-        fail(`mark the post ${read ? "read" : "unread"}`, e);
+        fail(`mark the post ${read ? "read" : "unread"}`, e, "Press m to try again.");
       },
     );
   };
 
+  openPost.current = selectedId;
+  shownPosts.current = posts;
   const index = posts.findIndex((p) => p.id === selectedId);
   const selected = index >= 0 ? posts[index] : undefined;
 
-  // The open post left the list (a reload no longer returns it, or failed): let it go, and
-  // on a narrow screen go back to the list rather than an empty reader with no way back.
+  // The open post left the list (a search that doesn't match it): let it go, and on a narrow
+  // screen go back to the list rather than an empty reader. A reload of the same list keeps
+  // it (R30).
   useEffect(() => {
     if (loading || selectedId === null || selected) return;
     setSelectedId(null);
@@ -393,7 +435,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     markReadAbove(client, selected.id, scope, asOf).then(loadCounts, (e: unknown) => {
       // Undo only the read flags it set; rows paged in meanwhile stay.
       setReadFlags(new Map(above.map((p) => [p.id, p.read])));
-      fail("mark these read", e);
+      fail("mark these read", e, "Press Shift+A to try again.");
     });
   };
 
@@ -412,7 +454,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
         setEngaged((e) => (e && e.postId === postId ? { ...e, session: session.id } : e));
         return session.id;
       } catch (e) {
-        if (engagedPost.current === postId) fail("start the chat", e);
+        if (engagedPost.current === postId) fail("start the chat", e, "Send a message to try again.");
         return null;
       }
     },
@@ -563,7 +605,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
             Try again
           </Button>
         </div>
-      ) : loading && posts.length === 0 ? (
+      ) : loading && posts.length === 0 && loadedList !== shownList.current ? (
         <p className={s.empty}>Loading…</p>
       ) : (
         <PostList
@@ -648,7 +690,9 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
           onChanged={feedsChanged}
           // R28: unsubscribing the feed in view goes back to All unread.
           onRemoved={(id) => {
-            if (scope.feed === id) goTo(UNREAD);
+            // R28 and M11: the feed in view, or the last feed of the folder in view, is gone.
+            const folderGone = scope.folder !== null && !feeds.some((f) => f.id !== id && f.folder_id === scope.folder);
+            if (scope.feed === id || folderGone) goTo(UNREAD);
           }}
           onClose={() => setManaging(false)}
         />

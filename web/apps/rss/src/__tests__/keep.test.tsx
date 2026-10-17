@@ -207,7 +207,7 @@ describe("Keep popover", () => {
     expect(await within(popover()).findByRole("alert")).toHaveTextContent("Couldn't keep this post: busy.");
     await keepNow();
     expect(await within(popover()).findByRole("alert")).toHaveTextContent(
-      "Couldn't keep this post: connection refused.",
+      "Couldn't keep this post: Jesinia didn't answer (connection refused). Check that Jesinia is running, then try again.",
     );
   });
 

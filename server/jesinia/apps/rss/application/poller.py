@@ -69,8 +69,11 @@ class Poller:
         self._clock = clock
         self._in_flight = asyncio.Semaphore(MAX_IN_FLIGHT)
         self._hosts: dict[str, asyncio.Semaphore] = {}
-        # A scheduled round and a manual Refresh never poll the same feed at once.
+        # A scheduled round and a manual Refresh never run at once.
         self._round = asyncio.Lock()
+        # One poll of a feed at a time: a feed's Retry waits only for that feed, never for a
+        # whole round (hundreds of feeds, one request per host).
+        self._feed_locks: dict[int, asyncio.Lock] = {}
 
     async def poll_due(self) -> PollSummary:
         """Poll the feeds whose next poll time has come (the scheduled tick)."""
@@ -88,11 +91,10 @@ class Poller:
 
         Raises ``FeedNotFound`` for an unknown or unsubscribed feed.
         """
-        async with self._round:
-            feed = self._store.feed(feed_id)
-            if feed is None or feed.deleted:
-                raise FeedNotFound(f"no feed {feed_id}")
-            await self._poll([feed])
+        feed = self._store.feed(feed_id)
+        if feed is None or feed.deleted:
+            raise FeedNotFound(f"no feed {feed_id}")
+        await self._poll([feed])
 
     async def _poll(self, feeds: Iterable[Feed]) -> PollSummary:
         due = list(feeds)
@@ -128,7 +130,15 @@ class Poller:
         async with self._hosts.setdefault(host, asyncio.Semaphore(1)), self._in_flight:
             return await self._fetcher.get(url)
 
-    async def _poll_one(self, feed: Feed) -> _Outcome:
+    async def _poll_one(self, queued: Feed) -> _Outcome:
+        async with self._feed_locks.setdefault(queued.id, asyncio.Lock()):
+            # Read again: a Retry may have polled it (and changed its state) meanwhile.
+            feed = self._store.feed(queued.id)
+            if feed is None or feed.deleted:
+                return _Outcome(0, failed=False)
+            return await self._poll_locked(feed)
+
+    async def _poll_locked(self, feed: Feed) -> _Outcome:
         try:
             result = await self._fetch(feed.url)
             if result.status != 200:

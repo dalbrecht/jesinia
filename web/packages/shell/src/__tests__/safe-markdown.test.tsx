@@ -67,6 +67,12 @@ describe("SafeMarkdown", () => {
     expectInert(container);
   });
 
+  it("shows an http: image as its alt text (the reader's CSP allows https: images only)", () => {
+    const { container } = render(<SafeMarkdown images markdown={"![a chart](http://img.example/c.png)"} />);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container).toHaveTextContent("a chart");
+  });
+
   it("keeps http(s) images, lazy and without a referrer", () => {
     const { container } = render(<SafeMarkdown images markdown={"![chart](https://img.example/c.png)"} />);
     const img = container.querySelector("img");

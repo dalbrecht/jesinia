@@ -5,7 +5,16 @@
 import { Button } from "@jesinia/design";
 import { SafeMarkdown, useClient } from "@jesinia/shell";
 import { useMemo, useState, type ReactNode } from "react";
-import { fullArticle, needsFullArticle, readingMinutes, retryArchive, safeHttpUrl, type Post } from "./api";
+import {
+  errorCause,
+  fullArticle,
+  needsFullArticle,
+  readingMinutes,
+  retryArchive,
+  RssRequestError,
+  safeHttpUrl,
+  type Post,
+} from "./api";
 import { archiveStatus, ArchiveBadge } from "./PostList";
 import s from "./rss.module.css";
 import { SafeHtml } from "./SafeContent";
@@ -17,7 +26,7 @@ export function sentence(text: string): string {
 }
 
 function causeOf(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  return e instanceof RssRequestError ? e.message : errorCause(e);
 }
 
 function byline(post: Post, words: string): string {

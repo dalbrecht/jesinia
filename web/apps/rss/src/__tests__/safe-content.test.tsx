@@ -72,6 +72,18 @@ describe("SafeHtml", () => {
     expectInert(root);
   });
 
+  it("an http: image is its alt text: the reader's CSP would block it (https only)", () => {
+    const root = html(
+      "<p><img src='http://plain.example/a.png' alt='a chart'><img src='http://plain.example/b.png'></p>",
+    );
+    expect(root.querySelector("img")).toBeNull();
+    expect(root).toHaveTextContent("a chart");
+    // A relative image on an http: page resolves to http: too.
+    const page = render(<SafeHtml html="<img src='pic.png' alt='rel'>" base="http://plain.example/post" />).container;
+    expect(page.querySelector("img")).toBeNull();
+    expect(page).toHaveTextContent("rel");
+  });
+
   it("drops onerror and every other attribute outside the allowlist", () => {
     const root = html(
       "<p style='color:red' class='x' id='y' onclick='alert(1)'><img src='x.png' onerror='alert(1)'></p>",

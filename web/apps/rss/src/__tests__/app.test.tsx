@@ -206,7 +206,7 @@ describe("list and reader", () => {
     act(() => pending[1]?.(new Response()));
     act(() => pending[0]?.(new Response()));
     await waitFor(() => expect(within(reader()).getByRole("button", { name: "Mark unread" })).toBeInTheDocument());
-    await new Promise((r) => setTimeout(r, 20));
+    await act(async () => {}); // let both answers settle: the older one must not win
     expect(within(reader()).getByRole("button", { name: "Mark unread" })).toBeInTheDocument();
   });
 
@@ -616,7 +616,7 @@ describe("narrow layout", () => {
     expect(screen.getByRole("heading", { name: "In KB", level: 2 })).toBeInTheDocument();
   });
 
-  it("when the open post drops out of a refreshed list, the narrow screen goes back to the list", async () => {
+  it("R30: when the open post drops out of a refreshed list, the narrow reader keeps it", async () => {
     stubNarrow(true);
     let first = true;
     setup({
@@ -630,14 +630,14 @@ describe("narrow layout", () => {
     await userEvent.click(await option(/Post 1/));
     expect(reader()).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "↻ Refresh" }));
-    expect(await list()).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Reader" })).toBeNull();
-    expect(within(await list()).queryByRole("option", { name: /Post 1/ })).toBeNull();
-    // The post is no longer selected, so it doesn't come back as an open reader.
-    expect(within(await list()).queryByRole("option", { selected: true })).toBeNull();
+    await waitFor(() => expect(first).toBe(false));
+    await act(async () => {});
+    // Read, it no longer matches All unread, but it stays open until the reader moves on.
+    expect(reader()).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Post 1", level: 1 })).toBeInTheDocument();
   });
 
-  it("a failed reload while reading on a narrow screen shows the list and its error", async () => {
+  it("R30: a failed reload while reading on a narrow screen keeps the reader and says why", async () => {
     stubNarrow(true);
     let fail = false;
     setup({
@@ -650,8 +650,14 @@ describe("narrow layout", () => {
     await userEvent.click(await option(/Post 1/));
     fail = true;
     await userEvent.click(screen.getByRole("button", { name: "↻ Refresh" }));
+    expect((await screen.findAllByText(/Couldn't reload posts: database locked\./)).length).toBeGreaterThan(0);
+    expect(reader()).toBeInTheDocument();
+  });
+
+  it("a list that fails to load (not a reload) shows its error with Try again", async () => {
+    stubNarrow(true);
+    setup({ "GET /api/rss/posts": () => Response.json({ detail: "database locked" }, { status: 500 }) });
     expect(await screen.findByText(/Couldn't load posts: database locked/)).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Reader" })).toBeNull();
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 

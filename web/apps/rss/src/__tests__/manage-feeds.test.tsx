@@ -404,3 +404,71 @@ describe("R28", () => {
     expect(await screen.findByRole("heading", { name: "All unread", level: 2 })).toBeInTheDocument();
   });
 });
+
+describe("Focus after a move (carried minor)", () => {
+  it("a feed moved to another folder keeps focus on its folder select after the list reloads", async () => {
+    let feeds = FEEDS;
+    setup({
+      "GET /api/rss/feeds": () => Response.json(feeds),
+      "PATCH /api/rss/feeds/2": async (req: Request) => {
+        const { folder } = (await req.clone().json()) as { folder: string };
+        const moved = { ...(FEEDS[1] as Feed), folder, folder_id: folder === "News" ? 10 : 12 };
+        feeds = FEEDS.map((f) => (f.id === 2 ? moved : f));
+        return Response.json(moved);
+      },
+    });
+    const manage = await openManage();
+    await userEvent.selectOptions(manage.getByRole("combobox", { name: "Folder for Fly.io blog" }), "News");
+    await waitFor(() =>
+      expect(
+        within(manage.getByRole("list", { name: "Feeds in News" })).getByRole("combobox", {
+          name: "Folder for Fly.io blog",
+        }),
+      ).toHaveFocus(),
+    );
+    // And through New folder…, into a folder that didn't exist.
+    await userEvent.selectOptions(manage.getByRole("combobox", { name: "Folder for Fly.io blog" }), "New folder…");
+    await userEvent.type(manage.getByLabelText("New folder for Fly.io blog"), "Reading{Enter}");
+    await waitFor(() =>
+      expect(
+        within(manage.getByRole("list", { name: "Feeds in Reading" })).getByRole("combobox", {
+          name: "Folder for Fly.io blog",
+        }),
+      ).toHaveFocus(),
+    );
+  });
+});
+
+describe("M11", () => {
+  it("unsubscribing the last feed of the folder in view goes back to All unread", async () => {
+    let gone: number[] = [];
+    setup({
+      "GET /api/rss/feeds": () => Response.json(FEEDS.filter((f) => !gone.includes(f.id))),
+      "DELETE /api/rss/feeds/1": () => {
+        gone = [1];
+        return new Response(null, { status: 204 });
+      },
+    });
+    const pane = within(await screen.findByRole("navigation", { name: "Feeds" }));
+    await userEvent.click(await pane.findByRole("button", { name: /^News/ }));
+    expect(await screen.findByRole("heading", { name: "News", level: 2 })).toBeInTheDocument();
+    const manage = await openManage();
+    const row = within(manage.getByRole("listitem", { name: "Hacker News" }));
+    await userEvent.click(row.getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(row.getByRole("button", { name: "Unsubscribe from Hacker News" }));
+    expect(await screen.findByRole("heading", { name: "All unread", level: 2 })).toBeInTheDocument();
+  });
+
+  it("unsubscribing one of several feeds in the folder in view leaves the view", async () => {
+    setup({ "DELETE /api/rss/feeds/2": () => new Response(null, { status: 204 }) });
+    const pane = within(await screen.findByRole("navigation", { name: "Feeds" }));
+    await userEvent.click(await pane.findByRole("button", { name: /^Engineering/ }));
+    expect(await screen.findByRole("heading", { name: "Engineering", level: 2 })).toBeInTheDocument();
+    const manage = await openManage();
+    const row = within(manage.getByRole("listitem", { name: "Fly.io blog" }));
+    await userEvent.click(row.getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(row.getByRole("button", { name: "Unsubscribe from Fly.io blog" }));
+    expect(await toast("Unsubscribed from Fly.io blog.")).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Engineering", level: 2 })).toBeInTheDocument();
+  });
+});

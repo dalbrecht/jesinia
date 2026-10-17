@@ -54,7 +54,10 @@ const withHost = (text: string, url: string) => {
   return host ? `${text}${text ? " " : ""}(${host})` : text;
 };
 
-/** Feed articles: http(s) images load (lazily, no referrer). */
+/**
+ * Feed articles: https images load (lazily, no referrer). An http: image is its alt text: the
+ * reader's CSP allows https: images only, so it would only show as broken.
+ */
 const ARTICLE: Components = {
   a: ({ href, children }) =>
     href ? (
@@ -64,7 +67,10 @@ const ARTICLE: Components = {
     ) : (
       <>{children}</>
     ),
-  img: ({ src, alt }) => (typeof src === "string" && src ? <img src={src} alt={alt ?? ""} {...IMG_PROPS} /> : null),
+  img: ({ src, alt }) => {
+    if (typeof src !== "string" || !src) return null;
+    return src.startsWith("https:") ? <img src={src} alt={alt ?? ""} {...IMG_PROPS} /> : <>{alt ?? ""}</>;
+  },
 };
 
 /**
