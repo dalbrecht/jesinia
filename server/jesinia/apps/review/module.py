@@ -8,16 +8,19 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 
 from fastapi import APIRouter, HTTPException, status
 
-from jesinia.apps.review.api.tools import build_tools
+from jesinia.apps.review.api.routes import build_router
+from jesinia.apps.review.api.tools import build_review_tools, build_tools
 from jesinia.apps.review.application.jobs import JobRunner
 from jesinia.apps.review.application.pipeline import Pipeline
+from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
 from jesinia.apps.review.application.repo_tools import RepoTools
+from jesinia.apps.review.application.reviews import ReviewReads
 from jesinia.apps.review.application.scheduler import (
     PRUNE_INTERVAL,
     PreReviewRequest,
@@ -25,10 +28,12 @@ from jesinia.apps.review.application.scheduler import (
     WorkspacePruner,
 )
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
+from jesinia.apps.review.domain.queue import SyncStatus
 from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace, github_remote_url
 from jesinia.core.db import DbClass, ModuleDb, open_db
+from jesinia.core.idempotency import RETENTION, IdempotencyStore, SqliteIdempotencyStore
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.github.application.prs import PrClient
@@ -41,6 +46,7 @@ log = logging.getLogger(__name__)
 REVIEW_DB = ModuleDb("review", DbClass.HISTORY, files("jesinia.apps.review.migrations"))
 SYNC_JOB = "review.sync"
 PRUNE_JOB = "review.prune"
+IDEMPOTENCY_PRUNE_JOB = "review.idempotency-prune"
 
 
 def _not_started() -> HTTPException:
@@ -63,6 +69,9 @@ class ReviewModule:
         self._pruner: WorkspacePruner | None = None
         self._jobs: JobRunner | None = None
         self._pipeline: Pipeline | None = None
+        self._posting: PostingService | None = None
+        self._reviews: ReviewReads | None = None
+        self._idempotency: SqliteIdempotencyStore | None = None
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -113,6 +122,37 @@ class ReviewModule:
             raise _not_started()
         return self._pipeline
 
+    @property
+    def posting(self) -> PostingService:
+        """Drafts and posting (needs the github service)."""
+        if self._posting is None:
+            if self._workspace is not None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "posting reviews requires the github service",
+                )
+            raise _not_started()
+        return self._posting
+
+    @property
+    def reviews(self) -> ReviewReads:
+        """Cached review reads and Settings → Review."""
+        if self._reviews is None:
+            raise _not_started()
+        return self._reviews
+
+    @property
+    def idempotency(self) -> IdempotencyStore:
+        if self._idempotency is None:
+            raise _not_started()
+        return self._idempotency
+
+    async def prune_idempotency_keys(self) -> None:
+        """Forget idempotency keys older than ``RETENTION`` (a daily job)."""
+        if self._idempotency is not None:
+            removed = self._idempotency.prune(datetime.now(UTC) - RETENTION)
+            log.info("pruned %d expired review idempotency keys", removed)
+
     async def _prereview(self, request: PreReviewRequest) -> None:
         await self.pipeline.prereview(request)
 
@@ -133,10 +173,10 @@ class ReviewModule:
             await self._pruner.run()
 
     def router(self) -> APIRouter | None:
-        return None
+        return build_router(self)
 
     def mcp_tools(self) -> Sequence[ToolDef]:
-        return build_tools(self)
+        return [*build_tools(self), *build_review_tools(self)]
 
     async def start(self, ctx: AppContext) -> None:
         self._conn = open_db(ctx.cfg.data_dir, REVIEW_DB)
@@ -151,6 +191,19 @@ class ReviewModule:
         )
         self.sessions.use_tree_locks(self._workspace.tree_lock)
         store = SqliteReviewStore(self._conn)
+        self._idempotency = SqliteIdempotencyStore(self._conn)
+        # Single process and nothing served yet: any pending key was left by a crash.
+        if cleared := self._idempotency.clear_pending():
+            log.info("cleared %d review idempotency keys left pending by an unclean stop", cleared)
+        ctx.scheduler.every(
+            IDEMPOTENCY_PRUNE_JOB, timedelta(days=1), self.prune_idempotency_keys, at_start=True
+        )
+
+        def cached_status() -> SyncStatus:  # without GitHub, nothing ever syncs
+            synced_at, error = store.sync_status()
+            return SyncStatus(synced_at, False, error)
+
+        self._reviews = ReviewReads(store, cached_status)
         agents = ctx.services.get("agents")
         github = ctx.services.get("github")
         reviews = isinstance(agents, SessionService) and isinstance(github, GitHubService)
@@ -172,6 +225,10 @@ class ReviewModule:
         if isinstance(github, GitHubService):
             prs = PrClient(github)
             self._queue = QueueService(prs, store, _utc_now, on_change=self._scheduler.tick)
+            self._reviews = ReviewReads(store, self._queue.status)
+            self._posting = PostingService(
+                github=prs, writer=github, files=self._queue, store=store, clock=_utc_now
+            )
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_queue, at_start=True)
             if self._jobs is not None:
                 self._pipeline = Pipeline(
@@ -190,6 +247,9 @@ class ReviewModule:
         if self._scheduler is not None:
             await self._scheduler.stop()
         self._pipeline = None
+        self._posting = None
+        self._reviews = None
+        self._idempotency = None
         self._scheduler = None
         self._jobs = None
         self._queue = None

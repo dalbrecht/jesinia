@@ -8,7 +8,22 @@ This is the first part of it (PR 1). It adds:
 - **The repo tools:** four read-only MCP tools (`repo_read`, `repo_grep`, `repo_ls`, `repo_git`). Review agents read PR code only through these. See `application/repo_tools.py` and `api/tools.py`.
 - **The auto-skip rules:** which files a review leaves out (lockfiles, generated, vendored and binary files). See `domain/skip.py`.
 
-It uses the `github` service (`services/github/`) for pull request data and for posting reviews. The queue, the walkthrough and the web app come in later PRs.
+It uses the `github` service (`services/github/`) for pull request data and for posting reviews. PR 2 adds the queue, the pre-review pipeline, the REST API and posting (below). The web app comes in a later PR.
+
+## API
+
+- **REST, under `/api/review`:** owner-only, like every module route. Every write takes an `Idempotency-Key` header.
+  - `GET /queue` and `GET /prs/<owner>/<repo>/<n>` read `review.sqlite` only and never wait for GitHub. A running or failed sync is reported in the response (`syncing`, `sync_error`).
+  - `POST /load`, `POST /queue/…/dismiss`, and `POST /prs/…/open`, `/retry` and `/review-anyway`.
+  - `GET|PUT /prs/…/drafts`, `POST /prs/…/post/preview`, `POST /prs/…/post` and `POST /prs/…/done`.
+  - `GET|PUT /settings`.
+- **Posting** (`application/posting.py`) is the only GitHub write.
+  - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `newer_head`, `own_pr_comment_only`) and a digest.
+  - A post must carry that digest and confirm every warning. It goes out as one atomic review on the round's head. Drafts GitHub can't anchor go in the body.
+  - Each attempt is recorded before GitHub is called. After a lost response, a retry adopts the review GitHub already has instead of posting it twice.
+  - Bodies and tokens are never logged.
+- **MCP, read-only:** `review_queue`, `review_get` and `review_findings`. They read the cache only. Every PR-derived text comes back inside `<untrusted-data>` fences.
+- **Correctness evidence:** the correctness pass's claimed `checked` ranges count only where its repo tools actually returned those lines (`ReadLog`). The evidence shows the claimed coverage beside the verified one.
 
 ## Setup
 
@@ -27,7 +42,7 @@ All under Jesinia's data directory (`~/Library/Application Support/jesinia/`):
 |---|---|---|
 | `review/repos/<owner>/<name>/mirror.git` | A bare mirror of the repo | rebuilt by fetching |
 | `review/repos/<owner>/<name>/trees/<sha>` | A checkout of one reviewed head | rebuilt on demand |
-| `review.sqlite` | Review history (filled from Task 4 on) | history: included in `jesinia backup` |
+| `review.sqlite` | The queue, rounds, artifacts, drafts and postings | history: included in `jesinia backup` |
 
 - **Kept commits:** commits fetched by SHA get a `refs/jesinia/keep/<sha>` ref, so `git gc` never drops them.
 - **Pruning:** `GitWorkspace.prune(keep)` removes worktrees and keep refs that are no longer needed. Nothing schedules it yet; a later task will.

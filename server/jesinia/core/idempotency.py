@@ -145,6 +145,11 @@ class IdempotentCall:
         self._route = route
         self._now = now
 
+    @property
+    def key(self) -> str | None:
+        """The request's key (``None`` when missing; ``run`` refuses such a request)."""
+        return self._key
+
     async def run(self, work: Callable[[], Awaitable[Response]]) -> Response:
         """The stored response for a repeated key, else ``work()``'s (stored unless 5xx).
 

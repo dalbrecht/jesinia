@@ -1010,6 +1010,250 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Queue
+         * @description The cached queue, at once; ``syncing`` and ``sync_error`` report GitHub.
+         */
+        get: operations["get_queue_api_review_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/load": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Load
+         * @description Load a PR for review now (from the cache, else from GitHub).
+         */
+        post: operations["load_api_review_load_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/queue/{owner}/{repo}/{number}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Dismiss */
+        post: operations["dismiss_api_review_queue__owner___repo___number__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Pr
+         * @description The PR's latest round and its artifacts, from the cache only.
+         */
+        get: operations["get_pr_api_review_prs__owner___repo___number__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Pr
+         * @description Open the PR: start what its round lacks (202), or say why not (gates).
+         */
+        post: operations["open_pr_api_review_prs__owner___repo___number__open_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry
+         * @description Run again what failed: a failed round gets a new one, failed jobs run again.
+         */
+        post: operations["retry_api_review_prs__owner___repo___number__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}/review-anyway": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Anyway
+         * @description Open without the CI and automated-review gates; failing CI still never approves.
+         */
+        post: operations["review_anyway_api_review_prs__owner___repo___number__review_anyway_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Drafts
+         * @description The latest round's summary and drafts (seeded from its findings the first time).
+         */
+        get: operations["get_drafts_api_review_prs__owner___repo___number__drafts_get"];
+        /**
+         * Put Drafts
+         * @description Replace the latest round's summary and drafts (deleted ones stay deleted).
+         */
+        put: operations["put_drafts_api_review_prs__owner___repo___number__drafts_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}/post/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview
+         * @description Exactly what posting would send, its warnings and the digest to post it with.
+         *     Changes nothing (beyond seeding the drafts), so it takes no key.
+         */
+        post: operations["preview_api_review_prs__owner___repo___number__post_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}/post": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post
+         * @description Post the previewed review to GitHub as one atomic review on the round's head.
+         *     Owner only (never an agent session); every preview warning must be confirmed.
+         */
+        post: operations["post_api_review_prs__owner___repo___number__post_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}/done": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Done
+         * @description Mark the latest round done without posting.
+         */
+        post: operations["done_api_review_prs__owner___repo___number__done_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Settings */
+        get: operations["get_settings_api_review_settings_get"];
+        /**
+         * Put Settings
+         * @description Save Settings → Review; repos not listed keep their settings.
+         */
+        put: operations["put_settings_api_review_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -1043,6 +1287,24 @@ export interface components {
             /** Expected Rev */
             expected_rev: string;
         };
+        /** CommentOut */
+        CommentOut: {
+            /** Path */
+            path: string;
+            /** Line */
+            line: number;
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "LEFT" | "RIGHT";
+            /** Body */
+            body: string;
+            /** Start Line */
+            start_line: number | null;
+            /** Start Side */
+            start_side: ("LEFT" | "RIGHT") | null;
+        };
         /** ConflictOut */
         ConflictOut: {
             /** Kind */
@@ -1062,10 +1324,74 @@ export interface components {
             folders: components["schemas"]["UnreadOut"][];
             views: components["schemas"]["ViewCountsOut"];
         };
+        /**
+         * DraftBody
+         * @description A draft review comment: inline (``line``, ``side`` and, for a range, ``start_line``
+         *     and ``start_side``) or ``outside_diff`` (posted in the review body).
+         */
+        DraftBody: {
+            /** Id */
+            id?: number | null;
+            /** Path */
+            path: string;
+            /** Body */
+            body: string;
+            /** Line */
+            line?: number | null;
+            /** Side */
+            side?: ("LEFT" | "RIGHT") | null;
+            /** Start Line */
+            start_line?: number | null;
+            /** Start Side */
+            start_side?: ("LEFT" | "RIGHT") | null;
+            /** Origin Finding */
+            origin_finding?: string | null;
+            /**
+             * Outdated
+             * @default false
+             */
+            outdated: boolean;
+            /**
+             * Outside Diff
+             * @default false
+             */
+            outside_diff: boolean;
+        };
+        /** DraftsIn */
+        DraftsIn: {
+            /**
+             * Summary
+             * @description The review body
+             * @default
+             */
+            summary: string;
+            /** Drafts */
+            drafts?: components["schemas"]["DraftBody"][];
+        };
+        /** DraftsOut */
+        DraftsOut: {
+            /** Round Id */
+            round_id: number;
+            /** Summary */
+            summary: string;
+            /** Drafts */
+            drafts: components["schemas"]["DraftBody"][];
+        };
         /** EngageIn */
         EngageIn: {
             /** Runner */
             runner: string;
+        };
+        /** EvidenceOut */
+        EvidenceOut: {
+            /** Ci */
+            ci: string;
+            /** Tests */
+            tests: string | null;
+            /** Findings */
+            findings: {
+                [key: string]: number;
+            };
         };
         /** FeedIn */
         FeedIn: {
@@ -1154,6 +1480,7 @@ export interface components {
             /** Failed */
             failed: components["schemas"]["ImportFailureOut"][];
         };
+        JsonValue: unknown;
         /** KeepIn */
         KeepIn: {
             /**
@@ -1181,6 +1508,14 @@ export interface components {
              */
             created: boolean;
             post: components["schemas"]["PostOut"];
+        };
+        /** LoadIn */
+        LoadIn: {
+            /**
+             * Ref
+             * @description A PR URL, owner/repo#n, or a /review/<owner>/<repo>/<n> link
+             */
+            ref: string;
         };
         /** MarkedOut */
         MarkedOut: {
@@ -1220,6 +1555,21 @@ export interface components {
             relinked: string[];
             /** Skipped */
             skipped: string[];
+        };
+        /**
+         * OpenOut
+         * @description What opening did: ``started`` jobs (202), or the round's state, or the gate holding
+         *     it (``ci_failing``…, with **Review anyway** offered).
+         */
+        OpenOut: {
+            /** State */
+            state: string;
+            /** Reason */
+            reason: string;
+            /** Round Id */
+            round_id: number | null;
+            /** Jobs */
+            jobs: string[];
         };
         /** OpmlIn */
         OpmlIn: {
@@ -1296,6 +1646,24 @@ export interface components {
             /** Failed */
             failed: number;
         };
+        /** PostIn */
+        PostIn: {
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+            /**
+             * Confirm
+             * @description Every warning the preview showed
+             */
+            confirm?: ("blocking_comment" | "newer_head" | "own_pr_comment_only")[];
+            /**
+             * Digest
+             * @description The digest of the preview being confirmed
+             */
+            digest: string;
+        };
         /** PostOut */
         PostOut: {
             /** Id */
@@ -1350,6 +1718,173 @@ export interface components {
         PostPatchIn: {
             /** Read */
             read: boolean;
+        };
+        /** PostedOut */
+        PostedOut: {
+            /** Review Url */
+            review_url: string;
+        };
+        /**
+         * PrOut
+         * @description An opened PR from the cache: its row, its latest round and every artifact of it.
+         */
+        PrOut: {
+            pr: components["schemas"]["QueueRowOut"];
+            round: components["schemas"]["RoundOut"] | null;
+            /**
+             * Artifacts
+             * @description The round's artifacts by kind (agent output is the PR's to influence)
+             */
+            artifacts: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /**
+             * Stale
+             * @description The PR has moved past the head this review covers
+             */
+            stale: boolean;
+            /** Nothing To Walk */
+            nothing_to_walk: boolean;
+            sync: components["schemas"]["SyncOut"];
+        };
+        /** PreviewIn */
+        PreviewIn: {
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+        };
+        /**
+         * PreviewOut
+         * @description Exactly what posting ``event`` sends; pass ``digest`` back to post it.
+         */
+        PreviewOut: {
+            /** Round Id */
+            round_id: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+            /** Body */
+            body: string;
+            /** Comments */
+            comments: components["schemas"]["CommentOut"][];
+            /** Warnings */
+            warnings: ("blocking_comment" | "newer_head" | "own_pr_comment_only")[];
+            /** Allowed Events */
+            allowed_events: ("APPROVE" | "REQUEST_CHANGES" | "COMMENT")[];
+            /** Digest */
+            digest: string;
+            /** Notes */
+            notes: string[];
+        };
+        /**
+         * QueueOut
+         * @description The cached queue; a running or failed sync is reported here, never by waiting.
+         */
+        QueueOut: {
+            /** Rows */
+            rows: components["schemas"]["QueueRowOut"][];
+            /** Synced At */
+            synced_at: string | null;
+            /** Syncing */
+            syncing: boolean;
+            /** Sync Error */
+            sync_error: string | null;
+            /** Suggested Repos */
+            suggested_repos: string[];
+        };
+        /**
+         * QueueRowOut
+         * @description A queue row (spec §2 "Each row shows"); ``title`` is the PR author's text.
+         */
+        QueueRowOut: {
+            /** Repo */
+            repo: string;
+            /** Display Repo */
+            display_repo: string;
+            /** Number */
+            number: number;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
+            /** Author */
+            author: string;
+            /**
+             * Author Kind
+             * @enum {string}
+             */
+            author_kind: "you" | "agent" | "developer";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Size Lines */
+            size_lines: number;
+            /** Files */
+            files: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "new" | "rereview" | "rebase" | "stack";
+            /**
+             * Depth
+             * @enum {string}
+             */
+            depth: "quick" | "deep";
+            /**
+             * Ci State
+             * @enum {string}
+             */
+            ci_state: "pending" | "passing" | "failing" | "none";
+            /**
+             * Auto Review State
+             * @enum {string}
+             */
+            auto_review_state: "not_configured" | "pending" | "landed";
+            /** Review Comment Count */
+            review_comment_count: number;
+            /** Bot Review Count */
+            bot_review_count: number;
+            /** Human Review Count */
+            human_review_count: number;
+            /** Review Requested */
+            review_requested: boolean;
+            /** Prereview State */
+            prereview_state: ("fetch_failed" | "waiting_ci" | "ci_failing" | "waiting_auto_review" | "debouncing" | "ready") | ("queued" | "running" | "ready" | "failed" | "not_started");
+            /** Prereview Reason */
+            prereview_reason: string;
+            /** Recommendation */
+            recommendation: string | null;
+            /** Recommendation Stale */
+            recommendation_stale: boolean;
+            evidence: components["schemas"]["EvidenceOut"] | null;
+            /** Coverage Pct */
+            coverage_pct: number | null;
+            /**
+             * Nothing To Walk
+             * @description The latest review's diff changes no line: show that, not 100%
+             */
+            nothing_to_walk: boolean;
+            /** Loaded */
+            loaded: boolean;
+            /** Dismissed */
+            dismissed: boolean;
+            /** Head Sha */
+            head_sha: string;
+            /** Fetch Error */
+            fetch_error: string | null;
+            /** Fetch Error At */
+            fetch_error_at: string | null;
+            /** Suggested */
+            suggested: boolean;
         };
         /** ReadAboveIn */
         ReadAboveIn: {
@@ -1407,6 +1942,81 @@ export interface components {
             updated: string[];
             /** Skipped Changed */
             skipped_changed: string[];
+        };
+        /** ReviewErrorOut */
+        ReviewErrorOut: {
+            /** Error */
+            error: string;
+            /** Detail */
+            detail: string;
+            /**
+             * Warnings
+             * @description For NeedsConfirmation: every warning to confirm
+             */
+            warnings?: ("blocking_comment" | "newer_head" | "own_pr_comment_only")[] | null;
+        };
+        /** ReviewRepoSettingBody */
+        ReviewRepoSettingBody: {
+            /** Repo */
+            repo: string;
+            /** Watched */
+            watched: boolean;
+            /**
+             * Suggested
+             * @default false
+             */
+            suggested: boolean;
+            /** Prereview */
+            prereview?: ("triage" | "everything" | "on_open") | null;
+            /** Automated Reviewer */
+            automated_reviewer?: string | null;
+        };
+        /**
+         * ReviewSettingsBody
+         * @description Settings → Review.
+         */
+        ReviewSettingsBody: {
+            /**
+             * Prereview
+             * @enum {string}
+             */
+            prereview: "triage" | "everything" | "on_open";
+            /**
+             * Runner
+             * @description The agent runner
+             */
+            runner: string;
+            /** Repos */
+            repos?: components["schemas"]["ReviewRepoSettingBody"][];
+        };
+        /** RoundOut */
+        RoundOut: {
+            /** Id */
+            id: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Base Sha */
+            base_sha: string;
+            /**
+             * Depth
+             * @enum {string}
+             */
+            depth: "quick" | "deep";
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Finished At */
+            finished_at: string | null;
+            /** Verdict */
+            verdict: string | null;
+            /** Error */
+            error: string | null;
+            /** Posted Review Url */
+            posted_review_url: string | null;
+            /** Done */
+            done: boolean;
         };
         /** RssErrorOut */
         RssErrorOut: {
@@ -1537,6 +2147,15 @@ export interface components {
              * @description Not in the catalog yet; accepting it creates it
              */
             new: boolean;
+        };
+        /** SyncOut */
+        SyncOut: {
+            /** Synced At */
+            synced_at: string | null;
+            /** Syncing */
+            syncing: boolean;
+            /** Sync Error */
+            sync_error: string | null;
         };
         /** TagCheckOut */
         TagCheckOut: {
@@ -4950,6 +5569,1148 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    get_queue_api_review_queue_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+                include_dismissed?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    load_api_review_load_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoadIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueRowOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    dismiss_api_review_queue__owner___repo___number__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    get_pr_api_review_prs__owner___repo___number__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    open_pr_api_review_prs__owner___repo___number__open_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenOut"];
+                };
+            };
+            /** @description Jobs started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    retry_api_review_prs__owner___repo___number__retry_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenOut"];
+                };
+            };
+            /** @description Jobs started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    review_anyway_api_review_prs__owner___repo___number__review_anyway_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenOut"];
+                };
+            };
+            /** @description Jobs started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    get_drafts_api_review_prs__owner___repo___number__drafts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    put_drafts_api_review_prs__owner___repo___number__drafts_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DraftsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    preview_api_review_prs__owner___repo___number__post_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    post_api_review_prs__owner___repo___number__post_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostedOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    done_api_review_prs__owner___repo___number__done_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoundOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    get_settings_api_review_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewSettingsBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    put_settings_api_review_settings_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewSettingsBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewSettingsBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
                 };
             };
         };

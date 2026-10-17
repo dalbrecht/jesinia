@@ -1,0 +1,578 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Posting a review (plan Task 7, spec §7): exactly the previewed drafts, as one atomic GitHub
+review against the round's head, with the BLOCKING, newer-head and own-PR rules, and a retry
+after a lost response that adopts the review instead of posting it twice.
+
+A real ``review.sqlite``; GitHub is a double (no network).
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+
+from jesinia.apps.review.application.posting import PostingFailed, PostingService
+from jesinia.apps.review.domain.posting import (
+    CommentOnlyOnOwnPr,
+    Draft,
+    EmptyReview,
+    InvalidDraftError,
+    NeedsConfirmation,
+    NoReviewRound,
+    PreviewOutdated,
+    ReviewedHeadGone,
+    commentable_lines,
+    compose_review,
+    has_blocking,
+    review_warnings,
+    seed_drafts,
+)
+from jesinia.apps.review.domain.queue import PrHeadMovedError, PrRef, RepoConfig, snapshot_of
+from jesinia.apps.review.infrastructure.store import SqliteReviewStore
+from jesinia.apps.review.module import REVIEW_DB
+from jesinia.core.db import open_db
+from jesinia.services.github.application.service import (
+    GitHubRequestError,
+    GitHubUnavailable,
+)
+from jesinia.services.github.domain.pr import (
+    DraftComment,
+    PrCommit,
+    PrFile,
+    PullRequest,
+    ReviewEvent,
+    ReviewSummary,
+)
+from tests.apps.review.fakes import HEAD, FakeClock, pull
+
+NEW_HEAD = "f" * 40
+URL = "https://github.com/acme/web/pull/1#pullrequestreview-9"
+# GitHub's diff of src/app.py: new lines 1-4 and 11-12 (old 1-3 and 10-11) take comments.
+PATCH = "@@ -1,3 +1,4 @@\n a\n-b\n+B\n+c\n d\n@@ -10,2 +11,2 @@ def f():\n x\n-y\n+Y"
+
+
+def finding(start: int, end: int, text: str, *, path: str = "src/app.py") -> dict[str, object]:
+    return {
+        "group": "correctness",
+        "severity": "important",
+        "path": path,
+        "start_line": start,
+        "end_line": end,
+        "explanation": text,
+        "rule": {"id": "lang-01_python_standards.md › Errors", "layer": "base"},
+    }
+
+
+# --- doubles ------------------------------------------------------------------------------------
+
+
+@dataclass
+class FakeGitHub:
+    """GitHub as posting sees it: the live PR, its commits, its reviews and the one write."""
+
+    pr: PullRequest
+    commits: list[str] = field(default_factory=lambda: [HEAD])
+    commits_truncated: bool = False
+    reviews_on_pr: list[ReviewSummary] = field(default_factory=list)
+    posted: list[dict[str, object]] = field(default_factory=list)
+    # Raised by create_review; ``lose_response`` raises it *after* GitHub took the review.
+    error: Exception | None = None
+    lose_response: bool = False
+    viewer_calls: int = 0
+    clock: FakeClock = field(default_factory=FakeClock)
+    get_error: Exception | None = None
+
+    async def get(self, repo: str, number: int) -> PullRequest:
+        if self.get_error is not None:
+            raise self.get_error
+        return self.pr
+
+    async def commits_of(self, pr: PullRequest) -> tuple[PullRequest, list[PrCommit]]:
+        listed = [PrCommit(sha, "m", "alice", None) for sha in self.commits]
+        return replace(pr, commits_truncated=self.commits_truncated), listed
+
+    async def reviews(self, repo: str, number: int) -> list[ReviewSummary]:
+        return list(self.reviews_on_pr)
+
+    async def viewer(self) -> str:
+        self.viewer_calls += 1
+        return "me"
+
+    async def create_review(
+        self,
+        repo: str,
+        number: int,
+        *,
+        commit_sha: str,
+        event: ReviewEvent,
+        body: str,
+        comments: Sequence[DraftComment],
+    ) -> str:
+        if self.error is not None and not self.lose_response:
+            raise self.error
+        self.posted.append(
+            {"commit_sha": commit_sha, "event": event, "body": body, "comments": list(comments)}
+        )
+        state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}.get(
+            event, "COMMENTED"
+        )
+        self.reviews_on_pr.append(
+            ReviewSummary("Me", False, state, commit_sha, self.clock(), len(comments), body, URL)
+        )
+        if self.error is not None:
+            raise self.error
+        return URL
+
+
+class FileSource:
+    def __init__(self) -> None:
+        self.result: list[PrFile] = []
+        self.error: Exception | None = None
+        self.calls = 0
+
+    async def files(self, repo: str, number: int, head_sha: str) -> list[PrFile]:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return list(self.result)
+
+
+@dataclass
+class Env:
+    store: SqliteReviewStore
+    github: FakeGitHub
+    source: FileSource
+    clock: FakeClock
+    service: PostingService
+    ref: PrRef
+    round_id: int
+
+    async def post(
+        self, event: ReviewEvent, confirm: Sequence[str] = (), *, key: str = "k1"
+    ) -> str:
+        preview = await self.service.preview(self.round_id, event)
+        return await self.service.post(
+            self.round_id, event, confirm, key=key, digest=preview.digest
+        )
+
+
+@pytest.fixture
+def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    connection = open_db(tmp_path, REVIEW_DB)
+    yield connection
+    connection.close()
+
+
+def _env(conn: sqlite3.Connection, findings: list[dict[str, object]]) -> Env:
+    store = SqliteReviewStore(conn)
+    store.upsert_repo(RepoConfig("acme/web", watched=True))
+    store.set_viewer("me")
+    clock = FakeClock()
+    pr = pull(1)
+    snapshot = snapshot_of(pr, ci_state="passing", reviews=[], automated_reviewer=None, viewer="me")
+    store.apply_sync([snapshot], [], [], clock())
+    ref = snapshot.ref
+    round_id = store.start_round(ref, HEAD, pr.base_sha, "quick", clock())
+    store.put_artifact(round_id, "findings", {"findings": findings})
+    store.finish_round(round_id, clock(), None, "approve")
+    # GitHub needs a body to comment: the author's summary.
+    conn.execute("UPDATE rounds SET summary = 'Review notes.' WHERE id = ?", (round_id,))
+    store.put_pr_files(ref, HEAD, [PrFile("src/app.py", "modified", 3, 2, PATCH, None)])
+    github = FakeGitHub(pr, clock=clock)
+    source = FileSource()
+    service = PostingService(github=github, writer=github, files=source, store=store, clock=clock)
+    return Env(store, github, source, clock, service, ref, round_id)
+
+
+@pytest.fixture
+def env(conn: sqlite3.Connection) -> Env:
+    return _env(conn, [finding(2, 3, "The error is swallowed.")])
+
+
+# --- the brief's tests --------------------------------------------------------------------------
+
+
+async def test_blocking_comment_warns_on_approve(env: Env) -> None:
+    drafts = await env.service.drafts(env.round_id)
+    edited = [replace(drafts.drafts[0], body="This is bLoCkInG: fix it first.")]
+    await env.service.save_drafts(env.round_id, "Looks good otherwise.", edited)
+
+    approve = await env.service.preview(env.round_id, "APPROVE")
+    assert approve.warnings == ("blocking_comment",)
+    assert (await env.service.preview(env.round_id, "COMMENT")).warnings == ()
+    with pytest.raises(NeedsConfirmation) as refused:
+        await env.post("APPROVE")
+    assert refused.value.warnings == ("blocking_comment",)
+    assert env.github.posted == []
+
+    assert await env.post("APPROVE", ["blocking_comment"]) == URL
+    assert len(env.github.posted) == 1 and env.github.posted[0]["event"] == "APPROVE"
+
+    # The final body counts too, in any case.
+    await env.service.save_drafts(env.round_id, "blocking: the migration", [])
+    assert (await env.service.preview(env.round_id, "APPROVE")).warnings == ("blocking_comment",)
+
+
+async def test_newer_head_requires_confirmation(env: Env) -> None:
+    env.github.pr = replace(env.github.pr, head_sha=NEW_HEAD)
+    env.github.commits = [HEAD, NEW_HEAD]
+    preview = await env.service.preview(env.round_id, "APPROVE")
+    assert preview.warnings == ("newer_head",) and preview.head_sha == HEAD
+    with pytest.raises(NeedsConfirmation) as refused:
+        await env.post("APPROVE")
+    assert refused.value.warnings == ("newer_head",)
+    assert await env.post("APPROVE", ["newer_head"]) == URL
+    # Posting targets the commit the round reviewed, not the new head.
+    assert env.github.posted[0]["commit_sha"] == HEAD
+
+    # A head GitHub can't list fully may still contain the round's commit: it warns.
+    env.github.commits, env.github.commits_truncated = [NEW_HEAD], True
+    assert (await env.service.preview(env.round_id, "COMMENT")).warnings == ("newer_head",)
+    # Force-pushed away: the reviewed commit is no longer on the PR at all.
+    env.github.commits_truncated = False
+    with pytest.raises(ReviewedHeadGone):
+        await env.service.preview(env.round_id, "COMMENT")
+
+
+async def test_own_pr_offers_comment_only(env: Env) -> None:
+    env.github.pr = replace(env.github.pr, author="Me")
+    preview = await env.service.preview(env.round_id, "APPROVE")
+    assert preview.allowed_events == ("COMMENT",)
+    assert preview.warnings == ("own_pr_comment_only",)
+    with pytest.raises(CommentOnlyOnOwnPr):
+        await env.post("APPROVE", ["own_pr_comment_only"])
+    with pytest.raises(CommentOnlyOnOwnPr):
+        await env.post("REQUEST_CHANGES", ["own_pr_comment_only"])
+    assert env.github.posted == []
+    comment = await env.service.preview(env.round_id, "COMMENT")
+    assert comment.warnings == () and comment.allowed_events == ("COMMENT",)
+    assert await env.post("COMMENT") == URL
+    other = replace(env.github.pr, author="alice")
+    env.github.pr = other
+    assert (await env.service.preview(env.round_id, "COMMENT")).allowed_events == (
+        "APPROVE",
+        "REQUEST_CHANGES",
+        "COMMENT",
+    )
+
+
+async def test_post_is_one_atomic_review(env: Env) -> None:
+    drafts = [
+        Draft("src/app.py", "First.", line=2, side="RIGHT"),
+        Draft("src/app.py", "Second.", line=11, side="LEFT"),
+    ]
+    await env.service.save_drafts(env.round_id, "Summary.", drafts)
+    preview = await env.service.preview(env.round_id, "REQUEST_CHANGES")
+    assert preview.body == "Summary."
+    assert [c.body for c in preview.comments] == ["First.", "Second."]
+
+    # A refusal posts nothing at all, keeps the drafts, and keeps GitHub's cause.
+    env.github.error = GitHubRequestError(
+        422, "Unprocessable Entity: line must be part of the diff"
+    )
+    with pytest.raises(PostingFailed) as failed:
+        await env.post("REQUEST_CHANGES")
+    assert "line must be part of the diff" in str(failed.value)
+    assert not failed.value.maybe_posted
+    assert isinstance(failed.value.__cause__, GitHubRequestError)
+    assert env.github.posted == []
+    assert len((await env.service.drafts(env.round_id)).drafts) == 2
+    stored = env.store.round(env.round_id)
+    assert stored is not None and stored.posted_review_url is None
+
+    env.github.error = None
+    assert await env.post("REQUEST_CHANGES", key="k2") == URL
+    assert len(env.github.posted) == 1
+    sent = env.github.posted[0]
+    assert sent["body"] == preview.body and sent["comments"] == list(preview.comments)
+    stored = env.store.round(env.round_id)
+    assert stored is not None and stored.posted_review_url == URL and stored.done
+    # The same key again is the same posting: nothing new is sent.
+    assert await env.post("REQUEST_CHANGES", key="k2") == URL
+    assert len(env.github.posted) == 1
+
+
+async def test_outside_diff_findings_go_in_the_body_and_the_review_posts(
+    conn: sqlite3.Connection,
+) -> None:
+    env = _env(conn, [finding(2, 3, "Inside the diff."), finding(40, 41, "Far below the diff.")])
+    drafts = (await env.service.drafts(env.round_id)).drafts
+    assert [("Inside the diff." in d.body, d.outside_diff) for d in drafts] == [
+        (True, False),
+        (False, True),
+    ]
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    assert len(preview.comments) == 1 and preview.comments[0].line == 3
+    assert "Far below the diff." in preview.body and "src/app.py" in preview.body
+    assert "lines 40" in preview.body
+
+    assert await env.post("COMMENT") == URL
+    sent = env.github.posted[0]
+    comments = sent["comments"]
+    assert isinstance(comments, list) and len(comments) == 1
+    assert all("Far below" not in c.body for c in comments)
+    assert "Far below the diff." in str(sent["body"])
+
+
+async def test_multi_line_draft_round_trips_its_start_line_and_side(env: Env) -> None:
+    ranged = Draft(
+        "src/app.py", "Across lines.", line=4, side="RIGHT", start_line=2, start_side="RIGHT"
+    )
+    await env.service.save_drafts(env.round_id, "Ranged.", [ranged])
+    stored = (await env.service.drafts(env.round_id)).drafts
+    assert len(stored) == 1 and stored[0].id is not None
+    assert (stored[0].start_line, stored[0].start_side, stored[0].line, stored[0].side) == (
+        2,
+        "RIGHT",
+        4,
+        "RIGHT",
+    )
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    assert preview.comments == (
+        DraftComment("src/app.py", 4, "RIGHT", "Across lines.", 2, "RIGHT"),
+    )
+    await env.post("COMMENT")
+    assert env.github.posted[0]["comments"] == list(preview.comments)
+
+
+async def test_retry_after_lost_response_does_not_post_twice(env: Env) -> None:
+    env.github.error = GitHubRequestError(None, "ReadTimeout")
+    env.github.lose_response = True  # GitHub took the review; the answer never came back
+    with pytest.raises(PostingFailed) as lost:
+        await env.post("COMMENT", key="k1")
+    assert lost.value.maybe_posted
+    assert len(env.github.posted) == 1
+
+    env.github.error, env.github.lose_response = None, False
+    env.clock.advance(1)
+    # The retry (same key, or a new one) adopts the review GitHub already has.
+    assert await env.post("COMMENT", key="k1") == URL
+    assert await env.post("COMMENT", key="k-new") == URL
+    assert len(env.github.posted) == 1
+    stored = env.store.round(env.round_id)
+    assert stored is not None and stored.posted_review_url == URL
+
+
+# --- more of posting ----------------------------------------------------------------------------
+
+
+async def test_a_lost_response_with_no_review_on_github_posts_again(env: Env) -> None:
+    env.github.error = GitHubRequestError(None, "ConnectError")  # never reached GitHub
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error = None
+    # Someone else's review, an older one of mine and one with another body don't count.
+    stale = env.clock() - timedelta(hours=1)
+    env.github.reviews_on_pr = [
+        ReviewSummary("bob", False, "COMMENTED", HEAD, env.clock(), 0, "", "u1"),
+        ReviewSummary("me", False, "COMMENTED", HEAD, stale, 0, "", "u2"),
+        ReviewSummary("me", False, "COMMENTED", HEAD, env.clock(), 0, "other", "u3"),
+        ReviewSummary("me", False, "APPROVED", HEAD, env.clock(), 0, "", "u4"),
+        ReviewSummary("me", False, "COMMENTED", NEW_HEAD, env.clock(), 0, "", "u5"),
+        ReviewSummary("me", False, "COMMENTED", HEAD, None, 0, "", "u6"),
+    ]
+    assert await env.post("COMMENT") == URL
+    assert len(env.github.posted) == 1
+
+
+async def test_a_definite_refusal_is_not_adopted_later(env: Env) -> None:
+    env.github.error = GitHubUnavailable("no GitHub token")
+    with pytest.raises(PostingFailed) as failed:
+        await env.post("COMMENT")
+    assert not failed.value.maybe_posted
+    env.github.error = None
+    assert await env.post("COMMENT") == URL
+    assert len(env.github.posted) == 1
+
+
+async def test_a_stale_preview_is_refused(env: Env) -> None:
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    await env.service.save_drafts(env.round_id, "Changed after the preview.", [])
+    with pytest.raises(PreviewOutdated):
+        await env.service.post(env.round_id, "COMMENT", [], key="k", digest=preview.digest)
+    approve = await env.service.preview(env.round_id, "APPROVE")
+    with pytest.raises(PreviewOutdated):  # a digest for another event
+        await env.service.post(env.round_id, "COMMENT", [], key="k", digest=approve.digest)
+    assert env.github.posted == []
+
+
+async def test_a_comment_needs_a_body_or_comments(env: Env) -> None:
+    await env.service.save_drafts(env.round_id, "   ", [])
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    assert "needs a summary" in " ".join(preview.notes)
+    with pytest.raises(EmptyReview):
+        await env.post("COMMENT")
+    assert await env.post("APPROVE") == URL  # an approval may be bare
+
+
+async def test_a_draft_outside_githubs_diff_moves_to_the_body(env: Env) -> None:
+    await env.service.save_drafts(
+        env.round_id,
+        "",
+        [
+            Draft("src/app.py", "Edited onto line 30.", line=30, side="RIGHT"),
+            Draft("src/app.py", "Spans two hunks.", line=11, side="RIGHT", start_line=2,
+                  start_side="RIGHT"),
+            Draft("other.py", "No such file.", line=1, side="RIGHT"),
+            Draft("src/app.py", "General note.", outside_diff=True),
+        ],
+    )  # fmt: skip
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    assert preview.comments == ()
+    for text in ("Edited onto line 30.", "Spans two hunks.", "No such file.", "General note."):
+        assert text in preview.body
+
+
+async def test_files_missing_from_the_cache_are_read_once_or_degrade_visibly(env: Env) -> None:
+    conn = env.store._conn
+    conn.execute("DELETE FROM pr_files")
+    env.source.result = [PrFile("src/app.py", "modified", 3, 2, PATCH, None)]
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    assert len(preview.comments) == 1 and env.source.calls == 1 and preview.notes == ()
+
+    conn.execute("DELETE FROM pr_files")
+    env.source.error = PrHeadMovedError("acme/web#1 is now at ffff")
+    moved = await env.service.preview(env.round_id, "COMMENT")
+    assert moved.comments == ()
+    assert "GitHub's list of this head's files couldn't be read" in " ".join(moved.notes)
+    assert "The error is swallowed." in moved.body
+
+
+async def test_the_viewer_comes_from_github_when_never_synced(env: Env) -> None:
+    env.store._conn.execute("DELETE FROM settings WHERE key = 'viewer'")
+    await env.service.preview(env.round_id, "COMMENT")
+    assert env.github.viewer_calls == 1
+
+
+async def test_rounds_are_found_by_pr_and_refused_when_missing(env: Env) -> None:
+    assert await env.service.round_for(env.ref) == env.round_id
+    later = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
+    assert await env.service.round_for(env.ref) == later
+    with pytest.raises(NoReviewRound):
+        await env.service.round_for(PrRef("acme/web", 99))
+    with pytest.raises(NoReviewRound):
+        await env.service.preview(12345, "COMMENT")
+    with pytest.raises(NoReviewRound):
+        await env.service.drafts(12345)
+
+
+# --- the domain rules ---------------------------------------------------------------------------
+
+
+def test_blocking_is_found_case_insensitively_anywhere() -> None:
+    assert has_blocking("x", [DraftComment("a", 1, "RIGHT", "Blocking!")])
+    assert has_blocking("NON-BLOCKING nit", [])
+    assert not has_blocking("block ing", [DraftComment("a", 1, "RIGHT", "fine")])
+
+
+def test_warnings_follow_the_event() -> None:
+    review = compose_review("BLOCKING", [], commentable_lines([]))
+    assert review_warnings("APPROVE", review, own_pr=False, newer_head=True) == (
+        "blocking_comment",
+        "newer_head",
+    )
+    assert review_warnings("REQUEST_CHANGES", review, own_pr=True, newer_head=False) == (
+        "own_pr_comment_only",
+    )
+    assert review_warnings("COMMENT", review, own_pr=True, newer_head=False) == ()
+
+
+def test_commentable_lines_come_from_githubs_patches() -> None:
+    lines = commentable_lines(
+        [
+            PrFile("src/app.py", "modified", 3, 2, PATCH, None),
+            PrFile("big.bin", "added", 0, 0, None, None),
+            PrFile("odd.py", "modified", 1, 1, "not a patch", None),
+        ]
+    )
+    assert lines.anchors(Draft("src/app.py", "x", line=4, side="RIGHT"))
+    assert lines.anchors(Draft("src/app.py", "x", line=10, side="LEFT"))
+    assert not lines.anchors(Draft("src/app.py", "x", line=5, side="RIGHT"))
+    assert not lines.anchors(Draft("big.bin", "x", line=1, side="RIGHT"))
+    assert not lines.anchors(Draft("odd.py", "x", line=1, side="RIGHT"))
+    assert not lines.anchors(Draft("src/app.py", "x", outside_diff=True))
+
+
+def test_drafts_are_validated_like_githubs_comments() -> None:
+    cases: list[Callable[[], Draft]] = [
+        lambda: Draft("", "x", line=1, side="RIGHT"),
+        lambda: Draft("a.py", " ", line=1, side="RIGHT"),
+        lambda: Draft("a.py", "x"),  # inline without a line
+        lambda: Draft("a.py", "x", line=3, side="RIGHT", start_line=3, start_side="RIGHT"),
+        lambda: Draft("a.py", "x", line=3, side="RIGHT", start_line=1),
+        lambda: Draft("a.py", "x" * 70_000, line=1, side="RIGHT"),
+        lambda: Draft("a.py", "x", line=1, side="UP"),  # type: ignore[arg-type]
+        lambda: Draft("a.py", "x", outside_diff=True, line=0),
+    ]
+    for bad in cases:
+        with pytest.raises(InvalidDraftError):
+            bad()
+    assert Draft("a.py", "x", outside_diff=True).line is None
+
+
+def test_seed_drafts_take_well_formed_findings_only() -> None:
+    lines = commentable_lines([PrFile("src/app.py", "modified", 3, 2, PATCH, None)])
+    seeded = seed_drafts(
+        [
+            finding(3, 3, "One line."),
+            finding(2, 4, "A range."),
+            {"group": "style", "severity": "minor", "path": "src/app.py", "start_line": 12,
+             "end_line": 12, "explanation": "Name it.", "rule": None},
+            {"severity": "bogus"},
+            "not a finding",
+            finding(5, 2, "Backwards."),
+        ],
+        lines,
+    )  # fmt: skip
+    assert [(d.line, d.start_line, d.outside_diff) for d in seeded] == [
+        (3, None, False),
+        (4, 2, False),
+        (12, None, False),
+    ]
+    assert seeded[0].body.startswith("**Important** (correctness)")
+    assert "lang-01_python_standards.md › Errors" in seeded[0].body
+    assert seeded[2].origin_finding == "style/minor"
+
+
+async def test_a_lost_review_found_after_the_drafts_changed_is_kept_but_not_reused(
+    env: Env,
+) -> None:
+    env.github.error, env.github.lose_response = GitHubRequestError(None, "ReadTimeout"), True
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error, env.github.lose_response = None, False
+    await env.service.save_drafts(env.round_id, "A second, different review.", [])
+    env.github.reviews_on_pr.append(  # GitHub lists the review without its URL once
+        ReviewSummary("me", False, "COMMENTED", HEAD, env.clock(), 0, "x", None)
+    )
+    assert await env.post("COMMENT", key="k2") == URL  # the fake's URL for every post
+    assert len(env.github.posted) == 2
+    attempts = env.store.postings(env.round_id)
+    # The lost first review is on GitHub (kept with the round); the new one was posted.
+    assert [a.state for a in attempts] == ["posted", "posted"]
+
+
+async def test_drafts_are_seeded_once_from_both_passes_without_repeats(
+    conn: sqlite3.Connection,
+) -> None:
+    env = _env(conn, [finding(2, 3, "Swallowed."), finding(11, 11, "", path="")])
+    env.store.put_artifact(env.round_id, "correctness", {"findings": [finding(2, 3, "Swallowed.")]})
+    drafts = (await env.service.drafts(env.round_id)).drafts
+    assert len(drafts) == 1
+    await env.service.save_drafts(env.round_id, "", [])
+    assert (await env.service.drafts(env.round_id)).drafts == ()  # a deletion sticks
+
+
+async def test_saving_drafts_is_bounded(env: Env) -> None:
+    many = [Draft("a.py", "x", outside_diff=True)] * 501
+    with pytest.raises(InvalidDraftError):
+        await env.service.save_drafts(env.round_id, "", many)
+    with pytest.raises(InvalidDraftError):
+        await env.service.save_drafts(env.round_id, "x" * 70_000, [])
+    with pytest.raises(InvalidDraftError):
+        Draft("a.py", "x", outside_diff=True).comment()

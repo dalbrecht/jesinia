@@ -491,6 +491,8 @@ class PrClient:
                     commit_sha=_optional_text(review, "commit_id"),
                     submitted_at=_optional_time(review, "submitted_at"),
                     comment_count=counts.get(_number(review, "id"), 0),
+                    body=_optional_text(review, "body") or "",
+                    url=_optional_text(review, "html_url"),
                 )
             )
         return summaries

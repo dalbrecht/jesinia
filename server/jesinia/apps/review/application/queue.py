@@ -29,6 +29,7 @@ from jesinia.apps.review.domain.queue import (
     QueueView,
     RepoConfig,
     StoredPr,
+    SyncStatus,
     owner_of,
     parse_pr_ref,
     queue_order,
@@ -131,6 +132,11 @@ class QueueService:
             sync_error=sync_error,
             suggested_repos=suggested,
         )
+
+    def status(self) -> SyncStatus:
+        """The sync's state for the views: never waits for a running sync."""
+        synced_at, sync_error = self._store.sync_status()
+        return SyncStatus(synced_at, self._syncing, sync_error)
 
     async def sync(self) -> None:
         """Refresh the queue from GitHub (the ``review.sync`` job, every ``SYNC_INTERVAL``).

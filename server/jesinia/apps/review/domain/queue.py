@@ -181,6 +181,23 @@ class RoundStatus:
 
 
 @dataclass(frozen=True)
+class RoundRecord:
+    """A stored review round: which head it reviewed, how it ended, what was posted."""
+
+    id: int
+    ref: PrRef
+    head_sha: str
+    base_sha: str
+    depth: Depth
+    started_at: datetime
+    finished_at: datetime | None
+    verdict: str | None
+    error: str | None
+    posted_review_url: str | None
+    done: bool
+
+
+@dataclass(frozen=True)
 class EvidenceSummary:
     """The recommendation's evidence in one line: CI, tests, finding counts by group."""
 
@@ -197,6 +214,7 @@ class RoundSummary:
     verdict: str | None
     evidence: EvidenceSummary | None
     coverage_pct: float | None
+    nothing_to_walk: bool = False
 
 
 def evidence_from_json(data: object) -> EvidenceSummary | None:
@@ -215,6 +233,12 @@ def evidence_from_json(data: object) -> EvidenceSummary | None:
             return None
         counts[group] = count
     return EvidenceSummary(ci, tests, counts)
+
+
+def nothing_to_walk_from_json(data: object) -> bool:
+    """Whether the ``coverage`` artifact says the diff changes no line (so its 100% means
+    there was nothing to cover, M3)."""
+    return isinstance(data, Mapping) and data.get("nothing_to_walk") is True
 
 
 def coverage_from_json(data: object) -> float | None:
@@ -259,6 +283,8 @@ class QueueRow:
     fetch_error: str | None
     fetch_error_at: datetime | None
     suggested: bool = False  # from a suggested repo (only a PR the author loaded)
+    # The latest review's diff changes no line: the UI says so instead of showing 100% (M3).
+    nothing_to_walk: bool = False
 
 
 @dataclass(frozen=True)
@@ -269,6 +295,15 @@ class QueueFilter:
     def __post_init__(self) -> None:
         if self.repo is not None:
             object.__setattr__(self, "repo", _canonical(self.repo))
+
+
+@dataclass(frozen=True)
+class SyncStatus:
+    """The queue's last good sync, whether one is running now, and why the latest failed."""
+
+    synced_at: datetime | None
+    syncing: bool
+    sync_error: str | None
 
 
 @dataclass(frozen=True)
@@ -398,4 +433,5 @@ def queue_row(
         fetch_error=stored.fetch_error,
         fetch_error_at=stored.fetch_error_at,
         suggested=suggested,
+        nothing_to_walk=latest is not None and latest.nothing_to_walk,
     )

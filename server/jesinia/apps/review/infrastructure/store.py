@@ -15,6 +15,7 @@ from typing import cast
 
 from jesinia.apps.review.domain.gates import CiState, Depth
 from jesinia.apps.review.domain.jobs import DEFAULT_RUNNER
+from jesinia.apps.review.domain.posting import Draft, Posting, PostingState
 from jesinia.apps.review.domain.queue import (
     DEFAULT_PREREVIEW,
     AutoReviewState,
@@ -24,16 +25,18 @@ from jesinia.apps.review.domain.queue import (
     PrRef,
     PrSnapshot,
     RepoConfig,
+    RoundRecord,
     RoundStatus,
     RoundSummary,
     StoredPr,
     coverage_from_json,
     evidence_from_json,
+    nothing_to_walk_from_json,
     parse_prereview_mode,
 )
 from jesinia.apps.review.domain.standards import Override
 from jesinia.core.db import transaction
-from jesinia.services.github.domain.pr import PrFile
+from jesinia.services.github.domain.pr import PrFile, ReviewEvent, ReviewSide
 
 _PREREVIEW_KEY = "prereview"
 _STANDARDS_DIR_KEY = "standards.dir"
@@ -196,6 +199,65 @@ def _file(data: object) -> PrFile:
         deletions=cast(int, fields["deletions"]),
         patch=cast(str | None, fields["patch"]),
         previous_filename=cast(str | None, fields["previous_filename"]),
+    )
+
+
+_ROUND_COLUMNS = (
+    "id, repo, number, head_sha, base_sha, depth, started_at, finished_at, verdict, error, "
+    "posted_review_url, done"
+)
+_DRAFT_COLUMNS = (
+    "id, path, line, side, start_line, start_side, body, origin_finding, outdated, outside_diff"
+)
+_POSTING_COLUMNS = "id, round_id, event, key, digest, body, started_at, state, review_url, error"
+
+
+def _round(row: tuple[object, ...]) -> RoundRecord:
+    (round_id, repo, number, head, base, depth, started, finished, verdict, error, url, done) = row
+    return RoundRecord(
+        id=cast(int, round_id),
+        ref=PrRef(cast(str, repo), cast(int, number)),
+        head_sha=cast(str, head),
+        base_sha=cast(str, base),
+        depth=cast(Depth, depth),
+        started_at=datetime.fromisoformat(cast(str, started)),
+        finished_at=_optional_time(cast(str | None, finished)),
+        verdict=cast(str | None, verdict),
+        error=cast(str | None, error),
+        posted_review_url=cast(str | None, url),
+        done=bool(done),
+    )
+
+
+def _draft(row: tuple[object, ...]) -> Draft:
+    draft_id, path, line, side, start_line, start_side, body, origin, outdated, outside = row
+    return Draft(
+        path=cast(str, path),
+        body=cast(str, body),
+        line=cast(int | None, line),
+        side=cast(ReviewSide | None, side),
+        start_line=cast(int | None, start_line),
+        start_side=cast(ReviewSide | None, start_side),
+        origin_finding=cast(str | None, origin),
+        outdated=bool(outdated),
+        outside_diff=bool(outside),
+        id=cast(int, draft_id),
+    )
+
+
+def _posting(row: tuple[object, ...]) -> Posting:
+    posting_id, round_id, event, key, digest, body, started, state, url, error = row
+    return Posting(
+        id=cast(int, posting_id),
+        round_id=cast(int, round_id),
+        event=cast(ReviewEvent, event),
+        key=cast(str, key),
+        digest=cast(str, digest),
+        body=cast(str, body),
+        started_at=datetime.fromisoformat(cast(str, started)),
+        state=cast(PostingState, state),
+        review_url=cast(str | None, url),
+        error=cast(str | None, error),
     )
 
 
@@ -495,6 +557,8 @@ class SqliteReviewStore:
                 verdict=verdict,
                 evidence=None if evidence is None else evidence_from_json(json.loads(evidence)),
                 coverage_pct=None if coverage is None else coverage_from_json(json.loads(coverage)),
+                nothing_to_walk=coverage is not None
+                and nothing_to_walk_from_json(json.loads(coverage)),
             )
             for repo, number, head, verdict, evidence, coverage in rows
         }
@@ -520,6 +584,130 @@ class SqliteReviewStore:
                 "UPDATE prs SET depth = ? WHERE repo = ? AND number = ? AND head_sha = ?",
                 (depth, ref.repo, ref.number, head_sha),
             )
+
+    def round(self, round_id: int) -> RoundRecord | None:
+        row = self._conn.execute(
+            f"SELECT {_ROUND_COLUMNS} FROM rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        return None if row is None else _round(row)
+
+    def latest_round(self, ref: PrRef) -> RoundRecord | None:
+        """The PR's newest round, however it ended (or while it runs)."""
+        row = self._conn.execute(
+            f"SELECT {_ROUND_COLUMNS} FROM rounds WHERE repo = ? AND number = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (ref.repo, ref.number),
+        ).fetchone()
+        return None if row is None else _round(row)
+
+    # Drafts and postings ----------------------------------------------------------------
+
+    def drafts(self, round_id: int) -> list[Draft]:
+        rows = self._conn.execute(
+            f"SELECT {_DRAFT_COLUMNS} FROM drafts WHERE round_id = ? ORDER BY id", (round_id,)
+        )
+        return [_draft(row) for row in rows]
+
+    def review_summary(self, round_id: int) -> str:
+        row = self._conn.execute("SELECT summary FROM rounds WHERE id = ?", (round_id,)).fetchone()
+        return "" if row is None else cast(str, row[0])
+
+    def _insert_drafts(self, round_id: int, drafts: Sequence[Draft]) -> None:
+        self._conn.executemany(
+            "INSERT INTO drafts (round_id, path, line, side, start_line, start_side, body, "
+            "origin_finding, outdated, outside_diff) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    round_id,
+                    d.path,
+                    d.line,
+                    d.side,
+                    d.start_line,
+                    d.start_side,
+                    d.body,
+                    d.origin_finding,
+                    int(d.outdated),
+                    int(d.outside_diff),
+                )
+                for d in drafts
+            ],
+        )
+
+    def seed_drafts(self, round_id: int, drafts: Sequence[Draft]) -> bool:
+        """Store a round's first drafts, once: False (and nothing written) if it was seeded
+        or edited before."""
+        with transaction(self._conn):
+            claimed = self._conn.execute(
+                "UPDATE rounds SET drafts_seeded = 1 WHERE id = ? AND drafts_seeded = 0",
+                (round_id,),
+            )
+            if not claimed.rowcount:
+                return False
+            self._insert_drafts(round_id, drafts)
+        return True
+
+    def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> None:
+        """Replace a round's summary and drafts (the author's edit) in one transaction."""
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE rounds SET drafts_seeded = 1, summary = ? WHERE id = ?",
+                (summary, round_id),
+            )
+            self._conn.execute("DELETE FROM drafts WHERE round_id = ?", (round_id,))
+            self._insert_drafts(round_id, drafts)
+
+    def postings(self, round_id: int) -> list[Posting]:
+        rows = self._conn.execute(
+            f"SELECT {_POSTING_COLUMNS} FROM postings WHERE round_id = ? ORDER BY id",
+            (round_id,),
+        )
+        return [_posting(row) for row in rows]
+
+    def start_posting(
+        self,
+        round_id: int,
+        event: ReviewEvent,
+        key: str,
+        digest: str,
+        body: str,
+        comments: object,
+        started_at: datetime,
+    ) -> Posting:
+        """Record an attempt before GitHub is called; a failed attempt with the same key is
+        started again. Returns the attempt as stored (an existing posted one unchanged)."""
+        self._conn.execute(
+            "INSERT INTO postings (round_id, event, key, digest, body, comments, started_at, "
+            "state) VALUES (?, ?, ?, ?, ?, ?, ?, 'started') "
+            "ON CONFLICT (round_id, key) DO UPDATE SET event = excluded.event, "
+            "digest = excluded.digest, body = excluded.body, comments = excluded.comments, "
+            "started_at = excluded.started_at, state = 'started', error = NULL "
+            "WHERE postings.state = 'failed'",
+            (round_id, event, key, digest, body, json.dumps(comments), _time(started_at)),
+        )
+        row = self._conn.execute(
+            f"SELECT {_POSTING_COLUMNS} FROM postings WHERE round_id = ? AND key = ?",
+            (round_id, key),
+        ).fetchone()
+        return _posting(row)
+
+    def finish_posting(self, posting_id: int, review_url: str) -> None:
+        """The review is on GitHub: keep its URL on the attempt and the round (now done)."""
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE postings SET state = 'posted', review_url = ?, error = NULL WHERE id = ?",
+                (review_url, posting_id),
+            )
+            self._conn.execute(
+                "UPDATE rounds SET posted_review_url = ?, done = 1 "
+                "WHERE id = (SELECT round_id FROM postings WHERE id = ?)",
+                (review_url, posting_id),
+            )
+
+    def fail_posting(self, posting_id: int, error: str) -> None:
+        """Nothing was posted by this attempt."""
+        self._conn.execute(
+            "UPDATE postings SET state = 'failed', error = ? WHERE id = ?", (error, posting_id)
+        )
 
     def set_verdict(self, round_id: int, verdict: str) -> None:
         self._conn.execute("UPDATE rounds SET verdict = ? WHERE id = ?", (verdict, round_id))

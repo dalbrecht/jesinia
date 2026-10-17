@@ -800,7 +800,7 @@ async def test_a_vanished_worktree_is_reported(tree: Tree, tmp_path: Path) -> No
 async def test_review_module_registers_the_repo_tools(cfg: Config) -> None:
     module = ReviewModule()
     names = [tool.name for tool in module.mcp_tools()]
-    assert names == ["repo_read", "repo_grep", "repo_ls", "repo_git"]
+    assert names[:4] == ["repo_read", "repo_grep", "repo_ls", "repo_git"]
     tool = module.mcp_tools()[0]
     with pytest.raises(Exception, match="not started"):
         await tool.handler(RepoReadIn(path="a"), CallContext(SESSION))

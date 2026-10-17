@@ -207,6 +207,10 @@ async def test_reviews_carry_state_commit_and_comment_counts(prs: PrClient) -> N
     ]
     assert reviews[0].submitted_at == datetime(2026, 10, 15, 10, 10, tzinfo=UTC)
     assert reviews[2].submitted_at is None
+    # Posting adopts a review whose response was lost by its body and URL.
+    assert reviews[0].body == "Looks fine"
+    assert reviews[0].url == "https://github.com/acme/api/pull/7#pullrequestreview-101"
+    assert reviews[1].body == ""
 
 
 @pytest.mark.parametrize(
