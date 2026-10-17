@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from jesinia.apps.issues.application.labels import LabelSetupService
+from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
@@ -91,7 +92,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     module = IssuesModule()
     with pytest.raises(HTTPException, match="not started"):
         _ = module.sync
-    for name in ("labels", "queries"):
+    for name in ("labels", "queries", "pending", "apply"):
         with pytest.raises(HTTPException, match="not started"):
             getattr(module, name)
     await module.sync_repos()  # nothing to sync before start
@@ -102,7 +103,10 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     assert caught.value.status_code == 503
     with pytest.raises(HTTPException, match="require the github service"):
         _ = module.labels
+    with pytest.raises(HTTPException, match="require the github service"):
+        _ = module.apply
     assert isinstance(module.queries, IssueQueries)  # the cache reads need no GitHub
+    assert isinstance(module.pending, PendingService)  # so does the tray
     assert module.clock().tzinfo is not None
     await module.stop()
 
@@ -112,6 +116,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     await module.start(ctx)
     assert isinstance(module.sync, SyncService)
     assert isinstance(module.labels, LabelSetupService)
+    assert isinstance(module.apply, ApplyService)
     # Without a token a repo can't be added (GitHub names it), ...
     with pytest.raises(GitHubUnavailable):
         await module.sync.configure("acme/web", watched=True, settings_schema=None)

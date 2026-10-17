@@ -4,6 +4,7 @@ titles, bodies, labels and comments are the issue authors' text: the PWA shows i
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
@@ -11,6 +12,8 @@ from pydantic import BaseModel, Field, JsonValue
 
 from jesinia.apps.issues.application.labels import LabelRun, OpResult
 from jesinia.apps.issues.application.ports import (
+    AppliedBatch,
+    ApplyOrigin,
     RepoState,
     RunSource,
     RunStatus,
@@ -19,6 +22,26 @@ from jesinia.apps.issues.application.ports import (
 )
 from jesinia.apps.issues.application.reads import IssueDetail
 from jesinia.apps.issues.application.suggest import MAX_BACKLOG_REFS
+from jesinia.apps.issues.domain.changes import (
+    AddArea,
+    Close,
+    Comment,
+    CreateIssue,
+    EnsureLabel,
+    Existing,
+    IssueChange,
+    PendingChange,
+    PendingSource,
+    RemoveArea,
+    ReorderChild,
+    SetDimension,
+    SetParent,
+    SingleDimension,
+    StepKind,
+    StepResult,
+    StepState,
+    Target,
+)
 from jesinia.apps.issues.domain.labels import (
     CreateLabel,
     LabelOp,
@@ -35,7 +58,12 @@ from jesinia.apps.issues.domain.schema import (
 )
 from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionKind, SuggestionState
 from jesinia.apps.issues.domain.triage import IssueRow, IssueView
-from jesinia.services.github.domain.issue import IssueComment, TimelineEvent
+from jesinia.services.github.domain.issue import (
+    COMMENT_BODY_LIMIT,
+    CloseReason,
+    IssueComment,
+    TimelineEvent,
+)
 
 REPO_MAX = 140
 PLAN_ID_MAX = 64
@@ -423,7 +451,8 @@ class IssueSuggestionOut(BaseModel):
     - ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be
       ``agent-ready``; else what ``agent-ready`` still lacks).
 
-    ``reason`` is the agent's one line, untrusted text shown as data."""
+    ``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why
+    its last approval didn't apply (it stays approvable)."""
 
     id: str
     repo: str | None
@@ -435,6 +464,7 @@ class IssueSuggestionOut(BaseModel):
     state: SuggestionState
     created_at: datetime
     updated_at: datetime
+    apply_error: str | None = None
 
     @classmethod
     def of(cls, suggestion: Suggestion) -> IssueSuggestionOut:
@@ -449,6 +479,7 @@ class IssueSuggestionOut(BaseModel):
             state=suggestion.state,
             created_at=suggestion.created_at,
             updated_at=suggestion.updated_at,
+            apply_error=suggestion.apply_error,
         )
 
 
@@ -500,3 +531,289 @@ class IssueSuggestionRunIn(BaseModel):
 
 class IssueSuggestionRunsOut(BaseModel):
     runs: list[IssueSuggestionRunOut]
+
+
+# The apply engine and the pending tray (Task 6) ----------------------------------------------
+
+
+class IssueTargetBody(BaseModel):
+    """An existing issue."""
+
+    repo: str = Field(min_length=3, max_length=REPO_MAX)
+    n: int = Field(ge=1, le=999_999_999)
+
+
+class SetDimensionBody(BaseModel):
+    """Set readiness, priority or type to a schema value (its other values are removed)."""
+
+    kind: Literal["set_dimension"]
+    dimension: SingleDimension
+    value: LabelText
+
+
+class AddAreaBody(BaseModel):
+    kind: Literal["add_area"]
+    value: LabelText
+
+
+class RemoveAreaBody(BaseModel):
+    kind: Literal["remove_area"]
+    value: LabelText
+
+
+class SetParentBody(BaseModel):
+    """Make ``parent`` the issue's epic, or remove its parent (``null``)."""
+
+    kind: Literal["set_parent"]
+    parent: IssueTargetBody | None
+
+
+class ReorderChildBody(BaseModel):
+    """Within this epic, move ``child`` just after ``after`` (the top when ``null``)."""
+
+    kind: Literal["reorder_child"]
+    child: IssueTargetBody
+    after: IssueTargetBody | None = None
+
+
+class CloseBody(BaseModel):
+    """Close the issue; a duplicate names its original (which must be cached) and may carry a
+    comment, posted after the close."""
+
+    kind: Literal["close"]
+    reason: CloseReason
+    duplicate_of: IssueTargetBody | None = None
+    comment: str | None = Field(default=None, max_length=COMMENT_BODY_LIMIT)
+
+
+class CommentBody(BaseModel):
+    kind: Literal["comment"]
+    body: str = Field(min_length=1, max_length=COMMENT_BODY_LIMIT)
+
+
+IssueChangeBody = Annotated[
+    SetDimensionBody
+    | AddAreaBody
+    | RemoveAreaBody
+    | SetParentBody
+    | ReorderChildBody
+    | CloseBody
+    | CommentBody,
+    Field(discriminator="kind"),
+]
+
+
+def _target_body(target: Target | None) -> IssueTargetBody | None:
+    """A staged change's issue: always an existing one (the tray holds no ``CreateIssue``, so
+    staging refuses a new issue's temp id)."""
+    if target is None:
+        return None
+    existing = cast(Existing, target)
+    return IssueTargetBody(repo=existing.repo, n=existing.n)
+
+
+def change_body(change: IssueChange) -> IssueChangeBody:
+    """A staged change as the API shows it."""
+    if isinstance(change, SetDimension):
+        return SetDimensionBody(
+            kind="set_dimension", dimension=change.dimension, value=change.value
+        )
+    if isinstance(change, AddArea):
+        return AddAreaBody(kind="add_area", value=change.value)
+    if isinstance(change, RemoveArea):
+        return RemoveAreaBody(kind="remove_area", value=change.value)
+    if isinstance(change, SetParent):
+        return SetParentBody(kind="set_parent", parent=_target_body(change.parent))
+    if isinstance(change, ReorderChild):
+        child = cast(IssueTargetBody, _target_body(change.child))
+        return ReorderChildBody(kind="reorder_child", child=child, after=_target_body(change.after))
+    if isinstance(change, Close):
+        return CloseBody(
+            kind="close",
+            reason=change.reason,
+            duplicate_of=_target_body(change.duplicate_of_ref),
+            comment=change.comment,
+        )
+    return CommentBody(kind="comment", body=change.body)
+
+
+def body_change(
+    body: IssueChangeBody, original: Callable[[str, int], tuple[Existing, int]]
+) -> IssueChange:
+    """A staged change from its body; ``original`` finds a duplicate's original and its GitHub
+    id in the cache (``DuplicateNotCachedError`` when it isn't there)."""
+
+    def target(found: IssueTargetBody) -> Existing:
+        return Existing(found.repo, found.n)
+
+    if isinstance(body, SetDimensionBody):
+        return SetDimension(body.dimension, body.value)
+    if isinstance(body, AddAreaBody):
+        return AddArea(body.value)
+    if isinstance(body, RemoveAreaBody):
+        return RemoveArea(body.value)
+    if isinstance(body, SetParentBody):
+        return SetParent(None if body.parent is None else target(body.parent))
+    if isinstance(body, ReorderChildBody):
+        after = None if body.after is None else target(body.after)
+        return ReorderChild(target(body.child), after)
+    if isinstance(body, CloseBody):
+        if body.duplicate_of is None:
+            return Close(body.reason, comment=body.comment)
+        ref, database_id = original(body.duplicate_of.repo, body.duplicate_of.n)
+        return Close(body.reason, database_id, ref, body.comment)
+    return Comment(body.body)
+
+
+class PendingIn(BaseModel):
+    """A change to stage for a cached issue, and what staged it."""
+
+    repo: str = Field(min_length=3, max_length=REPO_MAX)
+    n: int = Field(ge=1, le=999_999_999)
+    change: IssueChangeBody
+    source: PendingSource
+
+
+class PendingOut(BaseModel):
+    id: str
+    repo: str
+    n: int
+    change: IssueChangeBody
+    source: PendingSource
+    created_at: datetime
+
+    @classmethod
+    def of(cls, pending: PendingChange) -> PendingOut:
+        return cls(
+            id=pending.id,
+            repo=pending.target.repo,
+            n=pending.target.n,
+            change=change_body(pending.change),
+            source=pending.source,
+            created_at=pending.created_at,
+        )
+
+
+class PendingListOut(BaseModel):
+    """The tray, in the order staged."""
+
+    changes: list[PendingOut]
+
+
+class PendingApplyIn(BaseModel):
+    """Which staged changes to apply (all of them when ``ids`` is omitted or ``null``)."""
+
+    ids: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = Field(
+        default=None, max_length=1000
+    )
+
+
+class ApplyStepOut(BaseModel):
+    """One step: ``done`` (``cause`` may say it was already so), ``failed`` or ``skipped``
+    (``cause`` says why)."""
+
+    kind: StepKind
+    state: StepState
+    cause: str | None
+
+    @classmethod
+    def of(cls, result: StepResult) -> ApplyStepOut:
+        return cls(kind=result.step.kind, state=result.state, cause=result.cause)
+
+
+class ApplyIssueOut(BaseModel):
+    """One issue's steps in order: ``repo`` and ``n`` for an existing issue, ``temp_id`` for one
+    the batch creates (``repo`` and ``n`` filled once it exists)."""
+
+    repo: str | None
+    n: int | None
+    temp_id: str | None
+    steps: list[ApplyStepOut]
+
+
+class ApplyRepoStepOut(ApplyStepOut):
+    """A repo-level step: a label ensured (``label``) or an issue created (``temp_id``)."""
+
+    repo: str
+    label: str | None
+    temp_id: str | None
+
+
+class ApplyCreatedOut(BaseModel):
+    temp_id: str
+    repo: str
+    n: int
+
+
+class ApplyBatchOut(BaseModel):
+    """An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,
+    with ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a
+    503. Retry it with ``POST /pending/{id}/retry``."""
+
+    id: str
+    origin: ApplyOrigin
+    complete: bool
+    repo_steps: list[ApplyRepoStepOut]
+    issues: list[ApplyIssueOut]
+    created: list[ApplyCreatedOut]
+    stopped: str | None
+    rate_limited: bool
+    rate_limited_until: datetime | None
+
+    @classmethod
+    def of(cls, applied: AppliedBatch) -> ApplyBatchOut:
+        result = applied.result
+        issues = []
+        for target, found in result.per_issue.items():
+            if isinstance(target, Existing):
+                where: tuple[str | None, int | None, str | None] = (target.repo, target.n, None)
+            else:
+                made = result.created.get(target.temp_id)
+                where = (
+                    None if made is None else made.repo,
+                    None if made is None else made.n,
+                    target.temp_id,
+                )
+            issues.append(
+                ApplyIssueOut(
+                    repo=where[0],
+                    n=where[1],
+                    temp_id=where[2],
+                    steps=[ApplyStepOut.of(step) for step in found.steps],
+                )
+            )
+        repo_steps = []
+        for step in result.repo_steps:
+            change = step.step.changes[0]
+            repo_steps.append(
+                ApplyRepoStepOut(
+                    kind=step.step.kind,
+                    state=step.state,
+                    cause=step.cause,
+                    repo=step.step.repo,
+                    label=change.name if isinstance(change, EnsureLabel) else None,
+                    temp_id=change.temp_id if isinstance(change, CreateIssue) else None,
+                )
+            )
+        return cls(
+            id=applied.id,
+            origin=applied.origin,
+            complete=result.complete,
+            repo_steps=repo_steps,
+            issues=issues,
+            created=[
+                ApplyCreatedOut(temp_id=temp, repo=made.repo, n=made.n)
+                for temp, made in result.created.items()
+            ],
+            stopped=result.stopped,
+            rate_limited=result.is_rate_limited,
+            rate_limited_until=result.rate_limited_until,
+        )
+
+
+class SuggestionApproveOut(BaseModel):
+    """The suggestion after its approval (``approved``, or still open with ``apply_error``) and
+    the batch that applied it."""
+
+    suggestion: IssueSuggestionOut
+    batch: ApplyBatchOut

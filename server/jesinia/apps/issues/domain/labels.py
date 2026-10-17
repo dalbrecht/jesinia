@@ -143,6 +143,12 @@ def schema_labels(schema: LabelSchema) -> list[tuple[str, Canonical]]:
     return [(dimension, value) for dimension, values in dimensions for value in values]
 
 
+def create_label_op(dimension: str, canonical: Canonical) -> CreateLabel:
+    """The op that creates ``canonical`` in ``dimension``'s colour, as the setup batch would
+    (the apply engine's ``EnsureLabel`` for an approved new area uses it too)."""
+    return _create(dimension, canonical)
+
+
 def _create(dimension: str, canonical: Canonical) -> CreateLabel:
     return CreateLabel(
         canonical.name,

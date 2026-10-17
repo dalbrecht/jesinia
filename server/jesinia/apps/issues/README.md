@@ -16,16 +16,21 @@ This is PR 1 (plan Tasks 1–4). It adds:
 - the label setup and migration batches;
 - the read-only MCP tools.
 
-PR 2 (Tasks 5–7) adds suggestions, the apply engine and the pending-changes tray. Task 5, here
-so far, adds the suggestion drafts:
+PR 2 (Tasks 5–7) adds suggestions, the apply engine and the pending-changes tray. Task 5 adds
+the suggestion drafts:
 
 - agent triage of an issue, stored as drafts (labels for missing dimensions, new areas,
   duplicates, the likely epic, readiness gaps);
 - background runs for Inbox issues and on-demand runs for the Backlog;
 - listing, editing and dismissing drafts, and the two suggestion-backed saved filters.
 
-Approving a draft (which writes to GitHub) arrives with Task 6's apply engine. Epics, queues and
-themes come in PR 3, and the web app in PR 4.
+Task 6 adds the apply engine and the pending-changes tray:
+
+- approving a suggestion applies it to GitHub at once, as one ordered series per issue;
+- every other GitHub-changing action stages in the tray until Apply sends it as one batch;
+- every batch is kept with its result, step by step, so Retry runs only what didn't apply.
+
+Epics, queues and themes come in PR 3, and the web app in PR 4.
 
 ## Layout
 
@@ -36,6 +41,7 @@ domain/           pure rules, 100% covered
   triage.py       the Inbox rule, views, saved filters, the resumable sync cursor
   labels.py       LabelOp (CreateLabel, DeleteLabel), setup and migration plans, plan checks
   suggestions.py  Suggestion drafts: what a triage reply may draft, edits, dismissals
+  changes.py      Change, ChangeBatch, the ordered series, label edits, results, approvals
   similarity.py   the local TF-IDF that pre-filters duplicate candidates
 application/      orchestration over ports
   ports.py        what the app needs: IssueReads, LabelWrites, AgentAsker, the store protocols
@@ -44,9 +50,12 @@ application/      orchestration over ports
   labels.py       LabelPlanner, LabelExecutor (ordered, paced), LabelSetupService
   suggest.py      SuggestService: triage asks, background and on-demand runs, edits
   agent_output.py an agent's JSON reply, bounded and validated against schemas/*.json
+  apply.py        ApplyEngine: runs a batch's series against fresh reads (paced, rate-limit safe)
+  pending.py      PendingService (the tray) and ApplyService (apply, retry, approve)
 infrastructure/
   store.py        SqliteIssuesStore over issues.sqlite
   suggestion_store.py  SqliteSuggestionStore: drafts, runs, the similarity corpus
+  apply_store.py  SqliteApplyStore: the pending tray and the applied batches
 api/
   routes.py       REST under /api/issues
   schemas.py      request and response bodies (the generated web client's types)
@@ -75,8 +84,12 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   drafts about several issues or a queue have `scope` instead.
 - `suggestion_runs`: each issue's latest suggestion run, with its status, when it is due, and
   the cause of a failure.
-- `pending` and `schema_overlay`: the pending-changes tray and the approved schema entries, used
-  from Task 6 on.
+- `pending`: the pending-changes tray, in the order staged.
+- `apply_batches`: every applied batch (from the tray or an approval) with its result, kept 30
+  days for Retry (pruned by the daily job).
+- `schema_overlay`: schema entries the author approved (a new area). They are merged over the
+  repo's schema on every read, a read-only labels.yml included, so a sync never drops them.
+- A suggestion's `apply_error` says why its last approval didn't apply.
 
 ## Jobs
 
@@ -98,7 +111,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - Each run's failure is logged with its cause and recorded on the run. It never breaks sync
     or other runs. Without a runner, runs wait.
   - At start, a run that a stop cut off is queued again.
-- `issues.idempotency-prune` runs daily and drops expired keys.
+- `issues.idempotency-prune` runs daily and drops expired keys and applied batches older than
+  30 days.
 
 ## The label schema and labels.yml
 
@@ -133,6 +147,14 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     issues now, in the background (202).
   - `PATCH /suggestions/{id}` with `{payload, reason?}` edits a draft, checked against the
     repo's schema. `POST /suggestions/{id}/dismiss` dismisses it. Neither touches GitHub.
+  - `POST /suggestions/{id}/approve` applies a draft to GitHub at once and answers with the
+    suggestion and its batch. A gone premise, a settled suggestion or a duplicate of an uncached
+    issue is a 409, and nothing is applied.
+  - `GET /pending` lists the tray. `POST /pending` with `{repo, n, change, source}` stages a
+    change (201). `DELETE /pending/{id}` undoes one, `DELETE /pending` all (204).
+  - `POST /pending/apply` with `{ids?}` applies the tray (or those ids) as one batch.
+    `GET /pending/{batch}` reads a batch's result, and `POST /pending/{batch}/retry` resumes it.
+    A batch GitHub stopped is a 503, with `Retry-After` for a rate limit.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
     `possible_duplicates`. The last two read the open suggestions.
   - Typed errors come back as `{error, detail}`. A GitHub rate limit is a 503 with
@@ -168,12 +190,40 @@ Jesinia never creates a label implicitly and never changes GitHub without an app
 - **Cache:** after an apply, the label cache and the moved issues are updated at once, best
   effort.
 
+## How applying stays safe
+
+One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
+
+- **The series:** a batch first runs its repo-level steps: `EnsureLabel` (an approved new area),
+  then `CreateIssue`. Then each issue runs labels, parent, sub-issue order, close and comment, in
+  that order. The order step is a spec-compatible extension (ruling IR13). Within one issue a
+  later change of the same sort wins.
+- **Fresh reads:** each issue is read from GitHub before its first step. Labels are applied as an
+  add and removes against that read, never as a replacement, so labels someone else changed on
+  GitHub survive, and a label already gone is a no-op.
+- **No implicit labels:** the repo's labels are read fresh once per batch, and every label about
+  to be added (to an issue, or to a new issue) is read again live right before the write. A
+  missing label fails the step, and nothing is added or created. `EnsureLabel` reuses the label
+  setup's executor (ruling IR12).
+- **Failures:** an issue stops at its first failed step, and its other steps are skipped. Other
+  issues carry on. A failed `EnsureLabel` skips the issues that need its label, with the cause. A
+  failed `CreateIssue` skips every step that names its temp id.
+- **Rate limits:** a rate limit or a rejected token stops the whole batch. The step at hand and
+  all the rest are failed with the cause and GitHub's reset time, and syncs back off. Writes are
+  spaced 1 second apart.
+- **Approvals:** the premise is re-checked first, so an edited draft whose dimension was filled
+  since is refused. A duplicate takes the original's database id from the cache. A complete apply
+  marks the suggestion approved. A failed one leaves it approvable, with the cause.
+- **Cache:** afterwards the touched issues, the labels and (for a new area) the recomputed triage
+  are written to the cache, best effort. A failure there is logged with its cause and never fails
+  the writes.
+
 ## How suggestions stay safe
 
 Issue titles and bodies are written by whoever can open an issue, so they are untrusted:
 
 - **No GitHub client:** `SuggestService` holds none. A run can only write drafts to
-  `issues.sqlite`. A draft reaches GitHub only when the author approves it (Task 6).
+  `issues.sqlite`. A draft reaches GitHub only when the author approves it.
 - **Fenced as data:** the agent is asked through the agents service's one-shot ask, which has no
   tools. Jesinia's instructions are the role and the prompt. The issue, the repo's label schema,
   the duplicate candidates and the epics are `UntrustedDoc`s, fenced as data.
@@ -194,7 +244,7 @@ Issue titles and bodies are written by whoever can open an issue, so they are un
 - **Retiring:** whenever sync or a schema recompute stores an issue's triage, untouched drafts
   that lost their premise are deleted: a label for a dimension no longer missing, a parent for
   an issue that now has one, a readiness gap whose readiness changed, and every draft of a
-  closed issue. Edited drafts are the author's; Task 6's approval re-checks them.
+  closed issue. Edited drafts are the author's; approving one re-checks it.
 
 ## Development
 
@@ -205,5 +255,5 @@ make ci           # the full gate
 ```
 
 Tests use in-memory GitHub doubles (`tests/apps/issues/test_sync.py` `FakeIssues`,
-`test_labels.py` `FakeGitHub`) and a scripted agent (`test_suggest.py` `FakeAgent`), with a
+`test_labels.py` `FakeGitHub`, `test_apply.py` `FakeWrites`) and a scripted agent (`test_suggest.py` `FakeAgent`), with a
 fake clock, so they make no network calls and never sleep.

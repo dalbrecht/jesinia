@@ -27,7 +27,14 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlan,
     parse_plan_kind,
 )
-from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, Canonical, LabelSchema
+from jesinia.apps.issues.domain.schema import (
+    DEFAULT_SCHEMA,
+    OVERLAY_DIMENSIONS,
+    Canonical,
+    LabelSchema,
+    SchemaEntry,
+    with_overlay,
+)
 from jesinia.apps.issues.domain.suggestions import HUMAN_NEEDED
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
@@ -322,11 +329,38 @@ class SqliteIssuesStore:
         row = self._conn.execute(
             f"SELECT {_REPO_COLUMNS} FROM repos WHERE repo = ?", (repo,)
         ).fetchone()
-        return None if row is None else _repo_state(row)
+        return None if row is None else self._overlaid(_repo_state(row))
 
     def all_repos(self) -> list[RepoState]:
         rows = self._conn.execute(f"SELECT {_REPO_COLUMNS} FROM repos ORDER BY repo")
-        return [_repo_state(row) for row in rows]
+        return [self._overlaid(_repo_state(row)) for row in rows]
+
+    def _overlaid(self, state: RepoState) -> RepoState:
+        """``state`` with its approved schema entries merged over the stored schema, as every
+        read sees it (a labels.yml re-read by sync can't drop them)."""
+        rows = self._conn.execute(
+            "SELECT dimension, canonical, aliases_json FROM schema_overlay WHERE repo = ? "
+            "ORDER BY approved_at, rowid",
+            (state.repo,),
+        )
+        entries = tuple(
+            SchemaEntry(
+                next(d for d in OVERLAY_DIMENSIONS if d == dimension),
+                str(canonical),
+                tuple(json.loads(str(aliases))),
+            )
+            for dimension, canonical, aliases in rows
+        )
+        if not entries:
+            return state
+        return replace(state, schema=with_overlay(state.schema, entries), overlay=entries)
+
+    def add_overlay(self, repo: str, entry: SchemaEntry, now: datetime) -> None:
+        self._conn.execute(
+            "INSERT INTO schema_overlay (repo, dimension, canonical, aliases_json, approved_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (repo, dimension, canonical) DO NOTHING",
+            (repo, entry.dimension, entry.canonical, json.dumps(list(entry.aliases)), _time(now)),
+        )
 
     def set_schema(self, repo: str, source: SchemaSource, schema: LabelSchema) -> None:
         self._conn.execute(
@@ -488,6 +522,24 @@ class SqliteIssuesStore:
                 (_issue_json(replace(issue, labels=tuple(labels))), issue.repo, issue.number),
             )
             self._write_triage(issue.repo, [(issue.number, triaged)])
+
+    def refresh_issue(self, issue: Issue, triaged: Triage) -> None:
+        with transaction(self._conn):
+            updated = self._conn.execute(
+                "UPDATE issues SET json = ?, state = ?, updated_at = ?, sub_issue_count = ? "
+                "WHERE repo = ? AND number = ? AND updated_at <= ?",
+                (
+                    _issue_json(issue),
+                    issue.state,
+                    _time(issue.updated_at),
+                    issue.sub_issue_count,
+                    issue.repo,
+                    issue.number,
+                    _time(issue.updated_at),
+                ),
+            )
+            if updated.rowcount:  # a newer row (a sync since) keeps its own triage
+                self._write_triage(issue.repo, [(issue.number, triaged)])
 
     def update_triage(self, repo: str, triaged: Sequence[tuple[int, Triage]]) -> None:
         with transaction(self._conn):

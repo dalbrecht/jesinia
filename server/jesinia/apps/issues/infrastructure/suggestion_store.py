@@ -30,7 +30,7 @@ from jesinia.core.db import transaction
 
 _COLUMNS = (
     "id, repo, n, scope, kind, payload_json, reason, state, created_at, updated_at, "
-    "origin_json, basis"
+    "origin_json, basis, apply_error"
 )
 _RUN_COLUMNS = "repo, n, status, source, due_at, cause, updated_at"
 _STATUSES: tuple[RunStatus, ...] = ("queued", "running", "done", "skipped", "waiting", "failed")
@@ -42,7 +42,7 @@ def _time(value: datetime) -> str:
 
 
 def _suggestion(row: tuple[object, ...]) -> Suggestion:
-    sid, repo, n, scope, kind, payload, reason, state, created, updated, origin, basis = row
+    sid, repo, n, scope, kind, payload, reason, state, created, updated, origin, basis, error = row
     return Suggestion(
         id=str(sid),
         repo=cast(str | None, repo),
@@ -56,6 +56,7 @@ def _suggestion(row: tuple[object, ...]) -> Suggestion:
         updated_at=datetime.fromisoformat(str(updated)),
         origin=None if origin is None else tuple(json.loads(str(origin))),
         basis=cast(str | None, basis),
+        apply_error=cast(str | None, error),
     )
 
 
@@ -123,7 +124,8 @@ class SqliteSuggestionStore:
                 (repo, n, *ISSUE_KINDS),
             )
             self._conn.executemany(
-                f"INSERT INTO suggestions ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO suggestions ({_COLUMNS}) "
+                f"VALUES ({', '.join('?' for _ in range(13))})",
                 [
                     (
                         s.id,
@@ -138,6 +140,7 @@ class SqliteSuggestionStore:
                         _time(s.updated_at),
                         _origin_json(s.origin),
                         s.basis,
+                        s.apply_error,
                     )
                     for s in drafts
                 ],
@@ -146,7 +149,7 @@ class SqliteSuggestionStore:
     def save(self, suggestion: Suggestion) -> None:
         self._conn.execute(
             "UPDATE suggestions SET kind = ?, payload_json = ?, reason = ?, state = ?, "
-            "updated_at = ?, origin_json = ?, basis = ? WHERE id = ?",
+            "updated_at = ?, origin_json = ?, basis = ?, apply_error = ? WHERE id = ?",
             (
                 suggestion.kind,
                 payload_json(suggestion.payload),
@@ -155,6 +158,7 @@ class SqliteSuggestionStore:
                 _time(suggestion.updated_at),
                 _origin_json(suggestion.origin),
                 suggestion.basis,
+                suggestion.apply_error,
                 suggestion.id,
             ),
         )

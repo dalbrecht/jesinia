@@ -101,6 +101,17 @@ class InvalidSuggestionEditError(SuggestionDomainError):
     """An edit the suggestion's kind doesn't allow, or a value the repo's schema lacks."""
 
 
+class SuggestionStaleError(SuggestionDomainError):
+    """The suggestion's premise is gone (the issue closed, the dimension was filled, it got a
+    parent, its readiness changed): approving it now would apply stale advice, so nothing is
+    applied."""
+
+
+class DuplicateNotCachedError(SuggestionDomainError):
+    """The issue a duplicate points at isn't in the cache, so its GitHub database id (which
+    ``duplicate_issue_id`` needs) is unknown; sync its repo first."""
+
+
 class SuggestionRunError(RuntimeError):
     """Base for a suggestion run that produced nothing; the cause is kept."""
 
@@ -149,7 +160,8 @@ class Suggestion:
 
     ``origin`` is the ``identity`` it was proposed with (kept through edits, so an edited area
     still answers for the area first proposed); ``basis`` is the issue's ``content_hash`` the
-    draft was made from (a dismissal holds only while the issue still says the same)."""
+    draft was made from (a dismissal holds only while the issue still says the same).
+    ``apply_error`` is why its last approval failed to apply (it stays approvable)."""
 
     id: str
     repo: str | None
@@ -163,6 +175,7 @@ class Suggestion:
     updated_at: datetime
     origin: tuple[object, ...] | None = None
     basis: str | None = None
+    apply_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -462,6 +475,32 @@ def stale(suggestion: Suggestion, triaged: Triage, *, has_parent: bool, is_open:
             return triaged.readiness != HUMAN_NEEDED
         return triaged.readiness not in (AGENT_READY, None)
     return False
+
+
+def premise_holds(
+    suggestion: Suggestion, triaged: Triage, *, has_parent: bool, is_open: bool
+) -> bool:
+    """Whether the advice still applies to the issue as it is now: the ``stale`` rule, for any
+    open suggestion (an edited one included), checked again when it is approved."""
+    return not stale(
+        replace(suggestion, state="draft"), triaged, has_parent=has_parent, is_open=is_open
+    )
+
+
+def approved(suggestion: Suggestion, now: datetime) -> Suggestion:
+    """``suggestion`` approved and applied.
+
+    Raises:
+        SuggestionStateError: it was approved or dismissed already.
+    """
+    _require_open(suggestion)
+    return replace(suggestion, state="approved", updated_at=now, apply_error=None)
+
+
+def apply_failed(suggestion: Suggestion, cause: str, now: datetime) -> Suggestion:
+    """``suggestion`` after an approval whose apply failed: still open (approvable again), with
+    the cause."""
+    return replace(suggestion, updated_at=now, apply_error=one_line(cause, 1000))
 
 
 def _require_open(suggestion: Suggestion) -> None:

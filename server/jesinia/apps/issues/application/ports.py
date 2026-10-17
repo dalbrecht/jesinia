@@ -10,8 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
+from jesinia.apps.issues.domain.changes import BatchResult, ChangeBatch, PendingChange
 from jesinia.apps.issues.domain.labels import LabelPlan
-from jesinia.apps.issues.domain.schema import LabelSchema
+from jesinia.apps.issues.domain.schema import LabelSchema, SchemaEntry
 from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionFilters
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
@@ -23,6 +24,8 @@ from jesinia.apps.issues.domain.triage import (
 )
 from jesinia.services.agents.application.packs import ContextPack
 from jesinia.services.github.domain.issue import (
+    CloseReason,
+    CommentRef,
     Issue,
     IssueComment,
     IssueRef,
@@ -72,8 +75,9 @@ class IssueReads(Protocol):
 @dataclass(frozen=True)
 class RepoState:
     """A repo the author added, with its schema and where its sync stands. ``schema`` is the
-    effective one (``DEFAULT_SCHEMA`` until one is stored) and ``schema_source`` where it came
-    from; ``settings_schema`` is the one made in Settings, kept even while a labels.yml wins."""
+    effective one (``DEFAULT_SCHEMA`` until one is stored), with the approved ``overlay``
+    entries merged over it, and ``schema_source`` where it came from; ``settings_schema`` is the
+    one made in Settings, kept even while a labels.yml wins."""
 
     repo: str
     watched: bool
@@ -85,6 +89,7 @@ class RepoState:
     synced_at: datetime | None
     sync_error: str | None
     settings_schema: LabelSchema | None = None
+    overlay: tuple[SchemaEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -362,3 +367,90 @@ class AgentAsker(Protocol):
     async def one_shot(
         self, runner: str, pack: ContextPack, prompt: str, *, timeout: float = 45.0
     ) -> str: ...
+
+
+# The apply engine (Task 6) -------------------------------------------------------------------
+
+ApplyOrigin = Literal["pending", "suggestion"]
+
+
+class IssueWrites(LabelWrites, Protocol):
+    """What the apply engine asks GitHub (``IssueClient`` satisfies it). Every method may raise
+    ``GitHubError`` (a ``GitHubRateLimitedError`` while limited)."""
+
+    async def get(self, repo: str, n: int) -> Issue: ...
+
+    async def parent(self, repo: str, n: int) -> Issue | None: ...
+
+    async def add_sub_issue(
+        self, repo: str, n: int, child_id: int, *, replace_parent: bool = False
+    ) -> None: ...
+
+    async def remove_sub_issue(self, repo: str, n: int, child_id: int) -> None: ...
+
+    async def reprioritize_sub_issue(
+        self, repo: str, n: int, child_id: int, after_id: int | None
+    ) -> None: ...
+
+    async def close(
+        self, repo: str, n: int, state_reason: CloseReason, duplicate_of: int | None = None
+    ) -> Issue: ...
+
+    async def comment(self, repo: str, n: int, body: str) -> CommentRef: ...
+
+    async def create_issue(
+        self, repo: str, title: str, body: str, labels: Sequence[str]
+    ) -> Issue: ...
+
+
+class ApplyCache(Protocol):
+    """The issue cache the apply engine reads and updates (``SqliteIssuesStore`` has it)."""
+
+    def repo(self, repo: str) -> RepoState | None: ...
+
+    def cached_issue(self, repo: str, n: int) -> CachedIssue | None: ...
+
+    def add_overlay(self, repo: str, entry: SchemaEntry, now: datetime) -> None:
+        """Record an approved schema entry; merged over the repo's schema on every read."""
+
+    def replace_labels(self, repo: str, labels: Sequence[Label]) -> None: ...
+
+    def refresh_issue(self, issue: Issue, triaged: Triage) -> None:
+        """Store a cached issue as an apply left it (a row already newer is kept); the Inbox
+        flag is cleared when it is now complete, never set."""
+
+
+@dataclass(frozen=True)
+class AppliedBatch:
+    """A batch as applied, kept so Retry can resume it: where it came from (the tray or a
+    suggestion's approval), its changes and its result so far."""
+
+    id: str
+    origin: ApplyOrigin
+    suggestion_id: str | None
+    batch: ChangeBatch
+    result: BatchResult
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplyStore(Protocol):
+    """The pending-changes tray and the applied batches in ``issues.sqlite``."""
+
+    def add_pending(self, change: PendingChange) -> None: ...
+
+    def pending(self, ids: Sequence[str] | None = None) -> list[PendingChange]:
+        """The staged changes (only ``ids`` when given), in the order staged."""
+
+    def delete_pending(self, ids: Sequence[str]) -> int:
+        """Remove these staged changes; how many there were."""
+
+    def clear_pending(self) -> None: ...
+
+    def save_batch(self, applied: AppliedBatch) -> None:
+        """Store (or replace) an applied batch and its result."""
+
+    def batch(self, batch_id: str) -> AppliedBatch | None: ...
+
+    def prune_batches(self, before: datetime) -> int:
+        """Forget batches last updated before ``before``; how many."""

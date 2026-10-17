@@ -47,7 +47,13 @@ from jesinia.apps.issues.application.ports import (
     SchemaSource,
     StoredIssue,
 )
-from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, LabelSchema, parse_labels_yml
+from jesinia.apps.issues.domain.schema import (
+    DEFAULT_SCHEMA,
+    LabelSchema,
+    SchemaEntry,
+    parse_labels_yml,
+    with_overlay,
+)
 from jesinia.apps.issues.domain.triage import (
     IssueNotCachedError,
     RepoMovedError,
@@ -86,7 +92,8 @@ def _key(repo: str) -> str:
 
 async def read_schema(github: SchemaReads, state: RepoState) -> tuple[SchemaSource, LabelSchema]:
     """``state``'s effective schema as GitHub has it now: ``.jesinia/labels.yml`` when it exists,
-    else the one kept in Settings, else the default (spec §2). A file that exists but can't be
+    else the one kept in Settings, else the default (spec §2), with the approved overlay entries
+    merged over it (Task 6), so a re-read file never drops them. A file that exists but can't be
     read as text gives the default with the cause in ``errors``.
 
     Raises:
@@ -95,16 +102,20 @@ async def read_schema(github: SchemaReads, state: RepoState) -> tuple[SchemaSour
     try:
         text = await github.file(state.repo, LABELS_YML)
     except GitHubPayloadError as exc:
-        return "repo", replace(DEFAULT_SCHEMA, errors=(str(exc),))
+        return "repo", with_overlay(replace(DEFAULT_SCHEMA, errors=(str(exc),)), state.overlay)
     if text is None:
-        return _without_file(state.settings_schema)
-    return "repo", parse_labels_yml(text)
+        return _without_file(state.settings_schema, state.overlay)
+    return "repo", with_overlay(parse_labels_yml(text), state.overlay)
 
 
-def _without_file(settings: LabelSchema | None) -> tuple[SchemaSource, LabelSchema]:
+def _without_file(
+    settings: LabelSchema | None, overlay: Sequence[SchemaEntry]
+) -> tuple[SchemaSource, LabelSchema]:
     """The effective schema when the repo has no labels.yml (spec §2 precedence: labels.yml,
-    then the schema made in Settings, then the default)."""
-    return ("default", DEFAULT_SCHEMA) if settings is None else ("settings", settings)
+    then the schema made in Settings, then the default), with the overlay merged over it."""
+    if settings is None:
+        return "default", with_overlay(DEFAULT_SCHEMA, overlay)
+    return "settings", with_overlay(settings, overlay)
 
 
 async def _capped_pages[T](fetch: Callable[[str | None], Awaitable[Page[T]]]) -> list[T]:
@@ -401,7 +412,7 @@ class SyncService:
             state = self.state(name)
             self._store.set_settings_schema(name, schema)
             if state.schema_source != "repo":
-                source, effective = _without_file(schema)
+                source, effective = _without_file(schema, state.overlay)
                 self._store_effective(state, source, effective)
 
     def back_off(self, until: datetime | None) -> None:
@@ -414,8 +425,8 @@ class SyncService:
 
     async def recompute(self, repo: str) -> None:
         """Re-triage every cached issue of ``repo`` against its stored schema (IR18): call it
-        after the schema or its overlay changes. Kept for Task 5–6's ``schema_overlay``, which
-        changes the stored schema outside Settings. It can clear the Inbox flag (an issue now
+        after the schema or its overlay changes (an approved new area writes the overlay, which
+        changes the effective schema outside Settings). It can clear the Inbox flag (an issue now
         complete) but never set it: the convention changed, not the issue, so this never floods
         the Inbox (IR30). It waits for a running sync of the repo, so pages that sync saves with
         the old schema can't overwrite it.

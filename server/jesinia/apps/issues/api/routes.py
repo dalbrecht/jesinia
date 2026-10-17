@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Issues routes under ``/api/issues``: watched repos and their Settings, the Inbox and
-Backlog, one issue, the label setup and migration batches, and suggestion drafts (list, edit,
-dismiss, and runs on demand; approving one arrives with Task 6's apply engine, ruling IR36).
+Backlog, one issue, the label setup and migration batches, suggestion drafts (list, edit,
+dismiss, approve, and runs on demand), and the pending-changes tray with its applied batches.
 
 Every route needs the owner: the app mounts module routers behind ``require_owner``, so agent
-session tokens are refused (IR2); applying a label batch, the one approval here, also declares
-it itself. Every write takes an ``Idempotency-Key``. GET routes serve ``issues.sqlite`` only and
-never await GitHub (spec §6.3). A preview is a POST only for its body and isn't keyed: it reads
+session tokens are refused (IR2); the routes that change GitHub (applying a label batch,
+approving a suggestion, applying or retrying a batch) also declare it themselves. Every write
+takes an ``Idempotency-Key``. GET routes serve ``issues.sqlite`` only and never await GitHub
+(spec §6.3). A preview is a POST only for its body and isn't keyed: it reads
 GitHub and keeps a plan, and repeating it is harmless. Typed errors become ``{"error",
 "detail"}`` JSON with their status; a GitHub rate limit is a 503 with ``Retry-After`` (so the
 response is never stored under the key) wherever it happens.
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 
 from jesinia.apps.issues.api.schemas import (
     REPO_MAX,
+    ApplyBatchOut,
     IssueDetailOut,
     IssuesErrorOut,
     IssuesRepoIn,
@@ -42,11 +44,24 @@ from jesinia.apps.issues.api.schemas import (
     LabelApplyOut,
     LabelPlanIn,
     LabelPlanOut,
+    PendingApplyIn,
+    PendingIn,
+    PendingListOut,
+    PendingOut,
+    SuggestionApproveOut,
+    body_change,
 )
 from jesinia.apps.issues.application.labels import LabelSetupService
+from jesinia.apps.issues.application.pending import ApplyService, PendingService
+from jesinia.apps.issues.application.ports import AppliedBatch
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.domain.changes import (
+    BatchNotFoundError,
+    ChangeDomainError,
+    PendingNotFoundError,
+)
 from jesinia.apps.issues.domain.labels import (
     LabelNameCollisionError,
     LabelPlanError,
@@ -58,9 +73,11 @@ from jesinia.apps.issues.domain.labels import (
 from jesinia.apps.issues.domain.schema import InvalidSettingsSchemaError, validate_settings_schema
 from jesinia.apps.issues.domain.suggestions import (
     OPEN_STATES,
+    DuplicateNotCachedError,
     SuggestionDomainError,
     SuggestionFilters,
     SuggestionNotFoundError,
+    SuggestionStaleError,
     SuggestionStateError,
     parse_kind,
     parse_state,
@@ -100,6 +117,12 @@ class IssuesHost(Protocol):
     def suggest(self) -> SuggestService: ...
 
     @property
+    def pending(self) -> PendingService: ...
+
+    @property
+    def apply(self) -> ApplyService: ...
+
+    @property
     def idempotency(self) -> IdempotencyStore: ...
 
     def clock(self) -> datetime:
@@ -116,6 +139,10 @@ _STATUS: dict[type[Exception], int] = {
     LabelNameCollisionError: status.HTTP_409_CONFLICT,
     SuggestionNotFoundError: status.HTTP_404_NOT_FOUND,
     SuggestionStateError: status.HTTP_409_CONFLICT,
+    SuggestionStaleError: status.HTTP_409_CONFLICT,
+    DuplicateNotCachedError: status.HTTP_409_CONFLICT,
+    PendingNotFoundError: status.HTTP_404_NOT_FOUND,
+    BatchNotFoundError: status.HTTP_404_NOT_FOUND,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -124,12 +151,14 @@ _STATUS: dict[type[Exception], int] = {
     TriageDomainError: status.HTTP_400_BAD_REQUEST,
     LabelPlanError: status.HTTP_400_BAD_REQUEST,
     SuggestionDomainError: status.HTTP_400_BAD_REQUEST,
+    ChangeDomainError: status.HTTP_400_BAD_REQUEST,
     InvalidSettingsSchemaError: status.HTTP_400_BAD_REQUEST,
     GitHubReferenceError: status.HTTP_400_BAD_REQUEST,
     IssueDomainError: status.HTTP_400_BAD_REQUEST,
 }
 _TYPED = (
     TriageDomainError,
+    ChangeDomainError,
     LabelPlanError,
     SuggestionDomainError,
     InvalidSettingsSchemaError,
@@ -146,6 +175,7 @@ Owner = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Name = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Number = Annotated[int, Path(ge=1, le=999_999_999)]
 SuggestionId = Annotated[str, Path(min_length=1, max_length=64)]
+ItemId = Annotated[str, Path(min_length=1, max_length=64)]
 
 
 def retry_after(reset_at: datetime | None, now: datetime) -> int:
@@ -185,6 +215,23 @@ async def _respond(
 
 def _repo(owner: str, repo: str) -> str:
     return f"{owner}/{repo}"
+
+
+def _batch_response(
+    applied: AppliedBatch, now: Callable[[], datetime], out: BaseModel | None = None
+) -> Response:
+    """A batch's answer: 200, or a 503 when GitHub stopped it (with ``Retry-After`` for a rate
+    limit), so the response is never stored under the idempotency key and the client retries."""
+    body = jsonable_encoder(out or ApplyBatchOut.of(applied))
+    result = applied.result
+    if result.stopped is None:
+        return JSONResponse(body)
+    headers = (
+        {"Retry-After": str(retry_after(result.rate_limited_until, now()))}
+        if result.is_rate_limited
+        else None
+    )
+    return JSONResponse(body, status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers=headers)
 
 
 def build_router(host: IssuesHost) -> APIRouter:
@@ -369,6 +416,114 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         async def run() -> IssueSuggestionOut:
             return IssueSuggestionOut.of(host.suggest.dismiss(suggestion_id))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    stopped_responses: dict[int | str, dict[str, Any]] = {
+        503: {"model": ApplyBatchOut, "description": "GitHub stopped the batch"}
+    }
+
+    @r.post(
+        "/suggestions/{suggestion_id}/approve",
+        response_model=SuggestionApproveOut,
+        responses={503: {"model": SuggestionApproveOut, "description": "GitHub stopped it"}},
+    )
+    async def approve_suggestion(
+        suggestion_id: SuggestionId,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Approve a suggestion: it applies to GitHub at once, as one ordered series. Refused
+        with a 409 when its premise is gone (nothing applied), when it was approved or
+        dismissed, or for a duplicate whose original isn't cached. A failed apply leaves it
+        approvable with ``apply_error``; Retry its batch with ``/pending/{batch}/retry``."""
+
+        async def run() -> Response:
+            approval = await host.apply.approve(suggestion_id)
+            out = SuggestionApproveOut(
+                suggestion=IssueSuggestionOut.of(approval.suggestion),
+                batch=ApplyBatchOut.of(approval.batch),
+            )
+            return _batch_response(approval.batch, host.clock, out)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get("/pending", response_model=PendingListOut)
+    async def get_pending() -> Response:
+        """The pending-changes tray, in the order staged (no GitHub)."""
+
+        async def run() -> PendingListOut:
+            return PendingListOut(changes=[PendingOut.of(p) for p in host.pending.pending()])
+
+        return await _respond(run, host.clock)
+
+    @r.post("/pending", response_model=PendingOut, status_code=status.HTTP_201_CREATED)
+    async def stage_pending(body: PendingIn, idem: IdempotentCall = keyed) -> Response:
+        """Stage a change for a cached issue (a drag, a picker, a menu, the bulk bar or a queue
+        move); nothing reaches GitHub until Apply."""
+
+        async def run() -> Response:
+            change = body_change(body.change, host.pending.original)
+            staged = host.pending.stage(body.repo, body.n, change, body.source)
+            return JSONResponse(
+                jsonable_encoder(PendingOut.of(staged)), status_code=status.HTTP_201_CREATED
+            )
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.delete("/pending/{pending_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def unstage_pending(pending_id: ItemId, idem: IdempotentCall = keyed) -> Response:
+        """Undo one staged change."""
+
+        async def run() -> Response:
+            host.pending.unstage(pending_id)
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.delete("/pending", status_code=status.HTTP_204_NO_CONTENT)
+    async def clear_pending(idem: IdempotentCall = keyed) -> Response:
+        """Undo every staged change."""
+
+        async def run() -> Response:
+            host.pending.clear()
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post("/pending/apply", response_model=ApplyBatchOut, responses=stopped_responses)
+    async def apply_pending(
+        body: PendingApplyIn,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Apply the staged changes (or only ``ids``) as one batch: per issue, one ordered
+        series against a fresh read. They leave the tray; Retry resumes what didn't apply."""
+
+        async def run() -> Response:
+            return _batch_response(await host.apply.apply_pending(body.ids), host.clock)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get("/pending/{batch}", response_model=ApplyBatchOut)
+    async def get_batch(batch: ItemId) -> Response:
+        """An applied batch and its result, step by step (no GitHub)."""
+
+        async def run() -> ApplyBatchOut:
+            return ApplyBatchOut.of(host.pending.batch(batch))
+
+        return await _respond(run, host.clock)
+
+    @r.post("/pending/{batch}/retry", response_model=ApplyBatchOut, responses=stopped_responses)
+    async def retry_batch(
+        batch: ItemId,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Run again only the steps of a batch that didn't apply (failed or skipped)."""
+
+        async def run() -> Response:
+            return _batch_response(await host.apply.retry(batch), host.clock)
 
         return await idem.run(lambda: _respond(run, host.clock))
 

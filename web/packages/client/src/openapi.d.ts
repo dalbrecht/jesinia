@@ -1266,6 +1266,139 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/issues/suggestions/{suggestion_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Suggestion
+         * @description Approve a suggestion: it applies to GitHub at once, as one ordered series. Refused
+         *     with a 409 when its premise is gone (nothing applied), when it was approved or
+         *     dismissed, or for a duplicate whose original isn't cached. A failed apply leaves it
+         *     approvable with ``apply_error``; Retry its batch with ``/pending/{batch}/retry``.
+         */
+        post: operations["approve_suggestion_api_issues_suggestions__suggestion_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Pending
+         * @description The pending-changes tray, in the order staged (no GitHub).
+         */
+        get: operations["get_pending_api_issues_pending_get"];
+        put?: never;
+        /**
+         * Stage Pending
+         * @description Stage a change for a cached issue (a drag, a picker, a menu, the bulk bar or a queue
+         *     move); nothing reaches GitHub until Apply.
+         */
+        post: operations["stage_pending_api_issues_pending_post"];
+        /**
+         * Clear Pending
+         * @description Undo every staged change.
+         */
+        delete: operations["clear_pending_api_issues_pending_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/pending/{pending_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unstage Pending
+         * @description Undo one staged change.
+         */
+        delete: operations["unstage_pending_api_issues_pending__pending_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/pending/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Pending
+         * @description Apply the staged changes (or only ``ids``) as one batch: per issue, one ordered
+         *     series against a fresh read. They leave the tray; Retry resumes what didn't apply.
+         */
+        post: operations["apply_pending_api_issues_pending_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/pending/{batch}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Batch
+         * @description An applied batch and its result, step by step (no GitHub).
+         */
+        get: operations["get_batch_api_issues_pending__batch__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/pending/{batch}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Batch
+         * @description Run again only the steps of a batch that didn't apply (failed or skipped).
+         */
+        post: operations["retry_batch_api_issues_pending__batch__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/issues/{view}": {
         parameters: {
             query?: never;
@@ -1553,6 +1686,112 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AddAreaBody */
+        AddAreaBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "add_area";
+            /** Value */
+            value: string;
+        };
+        /**
+         * ApplyBatchOut
+         * @description An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,
+         *     with ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a
+         *     503. Retry it with ``POST /pending/{id}/retry``.
+         */
+        ApplyBatchOut: {
+            /** Id */
+            id: string;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "pending" | "suggestion";
+            /** Complete */
+            complete: boolean;
+            /** Repo Steps */
+            repo_steps: components["schemas"]["ApplyRepoStepOut"][];
+            /** Issues */
+            issues: components["schemas"]["ApplyIssueOut"][];
+            /** Created */
+            created: components["schemas"]["ApplyCreatedOut"][];
+            /** Stopped */
+            stopped: string | null;
+            /** Rate Limited */
+            rate_limited: boolean;
+            /** Rate Limited Until */
+            rate_limited_until: string | null;
+        };
+        /** ApplyCreatedOut */
+        ApplyCreatedOut: {
+            /** Temp Id */
+            temp_id: string;
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+        };
+        /**
+         * ApplyIssueOut
+         * @description One issue's steps in order: ``repo`` and ``n`` for an existing issue, ``temp_id`` for one
+         *     the batch creates (``repo`` and ``n`` filled once it exists).
+         */
+        ApplyIssueOut: {
+            /** Repo */
+            repo: string | null;
+            /** N */
+            n: number | null;
+            /** Temp Id */
+            temp_id: string | null;
+            /** Steps */
+            steps: components["schemas"]["ApplyStepOut"][];
+        };
+        /**
+         * ApplyRepoStepOut
+         * @description A repo-level step: a label ensured (``label``) or an issue created (``temp_id``).
+         */
+        ApplyRepoStepOut: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "ensure_label" | "create_issue" | "labels" | "parent" | "order" | "close" | "comment";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "done" | "failed" | "skipped";
+            /** Cause */
+            cause: string | null;
+            /** Repo */
+            repo: string;
+            /** Label */
+            label: string | null;
+            /** Temp Id */
+            temp_id: string | null;
+        };
+        /**
+         * ApplyStepOut
+         * @description One step: ``done`` (``cause`` may say it was already so), ``failed`` or ``skipped``
+         *     (``cause`` says why).
+         */
+        ApplyStepOut: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "ensure_label" | "create_issue" | "labels" | "parent" | "order" | "close" | "comment";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "done" | "failed" | "skipped";
+            /** Cause */
+            cause: string | null;
+        };
         /** ArticleOut */
         ArticleOut: {
             /** Markdown */
@@ -1564,6 +1803,36 @@ export interface components {
             body: string;
             /** Expected Rev */
             expected_rev: string;
+        };
+        /**
+         * CloseBody
+         * @description Close the issue; a duplicate names its original (which must be cached) and may carry a
+         *     comment, posted after the close.
+         */
+        CloseBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "close";
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "completed" | "not_planned" | "duplicate";
+            duplicate_of?: components["schemas"]["IssueTargetBody"] | null;
+            /** Comment */
+            comment?: string | null;
+        };
+        /** CommentBody */
+        CommentBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "comment";
+            /** Body */
+            body: string;
         };
         /** CommentOut */
         CommentOut: {
@@ -1961,7 +2230,8 @@ export interface components {
          *     - ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be
          *       ``agent-ready``; else what ``agent-ready`` still lacks).
          *
-         *     ``reason`` is the agent's one line, untrusted text shown as data.
+         *     ``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why
+         *     its last approval didn't apply (it stays approvable).
          */
         IssueSuggestionOut: {
             /** Id */
@@ -1998,6 +2268,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Apply Error */
+            apply_error?: string | null;
         };
         /**
          * IssueSuggestionRunIn
@@ -2056,6 +2328,16 @@ export interface components {
             /** Suggestions */
             suggestions: components["schemas"]["IssueSuggestionOut"][];
             run: components["schemas"]["IssueSuggestionRunOut"] | null;
+        };
+        /**
+         * IssueTargetBody
+         * @description An existing issue.
+         */
+        IssueTargetBody: {
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
         };
         /**
          * IssueViewOut
@@ -2431,6 +2713,60 @@ export interface components {
             /** Path */
             path: string;
         };
+        /**
+         * PendingApplyIn
+         * @description Which staged changes to apply (all of them when ``ids`` is omitted or ``null``).
+         */
+        PendingApplyIn: {
+            /** Ids */
+            ids?: string[] | null;
+        };
+        /**
+         * PendingIn
+         * @description A change to stage for a cached issue, and what staged it.
+         */
+        PendingIn: {
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+            /** Change */
+            change: components["schemas"]["SetDimensionBody"] | components["schemas"]["AddAreaBody"] | components["schemas"]["RemoveAreaBody"] | components["schemas"]["SetParentBody"] | components["schemas"]["ReorderChildBody"] | components["schemas"]["CloseBody"] | components["schemas"]["CommentBody"];
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "drag" | "picker" | "menu" | "bulk" | "queue";
+        };
+        /**
+         * PendingListOut
+         * @description The tray, in the order staged.
+         */
+        PendingListOut: {
+            /** Changes */
+            changes: components["schemas"]["PendingOut"][];
+        };
+        /** PendingOut */
+        PendingOut: {
+            /** Id */
+            id: string;
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+            /** Change */
+            change: components["schemas"]["SetDimensionBody"] | components["schemas"]["AddAreaBody"] | components["schemas"]["RemoveAreaBody"] | components["schemas"]["SetParentBody"] | components["schemas"]["ReorderChildBody"] | components["schemas"]["CloseBody"] | components["schemas"]["CommentBody"];
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "drag" | "picker" | "menu" | "bulk" | "queue";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /** PollSummaryOut */
         PollSummaryOut: {
             /** Polled */
@@ -2702,6 +3038,16 @@ export interface components {
              */
             as_of: string;
         };
+        /** RemoveAreaBody */
+        RemoveAreaBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "remove_area";
+            /** Value */
+            value: string;
+        };
         /** RenameIn */
         RenameIn: {
             /** Old */
@@ -2736,6 +3082,19 @@ export interface components {
             updated: string[];
             /** Skipped Changed */
             skipped_changed: string[];
+        };
+        /**
+         * ReorderChildBody
+         * @description Within this epic, move ``child`` just after ``after`` (the top when ``null``).
+         */
+        ReorderChildBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "reorder_child";
+            child: components["schemas"]["IssueTargetBody"];
+            after?: components["schemas"]["IssueTargetBody"] | null;
         };
         /** ReviewErrorOut */
         ReviewErrorOut: {
@@ -2896,6 +3255,36 @@ export interface components {
             read_only: boolean;
             subject: components["schemas"]["SubjectOut"];
         };
+        /**
+         * SetDimensionBody
+         * @description Set readiness, priority or type to a schema value (its other values are removed).
+         */
+        SetDimensionBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_dimension";
+            /**
+             * Dimension
+             * @enum {string}
+             */
+            dimension: "readiness" | "priority" | "type";
+            /** Value */
+            value: string;
+        };
+        /**
+         * SetParentBody
+         * @description Make ``parent`` the issue's epic, or remove its parent (``null``).
+         */
+        SetParentBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_parent";
+            parent: components["schemas"]["IssueTargetBody"] | null;
+        };
         /** SettingsBody */
         SettingsBody: {
             /**
@@ -2946,6 +3335,15 @@ export interface components {
              * @default 5
              */
             limit: number;
+        };
+        /**
+         * SuggestionApproveOut
+         * @description The suggestion after its approval (``approved``, or still open with ``apply_error``) and
+         *     the batch that applied it.
+         */
+        SuggestionApproveOut: {
+            suggestion: components["schemas"]["IssueSuggestionOut"];
+            batch: components["schemas"]["ApplyBatchOut"];
         };
         /** SuggestionOut */
         SuggestionOut: {
@@ -7290,6 +7688,619 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    approve_suggestion_api_issues_suggestions__suggestion_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                suggestion_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestionApproveOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description GitHub stopped it */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestionApproveOut"];
+                };
+            };
+        };
+    };
+    get_pending_api_issues_pending_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingListOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    stage_pending_api_issues_pending_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PendingIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    clear_pending_api_issues_pending_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    unstage_pending_api_issues_pending__pending_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                pending_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    apply_pending_api_issues_pending_apply_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PendingApplyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description GitHub stopped the batch */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchOut"];
+                };
+            };
+        };
+    };
+    get_batch_api_issues_pending__batch__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    retry_batch_api_issues_pending__batch__retry_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                batch: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description GitHub stopped the batch */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchOut"];
                 };
             };
         };

@@ -302,8 +302,14 @@ and touch sensors, such as `@dnd-kit` (MIT), wrapped once in `@jesinia/design` a
   - Each approval runs as one **ordered series** of calls for that issue, in this order:
     1. labels;
     2. parent epic link;
-    3. close (if any);
-    4. comment (if any).
+    3. sub-issue order (if any; a reorder within an epic, §6.1);
+    4. close (if any);
+    5. comment (if any).
+
+    Step 3 is a spec-compatible extension recorded at plan acceptance (ruling IR13): §6.1 already
+    stages reorders as GitHub writes. Before any issue's series, a batch runs its repo-level
+    steps: creating a label an approval adds (a new area, created only by that approval), then
+    creating any new issue the batch's other changes name.
   - Labels are applied as **add/remove against a fresh read**, never by replacing the whole
     set, so a change someone made on GitHub since the last sync isn't wiped.
   - The series stops at the first failure, keeps what succeeded, and shows exactly which steps

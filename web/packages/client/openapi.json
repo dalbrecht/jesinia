@@ -5816,6 +5816,820 @@
         }
       }
     },
+    "/api/issues/suggestions/{suggestion_id}/approve": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Approve Suggestion",
+        "description": "Approve a suggestion: it applies to GitHub at once, as one ordered series. Refused\nwith a 409 when its premise is gone (nothing applied), when it was approved or\ndismissed, or for a duplicate whose original isn't cached. A failed apply leaves it\napprovable with ``apply_error``; Retry its batch with ``/pending/{batch}/retry``.",
+        "operationId": "approve_suggestion_api_issues_suggestions__suggestion_id__approve_post",
+        "parameters": [
+          {
+            "name": "suggestion_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Suggestion Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionApproveOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "description": "GitHub stopped it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionApproveOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/pending": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Pending",
+        "description": "The pending-changes tray, in the order staged (no GitHub).",
+        "operationId": "get_pending_api_issues_pending_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingListOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Stage Pending",
+        "description": "Stage a change for a cached issue (a drag, a picker, a menu, the bulk bar or a queue\nmove); nothing reaches GitHub until Apply.",
+        "operationId": "stage_pending_api_issues_pending_post",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PendingIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Clear Pending",
+        "description": "Undo every staged change.",
+        "operationId": "clear_pending_api_issues_pending_delete",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/pending/{pending_id}": {
+      "delete": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Unstage Pending",
+        "description": "Undo one staged change.",
+        "operationId": "unstage_pending_api_issues_pending__pending_id__delete",
+        "parameters": [
+          {
+            "name": "pending_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Pending Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/pending/apply": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Apply Pending",
+        "description": "Apply the staged changes (or only ``ids``) as one batch: per issue, one ordered\nseries against a fresh read. They leave the tray; Retry resumes what didn't apply.",
+        "operationId": "apply_pending_api_issues_pending_apply_post",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PendingApplyIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyBatchOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "description": "GitHub stopped the batch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyBatchOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/pending/{batch}": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Batch",
+        "description": "An applied batch and its result, step by step (no GitHub).",
+        "operationId": "get_batch_api_issues_pending__batch__get",
+        "parameters": [
+          {
+            "name": "batch",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Batch"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyBatchOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/pending/{batch}/retry": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Retry Batch",
+        "description": "Run again only the steps of a batch that didn't apply (failed or skipped).",
+        "operationId": "retry_batch_api_issues_pending__batch__retry_post",
+        "parameters": [
+          {
+            "name": "batch",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Batch"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyBatchOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "description": "GitHub stopped the batch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyBatchOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/{view}": {
       "get": {
         "tags": [
@@ -7867,6 +8681,304 @@
   },
   "components": {
     "schemas": {
+      "AddAreaBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "add_area",
+            "title": "Kind"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "AddAreaBody"
+      },
+      "ApplyBatchOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "suggestion"
+            ],
+            "title": "Origin"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          },
+          "repo_steps": {
+            "items": {
+              "$ref": "#/components/schemas/ApplyRepoStepOut"
+            },
+            "type": "array",
+            "title": "Repo Steps"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ApplyIssueOut"
+            },
+            "type": "array",
+            "title": "Issues"
+          },
+          "created": {
+            "items": {
+              "$ref": "#/components/schemas/ApplyCreatedOut"
+            },
+            "type": "array",
+            "title": "Created"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          },
+          "rate_limited": {
+            "type": "boolean",
+            "title": "Rate Limited"
+          },
+          "rate_limited_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Limited Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "origin",
+          "complete",
+          "repo_steps",
+          "issues",
+          "created",
+          "stopped",
+          "rate_limited",
+          "rate_limited_until"
+        ],
+        "title": "ApplyBatchOut",
+        "description": "An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,\nwith ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a\n503. Retry it with ``POST /pending/{id}/retry``."
+      },
+      "ApplyCreatedOut": {
+        "properties": {
+          "temp_id": {
+            "type": "string",
+            "title": "Temp Id"
+          },
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N"
+          }
+        },
+        "type": "object",
+        "required": [
+          "temp_id",
+          "repo",
+          "n"
+        ],
+        "title": "ApplyCreatedOut"
+      },
+      "ApplyIssueOut": {
+        "properties": {
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          },
+          "n": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N"
+          },
+          "temp_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temp Id"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/ApplyStepOut"
+            },
+            "type": "array",
+            "title": "Steps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "n",
+          "temp_id",
+          "steps"
+        ],
+        "title": "ApplyIssueOut",
+        "description": "One issue's steps in order: ``repo`` and ``n`` for an existing issue, ``temp_id`` for one\nthe batch creates (``repo`` and ``n`` filled once it exists)."
+      },
+      "ApplyRepoStepOut": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ensure_label",
+              "create_issue",
+              "labels",
+              "parent",
+              "order",
+              "close",
+              "comment"
+            ],
+            "title": "Kind"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "skipped"
+            ],
+            "title": "State"
+          },
+          "cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause"
+          },
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "temp_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temp Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "state",
+          "cause",
+          "repo",
+          "label",
+          "temp_id"
+        ],
+        "title": "ApplyRepoStepOut",
+        "description": "A repo-level step: a label ensured (``label``) or an issue created (``temp_id``)."
+      },
+      "ApplyStepOut": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ensure_label",
+              "create_issue",
+              "labels",
+              "parent",
+              "order",
+              "close",
+              "comment"
+            ],
+            "title": "Kind"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "skipped"
+            ],
+            "title": "State"
+          },
+          "cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "state",
+          "cause"
+        ],
+        "title": "ApplyStepOut",
+        "description": "One step: ``done`` (``cause`` may say it was already so), ``failed`` or ``skipped``\n(``cause`` says why)."
+      },
       "ArticleOut": {
         "properties": {
           "markdown": {
@@ -7897,6 +9009,74 @@
           "expected_rev"
         ],
         "title": "BodyIn"
+      },
+      "CloseBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "close",
+            "title": "Kind"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "not_planned",
+              "duplicate"
+            ],
+            "title": "Reason"
+          },
+          "duplicate_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTargetBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 65536
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "reason"
+        ],
+        "title": "CloseBody",
+        "description": "Close the issue; a duplicate names its original (which must be cached) and may carry a\ncomment, posted after the close."
+      },
+      "CommentBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "comment",
+            "title": "Kind"
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 65536,
+            "minLength": 1,
+            "title": "Body"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "body"
+        ],
+        "title": "CommentBody"
       },
       "CommentOut": {
         "properties": {
@@ -9154,6 +10334,17 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "apply_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apply Error"
           }
         },
         "type": "object",
@@ -9170,7 +10361,7 @@
           "updated_at"
         ],
         "title": "IssueSuggestionOut",
-        "description": "A suggestion draft. ``repo`` and ``n`` name its issue (``scope`` a draft about several\nissues or a queue, from later tasks). ``payload`` is Jesinia's own JSON, by ``kind``:\n\n- ``label`` and ``new_area``: ``{dimension, value}`` (``new_area``: an area not in the\n  schema yet, which approving adds);\n- ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);\n- ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be\n  ``agent-ready``; else what ``agent-ready`` still lacks).\n\n``reason`` is the agent's one line, untrusted text shown as data."
+        "description": "A suggestion draft. ``repo`` and ``n`` name its issue (``scope`` a draft about several\nissues or a queue, from later tasks). ``payload`` is Jesinia's own JSON, by ``kind``:\n\n- ``label`` and ``new_area``: ``{dimension, value}`` (``new_area``: an area not in the\n  schema yet, which approving adds);\n- ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);\n- ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be\n  ``agent-ready``; else what ``agent-ready`` still lacks).\n\n``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why\nits last approval didn't apply (it stays approvable)."
       },
       "IssueSuggestionRunIn": {
         "properties": {
@@ -9299,6 +10490,29 @@
         ],
         "title": "IssueSuggestionsOut",
         "description": "Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked\nfor."
+      },
+      "IssueTargetBody": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 140,
+            "minLength": 3,
+            "title": "Repo"
+          },
+          "n": {
+            "type": "integer",
+            "maximum": 999999999.0,
+            "minimum": 1.0,
+            "title": "N"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "n"
+        ],
+        "title": "IssueTargetBody",
+        "description": "An existing issue."
       },
       "IssueViewOut": {
         "properties": {
@@ -10255,6 +11469,201 @@
         ],
         "title": "PathIn"
       },
+      "PendingApplyIn": {
+        "properties": {
+          "ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ids"
+          }
+        },
+        "type": "object",
+        "title": "PendingApplyIn",
+        "description": "Which staged changes to apply (all of them when ``ids`` is omitted or ``null``)."
+      },
+      "PendingIn": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 140,
+            "minLength": 3,
+            "title": "Repo"
+          },
+          "n": {
+            "type": "integer",
+            "maximum": 999999999.0,
+            "minimum": 1.0,
+            "title": "N"
+          },
+          "change": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SetDimensionBody"
+              },
+              {
+                "$ref": "#/components/schemas/AddAreaBody"
+              },
+              {
+                "$ref": "#/components/schemas/RemoveAreaBody"
+              },
+              {
+                "$ref": "#/components/schemas/SetParentBody"
+              },
+              {
+                "$ref": "#/components/schemas/ReorderChildBody"
+              },
+              {
+                "$ref": "#/components/schemas/CloseBody"
+              },
+              {
+                "$ref": "#/components/schemas/CommentBody"
+              }
+            ],
+            "title": "Change",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "add_area": "#/components/schemas/AddAreaBody",
+                "close": "#/components/schemas/CloseBody",
+                "comment": "#/components/schemas/CommentBody",
+                "remove_area": "#/components/schemas/RemoveAreaBody",
+                "reorder_child": "#/components/schemas/ReorderChildBody",
+                "set_dimension": "#/components/schemas/SetDimensionBody",
+                "set_parent": "#/components/schemas/SetParentBody"
+              }
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "drag",
+              "picker",
+              "menu",
+              "bulk",
+              "queue"
+            ],
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "n",
+          "change",
+          "source"
+        ],
+        "title": "PendingIn",
+        "description": "A change to stage for a cached issue, and what staged it."
+      },
+      "PendingListOut": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/PendingOut"
+            },
+            "type": "array",
+            "title": "Changes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "changes"
+        ],
+        "title": "PendingListOut",
+        "description": "The tray, in the order staged."
+      },
+      "PendingOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N"
+          },
+          "change": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SetDimensionBody"
+              },
+              {
+                "$ref": "#/components/schemas/AddAreaBody"
+              },
+              {
+                "$ref": "#/components/schemas/RemoveAreaBody"
+              },
+              {
+                "$ref": "#/components/schemas/SetParentBody"
+              },
+              {
+                "$ref": "#/components/schemas/ReorderChildBody"
+              },
+              {
+                "$ref": "#/components/schemas/CloseBody"
+              },
+              {
+                "$ref": "#/components/schemas/CommentBody"
+              }
+            ],
+            "title": "Change",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "add_area": "#/components/schemas/AddAreaBody",
+                "close": "#/components/schemas/CloseBody",
+                "comment": "#/components/schemas/CommentBody",
+                "remove_area": "#/components/schemas/RemoveAreaBody",
+                "reorder_child": "#/components/schemas/ReorderChildBody",
+                "set_dimension": "#/components/schemas/SetDimensionBody",
+                "set_parent": "#/components/schemas/SetParentBody"
+              }
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "drag",
+              "picker",
+              "menu",
+              "bulk",
+              "queue"
+            ],
+            "title": "Source"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "repo",
+          "n",
+          "change",
+          "source",
+          "created_at"
+        ],
+        "title": "PendingOut"
+      },
       "PollSummaryOut": {
         "properties": {
           "polled": {
@@ -11023,6 +12432,27 @@
         ],
         "title": "ReadAboveIn"
       },
+      "RemoveAreaBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "remove_area",
+            "title": "Kind"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "RemoveAreaBody"
+      },
       "RenameIn": {
         "properties": {
           "old": {
@@ -11123,6 +12553,35 @@
           "skipped_changed"
         ],
         "title": "RenameResultOut"
+      },
+      "ReorderChildBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "reorder_child",
+            "title": "Kind"
+          },
+          "child": {
+            "$ref": "#/components/schemas/IssueTargetBody"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTargetBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "child"
+        ],
+        "title": "ReorderChildBody",
+        "description": "Within this epic, move ``child`` just after ``after`` (the top when ``null``)."
       },
       "ReviewErrorOut": {
         "properties": {
@@ -11547,6 +13006,64 @@
         ],
         "title": "SessionOut"
       },
+      "SetDimensionBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "set_dimension",
+            "title": "Kind"
+          },
+          "dimension": {
+            "type": "string",
+            "enum": [
+              "readiness",
+              "priority",
+              "type"
+            ],
+            "title": "Dimension"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "dimension",
+          "value"
+        ],
+        "title": "SetDimensionBody",
+        "description": "Set readiness, priority or type to a schema value (its other values are removed)."
+      },
+      "SetParentBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "set_parent",
+            "title": "Kind"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTargetBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "parent"
+        ],
+        "title": "SetParentBody",
+        "description": "Make ``parent`` the issue's epic, or remove its parent (``null``)."
+      },
       "SettingsBody": {
         "properties": {
           "retention": {
@@ -11655,6 +13172,23 @@
           "text"
         ],
         "title": "SuggestIn"
+      },
+      "SuggestionApproveOut": {
+        "properties": {
+          "suggestion": {
+            "$ref": "#/components/schemas/IssueSuggestionOut"
+          },
+          "batch": {
+            "$ref": "#/components/schemas/ApplyBatchOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "suggestion",
+          "batch"
+        ],
+        "title": "SuggestionApproveOut",
+        "description": "The suggestion after its approval (``approved``, or still open with ``apply_error``) and\nthe batch that applied it."
       },
       "SuggestionOut": {
         "properties": {
