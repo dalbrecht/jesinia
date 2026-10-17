@@ -218,6 +218,8 @@ class FakeJobs:
     reads: dict[str, object] | None = None
     # Jobs that never finish (until cancelled): a stop or crash lands while they run.
     stuck: set[JobKind] = field(default_factory=set)
+    depth_hold: asyncio.Event | None = None
+    depth_asked: bool = False
 
     in_flight: int = 0
     peak: int = 0
@@ -247,6 +249,9 @@ class FakeJobs:
         return output
 
     async def correctness_depth(self, round: Round) -> Depth:
+        self.depth_asked = True
+        if self.depth_hold is not None:  # holds a preparation after it has read its depth
+            await self.depth_hold.wait()
         return "deep" if self.agent_authored else round.depth
 
 
@@ -848,8 +853,7 @@ async def test_an_open_during_an_everything_pre_review_runs_each_job_once(env: E
     ref = env.add(env.github.pr)
     env.workspace.fetch_hold = asyncio.Event()
     await env.scheduler.tick()
-    for _ in range(50):
-        await asyncio.sleep(0)
+    await wait_until(lambda: "started" in env.states())  # the pre-review is preparing
     result = await env.pipeline.open(ref)
     # Everything it lacks is already planned by the pre-review: nothing new starts.
     assert result.state == "running" and result.jobs == ()
@@ -884,8 +888,7 @@ async def test_a_second_open_while_the_first_runs_says_running(env: Env) -> None
     ref = env.add()
     env.jobs.hold = asyncio.Event()
     first = await env.pipeline.open(ref)
-    for _ in range(50):
-        await asyncio.sleep(0)
+    await wait_until(lambda: bool(env.jobs.ran))  # the first open's jobs are running
     second = await env.pipeline.open(ref)
     assert second.state == "running" and second.round_id == first.round_id
     env.jobs.hold.set()
@@ -1069,8 +1072,7 @@ async def test_opens_go_through_the_schedulers_two_slots(env: Env) -> None:
     await wait_until(lambda: len(env.jobs.rounds) == 2)
     opened = await env.pipeline.open(opened_ref)
     assert opened.state == "started"
-    for _ in range(50):
-        await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # real time for it to (wrongly) start, were the slots not full
     assert opened.round_id not in {round.id for round in env.jobs.rounds}  # it waits
     env.jobs.hold.set()
     await env.pipeline.drain()
@@ -1090,8 +1092,7 @@ async def test_an_open_stopped_while_it_waits_for_a_slot_gives_it_back(env: Env)
     running = [await env.pipeline.open(ref) for ref in refs[:2]]
     await wait_until(lambda: len(env.jobs.rounds) == 2)
     waiting = await env.pipeline.open(refs[2])
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # real time for the third open to reach its slot wait
     await env.pipeline.stop()  # cancels all three, one of them still waiting
     for result in (*running, waiting):
         found = env.store.latest_round_on_head(refs[(*running, waiting).index(result)], HEAD)
@@ -1419,10 +1420,7 @@ async def test_walk_everything_while_a_walkthrough_runs_says_running(env: Env) -
     ref = env.add()
     env.jobs.hold = asyncio.Event()
     await env.pipeline.open(ref)
-    for _ in range(50):
-        if JobKind.WALKTHROUGH in env.jobs.ran:
-            break
-        await asyncio.sleep(0)
+    await wait_until(lambda: bool(env.jobs.ran))  # prepared; the walkthrough is planned
     walk = await env.pipeline.open(ref, walk_everything=True)
     assert walk.state == "running" and walk.jobs == ()
     env.jobs.hold.set()
@@ -1478,13 +1476,29 @@ async def test_a_depth_switch_while_the_round_runs_reaches_the_new_jobs(env: Env
     ref = env.add()
     env.jobs.hold = asyncio.Event()
     await env.pipeline.open(ref)  # quick: prepared and running, held
-    for _ in range(50):
-        if env.jobs.ran:
-            break
-        await asyncio.sleep(0)
+    await wait_until(lambda: bool(env.jobs.ran))
     deep = await env.pipeline.open(ref, depth="deep")
     assert set(deep.jobs) >= {JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ}
     env.jobs.hold.set()
+    await env.pipeline.drain()
+    by_kind = dict(zip(env.jobs.ran, env.jobs.rounds, strict=True))
+    for kind in (JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ):
+        assert by_kind[kind].depth == "deep", kind
+
+
+async def test_a_depth_switch_while_the_round_is_still_preparing_reaches_the_new_jobs(
+    env: Env,
+) -> None:
+    """Codex round 3 on PR #58 (the CI flake's real cause): a quick open's preparation can
+    read the depth before a switch stores deep, and the deep runner joins that preparation.
+    The deep-only jobs must still get a deep Round."""
+    ref = env.add()
+    env.jobs.depth_hold = asyncio.Event()
+    await env.pipeline.open(ref)  # quick; preparation held after reading its depth
+    await wait_until(lambda: env.jobs.depth_asked)
+    deep = await env.pipeline.open(ref, depth="deep")
+    assert set(deep.jobs) >= {JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ}
+    env.jobs.depth_hold.set()
     await env.pipeline.drain()
     by_kind = dict(zip(env.jobs.ran, env.jobs.rounds, strict=True))
     for kind in (JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ):
