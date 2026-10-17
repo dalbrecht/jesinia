@@ -6,9 +6,11 @@ mean the same thing (aliases). It comes from the repo's ``.jesinia/labels.yml`` 
 otherwise from Jesinia's settings, starting from ``DEFAULT_SCHEMA``.
 
 ``.jesinia/labels.yml`` is untrusted repo content, so ``parse_labels_yml`` is lenient: it never
-raises, it caps the document's size and flow nesting before YAML sees it, and every unusable
-key or entry becomes a line in ``LabelSchema.errors`` while the rest of the schema loads. The
-format::
+raises; it caps the document's size, refuses YAML anchors and aliases (they share one object
+across many references, so anything that walks or prints the result would expand them) and
+nesting deeper than ``MAX_LABELS_YML_NESTING`` while composing, and every unusable key or entry
+becomes a line in ``LabelSchema.errors`` while the rest of the schema loads. Error messages
+quote parsed values only as a type name or a short, cut repr. The format::
 
     readiness:            # likewise priority and type; a missing one keeps the default
       - agent-ready
@@ -20,7 +22,12 @@ format::
     epic: epic            # or {name: epic, aliases: [...]}; initiative likewise
     free_prefixes: ["ops:"]   # added to review:, campaign: and theme:
 
-Labels match case-insensitively, as GitHub's label names do.
+Labels match case-insensitively and with surrounding whitespace ignored, as GitHub's label
+names do.
+
+An initiative, like an epic, needs priority only: spec §6.2 says "`initiative` sits above
+epics, with the same rule and its own label", and the plan's Global Constraints place it beside
+the epic completeness rule; no other completeness rule for initiatives exists.
 """
 
 from __future__ import annotations
@@ -32,8 +39,11 @@ from functools import lru_cache
 import yaml
 
 MAX_LABELS_YML_BYTES = 64 * 1024
-# Flow collections ("[", "{") deeper than this are refused before the YAML parser recurses.
+# Collections nested deeper than this are refused while composing, before the recursive
+# composer nears Python's recursion limit.
 MAX_LABELS_YML_NESTING = 32
+# How much of a parsed string an error message quotes.
+MAX_QUOTED = 80
 MAX_ENTRIES = 200
 MAX_ALIASES = 50
 # GitHub's own limit on a label name.
@@ -140,7 +150,7 @@ def _index(schema: LabelSchema) -> _Index:
     for dimension, values in dimensions:
         for value in values:
             for label in (value.name, *value.aliases):
-                by_label.setdefault(label.casefold(), (dimension, value.name))
+                by_label.setdefault(_key(label), (dimension, value.name))
     return _Index(
         by_label,
         schema.area_prefix.casefold(),
@@ -148,8 +158,12 @@ def _index(schema: LabelSchema) -> _Index:
     )
 
 
+def _key(label: str) -> str:
+    return label.strip().casefold()
+
+
 def _add(values: list[str], value: str) -> None:
-    if all(existing.casefold() != value.casefold() for existing in values):
+    if all(_key(existing) != _key(value) for existing in values):
         values.append(value)
 
 
@@ -162,12 +176,15 @@ def classify(labels: Iterable[str], schema: LabelSchema) -> Classified:
     index = _index(schema)
     found: dict[str, list[str]] = {READINESS: [], PRIORITY: [], TYPE: [], AREA: [], HIERARCHY: []}
     unknown: list[str] = []
-    for label in labels:
+    for raw in labels:
+        label = raw.strip()
         key = label.casefold()
+        if not key:
+            continue
         if key in index.by_label:
             dimension, canonical = index.by_label[key]
             _add(found[dimension], canonical)
-        elif key.startswith(index.area_prefix):
+        elif key.startswith(index.area_prefix) and len(key) > len(index.area_prefix):
             _add(found[AREA], label)
         elif not key.startswith(index.free_prefixes):
             _add(unknown, label)
@@ -203,42 +220,59 @@ def write_name(canonical: Canonical, existing_labels: Iterable[str]) -> str | No
     """
     existing: dict[str, str] = {}
     for label in existing_labels:
-        existing.setdefault(label.casefold(), label)
+        existing.setdefault(_key(label), label.strip())
     for alias in canonical.aliases:
-        if alias.casefold() in existing:
-            return existing[alias.casefold()]
-    return existing.get(canonical.name.casefold())
+        if _key(alias) in existing:
+            return existing[_key(alias)]
+    return existing.get(_key(canonical.name))
 
 
-def _nesting_error(text: str) -> str | None:
-    """Refuse flow collections nested deeper than ``MAX_LABELS_YML_NESTING``; quoted strings
-    and comments don't count."""
-    depth = 0
-    quote: str | None = None
-    escaped = comment = False
-    previous = "\n"
-    for char in text:
-        if comment:
-            comment = char != "\n"
-        elif quote is not None:
-            if escaped:
-                escaped = False
-            elif char == "\\" and quote == '"':
-                escaped = True
-            elif char == quote:
-                quote = None
-        elif char in "\"'":
-            quote = char
-        elif char == "#" and previous in " \t\n":
-            comment = True
-        elif char in "[{":
-            depth += 1
-            if depth > MAX_LABELS_YML_NESTING:
-                return f"labels.yml nests deeper than {MAX_LABELS_YML_NESTING} levels"
-        elif char in "]}":
-            depth -= 1
-        previous = char
-    return None
+class _LabelsYmlRefusedError(ValueError):
+    """A ``labels.yml`` the composer refuses outright (an anchor or alias, or too deep)."""
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """``SafeLoader`` that refuses anchors and aliases at the first one, and refuses nesting
+    deeper than ``MAX_LABELS_YML_NESTING`` before recursing into it."""
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._depth = 0
+
+    def compose_node(self, parent: yaml.Node | None, index: int) -> yaml.Node | None:
+        # check_event parses the next event into current_event without consuming it.
+        is_alias = self.check_event(yaml.AliasEvent)
+        anchor: object = getattr(self.current_event, "anchor", None)
+        if is_alias or anchor is not None:
+            raise _LabelsYmlRefusedError(
+                "labels.yml uses YAML anchors or aliases, which are not allowed"
+            )
+        if self._depth >= MAX_LABELS_YML_NESTING:
+            raise _LabelsYmlRefusedError(
+                f"labels.yml nests deeper than {MAX_LABELS_YML_NESTING} levels"
+            )
+        self._depth += 1
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+
+def _load(text: str) -> object:
+    loader = _StrictLoader(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
+def _describe(value: object) -> str:
+    """A parsed value as an error message may quote it: a type name, or a string's repr cut to
+    ``MAX_QUOTED`` characters, so a hostile value can't inflate the errors."""
+    if not isinstance(value, str):
+        return type(value).__name__
+    quoted = repr(value[: MAX_QUOTED + 1])
+    return quoted if len(quoted) <= MAX_QUOTED else quoted[: MAX_QUOTED - 1] + "…"
 
 
 def _label_name(raw: object) -> str | None:
@@ -273,8 +307,10 @@ class _Parser:
         if label is None:
             self.errors.append(f"{where}: the label name must be 1-{MAX_LABEL_NAME} characters")
             return None
-        if prefix is not None and not label.casefold().startswith(prefix):
-            self.errors.append(f"{where}: {label!r} must start with {prefix!r}")
+        if prefix is not None and (
+            not label.casefold().startswith(prefix) or len(label) == len(prefix)
+        ):
+            self.errors.append(f"{where}: {label!r} must be {prefix!r} followed by a name")
             return None
         if not self._admit(where, label):
             return None
@@ -288,7 +324,7 @@ class _Parser:
         for raw in aliases:
             alias = _label_name(raw)
             if alias is None:
-                self.errors.append(f"{where}: alias {raw!r} must be a label name")
+                self.errors.append(f"{where}: alias must be a label name, got {_describe(raw)}")
             elif self._admit(where, alias):
                 kept.append(alias)
         return Canonical(label, tuple(kept))
@@ -300,7 +336,9 @@ class _Parser:
             self.errors.append(f"{where}: expected a label name or a mapping with a name")
             return None
         canonical = self._canonical(where, raw.get("name"), raw.get("aliases", []), prefix)
-        self.errors.extend(f"{where}: unknown key {key!r}" for key in raw if key not in _ENTRY_KEYS)
+        self.errors.extend(
+            f"{where}: unknown key {_describe(key)}" for key in raw if key not in _ENTRY_KEYS
+        )
         return canonical
 
     def _defaults(self, key: str, default: tuple[Canonical, ...]) -> tuple[Canonical, ...]:
@@ -333,7 +371,9 @@ class _Parser:
     def hierarchy(self, data: Mapping[object, object], key: str, default: Canonical) -> Canonical:
         if key in data and (value := self.entry(key, data[key], None)) is not None:
             return value
-        self._admit(key, default.name)  # a repeat is listed; the default label still applies
+        # Hierarchy labels are admitted first, so only the other hierarchy label can repeat this
+        # one; the repeat is listed and the default still applies.
+        self._admit(key, default.name)
         return default
 
     def free_prefixes(
@@ -343,12 +383,17 @@ class _Parser:
         if not isinstance(raw, list):
             self.errors.append(f"{_FREE_PREFIXES}: expected a list")
             return default
+        if len(raw) > MAX_ENTRIES:
+            self.errors.append(
+                f"{_FREE_PREFIXES}: more than {MAX_ENTRIES} entries, the rest are ignored"
+            )
+            raw = raw[:MAX_ENTRIES]
         prefixes = list(default)
         for i, item in enumerate(raw, 1):
             prefix = _label_name(item)
             if prefix is None or not prefix.endswith(":"):
                 self.errors.append(
-                    f"{_FREE_PREFIXES}[{i}]: {item!r} must be a prefix ending in ':'"
+                    f"{_FREE_PREFIXES}[{i}]: must be a prefix ending in ':', got {_describe(item)}"
                 )
             else:
                 _add(prefixes, prefix)
@@ -369,13 +414,12 @@ def parse_labels_yml(text: str) -> LabelSchema:
     """
     if len(text.encode("utf-8", errors="replace")) > MAX_LABELS_YML_BYTES:
         return _fallback(f"labels.yml is over {MAX_LABELS_YML_BYTES // 1024} KB")
-    if (nesting := _nesting_error(text)) is not None:
-        return _fallback(nesting)
     try:
-        data = yaml.safe_load(text)
-    except (yaml.YAMLError, RecursionError, ValueError) as exc:
-        # RecursionError and ValueError: what a parser raises on hostile input it didn't
-        # anticipate; the nesting check above should stop the deep cases first.
+        data = _load(text)
+    except _LabelsYmlRefusedError as exc:
+        return _fallback(str(exc))
+    except (yaml.YAMLError, ValueError) as exc:
+        # ValueError: what a constructor raises on a malformed scalar it didn't anticipate.
         return _fallback(f"labels.yml is not valid YAML: {exc}")
     if data is None:
         return _fallback("labels.yml is empty, the default schema is used")
@@ -383,14 +427,15 @@ def parse_labels_yml(text: str) -> LabelSchema:
         return _fallback("labels.yml must be a mapping, the default schema is used")
     parser = _Parser()
     default = DEFAULT_SCHEMA
+    # The hierarchy labels first, so a dimension's alias can't silently take them over.
+    epic = parser.hierarchy(data, _EPIC, default.epic)
+    initiative = parser.hierarchy(data, _INITIATIVE, default.initiative)
     readiness = parser.dimension(data, READINESS, default.readiness)
     priority = parser.dimension(data, PRIORITY, default.priority)
     type_ = parser.dimension(data, TYPE, default.type)
     areas = parser.dimension(data, "areas", default.areas, default.area_prefix)
-    epic = parser.hierarchy(data, _EPIC, default.epic)
-    initiative = parser.hierarchy(data, _INITIATIVE, default.initiative)
     free_prefixes = parser.free_prefixes(data, default.free_prefixes)
-    parser.errors.extend(f"unknown key {key!r}" for key in data if key not in _KNOWN_KEYS)
+    parser.errors.extend(f"unknown key {_describe(key)}" for key in data if key not in _KNOWN_KEYS)
     return LabelSchema(
         readiness=readiness,
         priority=priority,
