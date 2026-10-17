@@ -926,3 +926,15 @@ async def test_a_cut_hunk_index_says_so_in_job_md(env: Env) -> None:
     env.script(json.dumps({"steps": [], "skipped": []}))
     await env.jobs.run(JobKind.WALKTHROUGH, a_round())
     assert "No hunk index" in pack2["diff-index.md"]
+
+
+async def test_a_summarised_file_in_the_hunk_index_is_noted_in_job_md(env: Env) -> None:
+    lockfile = "diff --git a/uv.lock b/uv.lock\n--- a/uv.lock\n+++ b/uv.lock\n" + "".join(
+        f"@@ -{i * 10 + 1} +{i * 10 + 1} @@\n-a\n+b\n" for i in range(400)
+    )
+    index = hunk_index(parse_unified_diff(lockfile))
+    pack = env.capture_pack()
+    env.script(json.dumps({"steps": [], "skipped": []}))
+    await env.jobs.run(JobKind.WALKTHROUGH, replace(a_round(), hunk_index=index))
+    assert "1 file in the hunk index is summarised" in pack["job.md"]
+    assert "uv.lock" not in pack["job.md"]

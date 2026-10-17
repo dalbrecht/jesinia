@@ -931,3 +931,28 @@ async def test_an_unexpected_preparation_error_still_reports_failed(env: Env) ->
     with pytest.raises(RuntimeError):
         await env.pipeline.prereview(env.request(ref, "triage"))
     assert env.states()[-1] == "failed"
+
+
+async def test_a_walkthrough_may_cite_the_second_entry_of_a_type_change(env: Env) -> None:
+    env.workspace.diff_text = (
+        "diff --git a/link b/link\ndeleted file mode 100644\n--- a/link\n+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n-x\n-y\n"
+        "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n"
+        "@@ -0,0 +1 @@\n+target\n"
+    )
+    env.jobs.outputs[JobKind.WALKTHROUGH] = {
+        "steps": [{"title": "t", "body": "b", "hunks": [{"path": "link", "hunk": 1}]}],
+        "skipped": [],
+    }
+    env.store.set_prereview_default("everything")
+    ref = env.add()
+    await prereview(env)
+    round_id, _ = latest(env, ref)
+    stored = env.artifacts(round_id)["walkthrough"]
+    assert isinstance(stored, dict) and len(stored["steps"]) == 1
+    coverage = env.artifacts(round_id)["coverage"]
+    assert isinstance(coverage, dict) and isinstance(coverage["walkthrough"], dict)
+    assert coverage["walkthrough"]["lines_covered"] == 1
+    assert coverage["walkthrough"]["not_walked"] == [
+        {"path": "link", "hunk": 0, "reason": "omitted"}
+    ]

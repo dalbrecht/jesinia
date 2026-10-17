@@ -129,7 +129,8 @@ def test_parse_unified_diff_reads_files_hunks_and_changed_lines() -> None:
     assert added.status == "added" and added.changed_lines == 2
     assert gone.status == "deleted" and gone.path == "gone.py" and gone.changed_lines == 2
     assert diff.changed_lines == 15 and diff.complete
-    assert diff.file("src/app.py") is app and diff.file("nope") is None
+    assert diff.has_path("src/app.py") and not diff.has_path("nope")
+    assert diff.locate("src/app.py", 1) == (0, 1) and diff.locate("src/app.py", 2) is None
 
 
 def test_parse_handles_quoted_paths_and_missing_newlines() -> None:
@@ -458,3 +459,73 @@ def test_hunk_index_is_capped() -> None:
     index = hunk_index(diff, limit=2_000)
     assert index.truncated and index.files_total == 400
     assert 0 < index.files_listed < 400 and len(index.text) <= 2_000
+
+
+# --- step 0 of Task 7: one huge file never hides the rest; a type change counts twice --------
+
+TYPE_CHANGE = """\
+diff --git a/link b/link
+deleted file mode 100644
+index 1111111..0000000
+--- a/link
++++ /dev/null
+@@ -1,2 +0,0 @@
+-x
+-y
+diff --git a/link b/link
+new file mode 120000
+index 0000000..2222222
+--- /dev/null
++++ b/link
+@@ -0,0 +1 @@
++target
+\\ No newline at end of file
+"""
+
+
+def test_a_huge_file_in_the_index_is_summarised_and_later_files_still_listed() -> None:
+    lockfile = _added("pnpm-lock.yaml", 4_000, hunks=2_000)
+    diff = parse_unified_diff(lockfile + APP + ADDED)
+    index = hunk_index(diff)
+    assert index.files_listed == index.files_total == 3 and not index.truncated
+    assert index.files_summarised == 1
+    assert '"pnpm-lock.yaml" (modified: 2000 hunks, 0 to 1999, too many to list here)' in (
+        index.text
+    )
+    assert '"src/app.py" (modified)' in index.text
+    assert "hunk 1: @@ -10,2 +11,2 @@ (+1 -1)" in index.text
+    assert '"docs/notes.md" (added)' in index.text
+
+
+def test_a_file_whose_summary_does_not_fit_is_skipped_and_counted() -> None:
+    diff = parse_unified_diff(_added("a" * 300 + ".py", 2) + APP)
+    index = hunk_index(diff, limit=250)
+    assert index.files_total == 2 and index.files_listed == 1 and index.truncated
+    assert '"src/app.py" (modified' in index.text and "aaaa" not in index.text
+
+
+def test_a_type_change_counts_both_entries_of_the_path() -> None:
+    diff = parse_unified_diff(TYPE_CHANGE)
+    assert [f.status for f in diff.files] == ["deleted", "added"]
+    both = coverage(diff, [walk(("link", 0), ("link", 1))], [])
+    assert (both.pct, both.files_covered, both.files_total) == (100.0, 2, 2)
+    assert both.lines_covered == both.lines_total == 3 and both.not_walked == []
+    second = coverage(diff, [walk(("link", 1))], [])
+    assert second.lines_covered == 1 and second.dropped_steps == 0
+    assert second.not_walked == [Skip("link", 0, "omitted")]
+    first = coverage(diff, [walk(("link", 0))], [Skip("link", 1, "judged_mechanical")])
+    assert first.lines_covered == 2
+    assert first.not_walked == [Skip("link", 1, "judged_mechanical")]
+    assert coverage(diff, [walk(("link", 2))], []).dropped_steps == 1
+
+
+def test_the_index_numbers_a_type_changes_hunks_across_its_entries() -> None:
+    text = hunk_index(parse_unified_diff(TYPE_CHANGE)).text
+    assert '"link" (deleted)\n  hunk 0: @@ -1,2 +0,0 @@ (+0 -2)' in text
+    assert '"link" (added)\n  hunk 1: @@ -0,0 +1,1 @@ (+1 -0)' in text
+
+
+def test_checked_coverage_reads_both_entries_of_a_type_change() -> None:
+    diff = parse_unified_diff(TYPE_CHANGE)
+    read = checked_coverage(diff, [LineRange("link", 1, 2)])
+    assert read.lines_covered == 3 and read.files_covered == 2

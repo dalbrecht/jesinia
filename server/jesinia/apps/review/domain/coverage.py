@@ -54,8 +54,10 @@ MAX_CHANGED_LINES: Final = 200_000
 MAX_FILES: Final = 20_000
 # Entries of "not walked" kept; ``not_walked_total`` counts them all.
 NOT_WALKED_LIMIT: Final = 500
-# Characters of the hunk index an agent is given.
+# Characters of the hunk index an agent is given; one file's listing may take at most
+# 1/SUMMARY_SHARE of it before it is summarised in one line.
 HUNK_INDEX_CHARS: Final = 60_000
+SUMMARY_SHARE: Final = 8
 
 _DIFF_HEADER = "diff --git "
 # Ten digits: git's line numbers fit, and int() never sees an absurd string.
@@ -146,15 +148,38 @@ class ParsedDiff:
         return sum(f.changed_lines for f in self.files)
 
     @cached_property
-    def _by_path(self) -> dict[str, int]:
-        index: dict[str, int] = {}
+    def _hunks_by_path(self) -> dict[str, list[tuple[int, int]]]:
+        """Each path's hunks as ``(file position, hunk index in that entry)``, numbered on
+        across the entries of one path: git lists a type change (a file becoming a symlink)
+        as two entries with the same path, and both count."""
+        slots: dict[str, list[tuple[int, int]]] = {}
         for position, diff_file in enumerate(self.files):
-            index.setdefault(diff_file.path, position)
-        return index
+            entry = slots.setdefault(diff_file.path, [])
+            entry.extend((position, h) for h in range(len(diff_file.hunks)))
+        return slots
 
-    def file(self, path: str) -> FileDiff | None:
-        position = self._by_path.get(path)
-        return None if position is None else self.files[position]
+    @cached_property
+    def _offsets(self) -> list[int]:
+        """Per entry, how many hunks earlier entries of the same path have."""
+        seen: dict[str, int] = {}
+        offsets: list[int] = []
+        for diff_file in self.files:
+            offsets.append(seen.get(diff_file.path, 0))
+            seen[diff_file.path] = offsets[-1] + len(diff_file.hunks)
+        return offsets
+
+    def has_path(self, path: str) -> bool:
+        return path in self._hunks_by_path
+
+    def locate(self, path: str, hunk: int) -> tuple[int, int] | None:
+        """The entry and its own hunk index for hunk ``hunk`` of ``path`` as agents cite it
+        (numbered across every entry of the path); ``None`` if there is no such hunk."""
+        slots = self._hunks_by_path.get(path, [])
+        return slots[hunk] if 0 <= hunk < len(slots) else None
+
+    def cited_index(self, position: int, hunk: int) -> int:
+        """How agents cite hunk ``hunk`` of the entry at ``position``."""
+        return self._offsets[position] + hunk
 
 
 @dataclass(frozen=True)
@@ -433,39 +458,57 @@ def parse_unified_diff(text: str) -> ParsedDiff:
 
 def hunk_index(diff: ParsedDiff, limit: int = HUNK_INDEX_CHARS) -> HunkIndex:
     """The hunks of ``diff`` as agents must cite them: each file (its path JSON-quoted, as
-    PR content) with every hunk's 0-based index, header and changed-line counts, in
-    Jesinia's own numbering. Files past ``limit`` characters are left out, and counted."""
+    PR content) with every hunk's index, header and changed-line counts, in Jesinia's own
+    numbering. A file whose listing would take over ``limit // SUMMARY_SHARE`` characters
+    (a lockfile's thousands of hunks), or more than is left, is summarised in one line
+    (its hunk count and index range), so one huge file never hides the files after it; a
+    file even its summary doesn't fit is left out, and counted."""
     parts: list[str] = []
-    used = listed = 0
-    for diff_file in diff.files:
+    used = listed = summarised = 0
+    for position, diff_file in enumerate(diff.files):
         path = json.dumps(diff_file.path, ensure_ascii=False)
-        if diff_file.hunks:
-            entry = [f"{path} ({diff_file.status})"]
-            for h, hunk in enumerate(diff_file.hunks):
-                added = sum(run.count for run in hunk.runs if run.kind == "+")
-                entry.append(f"  hunk {h}: {hunk.header} (+{added} -{hunk.changed - added})")
-            block = "\n".join(entry)
-        else:
-            if diff_file.status == "renamed":
-                what = f"renamed from {json.dumps(diff_file.old_path, ensure_ascii=False)}"
-            else:
-                what = f"{diff_file.status}, binary" if diff_file.is_binary else diff_file.status
-            block = f"{path} ({what}: no hunks)"
-        if used + len(block) + 1 > limit:
-            break
+        block = _index_block(diff, position, path)
+        if len(block) > limit // SUMMARY_SHARE or used + len(block) + 1 > limit:
+            first = diff.cited_index(position, 0)
+            last = first + len(diff_file.hunks) - 1
+            block = (
+                f"{path} ({diff_file.status}: {len(diff_file.hunks)} hunks, {first} to {last}, "
+                "too many to list here)"
+            )
+            if used + len(block) + 1 > limit:
+                continue
+            summarised += 1
         parts.append(block)
         used += len(block) + 1
         listed += 1
-    return HunkIndex("\n".join(parts), listed, len(diff.files))
+    return HunkIndex("\n".join(parts), listed, len(diff.files), summarised)
+
+
+def _index_block(diff: ParsedDiff, position: int, path: str) -> str:
+    diff_file = diff.files[position]
+    if diff_file.hunks:
+        entry = [f"{path} ({diff_file.status})"]
+        for h, hunk in enumerate(diff_file.hunks):
+            added = sum(run.count for run in hunk.runs if run.kind == "+")
+            cited = diff.cited_index(position, h)
+            entry.append(f"  hunk {cited}: {hunk.header} (+{added} -{hunk.changed - added})")
+        return "\n".join(entry)
+    if diff_file.status == "renamed":
+        what = f"renamed from {json.dumps(diff_file.old_path, ensure_ascii=False)}"
+    else:
+        what = f"{diff_file.status}, binary" if diff_file.is_binary else diff_file.status
+    return f"{path} ({what}: no hunks)"
 
 
 @dataclass(frozen=True)
 class HunkIndex:
-    """The hunk index text, and how many of the diff's files it lists."""
+    """The hunk index text, how many of the diff's files it lists, and how many of those
+    it lists only as a one-line summary (no per-hunk headers)."""
 
     text: str
     files_listed: int
     files_total: int
+    files_summarised: int = 0
 
     @property
     def truncated(self) -> bool:
@@ -487,9 +530,9 @@ def _agent_reasons(
 ) -> dict[tuple[str, int | None], str]:
     reasons: dict[tuple[str, int | None], str] = {}
     for skip in agent_skips:
-        known = diff.file(skip.path)
-        valid_hunk = skip.hunk is None or (known is not None and 0 <= skip.hunk < len(known.hunks))
-        if known is not None and valid_hunk and skip.reason in AGENT_SKIP_REASONS:
+        known = diff.has_path(skip.path)
+        valid_hunk = skip.hunk is None or diff.locate(skip.path, skip.hunk) is not None
+        if known and valid_hunk and skip.reason in AGENT_SKIP_REASONS:
             reasons.setdefault((skip.path, skip.hunk), skip.reason)
     return reasons
 
@@ -526,7 +569,9 @@ def _summarise(
         else:
             for h, hunk in enumerate(diff_file.hunks):
                 if walked[h] < hunk.changed:
-                    left_out(Skip(diff_file.path, h, reasons.get((diff_file.path, h), "omitted")))
+                    cited = diff.cited_index(f, h)
+                    reason = reasons.get((diff_file.path, cited), "omitted")
+                    left_out(Skip(diff_file.path, cited, reason))
     lines_total, files_total = diff.changed_lines, len(diff.files)
     if not diff.complete:
         lines_total = max(lines_total, diff.expected_lines)
@@ -568,19 +613,16 @@ def _auto_reason(diff_file: FileDiff) -> str | None:
 
 def coverage(diff: ParsedDiff, steps: list[Step], skipped: list[Skip]) -> Coverage:
     """A walkthrough's coverage of ``diff``: each step covers every changed line of the hunks
-    it cites. A step citing a hunk the diff doesn't have (or none) is dropped, and counted.
+    it cites (numbered per path, across a type change's two entries). A step citing a hunk
+    the diff doesn't have (or none) is dropped, and counted.
     ``skipped`` is the agent's list of what it left out; entries for unknown files or hunks,
     or with a reason it may not give, are ignored."""
-    positions = {f.path: position for position, f in reversed(list(enumerate(diff.files)))}
     walked: set[tuple[int, int]] = set()
     dropped = 0
     for step in steps:
-        cited = {
-            (positions[ref.path], ref.hunk)
-            for ref in step.hunks
-            if ref.path in positions and 0 <= ref.hunk < len(diff.files[positions[ref.path]].hunks)
-        }
-        if not step.hunks or len(cited) < len({(ref.path, ref.hunk) for ref in step.hunks}):
+        found = [diff.locate(ref.path, ref.hunk) for ref in step.hunks]
+        cited = {slot for slot in found if slot is not None}
+        if not step.hunks or None in found:
             dropped += 1
             continue
         walked |= cited

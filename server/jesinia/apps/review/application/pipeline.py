@@ -736,13 +736,12 @@ class Pipeline:
 
 def _known_steps(diff: ParsedDiff, output: Mapping[str, object]) -> dict[str, object]:
     """The walkthrough with only the steps whose every hunk is in ``diff``."""
-    known = {(f.path, h) for f in diff.files for h in range(len(f.hunks))}
     raw = output.get("steps")
     kept = [
         item
         for item, step in zip(
             raw if isinstance(raw, list) else [], steps_from_json(output), strict=False
         )
-        if step.hunks and {(ref.path, ref.hunk) for ref in step.hunks} <= known
+        if step.hunks and all(diff.locate(ref.path, ref.hunk) is not None for ref in step.hunks)
     ]
     return {**output, "steps": kept}

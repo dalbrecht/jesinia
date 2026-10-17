@@ -499,6 +499,13 @@ class JobRunner:
                 f"the hunk index lists {index.files_listed} of {index.files_total} files; "
                 "hunks of the others can't be cited"
             )
+        if index is not None and index.files_summarised:
+            count = index.files_summarised
+            notes.append(
+                f"{count} file{'' if count == 1 else 's'} in the hunk index "
+                f"{'is' if count == 1 else 'are'} summarised in one line (too many hunks to "
+                "list); cite those hunks by the index range shown"
+            )
         listing = (
             index.text
             if index is not None
