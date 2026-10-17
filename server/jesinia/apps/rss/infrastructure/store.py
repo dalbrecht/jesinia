@@ -9,7 +9,14 @@ from contextlib import AbstractContextManager, contextmanager
 from datetime import datetime, timedelta
 
 from jesinia.apps.rss.application.ports import NewFeed, PollState
-from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedItem, feed_warning
+from jesinia.apps.rss.domain.feed import (
+    Feed,
+    FeedView,
+    Folder,
+    ParsedItem,
+    feed_warning,
+    redact_urls,
+)
 from jesinia.apps.rss.domain.kept import ArchiveState
 from jesinia.apps.rss.domain.post import TOMBSTONE_TTL, Counts, Cursor, PostView, View, utc_text
 
@@ -84,7 +91,8 @@ class SqliteFeedStore:
                 state.interval_s,
                 state.next_poll_at.isoformat(),
                 state.fail_count,
-                state.last_error,
+                # Shown to the owner, but a URL's query can carry a token: hosts only.
+                redact_urls(state.last_error) if state.last_error is not None else None,
                 state.last_ok_at.isoformat() if state.last_ok_at is not None else None,
                 feed_id,
             ),
@@ -102,7 +110,7 @@ class SqliteFeedStore:
                 feed.interval_s,
                 feed.next_poll_at.isoformat(),
                 feed.last_ok_at.isoformat() if feed.last_ok_at is not None else None,
-                feed.last_error,
+                redact_urls(feed.last_error) if feed.last_error is not None else None,
             ),
         )
         inserted = self.feed(int(cursor.lastrowid or 0))

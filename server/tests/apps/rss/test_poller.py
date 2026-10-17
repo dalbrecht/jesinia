@@ -562,3 +562,14 @@ async def test_poll_logs_name_the_host_never_the_path_or_credentials(
     assert "feeds.example" in logged
     for secret in ("token-abc123", "s3cret", "/private", "feed.xml"):
         assert secret not in logged, logged
+
+
+async def test_a_stored_feed_error_keeps_only_the_hosts_of_urls(store: SqliteFeedStore) -> None:
+    url = "https://feeds.example/feed.xml?key=s3cret"
+    feed = _subscribe(store, url)
+    failing = FetchError(f"could not fetch {url}: redirected to https://u:pw@cdn.example/x?t=tok")
+    await _poller(store, FakeFetcher({url: failing}), Clock()).poll_due()
+    error = _feed(store, feed.id).last_error
+    assert error is not None and "feeds.example" in error and "cdn.example" in error
+    for secret in ("s3cret", "pw", "tok", "feed.xml"):
+        assert secret not in error, error

@@ -18,7 +18,12 @@ MAX_INTERVAL_S = 12 * 60 * 60
 _BACKOFF_DOUBLINGS = 10
 FOLDER_NAME_MAX = 100
 CREDENTIALS_REFUSED = "credentials in URL are not supported"
-_URL = re.compile(r"(?P<scheme>https?)://(?P<netloc>[^/\s?#'\"<>()]*)[^\s'\"<>()]*", re.IGNORECASE)
+# A URL candidate is the whole run of non-space characters after the scheme: parentheses
+# and quotes can be part of a path or query (and so of a token), never a reason to stop.
+_URL = re.compile(r"(?P<scheme>https?)://\S*", re.IGNORECASE)
+# Sentence punctuation after a URL, handed back to the text rather than redacted with it.
+_TRAILING = ".,;:!?'\"`"
+_CLOSERS = {")": "(", "]": "[", "}": "{", ">": "<"}
 
 
 class RssError(Exception):
@@ -75,6 +80,14 @@ def validate_feed_url(raw: str) -> str:
     return url
 
 
+def strip_credentials(url: str) -> str:
+    """``url`` without a user name or password, if it has one."""
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    return parts._replace(netloc=parts.netloc.rpartition("@")[2]).geturl()
+
+
 def has_credentials(url: str) -> bool:
     """Whether ``url`` carries a user name or password before its host."""
     return "@" in urlsplit(url).netloc
@@ -95,8 +108,31 @@ def redact_urls(text: str) -> str:
 
 
 def _url_host(match: re.Match[str]) -> str:
-    host = match.group("netloc").rpartition("@")[2]
-    return f"{match.group('scheme')}://{host}/…"
+    candidate, tail = _split_trailing(match.group(0))
+    try:
+        host = urlsplit(candidate).hostname
+    except ValueError:
+        host = None
+    if not host:
+        return "<url>" + tail
+    shown = f"[{host}]" if ":" in host else host
+    return f"{match.group('scheme')}://{shown}{tail}"
+
+
+def _split_trailing(candidate: str) -> tuple[str, str]:
+    """The URL and the punctuation after it: trailing sentence marks, and closing brackets
+    that close something opened before the URL (``(see https://h/x)``)."""
+    end = len(candidate)
+    while True:  # ends at the latest at the scheme, which is never punctuation
+        last = candidate[end - 1]
+        opener = _CLOSERS.get(last)
+        unbalanced = opener is not None and (
+            candidate[:end].count(last) > candidate[:end].count(opener)
+        )
+        if last not in _TRAILING and not unbalanced:
+            break
+        end -= 1
+    return candidate[:end], candidate[end:]
 
 
 def validate_folder_name(raw: str) -> str:

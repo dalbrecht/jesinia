@@ -299,3 +299,10 @@ def test_external_entity_is_ignored() -> None:
     )
     feed = parse_feed(body, "https://e.com/feed")
     assert "localhost" not in feed.title and "localhost" not in feed.items[0].title
+
+
+def test_a_feed_reached_through_credentials_never_lends_them_to_its_items() -> None:
+    # The feed was redirected to a URL with userinfo: it is the fallback for bad item links.
+    feed = parse_feed(_rss_with_link("javascript:alert(1)"), "https://u:pw@e.com/feed?x=1")
+    assert feed.items[0].url == "https://e.com/feed?x=1"
+    assert feed.site_url == "https://e.com/feed?x=1"

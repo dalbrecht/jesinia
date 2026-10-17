@@ -17,7 +17,13 @@ from urllib.parse import urljoin, urlparse
 import feedparser
 import nh3
 
-from jesinia.apps.rss.domain.feed import FeedParseError, ParsedFeed, ParsedItem, has_credentials
+from jesinia.apps.rss.domain.feed import (
+    FeedParseError,
+    ParsedFeed,
+    ParsedItem,
+    has_credentials,
+    strip_credentials,
+)
 from jesinia.services.fetch.api.content import sanitize_html
 
 MAX_ITEMS = 500
@@ -197,6 +203,9 @@ def parse_feed(body: bytes, url: str) -> ParsedFeed:
     raw = _read_json_feed(body) if is_json else _read_feedparser(body)
     if not is_json and not raw.entries and raw.title is None:
         raise FeedParseError(raw.warning or "document is not an RSS or Atom feed") from raw.cause
+    # A redirect may have landed on a URL with userinfo: it is the fallback for item and
+    # site links, which end up in kept pages, so never with credentials in it.
+    url = strip_credentials(url)
     is_hacker_news = urlparse(url).hostname == HN_HOST
     # Stable sort, so undated feeds keep their own order; trim before the costly per-item work.
     newest = sorted(raw.entries, key=_sort_key, reverse=True)[:MAX_ITEMS]

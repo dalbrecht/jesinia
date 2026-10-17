@@ -164,8 +164,26 @@ def test_log_helpers_keep_only_hosts() -> None:
     assert host_of("not a url") == "?" and host_of("http://[::1") == "?"
     text = "fetch https://u:p@a.example/x?k=1 failed (see http://b.example) at HTTPS://C.example"
     assert redact_urls(text) == (
-        "fetch https://a.example/… failed (see http://b.example/…) at HTTPS://C.example/…"
+        "fetch https://a.example failed (see http://b.example) at HTTPS://c.example"
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("got https://h.example/a(b)?token=SECRET now", "got https://h.example now"),
+        ("got https://h.example/a?q=x(SECRET) now", "got https://h.example now"),
+        ("got https://h.example/a'b\"c?t=SECRET now", "got https://h.example now"),
+        ("(see https://h.example/x?t=SECRET)", "(see https://h.example)"),
+        ("at https://h.example/x?t=SECRET.", "at https://h.example."),
+        ("by https://u:SECRET@h.example/x", "by https://h.example"),
+        ("on http://[::1]:8080/SECRET?k=SECRET", "on http://[::1]"),
+        ("bad http://[SECRET/x", "bad <url>"),
+    ],
+)
+def test_redaction_leaves_no_part_of_a_url_but_its_host(text: str, expected: str) -> None:
+    redacted = redact_urls(text)
+    assert redacted == expected and "SECRET" not in redacted
     assert has_credentials("https://u@a.example/") and not has_credentials("https://a.example/@x")
 
 
