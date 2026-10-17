@@ -128,7 +128,8 @@ export function Feeds({ feeds, counts, scope, onScope }: FeedsProps) {
                 }
               >
                 <span className={s.feedName}>{folder.name}</span>
-                <Count n={unreadOf(counts?.folders, folder.id)} />
+                {/* Open, its feeds show their own counts (spec §2.3: collapsing quiets them). */}
+                {open ? null : <Count n={unreadOf(counts?.folders, folder.id)} />}
               </button>
             </div>
             {open ? folder.feeds.map(feedRow) : null}

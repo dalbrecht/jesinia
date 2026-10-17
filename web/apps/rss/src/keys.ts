@@ -36,7 +36,9 @@ function isControl(el: Element | null): boolean {
 }
 
 function keyName(e: KeyboardEvent): string {
-  return e.shiftKey && /^[A-Z]$/.test(e.key) ? `Shift+${e.key}` : e.key;
+  if (!/^[A-Z]$/.test(e.key)) return e.key;
+  // An unshifted capital is Caps Lock: the same key as its lower case.
+  return e.shiftKey ? `Shift+${e.key}` : e.key.toLowerCase();
 }
 
 /**
@@ -50,7 +52,8 @@ export function useKeys(map: KeyMap): void {
   useEffect(() => {
     let chordUntil = 0;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      // A held key would select (and mark read) every post it passes.
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented || e.repeat) return;
       const active = document.activeElement;
       if (isTextField(active)) return;
       const key = keyName(e);

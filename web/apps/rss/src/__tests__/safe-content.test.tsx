@@ -156,6 +156,18 @@ describe("SafeMarkdown", () => {
     expect(img?.getAttribute("referrerpolicy")).toBe("no-referrer");
   });
 
+  it("resolves relative Markdown links and images against the post", () => {
+    const { container } = render(
+      <SafeMarkdown
+        markdown={"[next](/two) ![pic](img/p.png) [bad](javascript:x)"}
+        base="https://blog.example/posts/one"
+      />,
+    );
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("https://blog.example/two");
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("https://blog.example/posts/img/p.png");
+    expect(container.querySelectorAll("a")).toHaveLength(1);
+  });
+
   it("renderMarkdown is the same renderer, for ChatTranscript", () => {
     const { container } = render(<div>{renderMarkdown("**bold** [y](javascript:void(0))")}</div>);
     expect(container.querySelector("strong")).toHaveTextContent("bold");

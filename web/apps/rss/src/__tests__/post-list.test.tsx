@@ -30,7 +30,7 @@ describe("archiveStatus", () => {
 });
 
 describe("PostList", () => {
-  const props = { onSelect: () => undefined, onEndReached: () => undefined, empty: "none" };
+  const props = { onSelect: () => undefined, onStep: () => undefined, onEndReached: () => undefined, empty: "none" };
 
   it("scrolls the selection into view, down and back up", () => {
     const view = render(<PostList posts={many} selectedId={null} {...props} />);

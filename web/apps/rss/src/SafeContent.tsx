@@ -3,7 +3,7 @@
 // feed-supplied, so it never reaches the DOM as HTML: it is parsed off-document and rebuilt as
 // React elements through an allowlist. Markdown goes through react-markdown with raw HTML
 // skipped. Every href and src must be http(s); anything else is dropped.
-import { createElement, type ReactNode } from "react";
+import { createElement, useMemo, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { safeHttpUrl } from "./api";
 
@@ -64,14 +64,19 @@ function convert(node: Node, base: string, key: string): ReactNode {
 
 /** Feed HTML as React elements; `base` is the post's URL, for relative links and images. */
 export function SafeHtml({ html, base }: { html: string; base: string }) {
-  // DOMParser never runs scripts or loads resources in the parsed document.
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  return <>{[...doc.body.childNodes].map((n, i) => convert(n, base, String(i)))}</>;
+  // DOMParser never runs scripts or loads resources in the parsed document. Parsed once per
+  // post: the reader re-renders on every read toggle.
+  const nodes = useMemo(() => {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return [...doc.body.childNodes].map((n, i) => convert(n, base, String(i)));
+  }, [html, base]);
+  return <>{nodes}</>;
 }
 
-/** react-markdown's hook: anything that isn't http(s) becomes '' (then dropped below). */
-export function httpOnly(url: string): string {
-  return safeHttpUrl(url) ?? "";
+/** react-markdown's hook: resolve against the post, and anything that isn't http(s) becomes ''
+ * (then dropped below). */
+export function httpOnly(url: string, base = ""): string {
+  return resolve(url, base) ?? "";
 }
 
 const COMPONENTS: Components = {
@@ -86,10 +91,11 @@ const COMPONENTS: Components = {
   img: ({ src, alt }) => (typeof src === "string" && src ? <img src={src} alt={alt ?? ""} {...IMG_PROPS} /> : null),
 };
 
-/** Markdown (a full article, an Engage reply) with raw HTML skipped and http(s) URLs only. */
-export function SafeMarkdown({ markdown }: { markdown: string }) {
+/** Markdown (a full article, an Engage reply) with raw HTML skipped and http(s) URLs only;
+ * `base` (the post's URL) resolves relative links and images. */
+export function SafeMarkdown({ markdown, base = "" }: { markdown: string; base?: string }) {
   return (
-    <Markdown skipHtml urlTransform={httpOnly} components={COMPONENTS}>
+    <Markdown skipHtml urlTransform={(url) => httpOnly(url, base)} components={COMPONENTS}>
       {markdown}
     </Markdown>
   );

@@ -82,6 +82,17 @@ describe("useKeys", () => {
     expect(map.k).not.toHaveBeenCalled();
   });
 
+  it("Caps Lock letters still work, and held-down repeats are ignored", () => {
+    const { map } = setup();
+    press("J");
+    press("M");
+    expect(map.j).toHaveBeenCalledTimes(1);
+    expect(map.m).toHaveBeenCalledTimes(1);
+    press("j", { repeat: true });
+    expect(map.j).toHaveBeenCalledTimes(1);
+    expect(map["Shift+A"]).not.toHaveBeenCalled();
+  });
+
   it("a plain A is not Shift+A, and an unmapped key does nothing", () => {
     const { map } = setup();
     press("a");

@@ -50,12 +50,14 @@ export type PostListProps = {
   posts: Post[];
   selectedId: number | null;
   onSelect: (id: number) => void;
+  /** Arrow keys while the list has focus: the same move as j / k. */
+  onStep: (delta: 1 | -1) => void;
   /** The last rows are in view: load the next page if there is one. */
   onEndReached: () => void;
   empty: ReactNode;
 };
 
-export function PostList({ posts, selectedId, onSelect, onEndReached, empty }: PostListProps) {
+export function PostList({ posts, selectedId, onSelect, onStep, onEndReached, empty }: PostListProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(FALLBACK_HEIGHT);
@@ -108,6 +110,12 @@ export function PostList({ posts, selectedId, onSelect, onEndReached, empty }: P
           aria-label="Posts"
           tabIndex={0}
           className={s.listbox}
+          onKeyDown={(e) => {
+            const delta = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+            if (delta === 0) return;
+            e.preventDefault();
+            onStep(delta);
+          }}
           style={{ height: total * ROW_HEIGHT }}
           {...(selectedIndex >= 0 ? { "aria-activedescendant": `post-${selectedId}` } : {})}
         >
@@ -121,6 +129,7 @@ export function PostList({ posts, selectedId, onSelect, onEndReached, empty }: P
                 aria-selected={post.id === selectedId}
                 aria-posinset={index + 1}
                 aria-setsize={total}
+                data-read={post.read || undefined}
                 className={s.option}
                 style={{ top: index * ROW_HEIGHT, height: ROW_HEIGHT }}
                 onClick={() => onSelect(post.id)}

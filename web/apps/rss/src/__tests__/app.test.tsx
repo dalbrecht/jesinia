@@ -23,8 +23,9 @@ const press = (key: string, init: KeyboardEventInit = {}) => fireEvent.keyDown(d
 async function list() {
   return screen.findByRole("listbox", { name: "Posts" });
 }
+/** A row of the current list (a new list replaces the listbox, so it is looked up each try). */
 async function option(name: RegExp | string) {
-  return within(await list()).findByRole("option", { name });
+  return waitFor(() => within(screen.getByRole("listbox", { name: "Posts" })).getByRole("option", { name }));
 }
 /** A toast's own message (the live region repeats it for screen readers). */
 const toast = async (text: RegExp) =>
@@ -64,7 +65,11 @@ describe("feeds pane", () => {
     const unread = await within(nav).findByRole("button", { name: /All unread/ });
     expect(unread).toHaveTextContent("999+");
     expect(within(nav).getByRole("button", { name: /In KB/ })).toHaveTextContent("31");
+    // A folder's count shows while it is collapsed (its feeds carry their own).
+    expect(within(nav).getByRole("button", { name: /^News/ })).not.toHaveTextContent("999+");
+    await userEvent.click(within(nav).getByRole("button", { name: "Feeds in News" }));
     expect(within(nav).getByRole("button", { name: /^News/ })).toHaveTextContent("999+");
+    await userEvent.click(within(nav).getByRole("button", { name: "Feeds in News" }));
     expect(within(nav).getByRole("button", { name: /Hacker News/ })).toHaveTextContent("999+");
     expect(within(nav).getByRole("button", { name: /Fly\.io blog/ })).toHaveTextContent("4");
     expect(within(nav).getByRole("button", { name: /Loose feed/ })).toHaveTextContent("2");
@@ -159,7 +164,7 @@ describe("list and reader", () => {
   it("the reader's toolbar holds Open original, Engage and Keep; the bottom bar Previous, Next and Mark unread", async () => {
     const { calls } = setup();
     await userEvent.click(await option(/Post 2/));
-    const toolbar = within(reader()).getByRole("toolbar", { name: "Post actions" });
+    const toolbar = within(reader()).getByRole("group", { name: "Post actions" });
     const original = within(toolbar).getByRole("link", { name: "Open original ↗" });
     expect(original).toHaveAttribute("href", "https://fly.io/blog/post-2");
     expect(original).toHaveAttribute("target", "_blank");
@@ -167,7 +172,7 @@ describe("list and reader", () => {
     expect(within(toolbar).getByRole("button", { name: "Engage" })).toBeInTheDocument();
     expect(within(toolbar).getByRole("button", { name: "Keep" })).toBeInTheDocument();
     // The reader remounts per post, so the bar is looked up each time.
-    const bottom = () => within(within(reader()).getByRole("toolbar", { name: "Reading" }));
+    const bottom = () => within(within(reader()).getByRole("group", { name: "Reading" }));
     await userEvent.click(bottom().getByRole("button", { name: "Next" }));
     expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 3");
     await userEvent.click(bottom().getByRole("button", { name: "Previous" }));
@@ -178,6 +183,42 @@ describe("list and reader", () => {
     expect(await bottom().findByRole("button", { name: "Mark read" })).toBeInTheDocument();
     // No on-screen key guide (design pass): the keys are listed only by `?`.
     expect(screen.queryByText(/j\s*\/\s*k/)).toBeNull();
+  });
+
+  it("read posts are marked for dimming", async () => {
+    setup();
+    expect(await option(/Post 3/)).toHaveAttribute("data-read", "true");
+    expect(await option(/Post 1/)).not.toHaveAttribute("data-read");
+  });
+
+  it("rapid read toggles end in the last state asked for, whatever order the answers come in", async () => {
+    const pending: ((r: Response) => void)[] = [];
+    setup({
+      "PATCH /api/rss/posts/3": async (req: Request) => {
+        const body = (await req.clone().json()) as { read: boolean };
+        return new Promise<Response>((resolve) => pending.push(() => resolve(Response.json(post(3, body)))));
+      },
+    });
+    await userEvent.click(await option(/Post 3/));
+    press("m"); // → unread
+    press("m"); // → read again
+    await waitFor(() => expect(pending).toHaveLength(2));
+    act(() => pending[1]?.(new Response()));
+    act(() => pending[0]?.(new Response()));
+    await waitFor(() => expect(within(reader()).getByRole("button", { name: "Mark unread" })).toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(within(reader()).getByRole("button", { name: "Mark unread" })).toBeInTheDocument();
+  });
+
+  it("unread counts that fail to load say why, once", async () => {
+    const { calls } = setup({
+      "GET /api/rss/counts": () => Response.json({ detail: "counts busy" }, { status: 503 }),
+      "POST /api/rss/refresh": { polled: 1, new_items: 0, failed: 0 },
+    });
+    expect(await toast(/Couldn't load unread counts: counts busy/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "↻ Refresh" }));
+    await waitFor(() => expect(gets(calls, "/api/rss/counts").length).toBeGreaterThan(1));
+    expect(document.querySelectorAll("[data-toast]")).toHaveLength(1);
   });
 
   it("an unsafe original URL gets no link and o opens nothing", async () => {
@@ -299,6 +340,37 @@ describe("list and reader", () => {
     expect(within(box).queryByRole("option", { name: /Post 1\b/ })).toBeNull();
     expect(within(box).getAllByRole("option")[0]).toHaveAttribute("aria-posinset");
     expect(within(box).getAllByRole("option")[0]).toHaveAttribute("aria-setsize", "500");
+  });
+
+  it("a fast scope switch clears the old list: no stale read-above or paging, and the new list starts at the top", async () => {
+    const waiting = new Map<string, (r: Response) => void>();
+    const many = Array.from({ length: 500 }, (_, i) => post(i + 1));
+    const { calls } = setup({
+      "GET /api/rss/posts": (req: Request) => {
+        const feed = new URL(req.url).searchParams.get("feed");
+        if (feed === null) return Response.json({ items: many, next_before: "old-cursor" });
+        return new Promise<Response>((resolve) => waiting.set(feed, resolve));
+      },
+    });
+    await option(/Post 1\b/);
+    const scroller = screen.getByTestId("post-scroller");
+    scroller.scrollTop = ROW_HEIGHT * 200;
+    fireEvent.scroll(scroller);
+    await userEvent.click(await option(/Post 201\b/));
+    await userEvent.click(screen.getByRole("button", { name: /Hacker News/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Fly\.io blog/ }));
+    expect(screen.queryByRole("listbox", { name: "Posts" })).toBeNull();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    press("A", { shiftKey: true });
+    press("j");
+    await waitFor(() => expect(waiting.size).toBe(2));
+    act(() => waiting.get("2")?.(Response.json({ items: [post(900, { title: "Fresh" })], next_before: null })));
+    act(() => waiting.get("1")?.(Response.json({ items: [post(800, { title: "Stale" })], next_before: null })));
+    expect(await option(/Fresh/)).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Stale/ })).toBeNull();
+    expect(screen.getByTestId("post-scroller").scrollTop).toBe(0);
+    expect(writes(calls, "/api/rss/posts/read-above")).toHaveLength(0);
+    expect(gets(calls, "/api/rss/posts").filter((c) => new URL(c.url).searchParams.has("before"))).toHaveLength(0);
   });
 
   it("loads the next page when the end comes into view", async () => {
@@ -493,6 +565,36 @@ describe("keys", () => {
   });
 });
 
+describe("focus", () => {
+  it("the key list keeps Tab inside and returns focus to where it was", async () => {
+    setup();
+    const box = await list();
+    box.focus();
+    press("?", { shiftKey: true });
+    const close = screen.getByRole("button", { name: "Close" });
+    expect(close).toHaveFocus();
+    await userEvent.tab();
+    expect(close).toHaveFocus();
+    await userEvent.tab({ shift: true });
+    expect(close).toHaveFocus();
+    await userEvent.click(close);
+    expect(box).toHaveFocus();
+  });
+
+  it("arrow keys move the selection while the list has focus", async () => {
+    setup();
+    const box = await list();
+    box.focus();
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+    fireEvent.keyDown(box, { key: "x" });
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+  });
+});
+
 describe("narrow layout", () => {
   it("the list fills the screen, a post opens the reader full-screen, and Back returns", async () => {
     stubNarrow(true);
@@ -512,6 +614,45 @@ describe("narrow layout", () => {
     await userEvent.click(within(nav).getByRole("button", { name: /In KB/ }));
     expect(await list()).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "In KB", level: 2 })).toBeInTheDocument();
+  });
+
+  it("when the open post drops out of a refreshed list, the narrow screen goes back to the list", async () => {
+    stubNarrow(true);
+    let first = true;
+    setup({
+      "GET /api/rss/posts": () => {
+        const items = first ? [post(1), post(2)] : [post(2)];
+        first = false;
+        return Response.json({ items, next_before: null });
+      },
+      "POST /api/rss/refresh": { polled: 1, new_items: 0, failed: 0 },
+    });
+    await userEvent.click(await option(/Post 1/));
+    expect(reader()).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "↻ Refresh" }));
+    expect(await list()).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Reader" })).toBeNull();
+    expect(within(await list()).queryByRole("option", { name: /Post 1/ })).toBeNull();
+    // The post is no longer selected, so it doesn't come back as an open reader.
+    expect(within(await list()).queryByRole("option", { selected: true })).toBeNull();
+  });
+
+  it("a failed reload while reading on a narrow screen shows the list and its error", async () => {
+    stubNarrow(true);
+    let fail = false;
+    setup({
+      "GET /api/rss/posts": () =>
+        fail
+          ? Response.json({ detail: "database locked" }, { status: 500 })
+          : Response.json({ items: [post(1)], next_before: null }),
+      "POST /api/rss/refresh": { polled: 1, new_items: 0, failed: 0 },
+    });
+    await userEvent.click(await option(/Post 1/));
+    fail = true;
+    await userEvent.click(screen.getByRole("button", { name: "↻ Refresh" }));
+    expect(await screen.findByText(/Couldn't load posts: database locked/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Reader" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
   it("j opens the reader on a narrow screen, and widening shows all three panes", async () => {

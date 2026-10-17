@@ -175,6 +175,10 @@
 .option:hover {
   background: var(--jx-row-bg-hover);
 }
+/* Read items dim (spec §2.1); the selected one stays full strength. */
+.option[data-read]:not([aria-selected="true"]) [data-row-title] {
+  color: var(--jx-fg-muted);
+}
 .option[aria-selected="true"] {
   background: var(--jx-row-bg-selected);
 }

@@ -72,7 +72,12 @@ function emptyText(scope: Scope, query: string): string {
 
 function KeysDialog({ onClose }: { onClose: () => void }) {
   const close = useRef<HTMLButtonElement>(null);
-  useEffect(() => close.current?.focus(), []);
+  useEffect(() => {
+    // Back to where the reader was when the list closes.
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    close.current?.focus();
+    return () => opener?.focus();
+  }, []);
   return (
     <div className={s.scrim} onClick={onClose}>
       <div
@@ -85,6 +90,8 @@ function KeysDialog({ onClose }: { onClose: () => void }) {
           if (e.key === "Escape") {
             e.preventDefault();
             onClose();
+          } else if (e.key === "Tab") {
+            e.preventDefault(); // Close is the only control: Tab stays on it (modal)
           }
         }}
       >
@@ -139,14 +146,29 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
   const searchBox = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
   const loadingMore = useRef(false);
+  const shownList = useRef("");
+  /** Per post, the latest read toggle: older answers arriving late are ignored. */
+  const readSeq = useRef(new Map<number, number>());
+  const countsFailing = useRef(false);
 
   const fail = useCallback(
     (what: string, e: unknown) => toast.show({ tone: "danger", message: `Couldn't ${what}: ${causeOf(e)}` }),
     [toast],
   );
   const loadCounts = useCallback(() => {
-    getCounts(client).then(setCounts, () => undefined); // stale counts are harmless; the list shows errors
-  }, [client]);
+    getCounts(client).then(
+      (c) => {
+        countsFailing.current = false;
+        setCounts(c);
+      },
+      (e: unknown) => {
+        // Counts reload after every read; say why once, not on each retry.
+        if (countsFailing.current) return;
+        countsFailing.current = true;
+        fail("load unread counts", e);
+      },
+    );
+  }, [client, fail]);
   const loadFeeds = useCallback(() => {
     listFeeds(client).then(setFeeds, (e: unknown) => fail("load feeds", e));
   }, [client, fail]);
@@ -166,6 +188,14 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
     loadingMore.current = false;
     setLoading(true);
     setListError(null);
+    // A different list: drop the old one at once, so nothing in it can be acted on under the
+    // new scope (read-above, paging with its cursor). A reload of the same list keeps it.
+    const listKey = JSON.stringify([scope, search]);
+    if (listKey !== shownList.current) {
+      shownList.current = listKey;
+      setPosts([]);
+      setNextBefore(null);
+    }
     // Read-above covers only what was on screen: posts first seen after this stay unread.
     const loadedAt = new Date().toISOString();
     const page = search
@@ -190,7 +220,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
   }, [client, scope, search, reload]);
 
   const loadMore = useCallback(() => {
-    if (nextBefore === null || loadingMore.current) return;
+    if (loading || nextBefore === null || loadingMore.current) return;
     loadingMore.current = true;
     const mine = generation.current;
     listPosts(client, scope, nextBefore).then(
@@ -211,7 +241,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
         fail("load more posts", e);
       },
     );
-  }, [client, scope, nextBefore, fail]);
+  }, [client, scope, nextBefore, loading, fail]);
 
   const refresh = useCallback(async () => {
     onRefreshing(true);
@@ -237,15 +267,21 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
 
   const replace = (next: Post) => setPosts((prev) => prev.map((p) => (p.id === next.id ? next : p)));
 
+  const setReadFlags = (flags: Map<number, boolean>) =>
+    setPosts((prev) => prev.map((p) => (flags.has(p.id) ? { ...p, read: flags.get(p.id) === true } : p)));
+
   const markRead = (post: Post, read: boolean) => {
-    replace({ ...post, read });
+    const seq = (readSeq.current.get(post.id) ?? 0) + 1;
+    readSeq.current.set(post.id, seq);
+    const latest = () => readSeq.current.get(post.id) === seq;
+    setReadFlags(new Map([[post.id, read]]));
     setRead(client, post.id, read).then(
       (saved) => {
-        replace(saved);
+        if (latest()) replace(saved);
         loadCounts();
       },
       (e: unknown) => {
-        replace(post);
+        if (latest()) setReadFlags(new Map([[post.id, !read]]));
         fail(`mark the post ${read ? "read" : "unread"}`, e);
       },
     );
@@ -253,6 +289,14 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
 
   const index = posts.findIndex((p) => p.id === selectedId);
   const selected = index >= 0 ? posts[index] : undefined;
+
+  // The open post left the list (a reload no longer returns it, or failed): let it go, and
+  // on a narrow screen go back to the list rather than an empty reader with no way back.
+  useEffect(() => {
+    if (loading || selectedId === null || selected) return;
+    setSelectedId(null);
+    setStage((st) => (st === "reader" ? "list" : st));
+  }, [loading, selectedId, selected]);
 
   const select = (id: number) => {
     setSelectedId(id);
@@ -270,11 +314,12 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   };
   const readAbove = () => {
-    if (!selected || search) return;
-    const before = posts;
-    setPosts(posts.map((p, i) => (i <= index ? { ...p, read: true } : p)));
+    if (!selected || search || loading) return;
+    const above = posts.slice(0, index + 1);
+    setReadFlags(new Map(above.map((p) => [p.id, true])));
     markReadAbove(client, selected.id, scope, asOf).then(loadCounts, (e: unknown) => {
-      setPosts(before);
+      // Undo only the read flags it set; rows paged in meanwhile stay.
+      setReadFlags(new Map(above.map((p) => [p.id, p.read])));
       fail("mark these read", e);
     });
   };
@@ -305,8 +350,10 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
 
   const title = titleOf(scope, feeds, search);
   const showFeeds = !narrow || stage === "feeds";
-  const showList = !narrow || stage === "list";
-  const showReader = !narrow || stage === "reader";
+  // Until the effect above settles, a reader stage with nothing selected is the list.
+  const shown = stage === "reader" && !selected ? "list" : stage;
+  const showList = !narrow || shown === "list";
+  const showReader = !narrow || shown === "reader";
 
   const listPane = (
     <section className={s.listPane} aria-labelledby="rss-list-title">
@@ -356,9 +403,11 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed }: WorkspaceProps) {
         <p className={s.empty}>Loading…</p>
       ) : (
         <PostList
+          key={shownList.current}
           posts={posts}
           selectedId={selectedId}
           onSelect={select}
+          onStep={move}
           onEndReached={loadMore}
           empty={emptyText(scope, search)}
         />

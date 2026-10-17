@@ -4,7 +4,7 @@
 // bottom. Mount one per post (`key={post.id}`): the loaded article belongs to that post.
 import { Button } from "@jesinia/design";
 import { useClient } from "@jesinia/shell";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { fullArticle, needsFullArticle, readingMinutes, retryArchive, safeHttpUrl, type Post } from "./api";
 import { archiveStatus, ArchiveBadge } from "./PostList";
 import s from "./rss.module.css";
@@ -79,10 +79,11 @@ export function Reader(props: ReaderProps) {
     }
   };
 
-  const text = article.state === "done" ? article.markdown : words(post.content_html ?? post.snippet);
+  const feedText = useMemo(() => words(post.content_html ?? post.snippet), [post.content_html, post.snippet]);
+  const text = article.state === "done" ? article.markdown : feedText;
   return (
     <section className={s.reader} aria-label="Reader">
-      <div className={s.paneHead} role="toolbar" aria-label="Post actions">
+      <div className={s.paneHead} role="group" aria-label="Post actions">
         {props.back ? (
           <Button variant="ghost" size="sm" onClick={props.back.onBack}>
             ‹ {props.back.label}
@@ -125,7 +126,7 @@ export function Reader(props: ReaderProps) {
             </div>
           ) : null}
           {article.state === "done" ? (
-            <SafeMarkdown markdown={article.markdown} />
+            <SafeMarkdown markdown={article.markdown} base={post.url} />
           ) : post.content_html ? (
             <SafeHtml html={post.content_html} base={post.url} />
           ) : (
@@ -146,7 +147,7 @@ export function Reader(props: ReaderProps) {
           ) : null}
         </article>
       </div>
-      <div className={s.paneFoot} role="toolbar" aria-label="Reading">
+      <div className={s.paneFoot} role="group" aria-label="Reading">
         <Button variant="ghost" size="sm" disabled={!props.hasPrevious} onClick={props.onPrevious}>
           <span aria-hidden="true">←</span> Previous
         </Button>
