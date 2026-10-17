@@ -673,3 +673,13 @@ async def test_a_broken_labels_yml_refuses_the_label_batches(env: Env) -> None:
     refused = await env.client.post(f"{LABELS}/preview", json={"kind": "setup"})
     assert refused.status_code == 400 and refused.json()["error"] == "SchemaHasErrorsError"
     assert "not valid YAML" in refused.json()["detail"]
+
+
+async def test_the_repos_endpoint_reports_the_schema_an_apply_validated(env: Env) -> None:
+    await env.watch_and_sync()
+    env.github.files[(REPO, LABELS_YML)] = AMICUS_YML + "  - name: area:web\n"  # no sync since
+    plan = (await env.client.post(f"{LABELS}/preview", json={"kind": "setup"})).json()
+    body = {"kind": "setup", "plan_id": plan["plan_id"]}
+    assert (await env.client.post(f"{LABELS}/apply", json=body, headers=keyed())).status_code == 200
+    repo = (await env.client.get(f"{API}/repos")).json()["repos"][0]
+    assert [area["name"] for area in repo["label_schema"]["areas"]] == ["area:apple", "area:web"]

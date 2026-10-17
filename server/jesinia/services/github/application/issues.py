@@ -309,6 +309,18 @@ class IssueClient:
         path = f"{_issue_path(repo, n)}/sub_issues"
         return [_issue(repo, item) for item in await get_pages(self._github, path)]
 
+    async def label(self, repo: str, name: str) -> Label | None:
+        """One label read live (its name encoded as one path segment); ``None`` when the repo
+        has no such label."""
+        path = f"/repos/{validate_repo(repo)}/labels/{_label_segment(name)}"
+        try:
+            data = await get_json(self._github, path)
+        except GitHubRequestError as exc:
+            if exc.status != 404:
+                raise
+            return None
+        return _label(mapping(data, path))
+
     async def labels(self, repo: str) -> list[Label]:
         path = f"/repos/{validate_repo(repo)}/labels"
         return [_label(item) for item in await get_pages(self._github, path)]

@@ -213,6 +213,9 @@ class LabelWrites(Protocol):
 
     async def file(self, repo: str, path: str) -> str | None: ...
 
+    async def label(self, repo: str, name: str) -> Label | None:
+        """One label read live; ``None`` when the repo has no such label."""
+
     async def labeled(self, repo: str, name: str) -> list[LabeledItem]:
         """Every issue and pull request carrying ``name`` now (``InvalidLabelError`` for a
         name with a comma, which GitHub's filter can't express)."""
@@ -234,6 +237,14 @@ class LabelPlanStore(Protocol):
     def issue(self, repo: str, n: int) -> Issue | None: ...
 
     def replace_labels(self, repo: str, labels: Sequence[Label]) -> None: ...
+
+    def issues(self, repo: str) -> list[Issue]: ...
+
+    def set_schema(self, repo: str, source: SchemaSource, schema: LabelSchema) -> None: ...
+
+    def update_triage(self, repo: str, triaged: Sequence[tuple[int, Triage]]) -> None:
+        """Store recomputed triage; the Inbox flag is cleared for issues now complete and
+        never set."""
 
     def update_issue_labels(self, issue: Issue, labels: Sequence[str], triaged: Triage) -> None:
         """Store a cached issue's labels as a write left them, with its new triage; the Inbox flag

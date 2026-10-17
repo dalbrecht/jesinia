@@ -37,6 +37,7 @@ from jesinia.apps.issues.domain.labels import (
     SchemaHasErrorsError,
     skip_cause,
 )
+from jesinia.apps.issues.domain.schema import parse_labels_yml
 from jesinia.apps.issues.domain.triage import IssueFilters, RepoNotWatchedError
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.module import ISSUES_DB
@@ -84,6 +85,8 @@ class FakeGitHub(FakeIssues):
         # Called before each ``labeled`` answer with the name and how many times it was listed
         # (1-based): mutate the repo to race the batch.
         self.before_labeled: Callable[[str, int], None] | None = None
+        # Likewise before each single-label read (``label``).
+        self.before_label: Callable[[str, int], None] | None = None
 
     def label_names(self) -> list[str]:
         return [label.name for label in self.repo_labels.get(REPO, [])]
@@ -111,6 +114,15 @@ class FakeGitHub(FakeIssues):
         if self.labels_error is not None:
             raise self.labels_error
         return await super().labels(repo)
+
+    async def label(self, repo: str, name: str) -> Label | None:
+        self.calls.append(("label", (repo, name)))
+        if self.before_label is not None:
+            self.before_label(name, self.calls.count(("label", (repo, name))))
+        wanted = name.casefold()
+        return next(
+            (lab for lab in self.repo_labels.get(repo, []) if lab.name.casefold() == wanted), None
+        )
 
     async def labeled(self, repo: str, name: str) -> list[LabeledItem]:
         self.calls.append(("labeled", (repo, name)))
@@ -854,3 +866,72 @@ async def test_the_cache_after_a_migration_is_triaged_with_the_fresh_schema(
     assert cached is not None and "ready" in cached.issue.labels
     assert cached.triage.complete and cached.triage.readiness == "ready"
     assert inbox.view("inbox", IssueFilters()).rows == []
+
+
+# The replacement is re-read live before every move (Codex round 3) ------------------------
+
+
+def _vanish(github: FakeGitHub, name: str, on_read: int) -> None:
+    def hook(read: str, count: int) -> None:
+        if read == name and count == on_read:
+            github.repo_labels[REPO] = [
+                label for label in github.repo_labels[REPO] if label.name != name
+            ]
+
+    github.before_label = hook
+
+
+async def test_a_replacement_deleted_before_the_move_is_never_recreated(
+    github: FakeGitHub,
+) -> None:
+    github.set_labels("old", "new")
+    github.put(issue(1, labels=("old",)))
+    _vanish(github, "new", on_read=1)  # deleted on GitHub after the batch read its labels
+    run = await executor(github).run(REPO, [DeleteLabel("old", "new")])
+    assert [r.state for r in run.results] == ["failed"]
+    assert "no longer exists" in str(run.results[0].cause)
+    assert not any(name in {"add_labels", "delete_label"} for name, _ in github.writes)
+    assert github.issues[(REPO, 1)].labels == ("old",)
+
+
+async def test_a_replacement_deleted_before_the_recheck_pass_is_never_recreated(
+    github: FakeGitHub,
+) -> None:
+    github.set_labels("old", "new")
+    github.put(issue(1, labels=("old",)))
+
+    def label_late(name: str, count: int) -> None:
+        if name == "old" and count == 2:
+            github.put(issue(7, labels=("old",)))
+
+    github.before_labeled = label_late
+    _vanish(github, "new", on_read=2)  # gone between pass 1 and the recheck
+    run = await executor(github).run(REPO, [DeleteLabel("old", "new"), DeleteLabel("x")])
+    assert [r.state for r in run.results] == ["failed", "skipped"]
+    assert "no longer exists" in str(run.results[0].cause)
+    adds = [args for name, args in github.writes if name == "add_labels"]
+    assert adds == [(1, ("new",))]  # pass 1 only; #7 is never given a recreated label
+    assert not any(name == "delete_label" for name, _ in github.writes)
+
+
+async def test_an_apply_stores_the_fresh_schema_and_retriages_every_cached_issue(
+    labels: LabelSetupService, github: FakeGitHub, store: SqliteIssuesStore, clock: FakeClock
+) -> None:
+    github.files[(REPO, LABELS_YML)] = "readiness:\n  - human-needed\n"
+    github.set_labels("agent-ready", "ready", "priority: high", "bug", "area:web")
+    already = ("ready", "priority: high", "bug", "area:web")  # never moved
+    github.put(issue(1, labels=already, created=clock.now + timedelta(seconds=30)))
+    await synced(github, store, clock)
+    inbox = IssueQueries(store, clock)
+    assert [r.number for r in inbox.view("inbox", IssueFilters()).rows] == [1]
+    fresh_yml = "readiness:\n  - name: ready\n    aliases: [agent-ready]\n  - human-needed\n"
+    github.files[(REPO, LABELS_YML)] = fresh_yml
+    plan = await labels.preview(REPO, "migrate")
+    assert plan.ops == (DeleteLabel("agent-ready", "ready", ()),)
+    assert (await labels.apply(REPO, "migrate", plan.id)).complete
+    cached = store.cached_issue(REPO, 1)
+    assert cached is not None and cached.triage.complete and cached.triage.readiness == "ready"
+    assert inbox.view("inbox", IssueFilters()).rows == []
+    state = store.repo(REPO)
+    assert state is not None and state.schema == parse_labels_yml(fresh_yml)
+    assert state.schema_source == "repo"

@@ -701,3 +701,21 @@ async def test_a_malformed_issue_time_is_a_payload_error(
     with pytest.raises(GitHubPayloadError) as caught:
         await issues.get("acme/api", 12)
     assert caught.value.__cause__ is not None or "updated_at" in str(caught.value)
+
+
+@respx.mock
+async def test_label_reads_one_label_live_with_its_name_encoded(issues: IssueClient) -> None:
+    found = respx.get(f"{API}/repos/acme/api/labels/area%3Aa%2Fb").mock(
+        return_value=Response(200, json={"name": "area:a/b", "color": "ededed"})
+    )
+    assert await issues.label("acme/api", "area:a/b") == Label("area:a/b", "ededed", "")
+    assert found.called
+    respx.get(f"{API}/repos/acme/api/labels/gone").mock(
+        return_value=Response(404, json={"message": "Not Found"})
+    )
+    assert await issues.label("acme/api", "gone") is None
+    respx.get(f"{API}/repos/acme/api/labels/locked").mock(
+        return_value=Response(403, json={"message": "Forbidden"})
+    )
+    with pytest.raises(GitHubRequestError):
+        await issues.label("acme/api", "locked")

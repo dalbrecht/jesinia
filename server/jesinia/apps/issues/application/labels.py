@@ -8,6 +8,10 @@ engine reuses it for its ``EnsureLabel`` steps and inherits its pacing. It:
 - starts from a fresh read of the repo's labels (IR4), so a label is created only by a
   ``CreateLabel`` step, and a move never asks GitHub to add a label the repo lacks (GitHub would
   create it silently);
+- re-reads a move's replacement label live right before each pass of moves: GitHub's
+  add-labels call would silently recreate a replacement deleted or renamed during the batch,
+  so a missing one fails that op and nothing is added (a window one write wide remains,
+  inherent to GitHub's API: the label can still vanish between that read and the add);
 - moves a label's members from a **live** listing, never the cache (IR31). For each
   ``DeleteLabel`` with a ``replacement`` it first lists every issue and pull request carrying
   the old label and moves each to the replacement: add it, then remove the old label in GitHub's
@@ -35,7 +39,12 @@ from datetime import datetime, timedelta
 from functools import partial
 from typing import Literal
 
-from jesinia.apps.issues.application.ports import LabelPlanStore, LabelWrites, RepoState
+from jesinia.apps.issues.application.ports import (
+    LabelPlanStore,
+    LabelWrites,
+    RepoState,
+    SchemaSource,
+)
 from jesinia.apps.issues.application.sync import read_schema
 from jesinia.apps.issues.domain.labels import (
     CreateLabel,
@@ -153,11 +162,15 @@ class _Run:
         self.known[label_key(created.name)] = created
         return None
 
-    async def members(self, name: str) -> list[LabeledItem]:
+    async def read[T](self, call: Callable[[], Awaitable[T]]) -> T:
+        """A read: unpaced, but GitHub stopping the batch still stops it."""
         try:
-            return await self.github.labeled(self.repo, name)
+            return await call()
         except (GitHubRateLimitedError, GitHubUnavailable) as exc:
             raise _BatchStoppedError(exc) from exc
+
+    async def members(self, name: str) -> list[LabeledItem]:
+        return await self.read(lambda: self.github.labeled(self.repo, name))
 
     async def move(self, op: DeleteLabel, replacement: str) -> None:
         """Move every live member of ``op.name`` to ``replacement``.
@@ -172,11 +185,20 @@ class _Run:
             raise _StepFailedError(
                 f"{op.name!r} and {replacement!r} are the same label; nothing to move"
             )
-        target = self.known.get(label_key(replacement))
-        if target is None:
+        if label_key(replacement) not in self.known:
             raise _StepFailedError(
                 f"{replacement!r} doesn't exist on GitHub, and Jesinia never creates labels "
                 "implicitly; run the label setup first"
+            )
+        # Re-read live right before the moves (each pass): GitHub's add-labels call creates a
+        # missing label, so a replacement deleted or renamed since the batch read the labels
+        # would be recreated silently.
+        target = await self.read(lambda: self.github.label(self.repo, replacement))
+        if target is None:
+            self.known.pop(label_key(replacement), None)
+            raise _StepFailedError(
+                f"{replacement!r} no longer exists on GitHub (deleted or renamed during the "
+                "batch); nothing was added, and Jesinia never creates labels implicitly"
             )
         failures: list[tuple[int, str]] = []
         for item in await self.members(op.name):
@@ -337,6 +359,7 @@ class Planned:
 
     ops: tuple[LabelOp, ...]
     labels: list[Label]
+    source: SchemaSource
     schema: LabelSchema
 
 
@@ -395,9 +418,9 @@ class LabelPlanner:
         labels = await self._github.labels(state.repo)
         if kind == "setup":
             ops = tuple(plan_setup(schema, [label.name for label in labels]))
-            return Planned(ops, labels, schema)
+            return Planned(ops, labels, source, schema)
         plan = await self._migration(state, labels, with_members=with_members)
-        return Planned(tuple(plan.ops()), labels, schema)
+        return Planned(tuple(plan.ops()), labels, source, schema)
 
 
 class LabelSetupService:
@@ -487,7 +510,7 @@ class LabelSetupService:
                 self._rate_limited(run.rate_limited_until)
             if kind == "migrate" and run.complete:
                 self._store.set_migrated(name)
-            self._update_cache(name, run, planned.schema)
+            self._update_cache(name, run, planned)
             return run
 
     @staticmethod
@@ -518,12 +541,13 @@ class LabelSetupService:
             run.is_rate_limited,
         )
 
-    def _update_cache(self, repo: str, run: LabelRun, schema: LabelSchema) -> None:
-        """Write the run's labels and moved issues to the cache now, re-triaged against
-        ``schema`` (the one the apply was validated with, read fresh from GitHub, not the
-        cached one), so views and a re-preview don't wait for the next sync. Best effort: a
-        failure here is logged with its cause and never fails the apply (the next sync corrects
-        the cache)."""
+    def _update_cache(self, repo: str, run: LabelRun, planned: Planned) -> None:
+        """Write the run's labels and moved issues to the cache now, store the schema the apply
+        was validated with (read fresh from GitHub), and re-triage every cached issue of the
+        repo against it, so views and a re-preview don't wait for the next sync. Best effort: a
+        failure here is logged with its cause and never fails the apply (the next sync
+        corrects the cache)."""
+        schema = planned.schema
         try:
             state = self.planner.watched(repo)
             self._store.replace_labels(state.repo, run.labels)
@@ -533,5 +557,13 @@ class LabelSetupService:
                     continue  # labelled on GitHub after the last sync: the sync brings it
                 result = triage(labels, cached.sub_issue_count, schema)
                 self._store.update_issue_labels(cached, labels, result)
+            self._store.set_schema(state.repo, planned.source, schema)
+            self._store.update_triage(
+                state.repo,
+                [
+                    (i.number, triage(i.labels, i.sub_issue_count, schema))
+                    for i in self._store.issues(state.repo)
+                ],
+            )
         except Exception:  # error-isolated: the GitHub writes already happened
             log.exception("issues.labels: updating the cache of %s after an apply failed", repo)
