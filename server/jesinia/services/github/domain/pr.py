@@ -61,6 +61,12 @@ class PullRequest:
     # Set when the inbox could list this PR only from its search hit: the PR fetch failed
     # with this cause, so the head, base and size fields are empty.
     fetch_error: str | None = None
+    # How many commits GitHub says the PR has (0 when only the search hit is known).
+    commit_count: int = 0
+    # Set by ``PrClient.commits_of`` when GitHub listed fewer commits than ``commit_count``
+    # (its commits endpoint stops at 250). Consumers must then treat authorship as unknown
+    # and read trailers from the local mirror (`git log base..head`) instead.
+    commits_truncated: bool = False
 
 
 @dataclass(frozen=True)

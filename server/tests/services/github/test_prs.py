@@ -144,6 +144,7 @@ async def test_get_maps_pull_request_fields(prs: PrClient) -> None:
         review_requested=False,
         mergeable_state="clean",
         created_at=datetime(2026, 10, 14, 9, 30, tzinfo=UTC),
+        commit_count=2,
     )
     seven = await prs.get("acme/api", 7)
     assert seven.review_requested is True
@@ -664,3 +665,42 @@ async def test_search_hits_with_a_bad_repository_url_are_typed_errors(
     respx.get(f"{API}/user").mock(return_value=Response(200, json=fixture("user")))
     with pytest.raises(GitHubPayloadError, match="repository_url"):
         await prs.list_review_inbox(["acme/api"])
+
+
+def _commit_items(count: int) -> list[dict[str, object]]:
+    template = fixture("commits")
+    assert isinstance(template, list)
+    return [{**template[0], "sha": f"{n:040x}"} for n in range(count)]
+
+
+def _mock_commit_pages(repo: str, number: int, fetched: int) -> None:
+    items = _commit_items(fetched)
+    pages = [items[i : i + 100] for i in range(0, max(fetched, 1), 100)]
+
+    def page(request: httpx.Request) -> Response:
+        index = int(request.url.params.get("page", "1")) - 1
+        return Response(200, json=pages[index] if index < len(pages) else [])
+
+    respx.get(f"{API}/repos/{repo}/pulls/{number}/commits").mock(side_effect=page)
+
+
+@pytest.mark.parametrize(("in_pr", "fetched", "truncated"), [(251, 250, True), (250, 250, False)])
+@respx.mock
+async def test_commit_lists_capped_by_github_are_flagged(
+    prs: PrClient, caplog: pytest.LogCaptureFixture, in_pr: int, fetched: int, truncated: bool
+) -> None:
+    respx.get(f"{API}/user").mock(return_value=Response(200, json=fixture("user")))
+    payload = fixture("pull_web_8")
+    assert isinstance(payload, dict)
+    respx.get(f"{API}/repos/acme/web/pulls/8").mock(
+        return_value=Response(200, json={**payload, "commits": in_pr})
+    )
+    _mock_commit_pages("acme/web", 8, fetched)
+    pr = await prs.get("acme/web", 8)
+    assert pr.commit_count == in_pr and pr.commits_truncated is False
+
+    flagged, commits = await prs.commits_of(pr)
+
+    assert len(commits) == fetched
+    assert flagged.commits_truncated is truncated
+    assert ("commit list truncated" in caplog.text) is truncated

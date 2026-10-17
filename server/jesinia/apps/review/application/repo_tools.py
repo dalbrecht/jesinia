@@ -10,7 +10,6 @@ result is capped and says what its caps are. Searching and history go through gi
 from __future__ import annotations
 
 import asyncio
-import os
 import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -82,6 +81,7 @@ class GrepResult(TypedDict):
     matches: list[GrepMatch]
     truncated: bool
     withheld_by_allowance: int
+    escaped_paths: list[str]
     skipped_files: list[str]
     cap: str
 
@@ -92,6 +92,7 @@ class LsEntry(TypedDict):
     size: NotRequired[int]  # files
     skip: NotRequired[str | None]  # files and dirs: the auto-skip reason
     inside: NotRequired[bool]  # symlinks: whether the target stays inside the PR
+    escaped: NotRequired[bool]  # the name isn't UTF-8; shown with \\xNN escapes
 
 
 class LsResult(TypedDict):
@@ -167,6 +168,27 @@ def _read_lines(path: Path, first: int, count: int) -> tuple[list[str], bool, bo
     return lines, False, False
 
 
+def _display_bytes(raw: bytes) -> tuple[str, bool]:
+    """A path from git as JSON-safe text, and whether it had to be escaped: bytes that
+    aren't UTF-8 are shown as ``\\xNN`` rather than crashing the encoder later."""
+    try:
+        return raw.decode("utf-8"), False
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", "backslashreplace"), True
+
+
+def _display_name(name: str) -> tuple[str, bool]:
+    """``_display_bytes`` for a name from the filesystem (undecodable bytes arrive as
+    surrogate escapes)."""
+    return _display_bytes(name.encode("utf-8", "surrogateescape"))
+
+
+def _mark_escaped(entry: LsEntry, escaped: bool) -> LsEntry:
+    if escaped:
+        entry["escaped"] = True
+    return entry
+
+
 def _within_bytes(lines: list[str], limit: int) -> list[str]:
     """The leading lines whose UTF-8 encoding fits in ``limit`` bytes. Output is capped
     after decoding, because undecodable bytes grow threefold as replacement characters."""
@@ -189,7 +211,7 @@ def _allowance_key(root: Path, rel: str) -> str:
     return f"inode:{stat.st_dev}:{stat.st_ino}"
 
 
-def _parse_grep(data: bytes) -> tuple[list[tuple[str, int, bytes]], bool]:
+def _parse_grep(data: bytes) -> tuple[list[tuple[bytes, int, bytes]], bool]:
     """``git grep -n -z`` records as ``(path, line, text)``, and whether the output ended
     inside a record.
 
@@ -203,7 +225,7 @@ def _parse_grep(data: bytes) -> tuple[list[tuple[str, int, bytes]], bool]:
         RepoGitError: a line number that isn't a number.
     """
     fields = data.split(b"\0")
-    records: list[tuple[str, int, bytes]] = []
+    records: list[tuple[bytes, int, bytes]] = []
     path = fields[0]
     index = 1
     while index < len(fields):
@@ -218,7 +240,7 @@ def _parse_grep(data: bytes) -> tuple[list[tuple[str, int, bytes]], bool]:
             pieces.append(text)
         if not line.isdigit():
             raise RepoGitError("could not parse git grep output; narrow the search with a glob")
-        records.append((os.fsdecode(path), int(line), b"\0".join(pieces)))
+        records.append((path, int(line), b"\0".join(pieces)))
         path = following
         index += 1
     return records, bool(path)
@@ -262,7 +284,13 @@ class RepoTools:
         target = safe_path(root, path)
         rel = _relative(root, target)
         if not target.is_file():
-            raise RepoPathNotFoundError(f"no file at {path!r}")
+            hint = (
+                "; paths shown with \\xNN escapes aren't valid UTF-8 and can't be read with "
+                "repo_read (try repo_grep, or repo_git show)"
+                if "\\x" in path
+                else ""
+            )
+            raise RepoPathNotFoundError(f"no file at {path!r}{hint}")
         first = 1 if start is None else start
         if first < 1:
             raise InvalidReadRangeError("start is a 1-based line number")
@@ -346,7 +374,11 @@ class RepoTools:
         # Only output already cut at the byte cap may end mid-record; either way it is
         # reported as truncated, so no match is ever missing silently.
         truncated = output.truncated or unfinished
-        for rel, line, raw_text in records:
+        escaped_paths: set[str] = set()
+        for raw_path, line, raw_text in records:
+            rel, escaped = _display_bytes(raw_path)
+            if escaped:
+                escaped_paths.add(rel)
             # repo_read refuses control characters in paths, so they are skipped here too.
             if auto_skip_reason(rel, False) is not None or any(ord(c) < 32 for c in rel):
                 skipped.add(rel)
@@ -379,12 +411,14 @@ class RepoTools:
             "truncated": truncated,
             "withheld_by_allowance": withheld,
             "skipped_files": sorted(skipped),
+            "escaped_paths": sorted(escaped_paths),
             "cap": (
                 f"repo_grep returns at most {GREP_MAX_MATCHES} matches and "
                 f"{GREP_MAX_BYTES // 1024} KB per call, each line cut to "
                 f"{GREP_MAX_LINE_CHARS} characters; matched lines count against the "
                 f"{FILE_LINES_PER_SESSION}-line per-file allowance, and binary, lockfile, "
-                "generated and vendored files are not searched."
+                "generated and vendored files are not searched. Paths that aren't valid "
+                "UTF-8 are shown with \\xNN escapes (listed in escaped_paths)."
             ),
         }
 
@@ -595,21 +629,22 @@ def _list_directory(root: Path, target: Path, limit: int) -> LsResult:
     children = sorted(child for child in target.iterdir() if child.name.lower() != ".git")
     for child in children[:limit]:
         rel = _relative(root, child)
+        name, escaped = _display_name(child.name)
+        entry: LsEntry
         if child.is_symlink():
-            entries.append({"name": child.name, "kind": "symlink", "inside": _stays(root, rel)})
+            entry = {"name": name, "kind": "symlink", "inside": _stays(root, rel)}
         elif child.is_dir():
-            entries.append({"name": child.name, "kind": "dir", "skip": directory_skip_reason(rel)})
+            entry = {"name": name, "kind": "dir", "skip": directory_skip_reason(rel)}
         else:
-            entries.append(
-                {
-                    "name": child.name,
-                    "kind": "file",
-                    "size": child.lstat().st_size,
-                    "skip": auto_skip_reason(rel, False),
-                }
-            )
+            entry = {
+                "name": name,
+                "kind": "file",
+                "size": child.lstat().st_size,
+                "skip": auto_skip_reason(rel, False),
+            }
+        entries.append(_mark_escaped(entry, escaped))
     return {
-        "path": _relative(root, target),
+        "path": _display_name(_relative(root, target))[0],
         "entries": entries,
         "truncated": len(children) > limit,
         "cap": f"repo_ls lists at most {limit} entries per directory",

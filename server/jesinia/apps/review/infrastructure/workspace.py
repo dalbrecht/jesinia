@@ -99,6 +99,7 @@ _TREE_READ_OPTIONS = (
     *("-c", "log.mailmap=false"),
     *("-c", "mailmap.file="),
     *("-c", "mailmap.blob="),
+    *("-c", "core.quotePath=true"),  # non-ASCII paths in git's output stay escaped text
 )
 # git's stderr kept for error messages; the rest is drained and dropped.
 _STDERR_LIMIT = 64 * 1024

@@ -9,6 +9,8 @@ the tree and a symlink that stays inside it.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import subprocess
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -24,7 +26,10 @@ from jesinia.apps.review.application.ports import TreeGit
 from jesinia.apps.review.application.repo_tools import (
     SEARCH_TIMEOUT,
     GrepResult,
+    LsEntry,
     RepoTools,
+    _display_name,
+    _mark_escaped,
     _parse_grep,
     safe_path,
 )
@@ -1052,12 +1057,12 @@ async def test_real_git_searches_word_boundaries_in_its_own_dialect(tools: RepoT
 
 def test_grep_output_cut_mid_record_drops_that_record() -> None:
     cut = b"a.py\x001\x00one\nb\nc.py\x002\x00two\nd.py\x003\x00thr"
-    assert _parse_grep(cut) == ([("a.py", 1, b"one"), ("b\nc.py", 2, b"two")], True)
+    assert _parse_grep(cut) == ([(b"a.py", 1, b"one"), (b"b\nc.py", 2, b"two")], True)
     assert _parse_grep(b"") == ([], False)
-    assert _parse_grep(b"a.py\x001\x00one\n") == ([("a.py", 1, b"one")], False)
+    assert _parse_grep(b"a.py\x001\x00one\n") == ([(b"a.py", 1, b"one")], False)
     # A NUL inside matched text doesn't misalign the records that follow it.
     nul = b"a.py\x001\x00x\x00y\x00z\nb.py\x002\x00ok\n"
-    assert _parse_grep(nul) == ([("a.py", 1, b"x\x00y\x00z"), ("b.py", 2, b"ok")], False)
+    assert _parse_grep(nul) == ([(b"a.py", 1, b"x\x00y\x00z"), (b"b.py", 2, b"ok")], False)
 
 
 # --- fix round 2: revisions stay inside the PR's history -----------------------------------
@@ -1317,3 +1322,61 @@ async def test_git_caps_output_by_utf8_bytes(tools: RepoTools) -> None:
     assert shown["truncated"] is True
     assert 0 < len(shown["output"].encode()) <= GIT_MAX_BYTES
     assert shown["output"].endswith("\n")  # whole lines only
+
+
+# --- Codex round 2 -------------------------------------------------------------------------
+
+LATIN1_NAME = b"caf\xe9.txt"  # not UTF-8, so APFS can't hold it on disk; git's index can
+
+
+@pytest.fixture
+def latin1_tree(tmp_path: Path) -> Path:
+    """A tree whose index (and commit) tracks a Latin-1 file name, built with plumbing."""
+    tree = tmp_path / "repos" / "acme" / "widget" / "trees" / ("c" * 40)
+    tree.mkdir(parents=True)
+    git(tree, "init", "-q")
+    blob = (
+        subprocess.run(
+            ["git", "-C", str(tree), "hash-object", "-w", "--stdin"],
+            input=b"latin_marker here\n",
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode()
+        .strip()
+    )
+    subprocess.run(
+        ["git", "-C", str(tree), "update-index", "--add", "-z", "--index-info"],
+        input=b"100644 blob " + blob.encode() + b"\t" + LATIN1_NAME + b"\0",
+        check=True,
+        capture_output=True,
+    )
+    git(tree, "commit", "-q", "-m", "latin1 name")
+    return tree
+
+
+async def test_grep_shows_undecodable_paths_escaped(latin1_tree: Path) -> None:
+    workspace = GitWorkspace(latin1_tree.parents[3], str)
+    sessions = ReviewSessionRegistry()
+    sessions.bind(SESSION, latin1_tree)
+    tools = RepoTools(sessions.worktree_for, workspace, sessions.allowance)
+    found = await tools.grep(SESSION, "latin_marker")
+    escaped = "caf\\xe9.txt"
+    assert [(m["path"], m["line"]) for m in found["matches"]] == [(escaped, 1)]
+    assert found["escaped_paths"] == [escaped]
+    assert "\\xNN" in found["cap"]
+    json.dumps(found, ensure_ascii=False).encode()  # JSON-safe, encodable as UTF-8
+    with pytest.raises(RepoPathNotFoundError, match="UTF-8"):
+        await tools.read(SESSION, escaped)
+    # git's own output quotes such paths (core.quotePath), so it stays text too.
+    log = await tools.git(SESSION, "log", ["--name-only", "--oneline"])
+    assert '"caf\\351.txt"' in log["output"]
+
+
+def test_listing_names_are_made_json_safe() -> None:
+    assert _display_name("plain.txt") == ("plain.txt", False)
+    undecodable = os.fsdecode(LATIN1_NAME)  # how Python hands such a name to repo_ls
+    assert _display_name(undecodable) == ("caf\\xe9.txt", True)
+    entry: LsEntry = {"name": "caf\\xe9.txt", "kind": "file"}
+    assert _mark_escaped(entry, True)["escaped"] is True
+    assert "escaped" not in _mark_escaped({"name": "a", "kind": "file"}, False)

@@ -9,6 +9,7 @@ Writes are not here: ``GitHubService.create_review`` is the only one.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
@@ -37,6 +38,8 @@ from jesinia.services.github.domain.pr import (
     validate_repo,
     validate_sha,
 )
+
+log = logging.getLogger(__name__)
 
 PER_PAGE = 100
 # GitHub's search rejects queries longer than 256 characters.
@@ -201,6 +204,7 @@ def _pull_request(repo: str, data: Mapping[str, object], viewer: str) -> PullReq
         additions=_number(data, "additions"),
         deletions=_number(data, "deletions"),
         changed_files=_number(data, "changed_files"),
+        commit_count=_number(data, "commits"),
         url=_text(data, "html_url"),
         review_requested=viewer in requested,
         mergeable_state=_optional_text(data, "mergeable_state"),
@@ -404,6 +408,22 @@ class PrClient:
                 )
             )
         return commits
+
+    async def commits_of(self, pr: PullRequest) -> tuple[PullRequest, list[PrCommit]]:
+        """``pr``'s commits, and ``pr`` with ``commits_truncated`` set when GitHub listed
+        fewer than the PR has: its commits endpoint stops at 250, and a short last page
+        otherwise looks like the whole history."""
+        commits = await self.commits(pr.repo, pr.number)
+        truncated = pr.commit_count > len(commits)
+        if truncated:
+            log.warning(
+                "github.pr commit list truncated: %s#%d has %d commits, GitHub listed %d",
+                pr.repo,
+                pr.number,
+                pr.commit_count,
+                len(commits),
+            )
+        return replace(pr, commits_truncated=truncated), commits
 
     async def checks(self, repo: str, sha: str) -> CheckState:
         """Check runs plus legacy commit statuses on ``sha``, rolled up into one state."""
