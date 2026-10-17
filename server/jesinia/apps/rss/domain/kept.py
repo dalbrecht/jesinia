@@ -16,25 +16,35 @@ from urllib.parse import urlsplit
 from jesinia.apps.rss.domain.feed import RssError
 from jesinia.apps.rss.domain.post import PostView
 from jesinia.services.kb.domain.provenance import inert, provenance_label, wrap_ai
-from jesinia.services.kb.domain.tags import TAG_LINE_PREFIX, extract_tags, render_tag_line
+from jesinia.services.kb.domain.tags import (
+    TAG_LINE_PREFIX,
+    escape_tags,
+    extract_tags,
+    render_tag_line,
+)
 
 KIND = "source/rss"
 ARTICLE_HEADING = "## Article"
 FEED_FALLBACK_NOTE = "Archived from the feed; the full article wasn't available."
-# Per kept page (spec §3.3, builder's call).
+# Per kept page (spec §3.3, builder's call): at most 20 images, and at most 20 download
+# attempts and 10 MB read in all, whether a download was kept or rejected.
 ARCHIVE_MAX_IMAGES = 20
+ARCHIVE_MAX_ATTEMPTS = ARCHIVE_MAX_IMAGES
 ARCHIVE_MAX_BYTES = 10 * 1024 * 1024
-# Raster formats only: an SVG can carry script, and the images are served from the KB.
-IMAGE_TYPES: Mapping[str, str] = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/gif": ".gif",
-    "image/webp": ".webp",
-    "image/avif": ".avif",
-}
 ASSET_NAME_HEX = 32
 
 ArchiveState = Literal["archiving", "done", "failed"]
+_ARCHIVE_STATES: Mapping[str, ArchiveState] = {
+    "archiving": "archiving",
+    "done": "done",
+    "failed": "failed",
+}
+
+
+def archive_state(raw: str | None) -> ArchiveState | None:
+    """A stored archive state as its type (None for none, or for an unknown value)."""
+    return _ARCHIVE_STATES.get(raw or "")
+
 
 _ARTICLE = re.compile(rf"(?m)^{re.escape(ARTICLE_HEADING)}[ \t]*$")
 _AI_OPEN = "<!-- jesinia:ai"
@@ -50,6 +60,11 @@ _ESCAPE = re.compile(r"\\(.)")
 
 class PostNotKept(RssError):  # noqa: N818 - the error code clients see
     """The post has no kept page, so there is nothing to archive."""
+
+
+class ArchiveNotFailed(RssError):  # noqa: N818 - the error code clients see
+    """Retry is only for a failed archive: a done one (and the author's edits to it) is never
+    overwritten, and a running one is not started twice."""
 
 
 @dataclass(frozen=True)
@@ -112,13 +127,20 @@ def feed_article(markdown: str) -> str:
 
 
 def _section(article: str) -> str:
-    return f"{ARTICLE_HEADING}\n\n{inert(article.strip())}\n"
+    """The article section. Its hashtags are escaped: they are the source's, not the
+    author's tags."""
+    return f"{ARTICLE_HEADING}\n\n{escape_tags(inert(article.strip()))}\n"
+
+
+def _note(text: str) -> str:
+    """The author's text, unable to open a provenance block or start the article section."""
+    return _ARTICLE.sub(lambda line: "\\" + line.group(0), inert(text.strip()))
 
 
 def render_kept_body(note: str, tags: Sequence[str], ai_block: str | None, article: str) -> str:
     """Note, ``Tags:`` line, AI takeaway, then ``## Article`` (spec §3.3 order); empty
     parts are left out."""
-    parts = [inert(note.strip())] if note.strip() else []
+    parts = [_note(note)] if note.strip() else []
     if tags:
         parts.append(render_tag_line(tags))
     if ai_block:
@@ -150,7 +172,7 @@ def kept_again(body: str, note: str, on: date, tags: Sequence[str], ai_block: st
     if added and tag_at is None:
         rest = "\n\n".join(p for p in (render_tag_line(added), rest) if p)
     if note.strip():
-        dated = f"_Kept again {on.isoformat()}:_ {inert(note.strip())}"
+        dated = f"_Kept again {on.isoformat()}:_ {_note(note)}"
         note_part = "\n\n".join(p for p in (note_part, dated) if p)
     new_head = "\n\n".join(p for p in (note_part, rest, ai_block or "") if p)
     return f"{new_head}\n\n{article}" if article else f"{new_head}\n"
@@ -191,10 +213,27 @@ def is_http_url(url: str) -> bool:
         return False
 
 
-def asset_name(data: bytes, content_type: str) -> str | None:
-    """A file name from the content's hash and an extension from its type; None when the
-    type is not an image format we keep."""
-    extension = IMAGE_TYPES.get(content_type.split(";", 1)[0].strip().lower())
+def image_extension(data: bytes) -> str | None:
+    """The file extension for the raster image format ``data`` starts with, whatever a server
+    claimed its type was; None for anything else (SVG included: it can carry script, and
+    archived images are served from the KB)."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data[4:8] == b"ftyp" and data[8:12] in (b"avif", b"avis"):
+        return ".avif"
+    return None
+
+
+def asset_name(data: bytes) -> str | None:
+    """A file name from the content's hash and an extension from its sniffed format; None
+    when it is not an image format we keep."""
+    extension = image_extension(data)
     if extension is None:
         return None
     return hashlib.sha256(data).hexdigest()[:ASSET_NAME_HEX] + extension

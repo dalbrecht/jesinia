@@ -185,8 +185,14 @@ class PostStore(Protocol):
 
     def counts(self) -> Counts: ...
 
-    def set_kept(self, post_id: int, page_id: str) -> None:
-        """Record the KB page the post was kept to."""
+    def set_kept(self, post_id: int, page_id: str, state: ArchiveState) -> None:
+        """Record the KB page the post was kept to and its archive state, together."""
+        ...
+
+    def set_post_archive_state(
+        self, post_id: int, state: ArchiveState | None, error: str | None
+    ) -> None:
+        """Set one post's archive state (before its page exists, or to undo that)."""
         ...
 
     def page_archive_state(self, page_id: str) -> ArchiveState | None:
@@ -198,7 +204,7 @@ class PostStore(Protocol):
         """Set the archive state (and error) of every post kept to the page."""
         ...
 
-    def archiving(self) -> list[tuple[str, int]]:
+    def archiving(self) -> list[tuple[str | None, int]]:
         """``(page id, post id)`` for each page whose archive was left running, one post
-        per page."""
+        per page; the page id is None for a post marked before its page was written."""
         ...

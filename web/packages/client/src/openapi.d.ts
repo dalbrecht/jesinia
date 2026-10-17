@@ -916,7 +916,8 @@ export interface paths {
         put?: never;
         /**
          * Retry Archive
-         * @description Archive a kept post's page again (Retry after "Archive incomplete").
+         * @description Archive a kept post's page again: Retry after "Archive incomplete" only (409
+         *     ``ArchiveNotFailed`` while it runs or once it is done).
          */
         post: operations["retry_archive_api_rss_posts__post_id__archive_post"];
         delete?: never;

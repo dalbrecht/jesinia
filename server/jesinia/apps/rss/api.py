@@ -36,7 +36,7 @@ from jesinia.apps.rss.domain.feed import (
     FolderNotFound,
     RssError,
 )
-from jesinia.apps.rss.domain.kept import PostNotKept, Takeaway
+from jesinia.apps.rss.domain.kept import ArchiveNotFailed, PostNotKept, Takeaway
 from jesinia.apps.rss.domain.post import (
     PAGE_SIZE,
     PAGE_SIZE_MAX,
@@ -400,6 +400,7 @@ _STATUS: dict[type[RssError], int] = {
     EngageSessionNotFound: status.HTTP_404_NOT_FOUND,
     FeedExists: status.HTTP_409_CONFLICT,
     PostNotKept: status.HTTP_409_CONFLICT,
+    ArchiveNotFailed: status.HTTP_409_CONFLICT,
     EngageBusy: status.HTTP_409_CONFLICT,
     NotAnEngageSession: status.HTTP_400_BAD_REQUEST,
     NotThisPostsSession: status.HTTP_400_BAD_REQUEST,
@@ -615,7 +616,8 @@ def build_router(host: RssHost) -> APIRouter:
         "/posts/{post_id}/archive", status_code=status.HTTP_202_ACCEPTED, response_model=PostOut
     )
     async def retry_archive(post_id: int, idem: IdempotentCall = keyed) -> Response:
-        """Archive a kept post's page again (Retry after "Archive incomplete")."""
+        """Archive a kept post's page again: Retry after "Archive incomplete" only (409
+        ``ArchiveNotFailed`` while it runs or once it is done)."""
 
         async def run() -> PostOut:
             return PostOut.of(host.keeper.retry(post_id))

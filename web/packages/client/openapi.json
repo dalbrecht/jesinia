@@ -3787,7 +3787,7 @@
           "rss"
         ],
         "summary": "Retry Archive",
-        "description": "Archive a kept post's page again (Retry after \"Archive incomplete\").",
+        "description": "Archive a kept post's page again: Retry after \"Archive incomplete\" only (409\n``ArchiveNotFailed`` while it runs or once it is done).",
         "operationId": "retry_archive_api_rss_posts__post_id__archive_post",
         "parameters": [
           {

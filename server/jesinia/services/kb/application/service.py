@@ -348,7 +348,8 @@ class KbService:
                 fs.write_atomic(str(ignore), LOCAL_ONLY_GITIGNORE)
         path = folder / name
         fs.contain(path)
-        fs.write_atomic(str(path), data)
+        # Up to megabytes with an fsync: keep it off the event loop.
+        await asyncio.to_thread(fs.write_atomic, str(path), data)
         return path
 
     async def update_body(self, id: PageId, body: str, *, expected_rev: str) -> PageWithRev:

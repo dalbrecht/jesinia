@@ -16,9 +16,11 @@ from fastapi import HTTPException
 from markdown_it import MarkdownIt
 
 from jesinia.apps.rss.domain.kept import (
+    ARCHIVE_MAX_ATTEMPTS,
     ARCHIVE_MAX_BYTES,
     ARCHIVE_MAX_IMAGES,
     FEED_FALLBACK_NOTE,
+    archive_state,
     find_images,
     is_http_url,
     kept_again,
@@ -37,11 +39,14 @@ from jesinia.services.fetch.application.service import FetchError, FetchService
 from jesinia.services.kb.application.errors import StaleWrite
 from jesinia.services.kb.application.service import PageDraft
 from jesinia.services.kb.domain.page import PageId
+from jesinia.services.kb.domain.tags import extract_tags
 from tests.apps.rss.conftest import KEEP_API, PUBLISHED, KeepEnv, keep_server
 from tests.apps.rss.test_posts import ARTICLE_FIXTURE, StubFetchModule
 from tests.conftest import running
 
 PNG = "image/png"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+JPEG_MAGIC = b"\xff\xd8\xff\xe0"
 
 
 def _front_matter(text: str) -> dict[str, object]:
@@ -333,6 +338,7 @@ async def test_keep_is_refused_while_the_kb_is_unavailable(
         # Nothing queued: the post is not kept and no archive is pending.
         assert env.state(post_id) == (None, None, None)
         assert env.rss.keeper.pending() == []
+        assert await env.rss.keeper.tags.catalog() == []  # "sqlite" was not catalogued
 
 
 async def test_keep_retry_with_same_idempotency_key_writes_once(keep_env: KeepEnv) -> None:
@@ -358,38 +364,20 @@ async def test_keep_retry_with_same_idempotency_key_writes_once(keep_env: KeepEn
 async def test_archive_saves_images_with_gitignore_and_caps(
     keep_env: KeepEnv, mock: respx.MockRouter
 ) -> None:
-    big = b"B" * (4 * 1024 * 1024)
-    urls = ["https://img.example/big-1", "https://img.example/big-2", "https://img.example/big-3"]
-    for n, url in enumerate(urls):
-        mock.get(url).mock(
-            return_value=httpx.Response(
-                200, content=big + bytes([n]), headers={"content-type": PNG}
-            )
-        )
-    smalls = [f"https://cdn.example/../../evil/{n}.png?x=1" for n in range(ARCHIVE_MAX_IMAGES)]
+    count = ARCHIVE_MAX_IMAGES + 2
+    smalls = [f"https://cdn.example/../../evil/{n}.png?x=1" for n in range(count)]
     for n, url in enumerate(smalls):
+        body = (PNG_MAGIC if n % 2 else JPEG_MAGIC) + f"small {n}".encode()
+        # The type a server claims is ignored: the bytes decide.
         mock.get(url).mock(
-            return_value=httpx.Response(
-                200, content=f"small {n}".encode(), headers={"content-type": "image/jpeg"}
-            )
+            return_value=httpx.Response(200, content=body, headers={"content-type": "text/plain"})
         )
-    html_page = mock.get("https://img.example/page").mock(
-        return_value=httpx.Response(200, content=b"<html>", headers={"content-type": "text/html"})
-    )
-    svg = mock.get("https://img.example/vector.svg").mock(
-        return_value=httpx.Response(
-            200, content=b"<svg/>", headers={"content-type": "image/svg+xml"}
-        )
-    )
-    lines = [f"![big {n}]({url})" for n, url in enumerate(urls)]
-    lines += [
+    lines = [
         "![not http](ftp://img.example/a.png)",
         "![script](javascript:alert(1))",
-        "![page](https://img.example/page)",
-        "![vector](<https://img.example/vector.svg>)",
     ]
     lines += [f"![small {n}](<{url}>)" for n, url in enumerate(smalls)]
-    lines.append("[a link, not an image](https://img.example/big-1)")
+    lines.append("[a link, not an image](https://cdn.example/evil/1.png?x=1)")
     post_id = keep_env.post()
     keep_env.cache_article(post_id, "\n\n".join(lines))
     kept = await keep_env.keep(post_id)
@@ -401,26 +389,214 @@ async def test_archive_saves_images_with_gitignore_and_caps(
     assert (assets / ".gitignore").read_text().strip() == "*"
     files = sorted(p for p in assets.iterdir() if p.name != ".gitignore")
     assert len(files) == ARCHIVE_MAX_IMAGES
-    assert sum(p.stat().st_size for p in files) <= ARCHIVE_MAX_BYTES
-    # Names come from the content hash and the content type, never from the URL path.
+    # Names come from the content hash and the sniffed type, never from the URL path.
     for path in files:
         assert re.fullmatch(r"[0-9a-f]{32}\.(png|jpg)", path.name), path.name
         assert path.name.startswith(hashlib.sha256(path.read_bytes()).hexdigest()[:32])
+        assert path.suffix == (".png" if path.read_bytes().startswith(PNG_MAGIC) else ".jpg")
     assert not (keep_env.root / "evil").exists()
-    assert html_page.call_count == 1 and svg.call_count == 1
 
     article = keep_env.page_text(kept.json()["path"]).split("## Article\n\n", 1)[1]
     local = re.findall(r"\]\((\.\./_assets/[^)]+)\)", article)
     assert len(local) == ARCHIVE_MAX_IMAGES
     assert all((keep_env.root / "Sources" / rel).resolve().is_file() for rel in local)
-    # The 10 MB cap left the third big image remote; the 20-image cap left two small ones.
-    assert "![big 2](https://img.example/big-3)" in article
-    assert sum(f"]({url}" in article or f"](<{url}>)" in article for url in smalls) == 2
-    # Non-http(s) and non-image targets are left as they were, never fetched.
+    # The 20-attempt cap left the last two remote, and never fetched them.
+    assert [f"](<{url}>)" in article for url in smalls[-2:]] == [True, True]
+    assert sum(route.call_count for route in mock.routes) == ARCHIVE_MAX_IMAGES
+    # Non-http(s) targets and links are left as they were, never fetched.
     assert "![not http](ftp://img.example/a.png)" in article
-    assert "![page](https://img.example/page)" in article
-    assert "![vector](<https://img.example/vector.svg>)" in article
-    assert "[a link, not an image](https://img.example/big-1)" in article
+    assert "![script](javascript:alert(1))" in article
+    assert "[a link, not an image](https://cdn.example/evil/1.png?x=1)" in article
+
+
+async def test_archive_stops_after_20_attempts_even_when_none_is_an_image(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    pages = mock.get(url__regex=r"https://junk\.example/\d+").mock(
+        return_value=httpx.Response(200, content=b"<html>", headers={"content-type": PNG})
+    )
+    post_id = keep_env.post()
+    keep_env.cache_article(
+        post_id, "\n\n".join(f"![{n}](https://junk.example/{n})" for n in range(50))
+    )
+    kept = await keep_env.keep(post_id)
+    await keep_env.rss.keeper.drain()
+    assert keep_env.state(post_id)[1] == "done"
+    assert pages.call_count == ARCHIVE_MAX_ATTEMPTS == 20
+    assert not (keep_env.root / "_assets" / kept.json()["page_id"]).exists()
+
+
+async def test_archive_byte_budget_counts_rejected_bodies(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    junk = b"<html>" + b"x" * (4 * 1024 * 1024)
+    bigs = [mock.get(f"https://big.example/{n}").mock(
+        return_value=httpx.Response(200, content=junk, headers={"content-type": PNG})
+    ) for n in range(3)]  # fmt: skip
+    image = mock.get("https://img.example/real.png").mock(
+        return_value=httpx.Response(200, content=PNG_MAGIC + b"tiny", headers={"content-type": PNG})
+    )
+    lines = [f"![{n}](https://big.example/{n})" for n in range(3)]
+    lines.append("![real](https://img.example/real.png)")
+    post_id = keep_env.post()
+    keep_env.cache_article(post_id, "\n\n".join(lines))
+    kept = await keep_env.keep(post_id)
+    await keep_env.rss.keeper.drain()
+    assert keep_env.state(post_id)[1] == "done"
+    # 8 MB of rejected bodies, then the third is over the 2 MB left: the budget is spent.
+    assert [route.call_count for route in bigs] == [1, 1, 1]
+    assert image.call_count == 0
+    assert not (keep_env.root / "_assets" / kept.json()["page_id"]).exists()
+    assert ARCHIVE_MAX_BYTES == 10 * 1024 * 1024
+
+
+async def test_archive_saves_only_what_the_bytes_say_is_an_image(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    served = {
+        "https://img.example/fake.png": (b"<script>alert(1)</script>", PNG),
+        "https://img.example/vector.svg": (b"<svg onload='x'/>", "image/svg+xml"),
+        "https://img.example/a.gif": (b"GIF89a" + b"g", "application/octet-stream"),
+        "https://img.example/a.webp": (b"RIFF\x10\x00\x00\x00WEBPVP8 ", "image/webp"),
+        "https://img.example/a.avif": (b"\x00\x00\x00\x1cftypavif" + b"a", "image/avif"),
+    }
+    for url, (body, kind) in served.items():
+        mock.get(url).mock(
+            return_value=httpx.Response(200, content=body, headers={"content-type": kind})
+        )
+    post_id = keep_env.post()
+    keep_env.cache_article(post_id, "\n\n".join(f"![x]({url})" for url in served))
+    kept = await keep_env.keep(post_id)
+    await keep_env.rss.keeper.drain()
+    assets = keep_env.root / "_assets" / kept.json()["page_id"]
+    suffixes = sorted(p.suffix for p in assets.iterdir() if p.name != ".gitignore")
+    assert suffixes == [".avif", ".gif", ".webp"]
+    article = keep_env.page_text(kept.json()["path"])
+    assert "![x](https://img.example/fake.png)" in article
+    assert "![x](https://img.example/vector.svg)" in article
+
+
+async def test_archive_links_images_from_where_the_page_is_when_it_is_written(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    kb = keep_env.kb
+    moved: list[str] = []
+
+    async def move_then_serve(request: httpx.Request) -> httpx.Response:
+        if not moved:  # the author moves the page while the images download
+            page_id = keep_env.state(post_id)[0]
+            assert page_id is not None
+            await kb.move(PageId(page_id), PurePosixPath("Reading/Deep"))
+            moved.append(page_id)
+        return httpx.Response(200, content=PNG_MAGIC + b"i", headers={"content-type": PNG})
+
+    mock.get("https://img.example/a.png").mock(side_effect=move_then_serve)
+    post_id = keep_env.post()
+    keep_env.cache_article(post_id, "![a](https://img.example/a.png)")
+    await keep_env.keep(post_id)
+    await keep_env.rss.keeper.drain()
+    assert keep_env.state(post_id)[1] == "done" and moved
+    path = kb.resolve(PageId(moved[0]))
+    assert path is not None and path.parent == PurePosixPath("Reading/Deep")
+    text = keep_env.page_text(str(path))
+    link = re.search(r"\]\((\.\./\.\./_assets/[^)]+)\)", text)
+    assert link is not None and (keep_env.root / path.parent / link.group(1)).resolve().is_file()
+
+
+async def test_article_hashtags_do_not_become_page_tags(keep_env: KeepEnv) -> None:
+    post_id = keep_env.post()
+    keep_env.cache_article(post_id, "Big news #breaking today, see C# and #2026.")
+    kept = await keep_env.keep(post_id, "My #mine note.", ["sqlite"])
+    await keep_env.rss.keeper.drain()
+    text = keep_env.page_text(kept.json()["path"])
+    body = text.split("---\n", 2)[2]
+    assert body.startswith("My #mine note.\n\nTags: #sqlite\n")
+    assert "Big news \\#breaking today, see C# and \\#2026." in body
+    assert extract_tags(body) == ["mine", "sqlite"]
+    counts = keep_env.kb.index.tag_counts()
+    assert "breaking" not in counts and "2026" not in counts and counts["mine"] == 1
+
+
+async def test_archive_retry_is_refused_unless_the_archive_failed(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    post_id = keep_env.post()
+    keep_env.cache_article(post_id, "Archived text.")
+    kept = await keep_env.keep(post_id)
+    # Still archiving: the running archive is not started again.
+    running = await keep_env.client.post(f"{KEEP_API}/posts/{post_id}/archive")
+    assert running.status_code == 409 and running.json()["error"] == "ArchiveNotFailed"
+    await keep_env.rss.keeper.drain()
+    page = await keep_env.kb.read(PageId(kept.json()["page_id"]))
+    edited = page.page.body.replace("Archived text.", "MY EDIT.")
+    await keep_env.kb.write(
+        PageDraft(page.page.id, page.page.title, page.page.path.parent, edited, page.page.jesinia),
+        expected_rev=page.rev,
+    )
+    done = await keep_env.client.post(f"{KEEP_API}/posts/{post_id}/archive")
+    assert done.status_code == 409 and done.json()["error"] == "ArchiveNotFailed"
+    await keep_env.rss.keeper.drain()
+    assert "MY EDIT." in keep_env.page_text(kept.json()["path"])
+    assert keep_env.state(post_id)[1] == "done"
+
+
+async def test_a_crash_after_the_page_write_still_finishes_the_archive(
+    cfg: Config, kb_root: Path, mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with keep_server(cfg, kb_root) as env:
+        post_id = env.post()
+        env.cache_article(post_id, "The full article.")
+        keeper = env.rss.keeper
+
+        def crash(*args: object) -> None:
+            raise SystemExit("the server died right after writing the page")
+
+        monkeypatch.setattr(keeper._store, "set_kept", crash)
+        with pytest.raises(SystemExit):
+            await keeper.keep(post_id, "Mine.", [], None)
+        monkeypatch.undo()
+        # The page is on disk and the post already says it is archiving.
+        assert env.state(post_id) == (None, "archiving", None)
+        page_files = list((kb_root / "Sources").iterdir())
+        assert len(page_files) == 1
+    async with keep_server(cfg, kb_root) as again:
+        await again.rss.keeper.drain()
+        page_id, state, _ = again.state(post_id)
+        assert state == "done" and page_id is not None
+        assert again.kb.resolve(PageId(page_id)) == PurePosixPath("Sources") / page_files[0].name
+        assert "The full article." in page_files[0].read_text()
+
+
+async def test_a_failed_keep_again_leaves_the_failed_archive_as_it_was(
+    keep_env: KeepEnv, mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock.get("https://fly.io/blog/sqlite-wal").mock(return_value=httpx.Response(500))
+    post_id = keep_env.post()
+    await keep_env.keep(post_id, "First.")
+    await keep_env.rss.keeper.drain()
+    failed = keep_env.state(post_id)
+    assert failed[1] == "failed"
+    kb = keep_env.kb
+
+    async def stale(draft: PageDraft, *, expected_rev: str | None = None) -> None:
+        raise StaleWrite("changed since read")
+
+    monkeypatch.setattr(kb, "write", stale)
+    refused = await keep_env.keep(post_id, "Again.")
+    assert refused.status_code == 409 and refused.json()["error"] == "StaleWrite"
+    assert keep_env.state(post_id) == failed
+    assert archive_state("failed") == "failed" and archive_state("bogus") is None
+
+
+async def test_a_crash_before_the_page_write_leaves_nothing_to_resume(
+    cfg: Config, kb_root: Path, mock: respx.MockRouter
+) -> None:
+    async with keep_server(cfg, kb_root) as env:
+        post_id = env.post()
+        env.conn.execute("UPDATE posts SET archive_state = 'archiving' WHERE id = ?", (post_id,))
+    async with keep_server(cfg, kb_root) as again:
+        await again.rss.keeper.drain()
+        assert again.state(post_id) == (None, None, None)
 
 
 async def test_archive_failure_is_visible_and_retryable(
@@ -443,7 +619,7 @@ async def test_archive_failure_is_visible_and_retryable(
         )
     )
     mock.get(url__regex=r"https://(news|cdn)\.example(\.org)?/.*\.png").mock(
-        return_value=httpx.Response(200, content=b"img", headers={"content-type": PNG})
+        return_value=httpx.Response(200, content=PNG_MAGIC + b"img", headers={"content-type": PNG})
     )
     retry = await keep_env.client.post(f"{KEEP_API}/posts/{post_id}/archive")
     assert retry.status_code == 202, retry.text
@@ -680,3 +856,15 @@ def test_settings_validation() -> None:
     for folder in ("", "/", "/abs", "../x", "a/../b", "drafts", "x/_assets", "x/.hidden"):
         with pytest.raises(InvalidSettings):
             validate_settings(30, folder)
+
+
+def test_a_note_line_reading_like_the_article_heading_does_not_split_the_page() -> None:
+    note = "Mine.\n## Article\nStill my note."
+    body = render_kept_body(note, ["a"], None, "Feed text.")
+    assert body.count("\n## Article\n") == 1 and "\\## Article\nStill my note." in body
+    archived = replace_article(body, "Full text.")
+    assert archived.startswith("Mine.\n\\## Article\nStill my note.\n\nTags: #a\n\n")
+    assert archived.endswith("## Article\n\nFull text.\n")
+    again = kept_again(archived, "More.\n## Article", date(2026, 10, 17), ["b"], None)
+    assert again.count("\n## Article\n") == 1
+    assert "_Kept again 2026-10-17:_ More.\n\\## Article\n\nTags: #a #b\n\n## Article" in again

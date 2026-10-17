@@ -26,11 +26,13 @@ from jesinia.apps.rss.application.ports import (
 )
 from jesinia.apps.rss.application.posts import PostService
 from jesinia.apps.rss.domain.kept import (
+    ARCHIVE_MAX_ATTEMPTS,
     ARCHIVE_MAX_BYTES,
-    ARCHIVE_MAX_IMAGES,
+    ArchiveNotFailed,
     KeepResult,
     PostNotKept,
     Takeaway,
+    archive_state,
     asset_name,
     feed_article,
     find_images,
@@ -45,11 +47,11 @@ from jesinia.apps.rss.domain.kept import (
     takeaway_block,
 )
 from jesinia.apps.rss.domain.post import PostView
-from jesinia.services.fetch.application.service import FetchError
+from jesinia.services.fetch.application.service import FetchError, FetchTooLarge
 from jesinia.services.kb.application.errors import StaleWrite
 from jesinia.services.kb.application.service import KbService, PageDraft, PageWithRev
 from jesinia.services.kb.application.tags import TagService
-from jesinia.services.kb.domain.page import PageId
+from jesinia.services.kb.domain.page import Page, PageId
 
 log = logging.getLogger(__name__)
 
@@ -107,22 +109,32 @@ class KeepService:
         ai_block = takeaway_block(takeaway, at) if takeaway is not None else None
         async with self._locks[post.url]:
             existing = self._kb.index.by_source(post.url)
-            if existing is None:
-                page = await self._create(post, note, names, ai_block, at)
-            else:
-                day = at.astimezone().date()
-                page = await self._rewrite(
-                    existing, lambda body: kept_again(body, note, day, names, ai_block)
-                )
-            page_id = page.page.id
-            self._store.set_kept(post_id, page_id)
-            state = self._store.page_archive_state(page_id)
+            prior = self._store.page_archive_state(existing) if existing is not None else None
             # A page archived before (or kept elsewhere) keeps its article: later edits to
             # it are the author's.
-            if existing is None or state in ("archiving", "failed"):
+            archive = existing is None or prior in ("archiving", "failed")
+            if archive:
+                # Recorded before the page is written, so a crash between the two leaves a
+                # post that recovery finishes (``recover``), never a page nobody archives.
+                self._store.set_post_archive_state(post_id, "archiving", None)
+            try:
+                if existing is None:
+                    page = await self._create(post, note, names, ai_block, at)
+                else:
+                    day = at.astimezone().date()
+                    page = await self._rewrite(
+                        existing, lambda p: kept_again(p.body, note, day, names, ai_block)
+                    )
+            except BaseException:
+                if archive:  # nothing was written: the post is as it was
+                    self._store.set_post_archive_state(
+                        post_id, archive_state(post.archive_state), post.archive_error
+                    )
+                raise
+            page_id = page.page.id
+            self._store.set_kept(post_id, page_id, "archiving" if archive else "done")
+            if archive:
                 self._start_archive(page_id, post_id)
-            else:
-                self._store.set_archive_state(page_id, "done", None)
         return KeepResult(page_id, page.page.path, created=existing is None)
 
     async def _create(
@@ -148,15 +160,15 @@ class KeepService:
         text = converted.markdown if converted else _MARKDOWN_SPECIAL.sub(r"\\\1", post.snippet)
         return feed_article(text)
 
-    async def _write_changed(self, page_id: PageId, change: Callable[[str], str]) -> PageWithRev:
+    async def _write_changed(self, page_id: PageId, change: Callable[[Page], str]) -> PageWithRev:
         current = await self._kb.read(page_id)
         page = current.page
-        draft = PageDraft(page_id, page.title, page.path.parent, change(page.body), page.jesinia)
+        draft = PageDraft(page_id, page.title, page.path.parent, change(page), page.jesinia)
         return await self._kb.write(draft, expected_rev=current.rev)
 
-    async def _rewrite(self, page_id: PageId, change: Callable[[str], str]) -> PageWithRev:
-        """Apply ``change`` to the page's body against its current revision; if it is edited
-        between the read and the write, once more against the fresh page."""
+    async def _rewrite(self, page_id: PageId, change: Callable[[Page], str]) -> PageWithRev:
+        """Write ``change(page)`` as the page's body against its current revision; if it is
+        edited between the read and the write, once more against the fresh page."""
         try:
             return await self._write_changed(page_id, change)
         except StaleWrite:
@@ -176,20 +188,34 @@ class KeepService:
         )
 
     def retry(self, post_id: int) -> PostView:
-        """Archive the post's page again (``POST /posts/{id}/archive``). Raises
-        ``PostNotFound`` or ``PostNotKept``."""
+        """Archive the post's page again after a failure (``POST /posts/{id}/archive``).
+        Raises ``PostNotFound``, ``PostNotKept``, or ``ArchiveNotFailed`` unless the archive
+        failed: a done one is never overwritten, a running one never started twice."""
         post = self._posts.get(post_id)
         if post.kept_page_id is None:
             raise PostNotKept(f"post {post_id} is not kept")
+        state = self._store.page_archive_state(post.kept_page_id)
+        if state != "failed":
+            raise ArchiveNotFailed(f"the archive of post {post_id} is {state or 'not started'}")
         self._start_archive(post.kept_page_id, post_id)
         return self._posts.get(post_id)
 
     def recover(self) -> int:
-        """Resume archives a stop interrupted (posts left ``archiving``); how many."""
-        stranded = self._store.archiving()
-        for page_id, post_id in stranded:
+        """Resume archives a stop interrupted (posts left ``archiving``); how many. A post
+        marked before its page was written is matched to the page by source, or cleared when
+        the page never got written."""
+        resumed = 0
+        for page_id, post_id in self._store.archiving():
+            if page_id is None:
+                found = self._kb.index.by_source(self._posts.get(post_id).url)
+                if found is None:
+                    self._store.set_post_archive_state(post_id, None, None)
+                    continue
+                self._store.set_kept(post_id, found, "archiving")
+                page_id = found
             self._schedule(page_id, post_id)
-        return len(stranded)
+            resumed += 1
+        return resumed
 
     def pending(self) -> list[str]:
         """The pages whose archive is running."""
@@ -223,37 +249,48 @@ class KeepService:
     async def _archive(self, page_id: PageId, post_id: int) -> None:
         post = self._posts.get(post_id)
         markdown = await self._posts.full_article(post_id)
-        folder = (await self._kb.read(page_id)).page.path.parent
         saved = await self._save_images(page_id, markdown)
-        article = rewrite_images(markdown, {url: link_to(p, folder) for url, p in saved.items()})
+
+        def archived(page: Page) -> str:
+            # Links are relative to where the page is now (it may have moved meanwhile).
+            folder = page.path.parent
+            local = {url: link_to(path, folder) for url, path in saved.items()}
+            return replace_article(page.body, rewrite_images(markdown, local))
+
         async with self._locks[post.url]:
-            await self._rewrite(page_id, lambda body: replace_article(body, article))
+            await self._rewrite(page_id, archived)
 
     async def _save_images(self, page_id: PageId, markdown: str) -> dict[str, PurePosixPath]:
         """Download the article's images (http(s) only, through the guarded fetch) into the
-        page's local-only asset folder, within the count and size caps. An image that is
-        skipped stays linked to its original URL, and the reason is logged."""
+        page's local-only asset folder. Every download counts against the budget, kept or
+        not: at most ``ARCHIVE_MAX_ATTEMPTS`` (which also bounds the images kept) and
+        ``ARCHIVE_MAX_BYTES`` read. A body is kept only if its bytes are a raster image. An
+        image that is skipped stays linked to its original URL, and the reason is logged."""
         saved: dict[str, PurePosixPath] = {}
-        used = 0
+        attempts = used = 0
         for url in dict.fromkeys(ref.url for ref in find_images(markdown)):
             if not is_http_url(url):
                 skipped = "not an http(s) URL"
-            elif len(saved) >= ARCHIVE_MAX_IMAGES:
-                skipped = f"the page already has {ARCHIVE_MAX_IMAGES} images"
+            elif attempts >= ARCHIVE_MAX_ATTEMPTS or used >= ARCHIVE_MAX_BYTES:
+                skipped = "the archive's image budget is spent"
             else:
+                attempts += 1
                 try:
                     result = await self._images.get(url, max_bytes=ARCHIVE_MAX_BYTES - used)
-                    name = asset_name(result.body, result.content_type)
-                    if result.status != 200 or name is None:
-                        skipped = f"HTTP {result.status}, {result.content_type or 'no type'}"
+                    used += len(result.body)
+                    name = asset_name(result.body) if result.status == 200 else None
+                    if name is None:
+                        skipped = f"HTTP {result.status}, not a PNG/JPEG/GIF/WebP/AVIF image"
                     else:
                         saved[url] = await self._kb.write_asset(
                             page_id, name, result.body, local_only=True
                         )
-                        used += len(result.body)
                         continue
-                # Isolation boundary: one image that cannot be fetched or stored (blocked,
-                # too big, a transport error) is skipped; the archive goes on.
+                except FetchTooLarge as exc:  # it read what was left of the budget
+                    used = ARCHIVE_MAX_BYTES
+                    skipped = _cause(exc)
+                # Isolation boundary: one image that cannot be fetched or stored (blocked, a
+                # transport error) is skipped; the archive goes on.
                 except Exception as exc:
                     skipped = _cause(exc)
             log.info("archive of page %s skipped image %s: %s", page_id, url, skipped)

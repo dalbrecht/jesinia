@@ -389,8 +389,21 @@ class SqlitePostStore:
             all=int(total),
         )
 
-    def set_kept(self, post_id: int, page_id: str) -> None:
-        self._conn.execute("UPDATE posts SET kept_page_id = ? WHERE id = ?", (page_id, post_id))
+    def set_kept(self, post_id: int, page_id: str, state: ArchiveState) -> None:
+        # One statement: the page and the archive state are recorded together.
+        self._conn.execute(
+            "UPDATE posts SET kept_page_id = ?, archive_state = ?, archive_error = NULL "
+            "WHERE id = ?",
+            (page_id, state, post_id),
+        )
+
+    def set_post_archive_state(
+        self, post_id: int, state: ArchiveState | None, error: str | None
+    ) -> None:
+        self._conn.execute(
+            "UPDATE posts SET archive_state = ?, archive_error = ? WHERE id = ?",
+            (state, error, post_id),
+        )
 
     def page_archive_state(self, page_id: str) -> ArchiveState | None:
         rows = self._conn.execute(
@@ -405,9 +418,9 @@ class SqlitePostStore:
             (state, error, page_id),
         )
 
-    def archiving(self) -> list[tuple[str, int]]:
+    def archiving(self) -> list[tuple[str | None, int]]:
         rows = self._conn.execute(
             "SELECT kept_page_id, MIN(id) FROM posts WHERE archive_state = 'archiving' "
-            "AND kept_page_id IS NOT NULL GROUP BY kept_page_id ORDER BY MIN(id)"
+            "GROUP BY COALESCE(kept_page_id, 'post:' || id) ORDER BY MIN(id)"
         ).fetchall()
-        return [(str(row[0]), int(row[1])) for row in rows]
+        return [(None if row[0] is None else str(row[0]), int(row[1])) for row in rows]
