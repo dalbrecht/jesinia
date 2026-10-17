@@ -18,13 +18,13 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import cache
 from importlib.resources import files
 from pathlib import Path
 from typing import Protocol
 
-from jsonschema import Draft202012Validator, ValidationError
+from jsonschema import Draft202012Validator, ValidationError, validators
 
 from jesinia.apps.review.application.errors import InvalidAgentOutput, JobFailed
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
@@ -50,6 +50,7 @@ from jesinia.services.agents.application.packs import (
     PACK_INLINE_LIMIT,
     ContextPack,
     UntrustedDoc,
+    wrap_untrusted,
 )
 from jesinia.services.agents.domain.session import Session, Subject
 from jesinia.services.github.domain.pr import PrCommit
@@ -205,6 +206,20 @@ class JobStore(Protocol):
     def job_runner(self) -> str: ...
 
 
+def _is_json_integer(checker: object, instance: object) -> bool:
+    """Only a JSON integer is an integer: JSON Schema also accepts ``1e308`` and ``3.0``,
+    which would reach line numbers and hunk indices as floats."""
+    return isinstance(instance, int) and not isinstance(instance, bool)
+
+
+# The stubs leave ``extend`` unannotated; this is the shape it has.
+_extend: Callable[..., type[Draft202012Validator]] = validators.extend
+_JobValidator = _extend(
+    Draft202012Validator,
+    type_checker=Draft202012Validator.TYPE_CHECKER.redefine("integer", _is_json_integer),
+)
+
+
 @cache
 def _schema_text(job: JobKind) -> str:
     return (files("jesinia.apps.review.schemas") / f"{job.value}.json").read_text(encoding="utf-8")
@@ -284,7 +299,7 @@ def parse_job_output(text: str, schema: Mapping[str, object]) -> dict[str, objec
     if not isinstance(data, dict):
         raise InvalidAgentOutput("the reply is not a JSON object")
     # The guards above bound what validation recurses into and how long it takes.
-    errors = sorted(Draft202012Validator(schema).iter_errors(data), key=lambda e: e.json_path)
+    errors = sorted(_JobValidator(schema).iter_errors(data), key=lambda e: e.json_path)
     if errors:
         problems = "; ".join(_problem(error) for error in errors[:_ERRORS_SHOWN])
         more = f" (and {len(errors) - _ERRORS_SHOWN} more)" if len(errors) > _ERRORS_SHOWN else ""
@@ -292,34 +307,37 @@ def parse_job_output(text: str, schema: Mapping[str, object]) -> dict[str, objec
     return data
 
 
-def _capped(text: str, limit: int, what: str) -> str:
+def _capped(text: str, limit: int, what: str, notes: list[str]) -> str:
+    """``text`` cut at ``limit`` characters. The note saying so goes into ``notes`` (for
+    job.md, which is Jesinia's), never into the text: PR text sits inside the untrusted
+    fence, where the PR could write a look-alike note itself."""
     if len(text) <= limit:
         return text
-    return (
-        f"{text[:limit]}\n\n[truncated: {what} is {len(text)} characters; the first {limit} "
-        "are shown]"
-    )
+    notes.append(f"{what} is {len(text)} characters; the first {limit} are shown")
+    return text[:limit]
 
 
-def _commit_log(commits: Sequence[PrCommit]) -> str:
+def _commit_log(commits: Sequence[PrCommit], notes: list[str]) -> str:
     """The newest commits' messages that fit ``COMMITS_CHARS``, oldest first, each cut at
-    ``COMMIT_MESSAGE_CHARS``, saying how many older ones were left out."""
+    ``COMMIT_MESSAGE_CHARS``; ``notes`` says how many were cut or left out."""
     kept: list[str] = []
-    used = 0
+    used = cut = 0
     for commit in reversed(commits):
-        message = _capped(commit.message, COMMIT_MESSAGE_CHARS, "this commit message")
+        message = commit.message
+        if len(message) > COMMIT_MESSAGE_CHARS:
+            message, cut = message[:COMMIT_MESSAGE_CHARS], cut + 1
         entry = f"commit {commit.sha}\n\n{message}"
         if used + len(entry) > COMMITS_CHARS:
             break
         kept.append(entry)
         used += len(entry) + 2
-    left_out = len(commits) - len(kept)
-    note = (
-        [f"[{left_out} older commits left out: the messages exceed {COMMITS_CHARS} characters]"]
-        if left_out
-        else []
-    )
-    return "\n\n".join([*note, *reversed(kept)])
+    if left_out := len(commits) - len(kept):
+        notes.append(
+            f"{left_out} older commits left out: the messages exceed {COMMITS_CHARS} characters"
+        )
+    if cut:
+        notes.append(f"{cut} commit messages were cut at {COMMIT_MESSAGE_CHARS} characters")
+    return "\n\n".join(reversed(kept))
 
 
 def _request(job: JobKind, depth: Depth, schema: Mapping[str, object]) -> str:
@@ -465,19 +483,29 @@ class JobRunner:
         PR's own text, each part capped with a visible note. The standards get whatever the
         rest leaves; past that their lowest-priority layers are left out, as they say."""
         pr = round.pr
+        notes: list[str] = []
+        known = round.knowledge.strip() or "Nothing is known yet about the author's familiarity."
+        knowledge = (
+            f"# What the author knows\n\n{_capped(known, KNOWLEDGE_CHARS, 'the summary', notes)}\n"
+        )
+        title = _capped(pr.title, TITLE_CHARS, "the title", notes)
+        body = _capped(pr.body, BODY_CHARS, "the PR body", notes)
+        untrusted = {
+            "pr.md": UntrustedDoc(pr.url, f"# {title}\n\nAuthor: {pr.author}\n\n{body}"),
+            "commits.md": UntrustedDoc(f"{pr.url}/commits", _commit_log(round.commits, notes)),
+        }
+        cut = "".join(f"- {note}\n" for note in notes)
         facts = (
             f"# This review\n\n- PR: {pr.repo}#{pr.number} ({pr.url})\n"
             f"- Base commit: {pr.base_sha}\n- Head commit: {pr.head_sha}\n"
             f"- Size: +{pr.additions} −{pr.deletions} in {pr.changed_files} files, "
             f"{pr.commit_count or len(round.commits)} commits\n- Depth: {depth}\n"
+            + (f"\n## Cut to fit (by Jesinia)\n\n{cut}" if cut else "")
         )
-        known = round.knowledge.strip() or "Nothing is known yet about the author's familiarity."
-        knowledge = f"# What the author knows\n\n{_capped(known, KNOWLEDGE_CHARS, 'the summary')}\n"
-        title = _capped(pr.title, TITLE_CHARS, "the title")
-        body = _capped(pr.body, BODY_CHARS, "the PR body")
-        description = f"# {title}\n\nAuthor: {pr.author}\n\n{body}"
-        commits = _commit_log(round.commits)
-        others = len(facts) + len(knowledge) + len(description) + len(commits)
+        # Counted as inlined: fenced, with any fence tags in the text neutralised (longer).
+        others = (
+            len(facts) + len(knowledge) + sum(map(len, map(wrap_untrusted, untrusted.values())))
+        )
         budget = PACK_INLINE_LIMIT - others - _PACK_OVERHEAD
         return ContextPack(
             role_prompt=f"{ROLE}\n\n{JOB_INSTRUCTIONS[job]}",
@@ -486,10 +514,7 @@ class JobRunner:
                 "job.md": facts,
                 "knowledge.md": knowledge,
             },
-            untrusted={
-                "pr.md": UntrustedDoc(pr.url, description),
-                "commits.md": UntrustedDoc(f"{pr.url}/commits", commits),
-            },
+            untrusted=untrusted,
         )
 
     async def _ask(
