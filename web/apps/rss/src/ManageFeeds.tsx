@@ -45,7 +45,10 @@ export function FeedProblem({ feed, onChanged }: { feed: Feed; onChanged: () => 
       }
       onChanged();
     } catch (e) {
-      toast.show({ tone: "danger", message: `Couldn't retry ${feed.title}: ${causeOf(e)}` });
+      toast.show({
+        tone: "danger",
+        message: `Couldn't retry ${feed.title}: ${causeOf(e)} Try again later; Jesinia keeps retrying it on its own.`,
+      });
     } finally {
       setBusy(false);
     }
@@ -57,6 +60,56 @@ export function FeedProblem({ feed, onChanged }: { feed: Feed; onChanged: () => 
         Retry
       </Button>
     </div>
+  );
+}
+
+/** Esc in an inline edit cancels that edit only, not the whole dialog (M-1). */
+function cancelOnEscape(cancel: () => void) {
+  return (e: KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    cancel();
+  };
+}
+
+/** A new folder's name, inline in the feed's row (R28): the feed moves into it. */
+function NewFolder({ feed, onDone }: { feed: Feed; onDone: (moved: boolean) => void }) {
+  const client = useClient();
+  const toast = useToast();
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const wanted = name.trim();
+    if (!wanted || busy) return;
+    setBusy(true);
+    try {
+      await moveFeed(client, feed.id, wanted);
+      toast.show({ tone: "success", message: `Moved ${feed.title} to ${wanted}.` });
+      onDone(true);
+    } catch (err) {
+      toast.show({ tone: "danger", message: `Couldn't move ${feed.title}: ${causeOf(err)}` });
+      setBusy(false);
+    }
+  };
+  return (
+    <form className={s.renameFolder} onSubmit={(e) => void save(e)} onKeyDown={cancelOnEscape(() => onDone(false))}>
+      <Input
+        label={`New folder for ${feed.title}`}
+        hideLabel
+        autoFocus
+        placeholder="New folder"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+      />
+      <Button type="submit" size="sm" variant="primary" loading={busy} disabled={!name.trim()}>
+        Move
+      </Button>
+      <Button size="sm" variant="ghost" onClick={() => onDone(false)}>
+        Cancel
+      </Button>
+    </form>
   );
 }
 
@@ -82,7 +135,7 @@ function RenameFolder({ folder, onDone }: { folder: FolderRef; onDone: (renamed:
     }
   };
   return (
-    <form className={s.renameFolder} onSubmit={(e) => void save(e)}>
+    <form className={s.renameFolder} onSubmit={(e) => void save(e)} onKeyDown={cancelOnEscape(() => onDone(false))}>
       <Input
         label={`New name for ${folder.name}`}
         hideLabel
@@ -101,14 +154,42 @@ function RenameFolder({ folder, onDone }: { folder: FolderRef; onDone: (renamed:
   );
 }
 
-type FeedRowProps = { feed: Feed; folders: FolderRef[]; onChanged: () => void };
+/** The folder select's choice that opens the new-folder field. */
+const NEW_FOLDER = "\u0000new";
 
-function FeedRow({ feed, folders, onChanged }: FeedRowProps) {
+type FeedRowProps = {
+  feed: Feed;
+  folders: FolderRef[];
+  onChanged: () => void;
+  /** Unsubscribed: the row is about to go, so the dialog moves focus before it does. */
+  onRemoved: (row: HTMLElement) => void;
+};
+type RowFocus = "unsubscribe" | "confirm" | "pick" | null;
+
+function FeedRow({ feed, folders, onChanged, onRemoved }: FeedRowProps) {
   const client = useClient();
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
+  const [naming, setNaming] = useState(false);
   const [busy, setBusy] = useState(false);
+  // A control that replaces the focused one takes focus after it renders (I-2).
+  const [focusTo, setFocusTo] = useState<RowFocus>(null);
+  const row = useRef<HTMLLIElement>(null);
+  const pick = useRef<HTMLSelectElement>(null);
+  const unsubscribeButton = useRef<HTMLButtonElement>(null);
+  const confirmButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (focusTo === null) return;
+    const target = { unsubscribe: unsubscribeButton, confirm: confirmButton, pick }[focusTo];
+    target.current?.focus();
+    setFocusTo(null);
+  }, [focusTo]);
+
   const move = async (folder: string) => {
+    if (folder === NEW_FOLDER) {
+      setNaming(true);
+      return;
+    }
     try {
       await moveFeed(client, feed.id, folder || null);
       onChanged();
@@ -121,15 +202,17 @@ function FeedRow({ feed, folders, onChanged }: FeedRowProps) {
     try {
       await removeFeed(client, feed.id);
       toast.show({ tone: "success", message: `Unsubscribed from ${feed.title}.` });
+      if (row.current) onRemoved(row.current);
       onChanged();
     } catch (e) {
       toast.show({ tone: "danger", message: `Couldn't unsubscribe from ${feed.title}: ${causeOf(e)}` });
       setBusy(false);
       setConfirming(false);
+      setFocusTo("unsubscribe");
     }
   };
   return (
-    <li className={s.manageFeed} aria-label={feed.title}>
+    <li ref={row} className={s.manageFeed} aria-label={feed.title} data-feed-row="">
       <div className={s.manageFeedHead}>
         <span className={s.manageTitle}>{feed.title}</span>
         <span className={s.manageUrl}>{feed.url}</span>
@@ -139,6 +222,7 @@ function FeedRow({ feed, folders, onChanged }: FeedRowProps) {
         <label className={s.folderPick}>
           <span className={s.muted}>Folder</span>
           <select
+            ref={pick}
             aria-label={`Folder for ${feed.title}`}
             value={feed.folder ?? ""}
             onChange={(e) => void move(e.target.value)}
@@ -149,20 +233,47 @@ function FeedRow({ feed, folders, onChanged }: FeedRowProps) {
                 {f.name}
               </option>
             ))}
+            <option value={NEW_FOLDER}>New folder…</option>
           </select>
         </label>
+        {naming ? (
+          <NewFolder
+            feed={feed}
+            onDone={(moved) => {
+              setNaming(false);
+              setFocusTo("pick");
+              if (moved) onChanged();
+            }}
+          />
+        ) : null}
         {confirming ? (
           <>
             <span className={s.muted}>Its unkept posts go; kept posts stay in the KB.</span>
-            <Button size="sm" variant="danger" loading={busy} onClick={() => void unsubscribe()}>
+            <Button ref={confirmButton} size="sm" variant="danger" loading={busy} onClick={() => void unsubscribe()}>
               Unsubscribe from {feed.title}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setConfirming(false);
+                setFocusTo("unsubscribe");
+              }}
+            >
               Cancel
             </Button>
           </>
         ) : (
-          <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>
+          <Button
+            ref={unsubscribeButton}
+            size="sm"
+            variant="ghost"
+            data-unsubscribe=""
+            onClick={() => {
+              setConfirming(true);
+              setFocusTo("confirm");
+            }}
+          >
             Unsubscribe
           </Button>
         )}
@@ -177,10 +288,12 @@ export type ManageFeedsProps = {
   onAdded: (feed: Feed) => void;
   /** Feeds or folders changed: reload them. */
   onChanged: () => void;
+  /** A feed was unsubscribed (the reader leaves it if it is in view). */
+  onRemoved: (feedId: number) => void;
   onClose: () => void;
 };
 
-export function ManageFeeds({ feeds, onAdded, onChanged, onClose }: ManageFeedsProps) {
+export function ManageFeeds({ feeds, onAdded, onChanged, onRemoved, onClose }: ManageFeedsProps) {
   const client = useClient();
   const toast = useToast();
   const [url, setUrl] = useState("");
@@ -188,7 +301,12 @@ export function ManageFeeds({ feeds, onAdded, onChanged, onClose }: ManageFeedsP
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<number | null>(null);
+  /** After a rename closes, its folder's Rename button takes focus back (I-2). */
+  const [renamed, setRenamed] = useState<number | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  /** Pressed on the backdrop itself: only then does a click there close the dialog (M-2). */
+  const pressedBackdrop = useRef(false);
   const urlBox = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   const titleId = useId();
   const folders = foldersOf(feeds);
@@ -200,6 +318,22 @@ export function ManageFeeds({ feeds, onAdded, onChanged, onClose }: ManageFeedsP
     urlBox.current?.focus();
     return () => opener?.focus();
   }, []);
+
+  useEffect(() => {
+    if (renamed === null || renaming !== null) return;
+    root.current?.querySelector<HTMLElement>(`[data-rename="${renamed}"]`)?.focus();
+    setRenamed(null);
+  }, [renamed, renaming]);
+
+  /** The unsubscribed row is about to go: focus the next row, else the one before, else the title. */
+  const removed = (feedId: number, row: HTMLElement) => {
+    const rows = [...(root.current?.querySelectorAll<HTMLElement>("[data-feed-row]") ?? [])];
+    const at = rows.indexOf(row);
+    const next = rows[at + 1] ?? rows[at - 1];
+    const target = next?.querySelector<HTMLElement>("[data-unsubscribe]") ?? heading.current;
+    target?.focus();
+    onRemoved(feedId);
+  };
 
   const add = async (e: FormEvent) => {
     e.preventDefault();
@@ -239,23 +373,40 @@ export function ManageFeeds({ feeds, onAdded, onChanged, onClose }: ManageFeedsP
   const feedRows = (list: Feed[], where: string) => (
     <ul className={s.manageList} aria-label={`Feeds in ${where}`}>
       {list.map((feed) => (
-        <FeedRow key={feed.id} feed={feed} folders={folders} onChanged={onChanged} />
+        <FeedRow
+          key={feed.id}
+          feed={feed}
+          folders={folders}
+          onChanged={onChanged}
+          onRemoved={(row) => removed(feed.id, row)}
+        />
       ))}
     </ul>
   );
 
   return (
-    <div className={s.scrim} onClick={onClose}>
+    <div
+      className={s.scrim}
+      onMouseDown={(e) => {
+        pressedBackdrop.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        // A drag from a field that ends out here (selecting text) is not a click on the backdrop.
+        if (pressedBackdrop.current && e.target === e.currentTarget) onClose();
+        pressedBackdrop.current = false;
+      }}
+    >
       <div
         ref={root}
         className={s.manage}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
       >
-        <h2 id={titleId}>Feeds</h2>
+        <h2 id={titleId} ref={heading} tabIndex={-1}>
+          Feeds
+        </h2>
         <form className={s.addFeed} onSubmit={(e) => void add(e)}>
           <Input
             ref={urlBox}
@@ -290,15 +441,22 @@ export function ManageFeeds({ feeds, onAdded, onChanged, onClose }: ManageFeedsP
                 {renaming === f.id ? (
                   <RenameFolder
                     folder={f}
-                    onDone={(renamed) => {
+                    onDone={(changed) => {
                       setRenaming(null);
-                      if (renamed) onChanged();
+                      setRenamed(f.id);
+                      if (changed) onChanged();
                     }}
                   />
                 ) : (
                   <>
                     <h3>{f.name}</h3>
-                    <Button size="sm" variant="ghost" aria-label={`Rename ${f.name}`} onClick={() => setRenaming(f.id)}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Rename ${f.name}`}
+                      data-rename={f.id}
+                      onClick={() => setRenaming(f.id)}
+                    >
                       Rename
                     </Button>
                   </>

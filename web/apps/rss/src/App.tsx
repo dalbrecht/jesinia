@@ -642,7 +642,16 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
       ) : null}
       {showKeys ? <KeysDialog onClose={() => setShowKeys(false)} /> : null}
       {managing ? (
-        <ManageFeeds feeds={feeds} onAdded={added} onChanged={feedsChanged} onClose={() => setManaging(false)} />
+        <ManageFeeds
+          feeds={feeds}
+          onAdded={added}
+          onChanged={feedsChanged}
+          // R28: unsubscribing the feed in view goes back to All unread.
+          onRemoved={(id) => {
+            if (scope.feed === id) goTo(UNREAD);
+          }}
+          onClose={() => setManaging(false)}
+        />
       ) : null}
     </div>
   );

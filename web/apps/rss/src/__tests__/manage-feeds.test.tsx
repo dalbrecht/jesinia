@@ -250,6 +250,157 @@ describe("A failing feed", () => {
     expect(await toast("Old Blog still fails: HTTP 503.")).toBeDefined();
     answer = Response.json({ error: "FeedNotFound", detail: "no feed 3" }, { status: 404 });
     await userEvent.click(row.getByRole("button", { name: "Retry" }));
-    expect(await toast("Couldn't retry Old Blog: no feed 3.")).toBeDefined();
+    expect(
+      await toast("Couldn't retry Old Blog: no feed 3. Try again later; Jesinia keeps retrying it on its own."),
+    ).toBeDefined();
+  });
+});
+
+describe("Focus stays in the dialog (I-2) and inline edits own their keys (M-1, M-2)", () => {
+  it("unsubscribing moves focus to the next row, or the previous one at the end", async () => {
+    let gone: number[] = [];
+    const drop = (id: number) => () => {
+      gone = [...gone, id];
+      return new Response(null, { status: 204 });
+    };
+    setup({
+      "GET /api/rss/feeds": () => Response.json(FEEDS.filter((f) => !gone.includes(f.id))),
+      "DELETE /api/rss/feeds/2": drop(2),
+      "DELETE /api/rss/feeds/4": drop(4),
+    });
+    const manage = await openManage();
+    const row = (name: string) => within(manage.getByRole("listitem", { name }));
+    await userEvent.click(row("Fly.io blog").getByRole("button", { name: "Unsubscribe" }));
+    expect(row("Fly.io blog").getByRole("button", { name: "Unsubscribe from Fly.io blog" })).toHaveFocus();
+    await userEvent.click(row("Fly.io blog").getByRole("button", { name: "Unsubscribe from Fly.io blog" }));
+    await waitFor(() => expect(row("Old Blog").getByRole("button", { name: "Unsubscribe" })).toHaveFocus());
+    await waitFor(() => expect(manage.queryByRole("listitem", { name: "Fly.io blog" })).toBeNull());
+    expect(row("Old Blog").getByRole("button", { name: "Unsubscribe" })).toHaveFocus();
+    // The last row: focus goes back to the one before it.
+    await userEvent.click(row("Loose feed").getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(row("Loose feed").getByRole("button", { name: "Unsubscribe from Loose feed" }));
+    await waitFor(() => expect(manage.queryByRole("listitem", { name: "Loose feed" })).toBeNull());
+    expect(row("Hacker News").getByRole("button", { name: "Unsubscribe" })).toHaveFocus();
+  });
+
+  it("unsubscribing the only feed moves focus to the dialog's title; Cancel returns to Unsubscribe", async () => {
+    let feeds = [FEEDS[3] as Feed];
+    setup({
+      "GET /api/rss/feeds": () => Response.json(feeds),
+      "DELETE /api/rss/feeds/4": () => {
+        feeds = [];
+        return new Response(null, { status: 204 });
+      },
+    });
+    const manage = await openManage();
+    const row = within(manage.getByRole("listitem", { name: "Loose feed" }));
+    await userEvent.click(row.getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(row.getByRole("button", { name: "Cancel" }));
+    expect(row.getByRole("button", { name: "Unsubscribe" })).toHaveFocus();
+    await userEvent.click(row.getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(row.getByRole("button", { name: "Unsubscribe from Loose feed" }));
+    await waitFor(() => expect(manage.getByRole("heading", { name: "Feeds", level: 2 })).toHaveFocus());
+  });
+
+  it("after a rename, a Cancel or Esc, focus returns to the folder's Rename; Esc keeps the dialog", async () => {
+    setup({ "PATCH /api/rss/folders/11": { id: 11, name: "Engineering" } });
+    const manage = await openManage();
+    const rename = () => manage.getByRole("button", { name: "Rename Engineering" });
+    await userEvent.click(rename());
+    await userEvent.click(manage.getByRole("button", { name: "Cancel" }));
+    expect(rename()).toHaveFocus();
+    await userEvent.click(rename());
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "Feeds" })).toBeInTheDocument();
+    expect(manage.queryByLabelText("New name for Engineering")).toBeNull();
+    expect(rename()).toHaveFocus();
+    await userEvent.click(rename());
+    await userEvent.click(manage.getByRole("button", { name: "Save name" }));
+    await waitFor(() => expect(rename()).toHaveFocus());
+  });
+
+  it("a drag that ends on the backdrop keeps the dialog and what was typed", async () => {
+    setup();
+    const manage = await openManage();
+    const field = manage.getByLabelText("Feed or site URL");
+    await userEvent.type(field, "https://example.com");
+    const scrim = dialog().parentElement as HTMLElement;
+    fireEvent.mouseDown(field);
+    fireEvent.click(scrim);
+    expect(screen.getByRole("dialog", { name: "Feeds" })).toBeInTheDocument();
+    expect(field).toHaveValue("https://example.com");
+    fireEvent.mouseDown(scrim);
+    fireEvent.click(scrim);
+    expect(screen.queryByRole("dialog", { name: "Feeds" })).toBeNull();
+  });
+});
+
+describe("R28", () => {
+  it("files a feed into a new folder", async () => {
+    const { calls } = setup({
+      "PATCH /api/rss/feeds/2": async (req: Request) =>
+        Response.json({ ...FEEDS[1], ...((await req.clone().json()) as object) }),
+    });
+    const manage = await openManage();
+    const pick = manage.getByRole("combobox", { name: "Folder for Fly.io blog" });
+    await userEvent.selectOptions(pick, "New folder…");
+    const name = manage.getByLabelText("New folder for Fly.io blog");
+    expect(name).toHaveFocus();
+    await userEvent.keyboard("{Escape}"); // cancels the new folder only
+    expect(screen.getByRole("dialog", { name: "Feeds" })).toBeInTheDocument();
+    expect(manage.queryByLabelText("New folder for Fly.io blog")).toBeNull();
+    expect(pick).toHaveFocus();
+    expect(pick).toHaveValue("Engineering");
+    await userEvent.selectOptions(pick, "New folder…");
+    await userEvent.type(manage.getByLabelText("New folder for Fly.io blog"), "  {Enter}");
+    expect(sent(calls, "PATCH", "/api/rss/feeds/2")).toHaveLength(0); // no name, nothing sent
+    await userEvent.type(manage.getByLabelText("New folder for Fly.io blog"), "Reading{Enter}");
+    await waitFor(() => expect(sent(calls, "PATCH", "/api/rss/feeds/2")).toHaveLength(1));
+    expect(await sent(calls, "PATCH", "/api/rss/feeds/2")[0]?.json()).toEqual({ folder: "Reading" });
+    await waitFor(() => expect(manage.queryByLabelText("New folder for Fly.io blog")).toBeNull());
+    expect(manage.getByRole("combobox", { name: "Folder for Fly.io blog" })).toHaveFocus();
+    await userEvent.selectOptions(pick, "New folder…");
+    await userEvent.click(manage.getByRole("button", { name: "Cancel" }));
+    expect(manage.queryByLabelText("New folder for Fly.io blog")).toBeNull();
+  });
+
+  it("says why a feed couldn't move to a new folder, and keeps the field", async () => {
+    setup({
+      "PATCH /api/rss/feeds/2": () =>
+        Response.json(
+          { error: "InvalidFolderName", detail: "a folder name must be 1 to 100 characters" },
+          { status: 400 },
+        ),
+    });
+    const manage = await openManage();
+    await userEvent.selectOptions(manage.getByRole("combobox", { name: "Folder for Fly.io blog" }), "New folder…");
+    await userEvent.type(manage.getByLabelText("New folder for Fly.io blog"), "Reading{Enter}");
+    expect(await toast("Couldn't move Fly.io blog: a folder name must be 1 to 100 characters.")).toBeDefined();
+    expect(manage.getByLabelText("New folder for Fly.io blog")).toHaveValue("Reading");
+  });
+
+  it("unsubscribing the feed in view goes back to All unread; another feed leaves the view alone", async () => {
+    let gone: number[] = [];
+    const drop = (id: number) => () => {
+      gone = [...gone, id];
+      return new Response(null, { status: 204 });
+    };
+    setup({
+      "GET /api/rss/feeds": () => Response.json(FEEDS.filter((f) => !gone.includes(f.id))),
+      "DELETE /api/rss/feeds/2": drop(2),
+      "DELETE /api/rss/feeds/4": drop(4),
+    });
+    const pane = within(await screen.findByRole("navigation", { name: "Feeds" }));
+    await userEvent.click(await pane.findByRole("button", { name: /Loose feed/ }));
+    expect(await screen.findByRole("heading", { name: "Loose feed", level: 2 })).toBeInTheDocument();
+    const manage = await openManage();
+    const row = (name: string) => within(manage.getByRole("listitem", { name }));
+    await userEvent.click(row("Fly.io blog").getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(row("Fly.io blog").getByRole("button", { name: "Unsubscribe from Fly.io blog" }));
+    await waitFor(() => expect(manage.queryByRole("listitem", { name: "Fly.io blog" })).toBeNull());
+    expect(screen.getByRole("heading", { name: "Loose feed", level: 2 })).toBeInTheDocument();
+    await userEvent.click(row("Loose feed").getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(row("Loose feed").getByRole("button", { name: "Unsubscribe from Loose feed" }));
+    expect(await screen.findByRole("heading", { name: "All unread", level: 2 })).toBeInTheDocument();
   });
 });
