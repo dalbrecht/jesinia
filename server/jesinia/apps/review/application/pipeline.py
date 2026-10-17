@@ -143,6 +143,16 @@ OpenState = Literal["started", "running", "up_to_date", "failed"] | GateState
 ProgressState = Literal["started", "job_started", "job_done", "job_failed", "finished", "failed"]
 
 
+def _failed_jobs(jobs: object) -> set[str]:
+    """The kinds a round's ``jobs`` record marks failed."""
+    entries = jobs.items() if isinstance(jobs, Mapping) else ()
+    return {
+        str(kind)
+        for kind, entry in entries
+        if isinstance(entry, Mapping) and entry.get("state") == "failed"
+    }
+
+
 def background_jobs(mode: PreReviewMode, depth: Depth, *, loaded: bool) -> tuple[JobKind, ...]:
     """The jobs a pre-review runs for a setting. A loaded PR in ``on_open`` mode still gets
     its triage: loading it asked for it now."""
@@ -371,7 +381,7 @@ class Pipeline:
             self._store.choose_depth(ref, stored.pr.head_sha, depth)
         config = self._store.repo_configs().get(ref.repo)
         result = gate_for(stored, config, self._clock(), immediate=True)
-        if result.state != "ready":
+        if result.state != "ready" and not self._gate_passed(stored):
             return OpenResult(result.state, result.reason)
         return self._start_open(stored, depth=depth, walk_everything=walk_everything)
 
@@ -385,7 +395,7 @@ class Pipeline:
         stored = self._consented(ref)
         config = self._store.repo_configs().get(ref.repo)
         result = gate_for(stored, config, self._clock(), immediate=True)
-        if result.state != "ready":
+        if result.state != "ready" and not self._gate_passed(stored):
             return OpenResult(result.state, result.reason)
         return self._start_open(stored, rerun_failed=True)
 
@@ -403,6 +413,16 @@ class Pipeline:
                 f"{ref} couldn't be loaded from GitHub ({stored.fetch_error}); reload it first"
             )
         return self._start_open(stored, rerun_failed=True)
+
+    def _gate_passed(self, stored: StoredPr) -> bool:
+        """Whether this head's CI and automated-review gates were passed or overridden before:
+        a round exists on it (PR 3 final I3), so **Review anyway** sticks for later opens,
+        Retry and Walk everything on the same head. A fetch failure still holds it."""
+        pr = stored.pr
+        return (
+            stored.fetch_error is None
+            and self._store.latest_round_on_head(pr.ref, pr.head_sha) is not None
+        )
 
     def _consented(self, ref: PrRef) -> StoredPr:
         stored = self._store.pr(ref)
@@ -445,11 +465,23 @@ class Pipeline:
         done = self._store.artifact_kinds(round_id)
         wanted = (*TRIAGE_JOBS, *ON_OPEN_JOBS[depth or pr.depth])
         missing = tuple(kind for kind in wanted if kind.value not in done)
+        if not rerun_failed:
+            # A failed job reruns only through Retry, like a failed round (R60, final M1).
+            failed = _failed_jobs(self._store.artifact(round_id, "jobs"))
+            missing = tuple(kind for kind in missing if kind.value not in failed)
+        coming = self._planned.get(round_id, Counter())
+        if walk_everything and (
+            coming[JobKind.WALKTHROUGH]
+            or self._job_flights.running((round_id, JobKind.WALKTHROUGH))
+        ):
+            # Joining the running walk would walk nothing more (final M6): say so instead.
+            return OpenResult(
+                "running", "the walkthrough is running; walk everything once it finishes", round_id
+            )
         rerun = (JobKind.WALKTHROUGH,) if walk_everything else ()
         missing = (*missing, *(kind for kind in rerun if kind not in missing))
         if not missing:
             return OpenResult("up_to_date", "this head's review is complete", round_id)
-        coming = self._planned.get(round_id, Counter())
         if not rerun and all(coming[kind] for kind in missing):
             return OpenResult("running", "this head is being reviewed", round_id)
         self._plan(round_id, missing, +1)

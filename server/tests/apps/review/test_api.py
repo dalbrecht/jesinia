@@ -329,7 +329,8 @@ async def test_open_retry_and_review_anyway(env: Env) -> None:
     assert "correctness" in anyway.json()["jobs"]
     await env.host.pipeline.drain()
     retry = await env.client.post(f"{PR}/retry", headers=keyed())
-    assert retry.status_code == 200 and retry.json()["state"] == "ci_failing"
+    # Review anyway sticks for the head (final I3): Retry acts instead of answering the gate.
+    assert retry.status_code == 200 and retry.json()["state"] == "up_to_date"
     missing = await env.client.post(f"{API}/prs/acme/web/42/open", headers=keyed())
     assert missing.status_code == 404
 
@@ -366,6 +367,7 @@ async def test_drafts_round_trip_with_multi_line_ranges(env: Env) -> None:
 
 async def test_preview_and_post_shapes(env: Env) -> None:
     env.round()
+    await env.client.get(f"{PR}/drafts")  # the client reads (and sees the seeds) first
     await env.client.put(
         f"{PR}/drafts",
         json={"summary": "Fine, but BLOCKING: see below.",
@@ -690,6 +692,7 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
 
 async def test_drafts_say_where_each_one_posts_once_files_are_cached(env: Env) -> None:
     env.round()
+    await env.client.get(f"{PR}/drafts")  # the client reads (and sees the seeds) first
     body = {"summary": "", "drafts": [
         {"path": "src/app.py", "body": "In.", "line": 3, "side": "RIGHT"},
         {"path": "src/app.py", "body": "Out.", "line": 40, "side": "RIGHT"},

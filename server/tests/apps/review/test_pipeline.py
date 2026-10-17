@@ -1389,3 +1389,53 @@ async def test_a_depth_chosen_while_a_gate_holds_the_pr_is_kept(env: Env) -> Non
     anyway = await env.pipeline.review_anyway(ref)
     assert set(ON_OPEN_JOBS["deep"]) <= set(anyway.jobs)
     await env.pipeline.drain()
+
+
+# --- PR 3 final fix wave ------------------------------------------------------------------------
+
+
+async def test_review_anyway_sticks_for_later_actions_on_the_head(env: Env) -> None:
+    """I3: once a round exists on a failing-CI head (Review anyway), opening it again or
+    asking to walk everything acts instead of answering the CI gate."""
+    ref = env.add(ci="failing")
+    assert (await env.pipeline.open(ref)).state == "ci_failing"
+    anyway = await env.pipeline.review_anyway(ref)
+    await env.pipeline.drain()
+    again = await env.pipeline.open(ref)
+    assert again.state == "up_to_date" and again.round_id == anyway.round_id
+    walk = await env.pipeline.open(ref, walk_everything=True)
+    assert walk.state == "started" and walk.jobs == (JobKind.WALKTHROUGH,)
+    await env.pipeline.drain()
+
+
+async def test_a_plain_open_never_reruns_a_failed_job(env: Env) -> None:
+    """M1: a failed job reruns only through Retry, like a failed round (R60)."""
+    ref = env.add()
+    env.jobs.failing[JobKind.WALKTHROUGH] = RuntimeError("boom")
+    first = await env.pipeline.open(ref)
+    await env.pipeline.drain()
+    env.jobs.failing.clear()
+    env.jobs.ran.clear()
+    again = await env.pipeline.open(ref)
+    assert JobKind.WALKTHROUGH not in again.jobs
+    await env.pipeline.drain()
+    assert JobKind.WALKTHROUGH not in env.jobs.ran
+    retry = await env.pipeline.retry(ref)
+    assert retry.round_id == first.round_id and JobKind.WALKTHROUGH in retry.jobs
+    await env.pipeline.drain()
+    assert JobKind.WALKTHROUGH in env.jobs.ran
+
+
+async def test_walk_everything_while_a_walkthrough_runs_says_running(env: Env) -> None:
+    """M6: never answer started for a walk-everything that would only join the running walk."""
+    ref = env.add()
+    env.jobs.hold = asyncio.Event()
+    await env.pipeline.open(ref)
+    for _ in range(50):
+        if JobKind.WALKTHROUGH in env.jobs.ran:
+            break
+        await asyncio.sleep(0)
+    walk = await env.pipeline.open(ref, walk_everything=True)
+    assert walk.state == "running" and walk.jobs == ()
+    env.jobs.hold.set()
+    await env.pipeline.drain()

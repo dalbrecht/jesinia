@@ -300,8 +300,10 @@ class PostingService:
         check_review_text(summary, drafts)
         # Findings already in are seeded first, so this edit (deletions included) replaces
         # them; findings still running are added next to it when they arrive.
-        settled = self._seed(rnd)
-        self._store.save_drafts(round_id, summary, drafts)
+        settled, seeded = self._seed_claim(rnd)
+        # Drafts this call just seeded were never seen by the client (PR 3 final I2): the
+        # author's list replaces what they had, and the new ones are kept after it.
+        self._store.save_drafts(round_id, summary, [*drafts, *seeded])
         return self._draft_set(rnd, pending=not settled)
 
     def _draft_set(self, rnd: RoundRecord, *, pending: bool) -> DraftSet:
@@ -333,16 +335,22 @@ class PostingService:
         """Seed the round's drafts from its findings, once, as soon as they are all in
         (Codex round 2: seeding earlier would miss them for good). Returns whether they
         are in."""
+        return self._seed_claim(rnd)[0]
+
+    def _seed_claim(self, rnd: RoundRecord) -> tuple[bool, tuple[Draft, ...]]:
+        """``_seed``, also returning the drafts this call seeded (empty unless it claimed
+        the seeding)."""
         if not self._findings_settled(rnd):
-            return False
+            return False, ()
         found = self._store.artifact(rnd.id, "findings")
         correctness = self._store.artifact(rnd.id, "correctness")
         findings = [
             *_findings_of(correctness),
             *_findings_of(found),
         ]
-        self._store.seed_drafts(rnd.id, seed_drafts(_unique(findings)))
-        return True
+        generated = tuple(seed_drafts(_unique(findings)))
+        claimed = self._store.seed_drafts(rnd.id, generated)
+        return True, generated if claimed else ()
 
     async def _commentable(self, rnd: RoundRecord) -> tuple[CommentableLines, list[str]]:
         """Where GitHub takes comments on the round's head: its cached file list, read once
