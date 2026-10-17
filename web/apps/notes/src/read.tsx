@@ -32,13 +32,16 @@ export function prepareMarkdown(body: string): string {
     .replace(/\\([\\#])/g, (escape, c: string) => (c === "#" ? ESCAPED_HASH : escape));
 }
 
+/** The open page, as the Read view needs it. */
+export type ReadPage = { id: string; path: string; title: string };
+
 /**
- * `src` (an image in the page at `pagePath`) as its `/api/kb/assets/<id>/<file>` URL when it is
- * a relative path to exactly one file in one page's asset folder at the KB root; else null.
+ * `src` (an image in `page`) as its `/api/kb/assets/<id>/<file>` URL when, resolved against the
+ * page's path, it is exactly one file in that page's own asset folder; else null.
  */
-export function kbAssetUrl(src: string, pagePath: string): string | null {
+export function kbAssetUrl(src: string, page: Pick<ReadPage, "id" | "path">): string | null {
   if (/^[a-z][a-z0-9+.-]*:|^\/|[%?#\\]/i.test(src)) return null;
-  const parts = pagePath.split("/").slice(0, -1);
+  const parts = page.path.split("/").slice(0, -1);
   for (const segment of src.split("/")) {
     if (segment === "" || segment === ".") continue;
     if (segment === "..") {
@@ -47,7 +50,14 @@ export function kbAssetUrl(src: string, pagePath: string): string | null {
     } else parts.push(segment);
   }
   const [folder, id, file, ...rest] = parts;
-  if (folder !== "_assets" || rest.length > 0 || !id || !file || !PAGE_ID.test(id) || !ASSET_FILE.test(file)) {
+  if (
+    folder !== "_assets" ||
+    rest.length > 0 ||
+    id !== page.id ||
+    !file ||
+    !PAGE_ID.test(id) ||
+    !ASSET_FILE.test(file)
+  ) {
     return null;
   }
   return `/api/kb/assets/${id}/${file}`;
@@ -125,8 +135,29 @@ function groupAi(children: MdNode[], classes: Classes): MdNode[] {
   return out;
 }
 
-/** The Read view's tree rewrite for the page at `pagePath`. */
-export function readTransform(pagePath: string, classes: Classes): (tree: MdNode) => void {
+/** A heading's text, lowercased with whitespace collapsed (for comparing with a title). */
+function headingKey(node: MdNode): string {
+  const words = (n: MdNode): string => (n.children ? n.children.map(words).join("") : restore(n.value ?? ""));
+  return words(node).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+const ARTICLE_HEADING = "article";
+
+/**
+ * `children` without the h1 that only repeats the page title: the body's first heading, or the
+ * first heading after `## Article` (a kept post's article starts with its own title).
+ */
+function withoutRepeatedTitle(children: MdNode[], title: string): MdNode[] {
+  const key = title.replace(/\s+/g, " ").trim().toLowerCase();
+  const headings = children.filter((n) => n.type === "heading");
+  const article = headings.findIndex((h) => h.depth === 2 && headingKey(h) === ARTICLE_HEADING);
+  const candidates = [headings[0], article === -1 ? undefined : headings[article + 1]];
+  const repeated = candidates.find((h) => h?.depth === 1 && headingKey(h) === key);
+  return repeated ? children.filter((n) => n !== repeated) : children;
+}
+
+/** The Read view's tree rewrite for `page`. */
+export function readTransform(page: ReadPage, classes: Classes): (tree: MdNode) => void {
   const visit = (node: MdNode, tags: boolean): void => {
     if (node.type === "code" || node.type === "inlineCode" || node.type === "html") {
       node.value = restore(String(node.value), "\\#");
@@ -134,7 +165,7 @@ export function readTransform(pagePath: string, classes: Classes): (tree: MdNode
     }
     if (node.url !== undefined) {
       const url = restore(node.url);
-      node.url = node.type === "link" ? url : (kbAssetUrl(url, pagePath) ?? url);
+      node.url = node.type === "link" ? url : (kbAssetUrl(url, page) ?? url);
     }
     if (typeof node.alt === "string") node.alt = restore(node.alt);
     if (!node.children) return;
@@ -150,21 +181,28 @@ export function readTransform(pagePath: string, classes: Classes): (tree: MdNode
       return inLink ? [text(restore(value))] : linked(value, classes, childTags);
     });
   };
-  return (tree) => visit(tree, true);
+  return (tree) => {
+    tree.children = withoutRepeatedTitle(tree.children ?? [], page.title);
+    visit(tree, true);
+  };
 }
 
 /** A KB page body, rendered for reading. */
 export function ReadView({
   markdown,
-  pagePath,
+  page,
   onOpenPage,
 }: {
   markdown: string;
-  pagePath: string;
+  page: ReadPage;
   onOpenPage: (id: string) => void;
 }) {
   const prepared = useMemo(() => prepareMarkdown(markdown), [markdown]);
-  const transform = useMemo(() => readTransform(pagePath, { tag: s.tag, ai: s.ai, aiLabel: s.aiLabel }), [pagePath]);
+  const { id, path, title } = page;
+  const transform = useMemo(
+    () => readTransform({ id, path, title }, { tag: s.tag, ai: s.ai, aiLabel: s.aiLabel }),
+    [id, path, title],
+  );
   const pageLinks = useMemo<PageLinks>(
     () => ({ href: (id) => `/notes/page/${encodeURIComponent(id)}`, open: onOpenPage }),
     [onOpenPage],

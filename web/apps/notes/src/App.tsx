@@ -122,7 +122,7 @@ function Workspace({ status }: { status: ServerStatus }) {
             {doc.error ? <p className={s.error}>{doc.error}</p> : null}
             <div className={s.editor}>
               {view === "read" ? (
-                <ReadView markdown={doc.text} pagePath={page.path} onOpenPage={open} />
+                <ReadView markdown={doc.text} page={page} onOpenPage={open} />
               ) : (
                 <Editor
                   key={page.id}

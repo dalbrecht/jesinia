@@ -373,6 +373,11 @@ class KbService:
         if not is_asset_file_name(name):
             raise InvalidAssetName(f"{name!r} is not a plain asset file name")
         disk = f"{ASSETS_FOLDER}/{page_id}/{name}"
+        # Resolved, the file must sit directly in this page's folder: never another page's
+        # (a linked folder), never anywhere else.
+        folder = fs.root.resolve() / ASSETS_FOLDER / page_id
+        if fs.contain(PurePosixPath(disk)).parent != folder:
+            raise PathOutsideKb(f"{disk} is not in {ASSETS_FOLDER}/{page_id}/")
         try:
             data = await asyncio.to_thread(fs.read_regular, disk)
         except FileNotFoundError as exc:
