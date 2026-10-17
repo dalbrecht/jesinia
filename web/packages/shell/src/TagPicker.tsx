@@ -112,6 +112,9 @@ export const TagPicker = forwardRef<TagPickerHandle, TagPickerProps>(function Ta
     if (!request || !root.current) return;
     focusRequest.current = null;
     const container = root.current;
+    // A slow check can answer after the user moved on; only take focus that would be lost.
+    const active = document.activeElement;
+    if (active && active !== document.body && !container.contains(active)) return;
     const offerButton = container.querySelector<HTMLElement>(`.${s.offer} button`);
     const group = request.from === "chips" ? `.${s.chips} button` : `.${s.suggestions} button`;
     const sibling = container.querySelectorAll<HTMLElement>(group)[request.index];

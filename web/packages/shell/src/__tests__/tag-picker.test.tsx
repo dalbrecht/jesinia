@@ -112,6 +112,25 @@ describe("TagPicker", () => {
     expect(await screen.findByRole("button", { name: "Use #sqlite" })).toHaveFocus();
   });
 
+  it("does not pull focus back when the user moved on before the check answered", async () => {
+    const slow = deferred();
+    setup({
+      "POST /api/kb/tags/suggest": [{ tag: "wal-mode", new: true }],
+      "GET /api/kb/tags/check": slow.route,
+    });
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    await suggestNow();
+    await userEvent.click(await screen.findByRole("button", { name: "#wal-mode new" }));
+    outside.focus();
+    await act(async () => {
+      slow.release(Response.json({ normalised: "wal-mode", ...NOT_FOUND }));
+    });
+    await screen.findByRole("button", { name: "Remove #wal-mode" });
+    expect(outside).toHaveFocus();
+    outside.remove();
+  });
+
   it("keeps focus inside the picker after a chip is removed", async () => {
     setup({}, { initial: ["one", "two"] });
     await userEvent.click(screen.getByRole("button", { name: "Remove #one" }));
