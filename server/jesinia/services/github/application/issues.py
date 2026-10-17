@@ -28,6 +28,7 @@ from jesinia.services.github.application.payload import (
     get_json,
     get_page,
     get_pages,
+    iso_time,
     list_of,
     mapping,
     number,
@@ -142,8 +143,8 @@ def _issue(repo: str, data: Mapping[str, object]) -> Issue:
         milestone=None if milestone is None else text(milestone, "title"),
         parent=None if parent_url is None else _issue_ref_from_url(parent_url),
         sub_issues=(),
-        created_at=datetime.fromisoformat(text(data, "created_at")),
-        updated_at=datetime.fromisoformat(text(data, "updated_at")),
+        created_at=iso_time(data, "created_at"),
+        updated_at=iso_time(data, "updated_at"),
         url=text(data, "html_url"),
         author=account(data, "user")[0],
         sub_issue_count=0 if summary is None else optional_number(summary, "total") or 0,
@@ -159,7 +160,7 @@ def _comment(data: Mapping[str, object]) -> IssueComment:
         id=number(data, "id"),
         author=account(data, "user")[0],
         body=optional_text(data, "body") or "",
-        created_at=datetime.fromisoformat(text(data, "created_at")),
+        created_at=iso_time(data, "created_at"),
         url=text(data, "html_url"),
     )
 

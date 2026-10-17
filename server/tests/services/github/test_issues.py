@@ -689,3 +689,15 @@ async def test_repository_returns_githubs_own_spelling(issues: IssueClient) -> N
     )
     with pytest.raises(GitHubRequestError):
         await issues.repository("acme/gone")
+
+
+@respx.mock
+@pytest.mark.parametrize("bad", [{"created_at": "yesterday"}, {"updated_at": None}])
+async def test_a_malformed_issue_time_is_a_payload_error(
+    issues: IssueClient, bad: dict[str, object]
+) -> None:
+    payload = {**fixture_dict("issue_12"), **bad}
+    respx.get(f"{API}/repos/acme/api/issues/12").mock(return_value=Response(200, json=payload))
+    with pytest.raises(GitHubPayloadError) as caught:
+        await issues.get("acme/api", 12)
+    assert caught.value.__cause__ is not None or "updated_at" in str(caught.value)

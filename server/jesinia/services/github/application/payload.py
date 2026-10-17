@@ -75,9 +75,21 @@ def optional_mapping(data: Mapping[str, object], key: str) -> Mapping[str, objec
     return value if isinstance(value, Mapping) else None
 
 
+def _parse_time(value: str, key: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise GitHubPayloadError(f"expected an ISO 8601 time for {key!r}") from exc
+
+
+def iso_time(data: Mapping[str, object], key: str) -> datetime:
+    """A required ISO 8601 time; a missing or malformed one is a ``GitHubPayloadError``."""
+    return _parse_time(text(data, key), key)
+
+
 def optional_time(data: Mapping[str, object], key: str) -> datetime | None:
     value = optional_text(data, key)
-    return datetime.fromisoformat(value) if value else None
+    return _parse_time(value, key) if value else None
 
 
 def account(data: Mapping[str, object], key: str) -> tuple[str, bool]:
