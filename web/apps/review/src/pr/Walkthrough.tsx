@@ -267,7 +267,8 @@ export function StepPage({ step, index, total, findings, files, layout, onDraft 
               const file = fileOf(files, path);
               const current = step.hunks.filter((h) => h.path === path).map((h) => h.hunk);
               return file ? (
-                <StepFile key={path} file={file} current={current} layout={layout} />
+                // Keyed by step too (final M3): "show the other hunks" is per step.
+                <StepFile key={`${index}:${path}`} file={file} current={current} layout={layout} />
               ) : (
                 <p key={path} className={s.empty}>
                   GitHub's file list has no <Visible text={path} />.

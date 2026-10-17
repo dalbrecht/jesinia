@@ -57,6 +57,8 @@ type UseDraftsArgs = {
   enabled: boolean;
   /** Changes whenever the review was read again: the drafts are read again too, unless edited. */
   refresh: number;
+  /** Whether the review is shown: a hidden one reads nothing until shown again (final I1). */
+  active?: boolean;
 };
 
 /** Typing pauses this long before the drafts save on their own (R59). */
@@ -72,7 +74,7 @@ export const AUTOSAVE_MS = 800;
  * - it saves after a pause in typing, on blur, when the window is hidden and on unmount, and
  *   guards leaving the page while anything is unsaved.
  */
-export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsArgs) {
+export function useDrafts({ client, repo, number, enabled, refresh, active = true }: UseDraftsArgs) {
   const keys = useRef(new ActionKeys());
   const counter = useRef(0);
   const [set, setSet] = useState<DraftSet | null>(null);
@@ -100,18 +102,34 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
     itemsRef.current = next;
     setItemsState(next);
   };
+  // Each draft keeps its React key for as long as it exists (final I1): a re-read never
+  // remounts a textarea, so focus and the cursor stay where the author left them.
+  const keyById = useRef(new Map<number, string>());
+  const keyFor = (draft: Draft): string => {
+    if (draft.id === null || draft.id === undefined) return nextKey();
+    let key = keyById.current.get(draft.id);
+    if (key === undefined) {
+      key = nextKey();
+      keyById.current.set(draft.id, key);
+    }
+    return key;
+  };
   const adopt = useCallback((d: DraftSet) => {
     setSet(d);
     setSummary(d.summary);
-    setItems(d.drafts.map((draft) => ({ key: nextKey(), draft, isNew: false })));
+    // A draft the author just added (not saved yet: no id) stays, after the server's list.
+    const local = itemsRef.current.filter((i) => i.isNew && (i.draft.id === null || i.draft.id === undefined));
+    setItems([...d.drafts.map((draft) => ({ key: keyFor(draft), draft, isNew: false })), ...local]);
   }, []);
 
   useEffect(() => {
-    if (!enabled || isDirty() || inflight.current) return;
+    if (!enabled || !active || isDirty() || inflight.current) return;
     let current = true;
+    const startedAt = revision.current;
     getDrafts(client, repo, number).then(
       (d) => {
-        if (!current || isDirty() || inflight.current) return;
+        // Only an answer to the content as it still is replaces it: nothing typed since.
+        if (!current || revision.current !== startedAt || isDirty() || inflight.current) return;
         adopt(d);
         setLoadError(null);
       },
@@ -122,7 +140,7 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
     return () => {
       current = false;
     };
-  }, [client, repo, number, enabled, refresh, again, adopt]);
+  }, [client, repo, number, enabled, active, refresh, again, adopt]);
 
   /** One PUT of the current content. */
   const saveOnce = useCallback(async (): Promise<boolean> => {
@@ -143,14 +161,16 @@ export function useDrafts({ client, repo, number, enabled, refresh }: UseDraftsA
       const answer = new Map(kept.map((item, i) => [item.key, saved.drafts[i]]));
       const untouched = revision.current === rev;
       if (untouched) setSummary(saved.summary);
-      setItems(
-        itemsRef.current.map((item) => {
-          const server = answer.get(item.key);
-          if (!server) return item;
-          const draft = untouched ? server : { ...item.draft, id: server.id ?? null, in_body: server.in_body ?? null };
-          return { ...item, draft, isNew: false };
-        }),
-      );
+      const merged = itemsRef.current.map((item) => {
+        const server = answer.get(item.key);
+        if (!server) return item;
+        if (server.id !== null && server.id !== undefined) keyById.current.set(server.id, item.key);
+        const draft = untouched ? server : { ...item.draft, id: server.id ?? null, in_body: server.in_body ?? null };
+        return { ...item, draft, isNew: false };
+      });
+      // Drafts the server added to this save (findings seeded just now, final I2) are shown too.
+      const added = saved.drafts.slice(kept.length).map((draft) => ({ key: keyFor(draft), draft, isNew: false }));
+      setItems([...merged, ...added]);
       setStatus({ kind: "saved" });
       return true;
     } catch (e) {

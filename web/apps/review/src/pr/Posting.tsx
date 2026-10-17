@@ -344,14 +344,22 @@ export function PostDialog(props: PostDialogProps) {
               <b>What will be posted</b>
               <div className={s.comment}>
                 <span className={s.label}>Review body</span>
-                {preview.body ? <pre className={s.exact}>{preview.body}</pre> : <span className={s.muted}>(none)</span>}
+                {preview.body ? (
+                  <pre className={s.exact}>
+                    <Visible text={preview.body} />
+                  </pre>
+                ) : (
+                  <span className={s.muted}>(none)</span>
+                )}
               </div>
               {preview.comments.map((c, i) => (
                 <div key={i} className={s.comment}>
                   <span className={s.loc}>
                     <Visible text={`${c.path}:${lines({ start_line: c.start_line ?? c.line, end_line: c.line })}`} />
                   </span>
-                  <pre className={s.exact}>{c.body}</pre>
+                  <pre className={s.exact}>
+                    <Visible text={c.body} />
+                  </pre>
                 </div>
               ))}
               {notes.length ? (

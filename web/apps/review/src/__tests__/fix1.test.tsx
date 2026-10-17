@@ -391,10 +391,18 @@ describe("big PRs (I4, R61)", () => {
       cleanup();
       return ms;
     };
+    // Robust on a loaded CI box (final M2): warm-up, the median of 3, a floor on the small side,
+    // a generous ratio and an absolute ceiling.
+    const median = async (n: number) => {
+      const runs: number[] = [];
+      for (let i = 0; i < 3; i += 1) runs.push(await page(n));
+      return runs.sort((a, b) => a - b)[1] as number;
+    };
     await page(50); // warm up
-    const small = await page(250);
-    const large = await page(1000);
-    expect(large).toBeLessThan(8000);
-    expect(large / Math.max(small, 1)).toBeLessThan(8);
-  }, 30_000);
+    await page(250);
+    const small = await median(250);
+    const large = await median(1000);
+    expect(large).toBeLessThan(10_000);
+    expect(large / Math.max(small, 20)).toBeLessThan(8);
+  }, 60_000);
 });

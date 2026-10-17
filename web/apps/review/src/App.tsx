@@ -65,7 +65,6 @@ function useNarrow(): boolean {
   return narrow;
 }
 
-/** "Updated 20 min ago · refreshing…" (spec §2, "Always cached"). */
 /**
  * "Updated 20 min ago · refreshing…" (spec §2, "Always cached"). `synced_at` is the last
  * successful sync (a failed one keeps it), so "Not updated yet" means there never was one.

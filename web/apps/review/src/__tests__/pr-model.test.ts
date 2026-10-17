@@ -199,13 +199,21 @@ describe("big PRs (I4, R61)", () => {
   };
 
   it("builds the outline in about linear time (n vs 4n), well under the ceiling", () => {
-    time(50); // warm up
-    const small = time(250);
-    const large = time(1000);
-    expect(large.entries.filter((e) => e.kind === "step")).toHaveLength(1000);
+    // Robust on a loaded CI box (final M2): warm-up runs, the median of 5, a floor on the
+    // small side, a generous ratio and an absolute ceiling, never a tight wall-clock bound.
+    const median = (n: number) => {
+      const runs = Array.from({ length: 5 }, () => time(n));
+      const sorted = runs.map((r) => r.ms).sort((a, b) => a - b);
+      return { ms: sorted[2] as number, entries: (runs[0] as (typeof runs)[number]).entries };
+    };
+    median(100); // warm up
+    median(500);
+    const small = median(500);
+    const large = median(2000);
+    expect(large.entries.filter((e) => e.kind === "step")).toHaveLength(2000);
     expect(large.entries.filter((e) => e.bad).length).toBeGreaterThan(20); // findings landed on steps
-    expect(large.ms).toBeLessThan(3000);
-    expect(large.ms / Math.max(small.ms, 1)).toBeLessThan(16);
+    expect(large.ms).toBeLessThan(5000);
+    expect(large.ms / Math.max(small.ms, 5)).toBeLessThan(8 * 1.5);
   });
 });
 

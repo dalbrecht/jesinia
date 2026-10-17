@@ -220,7 +220,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
 
   const shown = view && view.pr.repo === repo && view.pr.number === number ? view : null;
   const artifacts = useMemo(() => (shown ? readArtifacts(shown) : null), [shown]);
-  const drafts = useDrafts({ client, repo, number, enabled: shown?.round != null, refresh: refresh + reads });
+  const drafts = useDrafts({ client, repo, number, enabled: shown?.round != null, refresh: refresh + reads, active });
   const readKey = `${repo}#${number}@${shown?.round?.id ?? "none"}`;
   const draftCount = drafts.set ? drafts.items.length : null;
   const chosen: Depth | null = shown ? (depth ?? shown.round?.depth ?? shown.pr.depth) : null;
