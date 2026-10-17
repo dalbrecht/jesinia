@@ -170,17 +170,17 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   whenever `start_line` is set (GitHub rejects multi-line ranges without it); a test asserts
   the payload carries both.
 
-- [ ] **Step 1: Failing tests (respx plus fixtures):**
+- [x] **Step 1: Failing tests (respx plus fixtures):**
   - `test_inbox_merges_requested_authored_and_reviewed`;
   - `test_checks_rollup_maps_states` (any failing → failing; any pending → pending; none → none);
   - `test_bot_author_detected`;
   - `test_create_review_posts_one_atomic_review`;
   - `test_create_review_surfaces_github_error_cause`.
-- [ ] **Step 2: Run** `make test-py`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Reads use `get`/`graphql` with the ETag cache. The write uses a
+- [x] **Step 2: Run** `make test-py`. Expected: FAIL.
+- [x] **Step 3: Implement.** Reads use `get`/`graphql` with the ETag cache. The write uses a
   new `_post`, so the cache doesn't apply.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(github): pull request reads and the review write`.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(github): pull request reads and the review write`.
 
 ### Task 2: The repo workspace
 
@@ -207,15 +207,15 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - it never pushes;
   - worktrees are detached.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_worktree_is_idempotent_and_detached`;
   - `test_patch_ids_equal_for_pure_rebase_and_differ_with_conflict_edit`;
   - `test_prune_removes_unkept_worktrees`;
   - `test_never_pushes`, which asserts no `push` in recorded commands.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): repo workspace`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): repo workspace`.
 
 ### Task 3: Worktree-scoped repo MCP tools
 
@@ -248,16 +248,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - Every path goes through `safe_path(root, rel) -> Path`, which resolves symlinks and
   requires `is_relative_to(root)`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_repo_tools_refuse_escapes_and_symlinks` (Review Focus 5);
   - `test_repeated_reads_hit_the_per_file_allowance` and `test_auto_skipped_files_are_refused`;
   - `test_repo_tools_require_a_review_session`;
   - `test_repo_git_rejects_unsafe_args`;
   - `test_caps_are_reported`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): worktree-scoped repo tools`. **Open PR 1**, then the
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): worktree-scoped repo tools`. **Open PR 1**, then the
   Codex loop (at most 3 rounds) and merge.
 
 ## PR 2: Queue, gates, standards, agent jobs (Tasks 4–7)
@@ -308,7 +308,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **`Scheduler`:** a priority queue (loaded, then requested, then agent-authored, then the
   rest) with a concurrency of 2. It runs jobs per the pre-review setting.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - a table-driven `test_gate_states` (CI pending/failing/passing × auto-review
     configured/landed/timeout × debounce);
   - `test_propose_depth_thresholds`;
@@ -318,10 +318,10 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - `test_list_never_awaits_sync`;
   - `test_scheduler_priority_and_concurrency_two`;
   - `test_rapid_pushes_cost_one_review`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): queue, gates and scheduling`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): queue, gates and scheduling`.
 
 ### Task 5: Standards layering and agent job framework
 
@@ -359,16 +359,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   pure domain function enforcing the evidence rule. The agent's suggested verdict is input,
   never final.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_layering_later_wins_and_rule_ids_are_heading_paths`;
   - `test_languages_filter_documents`;
   - `test_invalid_agent_output_retries_once_then_fails_visibly` (Review Focus 3);
   - `test_injected_approve_cannot_bypass_evidence_rule` (Review Focus 4);
   - `test_agent_prs_always_get_deep_correctness`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): standards and agent jobs`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): standards and agent jobs`.
 
 ### Task 6: Walkthrough coverage and the review pipeline
 
@@ -392,16 +392,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   artifacts yet** (always the case in `on_open` mode), and streams progress over SSE topic
   `review.progress`. Test: `test_open_in_on_open_mode_runs_triage_and_on_open_jobs`. Test: `test_open_respects_the_gate_and_only_review_anyway_bypasses_it`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_coverage_counts_skipped_binaries_and_lockfiles` (Review Focus 2);
   - `test_unknown_hunks_count_as_uncovered`;
   - `test_triage_setting_runs_only_triage_jobs`;
   - `test_everything_setting_runs_all`;
   - `test_on_open_runs_nothing_in_background`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): coverage and the review pipeline`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): coverage and the review pipeline`.
 
 ### Task 7: REST, MCP reads, posting
 
@@ -436,7 +436,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
     - Test: `test_retry_after_lost_response_does_not_post_twice`.
 - **MCP (read-only):** `review_queue`, `review_get {repo, n}`, `review_findings {repo, n}`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_blocking_comment_warns_on_approve` (case-insensitive);
   - `test_newer_head_requires_confirmation`;
   - `test_own_pr_offers_comment_only`;
@@ -447,10 +447,10 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - `test_multi_line_draft_round_trips_its_start_line_and_side`;
   - API status and shape tests;
   - `make gen-client`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): REST, MCP reads and posting`. **Open PR 2**, then the
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): REST, MCP reads and posting`. **Open PR 2**, then the
   Codex loop and merge.
 
 ## PR 3: The review app (Tasks 8–10)

@@ -396,7 +396,7 @@ driven by Claude in the browser with the author's approval. Shipped in #28 (tag 
 | 3. Keep through Engage | A read-only `claude-code` session answered a question; *Keep with this conversation* prefilled the note and an editable takeaway; the page got the chosen tags, the `jesinia:ai` provenance block and the takeaway, and `Tags.md` was created. |
 | 4. Images stay local | 4 images in `_assets/<id>/` with a `.gitignore` of `*`; KB sync committed and pushed only the two pages and `Tags.md` (`git ls-files` lists no `_assets/`). |
 | 5. Rendering | Fixed during acceptance: clicking a suggested tag lost focus (#37); archived articles turned anchor-link headings into code blocks and kept site clutter (#38); Notes had no rendered view and never showed local images (#39); Notes squeezed the page on narrow windows (#41). After the fixes the two pages were rebuilt, and both render in Notes' Read view with clean headings, local images, tag chips and the AI callout. |
-| Pigeonpile Wiki | Not checked, at the author's request. ADR 0007 row h stays *pending manual check*. |
+| Pigeonpile Wiki | Not checked yet: it waits for the next Pigeonpile Wiki release (#53). ADR 0007 row h stays *pending manual check*. |
 
 Follow-ups: #30, #31, #32 (closed by #43), #36.
 
