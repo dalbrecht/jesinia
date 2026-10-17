@@ -80,8 +80,8 @@ appears in a URL. For a new link at any time, run:
 jesinia status
 ```
 
-In Chrome or Edge, use **Install** in the address bar to give Jesinia (the launcher) and
-Notes their own app windows.
+In Chrome or Edge, use **Install** in the address bar to give Jesinia (the launcher),
+Notes and RSS their own app windows.
 
 ## Everyday commands
 

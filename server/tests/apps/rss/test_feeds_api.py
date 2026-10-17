@@ -536,9 +536,17 @@ async def test_refresh_one_feed_polls_only_it_and_answers_with_its_warning(
     route.mock(return_value=httpx.Response(503))
     with env.db() as db:
         db.execute("UPDATE feeds SET fail_count = 2 WHERE id = ?", (feed["id"],))
-    failed = await env.client.post(f"{API}/feeds/{feed['id']}/refresh")
+    failed = await env.client.post(
+        f"{API}/feeds/{feed['id']}/refresh", headers={IDEMPOTENCY_HEADER: "retry-1"}
+    )
     assert failed.status_code == 200, failed.text
     assert failed.json()["warning"] == "HTTP 503"
+    polls = route.call_count
+    replay = await env.client.post(
+        f"{API}/feeds/{feed['id']}/refresh", headers={IDEMPOTENCY_HEADER: "retry-1"}
+    )
+    assert replay.json() == failed.json()
+    assert route.call_count == polls  # the same key answers again without polling again
     assert other.call_count == 1  # only the add: the other feed was left alone
 
     route.mock(

@@ -52,9 +52,12 @@ e2e-server: ## Build the apps and serve a throwaway e2e instance (needs E2E_HOME
 	@# loopback (fake_runner_app's temporary-home guard); the feeds stop with the server.
 	@# Then the server plus a scripted "fake" runner that calls kb_write through MCP (tests
 	@# only). It commits to the fixture KB; CI runners have no git identity of their own.
-	python3 -m http.server "$(E2E_FEEDS_PORT)" --bind 127.0.0.1 \
-	  --directory web/tests/e2e/fixtures/feeds >/dev/null 2>&1 & feeds=$$!; \
+	@# Its errors (a port in use, say) reach Playwright's log; uvicorn starts once it answers.
+	$(UV) run python -m http.server "$(E2E_FEEDS_PORT)" --bind 127.0.0.1 \
+	  --directory "$(CURDIR)/web/tests/e2e/fixtures/feeds" >/dev/null & feeds=$$!; \
 	trap 'kill $$feeds 2>/dev/null' EXIT; \
+	curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null \
+	  "http://127.0.0.1:$(E2E_FEEDS_PORT)/fixture.xml" || exit 1; \
 	GIT_AUTHOR_NAME="Jesinia E2E" GIT_AUTHOR_EMAIL="e2e@example.invalid" \
 	  GIT_COMMITTER_NAME="Jesinia E2E" GIT_COMMITTER_EMAIL="e2e@example.invalid" \
 	  JESINIA_HOME="$(E2E_HOME)/data" JESINIA_FAKE_RUNNER=1 $(UV) run uvicorn \
