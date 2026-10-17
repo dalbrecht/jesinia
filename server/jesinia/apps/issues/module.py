@@ -3,7 +3,9 @@
 ``kb`` (tags), ``agents`` and ``github``, which triage, suggestions and writes use.
 
 With the ``github`` service it syncs the watched repos every ``SYNC_INTERVAL`` (the
-``issues.sync`` job, also at start); routes and tools arrive with the later tasks."""
+``issues.sync`` job, also at start) and runs the label batches. It serves ``/api/issues`` and
+the read-only ``issues_search`` and ``issues_get`` MCP tools; the cache reads work without
+GitHub."""
 
 from __future__ import annotations
 
@@ -15,6 +17,10 @@ from importlib.resources import files
 
 from fastapi import APIRouter, HTTPException, status
 
+from jesinia.apps.issues.api.routes import build_router
+from jesinia.apps.issues.api.tools import build_tools
+from jesinia.apps.issues.application.labels import LabelSetupService
+from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.core.db import DbClass, ModuleDb, open_db
@@ -47,6 +53,8 @@ class IssuesModule:
         self._conn: sqlite3.Connection | None = None
         self._idempotency: SqliteIdempotencyStore | None = None
         self._sync: SyncService | None = None
+        self._labels: LabelSetupService | None = None
+        self._queries: IssueQueries | None = None
 
     @property
     def idempotency(self) -> IdempotencyStore:
@@ -54,16 +62,33 @@ class IssuesModule:
             raise _not_started()
         return self._idempotency
 
+    def _needs_github(self) -> HTTPException:
+        if self._conn is not None:
+            return HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "issues require the github service"
+            )
+        return _not_started()
+
     @property
     def sync(self) -> SyncService:
         """Watched repos, their sync and the Inbox and Backlog (needs the github service)."""
         if self._sync is None:
-            if self._conn is not None:
-                raise HTTPException(
-                    status.HTTP_503_SERVICE_UNAVAILABLE, "issues require the github service"
-                )
-            raise _not_started()
+            raise self._needs_github()
         return self._sync
+
+    @property
+    def labels(self) -> LabelSetupService:
+        """The label setup and migration batches (needs the github service)."""
+        if self._labels is None:
+            raise self._needs_github()
+        return self._labels
+
+    @property
+    def queries(self) -> IssueQueries:
+        """Cache-only reads: repos, one issue, search."""
+        if self._queries is None:
+            raise _not_started()
+        return self._queries
 
     async def sync_repos(self) -> None:
         """The ``issues.sync`` job: every watched repo, failures recorded, never raised."""
@@ -77,10 +102,10 @@ class IssuesModule:
             log.info("pruned %d expired issues idempotency keys", removed)
 
     def router(self) -> APIRouter | None:
-        return None
+        return build_router(self)
 
     def mcp_tools(self) -> Sequence[ToolDef]:
-        return []
+        return build_tools(self)
 
     async def start(self, ctx: AppContext) -> None:
         self._conn = open_db(ctx.cfg.data_dir, ISSUES_DB)
@@ -91,15 +116,22 @@ class IssuesModule:
         ctx.scheduler.every(
             IDEMPOTENCY_PRUNE_JOB, timedelta(days=1), self.prune_idempotency_keys, at_start=True
         )
+        store = SqliteIssuesStore(self._conn)
+        self._queries = IssueQueries(store)
         github = ctx.services.get("github")
         if isinstance(github, GitHubService):
-            store = SqliteIssuesStore(self._conn)
-            self._sync = SyncService(IssueClient(github), store, _utc_now)
+            client = IssueClient(github)
+            self._sync = SyncService(client, store, _utc_now)
+            self._labels = LabelSetupService(
+                client, store, _utc_now, on_rate_limit=self._sync.back_off
+            )
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_repos, at_start=True)
 
     async def stop(self) -> None:
         self._idempotency = None
         self._sync = None
+        self._labels = None
+        self._queries = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None

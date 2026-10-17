@@ -6,12 +6,16 @@
 
 -- Only repos the author added. `added_at` decides the Inbox (issues opened after it);
 -- `cursor_json` is the resumable incremental-sync cursor (domain/triage.py SyncCursor).
+-- `schema_json` is the effective schema and `schema_source` where it came from; the schema the
+-- author made in Settings is kept apart in `settings_schema_json`, so a `.jesinia/labels.yml`
+-- (which wins while it exists, spec §2) never overwrites it, and it is back when the file goes.
 CREATE TABLE repos (
     repo TEXT PRIMARY KEY,
     watched INTEGER NOT NULL DEFAULT 1,
     added_at TEXT NOT NULL,
     schema_source TEXT NOT NULL DEFAULT 'default',  -- 'default', 'repo' or 'settings'
     schema_json TEXT,
+    settings_schema_json TEXT,
     migrated INTEGER NOT NULL DEFAULT 0,
     cursor_json TEXT,
     synced_at TEXT,
@@ -85,7 +89,8 @@ CREATE TABLE sub_issue_links (
     FOREIGN KEY (repo, parent_number) REFERENCES issues (repo, number) ON DELETE CASCADE
 );
 
--- Previewed label setup and migration batches (Task 4), kept until applied or discarded.
+-- Previewed label setup and migration batches (domain/labels.py LabelPlan): `json` holds the
+-- ops; a plan is consumed by its apply and pruned once older than PLAN_TTL.
 CREATE TABLE label_plans (
     id TEXT PRIMARY KEY,
     repo TEXT NOT NULL REFERENCES repos (repo) ON DELETE CASCADE,

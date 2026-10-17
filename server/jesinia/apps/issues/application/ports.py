@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
+from jesinia.apps.issues.domain.labels import LabelPlan
 from jesinia.apps.issues.domain.schema import LabelSchema
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
@@ -21,6 +22,7 @@ from jesinia.apps.issues.domain.triage import (
 from jesinia.services.github.domain.issue import (
     Issue,
     IssueComment,
+    IssueRef,
     Label,
     Milestone,
     Page,
@@ -57,8 +59,9 @@ class IssueReads(Protocol):
 
 @dataclass(frozen=True)
 class RepoState:
-    """A repo the author added, with its schema and where its sync stands. ``schema`` is
-    ``DEFAULT_SCHEMA`` until one is stored."""
+    """A repo the author added, with its schema and where its sync stands. ``schema`` is the
+    effective one (``DEFAULT_SCHEMA`` until one is stored) and ``schema_source`` where it came
+    from; ``settings_schema`` is the one made in Settings, kept even while a labels.yml wins."""
 
     repo: str
     watched: bool
@@ -69,6 +72,7 @@ class RepoState:
     cursor: SyncCursor
     synced_at: datetime | None
     sync_error: str | None
+    settings_schema: LabelSchema | None = None
 
 
 @dataclass(frozen=True)
@@ -93,7 +97,11 @@ class IssuesStore(Protocol):
 
     def repo(self, repo: str) -> RepoState | None: ...
 
-    def set_schema(self, repo: str, source: SchemaSource, schema: LabelSchema) -> None: ...
+    def set_schema(self, repo: str, source: SchemaSource, schema: LabelSchema) -> None:
+        """Store the effective schema and where it came from."""
+
+    def set_settings_schema(self, repo: str, schema: LabelSchema | None) -> None:
+        """Keep (or clear) the schema made in Settings, apart from the effective one."""
 
     def replace_labels(self, repo: str, labels: Sequence[Label]) -> None: ...
 
@@ -145,3 +153,69 @@ class IssuesStore(Protocol):
 
     def rows(self, view: ViewName, filters: IssueFilters, now: datetime) -> list[IssueRow]:
         """Open issues of watched repos in ``view``, most recently updated first."""
+
+
+@dataclass(frozen=True)
+class CachedIssue:
+    """An issue as the cache holds it, for the item view and the MCP tools."""
+
+    issue: Issue
+    triage: Triage
+    inbox: bool
+    details_synced_at: datetime | None
+
+
+class IssueCache(Protocol):
+    """The cache reads behind ``IssueQueries``; never GitHub."""
+
+    def all_repos(self) -> list[RepoState]:
+        """Every repo the author added, watched or not, by name."""
+
+    def repo(self, repo: str) -> RepoState | None: ...
+
+    def cached_issue(self, repo: str, n: int) -> CachedIssue | None: ...
+
+    def comments(self, repo: str, n: int) -> list[IssueComment]: ...
+
+    def timeline(self, repo: str, n: int) -> list[TimelineEvent]: ...
+
+    def sub_issue_links(self, repo: str, parent: int) -> list[IssueRef] | None:
+        """The epic's children in order; ``None`` while they were never fetched."""
+
+    def search(self, query: str, repo: str | None, limit: int) -> list[IssueRow]:
+        """Issues of watched repos (open and closed) whose number is ``query`` (``12`` or
+        ``#12``) or whose title, body or labels contain it, case-insensitively and literally;
+        most recently updated first."""
+
+
+class LabelWrites(Protocol):
+    """What the label setup and migration batches ask GitHub (``IssueClient`` satisfies it).
+    Every method may raise ``GitHubError`` (a ``GitHubRateLimitedError`` while limited)."""
+
+    async def labels(self, repo: str) -> list[Label]: ...
+
+    async def get(self, repo: str, n: int) -> Issue: ...
+
+    async def add_labels(self, repo: str, n: int, names: Sequence[str]) -> tuple[str, ...]: ...
+
+    async def remove_label(self, repo: str, n: int, name: str) -> tuple[str, ...]: ...
+
+    async def create_label(self, repo: str, name: str, color: str, description: str) -> Label: ...
+
+    async def delete_label(self, repo: str, name: str) -> None: ...
+
+
+class LabelPlanStore(Protocol):
+    """Previewed label plans, and the repo state they are planned from."""
+
+    def repo(self, repo: str) -> RepoState | None: ...
+
+    def issues(self, repo: str) -> list[Issue]: ...
+
+    def save_plan(self, plan: LabelPlan, now: datetime) -> None:
+        """Keep ``plan``; plans that expired before ``now`` are dropped."""
+
+    def take_plan(self, plan_id: str, repo: str) -> LabelPlan | None:
+        """Remove and return ``repo``'s plan ``plan_id``: each plan is applied at most once."""
+
+    def set_migrated(self, repo: str) -> None: ...

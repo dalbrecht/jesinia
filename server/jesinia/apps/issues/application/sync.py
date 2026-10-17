@@ -74,6 +74,12 @@ Clock = Callable[[], datetime]
 OnInbox = Callable[[str, Sequence[int]], Awaitable[None]]
 
 
+def _without_file(settings: LabelSchema | None) -> tuple[SchemaSource, LabelSchema]:
+    """The effective schema when the repo has no labels.yml (spec §2 precedence: labels.yml,
+    then the schema made in Settings, then the default)."""
+    return ("default", DEFAULT_SCHEMA) if settings is None else ("settings", settings)
+
+
 async def _capped_pages[T](fetch: Callable[[str | None], Awaitable[Page[T]]]) -> list[T]:
     items: list[T] = []
     token: str | None = None
@@ -130,6 +136,37 @@ class SyncService:
 
     async def watched_repos(self) -> builtins.list[str]:
         return self._store.watched_repos()
+
+    async def configure(
+        self, repo: str, *, watched: bool, settings_schema: LabelSchema | None
+    ) -> RepoState:
+        """Settings → Issues for one repo: watch or unwatch it and keep (or clear, with
+        ``None``) its Settings schema (see ``set_settings_schema``).
+
+        Raises:
+            InvalidRepoError: ``repo`` is not ``owner/name``.
+            RepoNotWatchedError: unwatching a repo the author never added.
+        """
+        name = validate_repo(repo)
+        if watched:
+            self._store.watch(name, self._clock())
+        else:
+            self.state(name)  # only a repo the author added can be unwatched
+            self._store.unwatch(name)
+        await self.set_settings_schema(name, settings_schema)
+        return self.state(name)
+
+    def state(self, repo: str) -> RepoState:
+        """The stored repo, watched or not.
+
+        Raises:
+            InvalidRepoError: ``repo`` is not ``owner/name``.
+            RepoNotWatchedError: the author never added ``repo``.
+        """
+        state = self._store.repo(validate_repo(repo))
+        if state is None:
+            raise RepoNotWatchedError(f"{repo} is not a watched repo; add it first")
+        return state
 
     def _watched(self, repo: str) -> RepoState:
         state = self._store.repo(validate_repo(repo))
@@ -288,17 +325,47 @@ class SyncService:
             # The file exists but can't be read as text: the default, with the cause shown.
             source, schema = "repo", replace(DEFAULT_SCHEMA, errors=(str(exc),))
         else:
-            if text is None and state.schema_source == "settings":
-                # No labels.yml: the schema the author keeps in settings stands.
-                source, schema = "settings", state.schema
-            elif text is None:
-                source, schema = "default", DEFAULT_SCHEMA
+            if text is None:
+                # No labels.yml: the schema kept in Settings, else the default.
+                source, schema = _without_file(state.settings_schema)
             else:
                 source, schema = "repo", parse_labels_yml(text)
+        self._store_effective(state, source, schema)
+        return schema
+
+    def _store_effective(self, state: RepoState, source: SchemaSource, schema: LabelSchema) -> None:
+        """Store the effective schema and re-triage the cache when it changed; the caller
+        holds the repo's lock."""
         if source != state.schema_source or schema != state.schema:
             self._store.set_schema(state.repo, source, schema)
             self._retriage(state.repo, schema)
-        return schema
+
+    async def set_settings_schema(self, repo: str, schema: LabelSchema | None) -> None:
+        """Keep ``schema`` as the one made in Settings for ``repo`` (``None`` clears it). It is
+        stored apart from ``.jesinia/labels.yml``'s: while the file exists it wins (spec §2) and
+        this only takes effect once the file is gone. When it is the effective schema the cache
+        is re-triaged at once (IR18). Storing and recomputing happen under the repo's one lock,
+        so a running sync can't save pages triaged with the old schema in between.
+
+        Raises:
+            InvalidRepoError: ``repo`` is not ``owner/name``.
+            RepoNotWatchedError: the author never added ``repo``.
+        """
+        name = validate_repo(repo)
+        async with self._locks.setdefault(name, asyncio.Lock()):
+            state = self.state(name)
+            self._store.set_settings_schema(name, schema)
+            if state.schema_source != "repo":
+                source, effective = _without_file(schema)
+                self._store_effective(state, source, effective)
+
+    def back_off(self, until: datetime | None) -> None:
+        """GitHub rate limited a write (the label batches): pause syncs until ``until``, or
+        for ``SYNC_INTERVAL`` without a reset time. The token's limit is shared, so a sync
+        would only fail too. An earlier reset never shortens a pause already set."""
+        resume = until or self._clock() + SYNC_INTERVAL
+        if self._backoff_until is None or resume > self._backoff_until:
+            self._backoff_until = resume
 
     async def recompute(self, repo: str) -> None:
         """Re-triage every cached issue of ``repo`` against its stored schema (IR18): call it

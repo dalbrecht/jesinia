@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import HTTPException
 
+from jesinia.apps.issues.application.labels import LabelSetupService
+from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.domain.triage import IssueFilters
 from jesinia.apps.issues.module import IDEMPOTENCY_PRUNE_JOB, ISSUES_DB, SYNC_JOB, IssuesModule
@@ -30,8 +32,8 @@ def test_issues_db_is_history_and_registered_after_its_services() -> None:
 
 async def test_start_opens_the_db_and_wires_idempotency(cfg: Config) -> None:
     module = IssuesModule()
-    assert module.router() is None
-    assert list(module.mcp_tools()) == []
+    assert module.router() is not None
+    assert [tool.name for tool in module.mcp_tools()] == ["issues_search", "issues_get"]
     assert not module.health().ok
     with pytest.raises(HTTPException, match="not started") as caught:
         _ = module.idempotency
@@ -79,12 +81,18 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     module = IssuesModule()
     with pytest.raises(HTTPException, match="not started"):
         _ = module.sync
+    for name in ("labels", "queries"):
+        with pytest.raises(HTTPException, match="not started"):
+            getattr(module, name)
     await module.sync_repos()  # nothing to sync before start
 
     await module.start(AppContext(cfg, EventBus(), Scheduler()))
     with pytest.raises(HTTPException, match="require the github service") as caught:
         _ = module.sync
     assert caught.value.status_code == 503
+    with pytest.raises(HTTPException, match="require the github service"):
+        _ = module.labels
+    assert isinstance(module.queries, IssueQueries)  # the cache reads need no GitHub
     await module.stop()
 
     ctx = AppContext(cfg, EventBus(), Scheduler())
@@ -92,6 +100,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     ctx.services["github"] = github
     await module.start(ctx)
     assert isinstance(module.sync, SyncService)
+    assert isinstance(module.labels, LabelSetupService)
     await module.sync.watch("acme/web")
     # Without a token the sync fails, is recorded and the cache keeps serving.
     await ctx.scheduler.run_now(SYNC_JOB)

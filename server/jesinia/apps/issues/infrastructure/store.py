@@ -13,7 +13,21 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import cast
 
-from jesinia.apps.issues.application.ports import RepoState, SchemaSource, StoredIssue
+from jesinia.apps.issues.application.ports import (
+    CachedIssue,
+    RepoState,
+    SchemaSource,
+    StoredIssue,
+)
+from jesinia.apps.issues.domain.labels import (
+    PLAN_TTL,
+    CreateLabel,
+    DeleteLabel,
+    LabelOp,
+    LabelPlan,
+    Relabel,
+    parse_plan_kind,
+)
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, Canonical, LabelSchema
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
@@ -36,6 +50,10 @@ from jesinia.services.github.domain.issue import (
 
 _SOURCES: tuple[SchemaSource, ...] = ("default", "repo", "settings")
 _IN_INBOX = "(issues.inbox = 1 AND issues.complete = 0)"
+_REPO_COLUMNS = (
+    "repo, watched, added_at, schema_source, schema_json, migrated, cursor_json, synced_at, "
+    "sync_error, settings_schema_json"
+)
 
 
 def _time(value: datetime) -> str:
@@ -129,6 +147,43 @@ def _schema(text: str | None) -> LabelSchema:
         epic=_canonical(data["epic"]),
         initiative=_canonical(data["initiative"]),
         errors=tuple(data["errors"]),
+    )
+
+
+def _schema_json(schema: LabelSchema) -> str:
+    return json.dumps(asdict(schema))
+
+
+def _op_json(op: LabelOp) -> dict[str, object]:
+    if isinstance(op, CreateLabel):
+        return {"op": "create", "name": op.name, "color": op.color, "description": op.description}
+    if isinstance(op, Relabel):
+        return {"op": "relabel", "number": op.number, "replace": [list(p) for p in op.replace]}
+    return {"op": "delete", "name": op.name}
+
+
+def _op(data: dict[str, object]) -> LabelOp:
+    if data["op"] == "create":
+        return CreateLabel(str(data["name"]), str(data["color"]), str(data["description"]))
+    if data["op"] == "relabel":
+        pairs = cast(list[list[str]], data["replace"])
+        return Relabel(cast(int, data["number"]), tuple((old, new) for old, new in pairs))
+    return DeleteLabel(str(data["name"]))
+
+
+def _repo_state(row: tuple[object, ...]) -> RepoState:
+    name, watched, added_at, source, schema_json, migrated, cursor_json, synced, error, own = row
+    return RepoState(
+        repo=str(name),
+        watched=bool(watched),
+        added_at=datetime.fromisoformat(str(added_at)),
+        schema_source=_source(str(source)),
+        schema=_schema(cast(str | None, schema_json)),
+        migrated=bool(migrated),
+        cursor=SyncCursor() if cursor_json is None else SyncCursor.from_json(str(cursor_json)),
+        synced_at=_optional_time(cast(str | None, synced)),
+        sync_error=cast(str | None, error),
+        settings_schema=None if own is None else _schema(str(own)),
     )
 
 
@@ -253,30 +308,28 @@ class SqliteIssuesStore:
 
     def repo(self, repo: str) -> RepoState | None:
         row = self._conn.execute(
-            "SELECT repo, watched, added_at, schema_source, schema_json, migrated, cursor_json, "
-            "synced_at, sync_error FROM repos WHERE repo = ?",
-            (repo,),
+            f"SELECT {_REPO_COLUMNS} FROM repos WHERE repo = ?", (repo,)
         ).fetchone()
-        if row is None:
-            return None
-        name, watched, added_at, source, schema_json, migrated, cursor_json, synced, error = row
-        return RepoState(
-            repo=name,
-            watched=bool(watched),
-            added_at=datetime.fromisoformat(added_at),
-            schema_source=_source(source),
-            schema=_schema(schema_json),
-            migrated=bool(migrated),
-            cursor=SyncCursor() if cursor_json is None else SyncCursor.from_json(cursor_json),
-            synced_at=_optional_time(synced),
-            sync_error=error,
-        )
+        return None if row is None else _repo_state(row)
+
+    def all_repos(self) -> list[RepoState]:
+        rows = self._conn.execute(f"SELECT {_REPO_COLUMNS} FROM repos ORDER BY repo")
+        return [_repo_state(row) for row in rows]
 
     def set_schema(self, repo: str, source: SchemaSource, schema: LabelSchema) -> None:
         self._conn.execute(
             "UPDATE repos SET schema_source = ?, schema_json = ? WHERE repo = ?",
-            (source, json.dumps(asdict(schema)), repo),
+            (source, _schema_json(schema), repo),
         )
+
+    def set_settings_schema(self, repo: str, schema: LabelSchema | None) -> None:
+        self._conn.execute(
+            "UPDATE repos SET settings_schema_json = ? WHERE repo = ?",
+            (None if schema is None else _schema_json(schema), repo),
+        )
+
+    def set_migrated(self, repo: str) -> None:
+        self._conn.execute("UPDATE repos SET migrated = 1 WHERE repo = ?", (repo,))
 
     def record_sync(self, repo: str, synced_at: datetime | None, error: str | None) -> None:
         if synced_at is None:
@@ -511,7 +564,84 @@ class SqliteIssuesStore:
         )
         return [_event(text) for (text,) in rows]
 
+    def cached_issue(self, repo: str, n: int) -> CachedIssue | None:
+        row = self._conn.execute(
+            "SELECT json, triage_json, inbox, details_synced_at FROM issues "
+            "WHERE repo = ? AND number = ?",
+            (repo, n),
+        ).fetchone()
+        if row is None:
+            return None
+        text, result, inbox, details = row
+        return CachedIssue(_issue(text), _triage(result), bool(inbox), _optional_time(details))
+
+    # Label plans ------------------------------------------------------------------------
+
+    def save_plan(self, plan: LabelPlan, now: datetime) -> None:
+        with transaction(self._conn):
+            self._conn.execute(
+                "DELETE FROM label_plans WHERE created_at < ?", (_time(now - PLAN_TTL),)
+            )
+            self._conn.execute(
+                "INSERT INTO label_plans (id, repo, kind, json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    plan.id,
+                    plan.repo,
+                    plan.kind,
+                    json.dumps([_op_json(op) for op in plan.ops]),
+                    _time(plan.created_at),
+                ),
+            )
+
+    def take_plan(self, plan_id: str, repo: str) -> LabelPlan | None:
+        with transaction(self._conn):
+            row = self._conn.execute(
+                "SELECT kind, json, created_at FROM label_plans WHERE id = ? AND repo = ?",
+                (plan_id, repo),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute("DELETE FROM label_plans WHERE id = ?", (plan_id,))
+        kind, ops, created_at = row
+        return LabelPlan(
+            plan_id,
+            repo,
+            parse_plan_kind(kind),
+            tuple(_op(op) for op in json.loads(ops)),
+            datetime.fromisoformat(created_at),
+        )
+
     # Views ------------------------------------------------------------------------------
+
+    def search(self, query: str, repo: str | None, limit: int) -> list[IssueRow]:
+        # LIKE with its wildcards escaped: the query is matched literally.
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        where = ["repos.watched = 1"]
+        params: list[object] = []
+        if repo is not None:
+            where.append("issues.repo = ?")
+            params.append(repo)
+        number = query.strip().removeprefix("#")
+        text_match = " OR ".join(
+            f"json_extract(issues.json, '$.{field}') LIKE ? ESCAPE '\\'"
+            for field in ("title", "body", "labels")
+        )
+        params.extend([pattern] * 3)
+        if number.isdigit():
+            text_match += " OR issues.number = ?"
+            params.append(int(number))
+        query_sql = (
+            "SELECT issues.json, issues.triage_json FROM issues "
+            "JOIN repos ON repos.repo = issues.repo "
+            f"WHERE {' AND '.join(where)} AND ({text_match}) "
+            "ORDER BY issues.updated_at DESC, issues.repo, issues.number LIMIT ?"
+        )
+        params.append(limit)
+        return [
+            _row(_issue(text), _triage(result))
+            for text, result in self._conn.execute(query_sql, params)
+        ]
 
     def rows(self, view: ViewName, filters: IssueFilters, now: datetime) -> list[IssueRow]:
         # Mirrors domain/triage.py ``in_view``.

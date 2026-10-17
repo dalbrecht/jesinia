@@ -347,7 +347,7 @@ class _Parser:
 
     def dimension(
         self,
-        data: Mapping[object, object],
+        data: Mapping[str, object],
         key: str,
         default: tuple[Canonical, ...],
         prefix: str | None = None,
@@ -368,7 +368,7 @@ class _Parser:
             return self._defaults(key, default)
         return values
 
-    def hierarchy(self, data: Mapping[object, object], key: str, default: Canonical) -> Canonical:
+    def hierarchy(self, data: Mapping[str, object], key: str, default: Canonical) -> Canonical:
         if key in data and (value := self.entry(key, data[key], None)) is not None:
             return value
         # Hierarchy labels are admitted first, so only the other hierarchy label can repeat this
@@ -377,7 +377,7 @@ class _Parser:
         return default
 
     def free_prefixes(
-        self, data: Mapping[object, object], default: tuple[str, ...]
+        self, data: Mapping[str, object], default: tuple[str, ...]
     ) -> tuple[str, ...]:
         raw = data.get(_FREE_PREFIXES, [])
         if not isinstance(raw, list):
@@ -425,6 +425,15 @@ def parse_labels_yml(text: str) -> LabelSchema:
         return _fallback("labels.yml is empty, the default schema is used")
     if not isinstance(data, dict):
         return _fallback("labels.yml must be a mapping, the default schema is used")
+    return schema_from_mapping(data)
+
+
+def schema_from_mapping(data: Mapping[str, object]) -> LabelSchema:
+    """Build a schema from a parsed ``labels.yml``-shaped mapping, leniently: never raises.
+    (A YAML mapping may hold keys that aren't strings; they only ever miss the lookups and are
+    listed as unknown.)
+    Each bad key or entry is listed in ``errors`` and skipped; a dimension that is missing, not
+    a list or has no usable labels keeps the default."""
     parser = _Parser()
     default = DEFAULT_SCHEMA
     # The hierarchy labels first, so a dimension's alias can't silently take them over.
@@ -446,3 +455,24 @@ def parse_labels_yml(text: str) -> LabelSchema:
         initiative=initiative,
         errors=tuple(parser.errors),
     )
+
+
+class InvalidSettingsSchemaError(ValueError):
+    """A schema made in Settings that breaks the schema rules; ``errors`` lists every
+    problem. Settings refuse what ``labels.yml`` would skip: the author is there to fix it."""
+
+    def __init__(self, errors: Sequence[str]) -> None:
+        super().__init__("the label schema has problems: " + "; ".join(errors))
+        self.errors = tuple(errors)
+
+
+def validate_settings_schema(data: Mapping[str, object]) -> LabelSchema:
+    """The schema a Settings edit describes (``labels.yml``'s shape and rules).
+
+    Raises:
+        InvalidSettingsSchemaError: any entry or key is unusable.
+    """
+    schema = schema_from_mapping(data)
+    if schema.errors:
+        raise InvalidSettingsSchemaError(schema.errors)
+    return schema

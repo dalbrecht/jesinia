@@ -1031,6 +1031,171 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/issues/repos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Repos
+         * @description Every repo added in Settings → Issues, with its schema and sync state.
+         */
+        get: operations["get_repos_api_issues_repos_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/repos/{owner}/{repo}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Repo
+         * @description Watch or unwatch a repo and keep (or clear) its Settings schema. A new repo's
+         *     existing issues land in the Backlog on its first sync.
+         */
+        put: operations["put_repo_api_issues_repos__owner___repo__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/repos/{owner}/{repo}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync Repo
+         * @description Sync a watched repo now; a failure is recorded in ``sync_error``, not raised.
+         */
+        post: operations["sync_repo_api_issues_repos__owner___repo__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/item/{owner}/{repo}/{n}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Item
+         * @description One issue from the cache, with the comments and timeline last fetched.
+         */
+        get: operations["get_item_api_issues_item__owner___repo___n__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/item/{owner}/{repo}/{n}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Item
+         * @description Fetch the issue's comments, timeline and (for an epic) children from GitHub.
+         */
+        post: operations["refresh_item_api_issues_item__owner___repo___n__refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/labels/{owner}/{repo}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Labels
+         * @description What the setup or migration batch would do, from a fresh read of the repo's labels;
+         *     nothing is written to GitHub. Apply it with its ``plan_id``.
+         */
+        post: operations["preview_labels_api_issues_labels__owner___repo__preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/labels/{owner}/{repo}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Labels
+         * @description Apply a previewed batch (an approval; owner only). Refused with a 409 when the
+         *     repo changed since the preview. A rate limit stops the batch: a 503 with
+         *     ``Retry-After`` and the steps so far.
+         */
+        post: operations["apply_labels_api_issues_labels__owner___repo__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/{view}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get View
+         * @description The cached Inbox or Backlog, at once; ``syncing`` and ``sync_error`` report
+         *     GitHub. ``filter`` is a saved filter (``incomplete``, ``stale_90d``).
+         */
+        get: operations["get_view_api_issues__view__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/queue": {
         parameters: {
             query?: never;
@@ -1516,6 +1681,237 @@ export interface components {
             /** Failed */
             failed: components["schemas"]["ImportFailureOut"][];
         };
+        /** IssueCommentOut */
+        IssueCommentOut: {
+            /** Id */
+            id: number;
+            /** Author */
+            author: string;
+            /** Body */
+            body: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Url */
+            url: string;
+        };
+        /**
+         * IssueDetailOut
+         * @description One cached issue for the book layout. ``comments`` and ``timeline`` are what the last
+         *     refresh fetched (``details_synced_at``; ``None``: never); ``children`` is ``None`` while an
+         *     epic's sub-issues were never fetched.
+         */
+        IssueDetailOut: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Url */
+            url: string;
+            /** Author */
+            author: string;
+            /** State */
+            state: string;
+            /** State Reason */
+            state_reason: string | null;
+            /** Labels */
+            labels: string[];
+            /** Milestone */
+            milestone: string | null;
+            /** Parent */
+            parent: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Readiness */
+            readiness: string | null;
+            /** Priority */
+            priority: string | null;
+            /** Type */
+            type: string | null;
+            /** Areas */
+            areas: string[];
+            /** Complete */
+            complete: boolean;
+            /** Missing */
+            missing: string[];
+            /** Conflicts */
+            conflicts: string[];
+            /** Is Epic */
+            is_epic: boolean;
+            /** Inbox */
+            inbox: boolean;
+            /** Sub Issue Count */
+            sub_issue_count: number;
+            /** Children */
+            children: string[] | null;
+            /** Comments */
+            comments: components["schemas"]["IssueCommentOut"][];
+            /** Timeline */
+            timeline: components["schemas"]["IssueEventOut"][];
+            /** Details Synced At */
+            details_synced_at: string | null;
+        };
+        /**
+         * IssueEventOut
+         * @description A timeline event; ``source`` is the referencing issue or PR as ``owner/name#n``.
+         */
+        IssueEventOut: {
+            /** Id */
+            id: number | null;
+            /** Event */
+            event: string;
+            /** Actor */
+            actor: string;
+            /** Created At */
+            created_at: string | null;
+            /** Label */
+            label: string | null;
+            /** State Reason */
+            state_reason: string | null;
+            /** Source */
+            source: string | null;
+            /** Commit Id */
+            commit_id: string | null;
+        };
+        /**
+         * IssueRowOut
+         * @description An Inbox or Backlog row with its triage against the repo's schema.
+         */
+        IssueRowOut: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
+            /** Author */
+            author: string;
+            /** Labels */
+            labels: string[];
+            /** Readiness */
+            readiness: string | null;
+            /** Priority */
+            priority: string | null;
+            /** Type */
+            type: string | null;
+            /** Areas */
+            areas: string[];
+            /** Complete */
+            complete: boolean;
+            /** Missing */
+            missing: string[];
+            /** Conflicts */
+            conflicts: string[];
+            /** Is Epic */
+            is_epic: boolean;
+            /** Sub Issue Count */
+            sub_issue_count: number;
+            /** Parent */
+            parent: string | null;
+            /** Milestone */
+            milestone: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * IssueViewOut
+         * @description A list served from the cache at once; the sync's state is reported, never awaited.
+         */
+        IssueViewOut: {
+            /** Rows */
+            rows: components["schemas"]["IssueRowOut"][];
+            /** Synced At */
+            synced_at: string | null;
+            /** Syncing */
+            syncing: boolean;
+            /** Sync Error */
+            sync_error: string | null;
+        };
+        /**
+         * IssuesErrorOut
+         * @description A typed error: its class name, the cause, and (when GitHub rate limited the request)
+         *     the seconds to wait, also sent as ``Retry-After``.
+         */
+        IssuesErrorOut: {
+            /** Error */
+            error: string;
+            /** Detail */
+            detail: string;
+            /** Retry After */
+            retry_after?: number | null;
+        };
+        /**
+         * IssuesRepoIn
+         * @description Settings → Issues for one repo. PUT replaces: ``settings_schema`` left out (or null)
+         *     clears the schema kept in Settings, so the default applies when there is no labels.yml.
+         */
+        IssuesRepoIn: {
+            /** Watched */
+            watched: boolean;
+            settings_schema?: components["schemas"]["LabelSchemaBody"] | null;
+        };
+        /**
+         * IssuesRepoOut
+         * @description A repo the author added. ``label_schema`` is the effective one and ``schema_source`` where
+         *     it came from: ``repo`` (its ``.jesinia/labels.yml``, which wins while it exists),
+         *     ``settings`` (``settings_schema``) or ``default``. ``schema_errors`` lists what labels.yml
+         *     couldn't use.
+         */
+        IssuesRepoOut: {
+            /** Repo */
+            repo: string;
+            /** Watched */
+            watched: boolean;
+            /**
+             * Added At
+             * Format: date-time
+             */
+            added_at: string;
+            /**
+             * Schema Source
+             * @enum {string}
+             */
+            schema_source: "default" | "repo" | "settings";
+            label_schema: components["schemas"]["LabelSchemaBody"];
+            /** Schema Errors */
+            schema_errors: string[];
+            settings_schema: components["schemas"]["LabelSchemaBody"] | null;
+            /** Migrated */
+            migrated: boolean;
+            /** Synced At */
+            synced_at: string | null;
+            /** Sync Error */
+            sync_error: string | null;
+        };
+        /** IssuesReposOut */
+        IssuesReposOut: {
+            /** Repos */
+            repos: components["schemas"]["IssuesRepoOut"][];
+        };
         JsonValue: unknown;
         /** KeepIn */
         KeepIn: {
@@ -1544,6 +1940,142 @@ export interface components {
              */
             created: boolean;
             post: components["schemas"]["PostOut"];
+        };
+        /**
+         * LabelApplyIn
+         * @description Apply a previewed plan (an approval). ``plan_id`` is the preview's.
+         */
+        LabelApplyIn: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "setup" | "migrate";
+            /** Plan Id */
+            plan_id: string;
+        };
+        /**
+         * LabelApplyOut
+         * @description What an apply did, step by step. ``note`` says why old labels were kept;
+         *     ``rate_limited_until`` is set when GitHub stopped the batch (the response is then a 503
+         *     with ``Retry-After``). Anything left needs a fresh preview.
+         */
+        LabelApplyOut: {
+            /** Repo */
+            repo: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "setup" | "migrate";
+            /** Complete */
+            complete: boolean;
+            /** Steps */
+            steps: components["schemas"]["LabelStepOut"][];
+            /** Note */
+            note: string | null;
+            /** Rate Limited */
+            rate_limited: boolean;
+            /** Rate Limited Until */
+            rate_limited_until: string | null;
+        };
+        /**
+         * LabelCanonicalBody
+         * @description A canonical label value and the existing labels that mean the same thing.
+         */
+        LabelCanonicalBody: {
+            /** Name */
+            name: string;
+            /** Aliases */
+            aliases?: string[];
+        };
+        /**
+         * LabelOpOut
+         * @description One step: ``create`` (``name``, ``color``, ``description``), ``relabel`` (issue
+         *     ``number``, each ``replace``) or ``delete`` (``name``).
+         */
+        LabelOpOut: {
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "create" | "relabel" | "delete";
+            /** Name */
+            name: string | null;
+            /** Color */
+            color: string | null;
+            /** Description */
+            description: string | null;
+            /** Number */
+            number: number | null;
+            /** Replace */
+            replace: components["schemas"]["LabelReplaceOut"][];
+        };
+        /** LabelPlanIn */
+        LabelPlanIn: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "setup" | "migrate";
+        };
+        /**
+         * LabelPlanOut
+         * @description A previewed batch: apply it with ``plan_id`` before ``expires_at``.
+         */
+        LabelPlanOut: {
+            /** Plan Id */
+            plan_id: string;
+            /** Repo */
+            repo: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "setup" | "migrate";
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Ops */
+            ops: components["schemas"]["LabelOpOut"][];
+        };
+        /** LabelReplaceOut */
+        LabelReplaceOut: {
+            /** Old */
+            old: string;
+            /** New */
+            new: string;
+        };
+        /**
+         * LabelSchemaBody
+         * @description A label schema in ``.jesinia/labels.yml``'s shape (spec §2).
+         */
+        LabelSchemaBody: {
+            /** Readiness */
+            readiness: components["schemas"]["LabelCanonicalBody"][];
+            /** Priority */
+            priority: components["schemas"]["LabelCanonicalBody"][];
+            /** Type */
+            type: components["schemas"]["LabelCanonicalBody"][];
+            /** Areas */
+            areas?: components["schemas"]["LabelCanonicalBody"][];
+            epic?: components["schemas"]["LabelCanonicalBody"];
+            initiative?: components["schemas"]["LabelCanonicalBody"];
+            /** Free Prefixes */
+            free_prefixes?: string[];
+        };
+        /** LabelStepOut */
+        LabelStepOut: {
+            op: components["schemas"]["LabelOpOut"];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "done" | "failed" | "skipped";
+            /** Cause */
+            cause: string | null;
         };
         /** LoadIn */
         LoadIn: {
@@ -5656,6 +6188,638 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    get_repos_api_issues_repos_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesReposOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    put_repo_api_issues_repos__owner___repo__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssuesRepoIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesRepoOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    sync_repo_api_issues_repos__owner___repo__sync_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesRepoOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_item_api_issues_item__owner___repo___n__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueDetailOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    refresh_item_api_issues_item__owner___repo___n__refresh_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueDetailOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    preview_labels_api_issues_labels__owner___repo__preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LabelPlanIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabelPlanOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    apply_labels_api_issues_labels__owner___repo__apply_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LabelApplyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabelApplyOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description GitHub's rate limit stopped the batch */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabelApplyOut"];
+                };
+            };
+        };
+    };
+    get_view_api_issues__view__get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+                filter?: string | null;
+            };
+            header?: never;
+            path: {
+                view: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueViewOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
         };

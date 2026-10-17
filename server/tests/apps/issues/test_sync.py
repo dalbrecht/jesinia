@@ -622,6 +622,21 @@ async def test_recompute_without_a_stored_repo_is_refused(service: SyncService) 
         await service.recompute(REPO)
 
 
+async def test_recompute_retriages_against_the_stored_schema(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    github.put(issue(1, labels=("design needed", "priority: low", "bug", "area:web")))
+    await watched(service, clock)
+    await service.sync(REPO)
+    # An overlay (Tasks 5-6) changes the stored schema, then asks for the recompute.
+    overlay = replace(
+        DEFAULT_SCHEMA, readiness=(*DEFAULT_SCHEMA.readiness, Canonical("design needed"))
+    )
+    store.set_schema(REPO, "default", overlay)
+    await service.recompute(REPO)
+    assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == []
+
+
 async def test_recompute_applies_a_stored_schema_change(
     service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
 ) -> None:
@@ -633,8 +648,7 @@ async def test_recompute_applies_a_stored_schema_change(
     overlay = replace(
         DEFAULT_SCHEMA, readiness=(*DEFAULT_SCHEMA.readiness, Canonical("design needed"))
     )
-    store.set_schema(REPO, "settings", overlay)
-    await service.recompute(REPO)
+    await service.set_settings_schema(REPO, overlay)
     assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == []
     state = store.repo(REPO)
     assert state is not None and state.schema_source == "settings" and state.schema == overlay
@@ -830,8 +844,7 @@ async def test_recompute_cannot_set_the_inbox_flag(
     await watched(service, clock)
     github.put(issue(1, labels=COMPLETE, created=clock.now))  # complete on arrival
     await service.sync(REPO)
-    store.set_schema(REPO, "settings", replace(DEFAULT_SCHEMA, readiness=()))
-    await service.recompute(REPO)
+    await service.set_settings_schema(REPO, replace(DEFAULT_SCHEMA, readiness=()))
     assert await numbers(service, "inbox") == []
     assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == [1]
 
@@ -851,8 +864,8 @@ async def test_recompute_during_a_sync_ends_with_the_new_schema(
     overlay = replace(
         DEFAULT_SCHEMA, readiness=(*DEFAULT_SCHEMA.readiness, Canonical("design needed"))
     )
-    store.set_schema(REPO, "settings", overlay)
-    recomputing = asyncio.create_task(service.recompute(REPO))
+    # Task 3 carry: storing the schema and recomputing happen under the repo's one lock.
+    recomputing = asyncio.create_task(service.set_settings_schema(REPO, overlay))
     await asyncio.sleep(0)
     github.gate.set()
     await asyncio.gather(running, recomputing)
@@ -904,3 +917,82 @@ async def test_sync_all_skips_a_repo_unwatched_mid_run(
     github.before_list = unwatch_web
     await service.sync_all()  # acme/api runs first and unwatches acme/web
     assert {args[0] for name, args in github.calls if name == "list_issues"} == {OTHER}
+
+
+# Settings schemas (Task 4 carry): kept apart from labels.yml ---------------------------
+
+
+async def test_settings_schema_is_kept_apart_from_labels_yml(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    github.put(issue(1, labels=("design needed", "priority: low", "bug", "area:web")))
+    await watched(service, clock)
+    await service.sync(REPO)
+    overlay = replace(
+        DEFAULT_SCHEMA, readiness=(*DEFAULT_SCHEMA.readiness, Canonical("design needed"))
+    )
+    await service.set_settings_schema(REPO, overlay)
+    # A labels.yml wins while it exists (spec §2), and doesn't overwrite the settings schema.
+    github.files[(REPO, LABELS_YML)] = "priority:\n  - priority: low\n"
+    await service.sync(REPO)
+    state = store.repo(REPO)
+    assert state is not None and state.schema_source == "repo"
+    assert state.settings_schema == overlay
+    assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == [1]
+    # Editing settings while the file wins stores the edit and leaves the effective schema.
+    await service.set_settings_schema(REPO, overlay)
+    state = store.repo(REPO)
+    assert state is not None and state.schema_source == "repo"
+    # The file goes away: the settings schema is back, not the default.
+    del github.files[(REPO, LABELS_YML)]
+    await service.sync(REPO)
+    state = store.repo(REPO)
+    assert state is not None and state.schema_source == "settings" and state.schema == overlay
+    assert await numbers(service, "backlog", IssueFilters(saved="incomplete")) == []
+
+
+async def test_clearing_the_settings_schema_falls_back_to_the_default(
+    service: SyncService, github: FakeIssues, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    await watched(service, clock)
+    await service.set_settings_schema(REPO, replace(DEFAULT_SCHEMA, readiness=()))
+    await service.set_settings_schema(REPO, None)
+    state = store.repo(REPO)
+    assert state is not None and state.schema_source == "default"
+    assert state.schema == DEFAULT_SCHEMA and state.settings_schema is None
+    await service.set_settings_schema(REPO, None)  # unchanged: nothing to recompute
+
+
+async def test_a_settings_schema_needs_a_known_repo(service: SyncService) -> None:
+    with pytest.raises(RepoNotWatchedError):
+        await service.set_settings_schema(REPO, DEFAULT_SCHEMA)
+
+
+async def test_a_settings_schema_can_be_kept_for_an_unwatched_repo(
+    service: SyncService, clock: FakeClock, store: SqliteIssuesStore
+) -> None:
+    await watched(service, clock)
+    await service.unwatch(REPO)
+    await service.set_settings_schema(REPO, replace(DEFAULT_SCHEMA, readiness=()))
+    state = store.repo(REPO)
+    assert state is not None and state.schema_source == "settings"
+
+
+async def test_back_off_pauses_syncs_until_the_reset(
+    service: SyncService, github: FakeIssues, clock: FakeClock
+) -> None:
+    await watched(service, clock)
+    service.back_off(clock.now + timedelta(minutes=10))
+    service.back_off(clock.now + timedelta(minutes=1))  # an earlier reset never shortens it
+    await service.sync_all()
+    assert github.calls == []
+    clock.now += timedelta(minutes=10)
+    await service.sync_all()
+    assert "list_issues" in github.call_names()
+    github.calls.clear()
+    service.back_off(None)  # GitHub gave no reset time: one sync interval
+    await service.sync_all()
+    assert github.calls == []
+    clock.now += SYNC_INTERVAL
+    await service.sync_all()
+    assert "list_issues" in github.call_names()

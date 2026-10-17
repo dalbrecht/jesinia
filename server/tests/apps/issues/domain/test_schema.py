@@ -15,8 +15,11 @@ from jesinia.apps.issues.domain.schema import (
     MAX_LABELS_YML_NESTING,
     Canonical,
     Conflict,
+    InvalidSettingsSchemaError,
     classify,
     parse_labels_yml,
+    schema_from_mapping,
+    validate_settings_schema,
     write_name,
 )
 
@@ -287,3 +290,52 @@ def test_write_name_prefers_existing_alias_until_migrated() -> None:
     assert write_name(design, ["DESIGN-needed"]) == "DESIGN-needed"
     # Neither exists: Jesinia never creates a label implicitly.
     assert write_name(design, ["bug"]) is None
+
+
+# Settings schemas (Task 4): the same rules as labels.yml, but refused rather than skipped --
+
+
+def test_schema_from_mapping_reads_what_labels_yml_reads() -> None:
+    data = {
+        "readiness": ["agent-ready", {"name": "design-needed", "aliases": ["design needed"]}],
+        "areas": [{"name": "area:apple", "aliases": ["apple"]}],
+        "epic": {"name": "epic", "aliases": ["Epic!"]},
+    }
+    schema = schema_from_mapping(data)
+    assert schema.errors == ()
+    assert schema.readiness == (
+        Canonical("agent-ready"),
+        Canonical("design-needed", ("design needed",)),
+    )
+    assert schema.areas == (Canonical("area:apple", ("apple",)),)
+    assert schema.epic == Canonical("epic", ("Epic!",))
+    assert schema.priority == DEFAULT_SCHEMA.priority
+    assert parse_labels_yml(AMICUS) == schema_from_mapping(
+        {
+            "readiness": [
+                "agent-ready",
+                "human-needed",
+                "information-needed",
+                {"name": "design-needed", "aliases": ["design needed"]},
+                "blocked",
+                "icebox",
+            ],
+            "areas": [
+                {"name": "area:apple", "aliases": ["platform:ios", "apple"]},
+                {"name": "area:wiki", "aliases": ["wiki"]},
+            ],
+        }
+    )
+
+
+def test_a_settings_schema_with_any_error_is_refused_with_every_error() -> None:
+    with pytest.raises(InvalidSettingsSchemaError) as caught:
+        validate_settings_schema({"areas": ["web"], "type": ["bug", "bug"]})
+    assert len(caught.value.errors) == 2
+    assert "areas[1]" in str(caught.value) and "already in the schema" in str(caught.value)
+
+
+def test_a_valid_settings_schema_round_trips() -> None:
+    schema = validate_settings_schema({"areas": [{"name": "area:web", "aliases": ["web"]}]})
+    assert schema.areas == (Canonical("area:web", ("web",)),)
+    assert schema.errors == ()
