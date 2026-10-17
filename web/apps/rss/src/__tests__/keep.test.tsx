@@ -104,6 +104,15 @@ afterEach(() => {
   vi.stubGlobal("matchMedia", undefined);
 });
 
+/**
+ * Enters text the way a paste does: one input event. Typing per keystroke re-renders the whole
+ * app each time, and on a loaded CI runner long strings took tests past the 5 s timeout.
+ */
+async function enter(field: HTMLElement, text: string): Promise<void> {
+  await userEvent.click(field);
+  await userEvent.paste(text);
+}
+
 describe("Keep popover", () => {
   it("n opens the popover focused on the note", async () => {
     const { calls } = setup();
@@ -509,7 +518,7 @@ describe("Engage", () => {
     const again = await screen.findByRole("textbox", { name: "Takeaway" });
     expect(screen.getByRole("textbox", { name: "Note" })).toHaveValue("Tie this to my tech-debt notes");
     await userEvent.clear(again);
-    await userEvent.type(again, "Invisible success is hard to fund.");
+    await enter(again, "Invisible success is hard to fund.");
     await keepNow();
     await waitFor(() => expect(writes(calls, "/api/rss/posts/1/keep")).toHaveLength(1));
     expect(await writes(calls, "/api/rss/posts/1/keep")[0]?.json()).toEqual({

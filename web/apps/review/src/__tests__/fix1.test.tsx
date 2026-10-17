@@ -43,6 +43,15 @@ const draftBox = () => screen.getByRole("textbox", { name: "Comment on src/billi
 const summaryBox = () => screen.getByRole("textbox", { name: "Review summary" });
 const workspace = () => screen.getByRole("navigation", { name: "Open reviews" });
 
+/**
+ * Enters text the way a paste does: one input event. Typing per keystroke re-renders the whole
+ * app each time, and on a loaded CI runner long strings took tests past the 5 s timeout.
+ */
+async function enter(field: HTMLElement, text: string): Promise<void> {
+  await userEvent.click(field);
+  await userEvent.paste(text);
+}
+
 /** A PUT route that answers only when the test says so. */
 function deferredPuts() {
   const pending: { body: Put; key: string | null; resolve: () => void }[] = [];
@@ -66,10 +75,10 @@ describe("draft saves (I1, I2, R59)", () => {
     const { calls } = setup(reviewed(), { [`PUT ${API}/drafts`]: puts.route });
     await ready();
     await go(/Your comments/);
-    await userEvent.type(draftBox(), " Edited.");
+    await enter(draftBox(), " Edited.");
     fireEvent.blur(draftBox());
     await waitFor(() => expect(puts.pending).toHaveLength(1));
-    await userEvent.type(summaryBox(), " TYPED-DURING-SAVE");
+    await enter(summaryBox(), " TYPED-DURING-SAVE");
     await act(async () => puts.pending[0]?.resolve());
     expect(summaryBox()).toHaveValue("Looks good overall. TYPED-DURING-SAVE");
     expect(draftBox()).toHaveValue("Rounding happens once. Edited.");
@@ -85,10 +94,10 @@ describe("draft saves (I1, I2, R59)", () => {
     setup(reviewed(), { [`PUT ${API}/drafts`]: puts.route });
     await ready();
     await go(/Your comments/);
-    await userEvent.type(draftBox(), " one");
+    await enter(draftBox(), " one");
     fireEvent.blur(draftBox());
     await waitFor(() => expect(puts.pending).toHaveLength(1));
-    await userEvent.type(draftBox(), " two");
+    await enter(draftBox(), " two");
     fireEvent.blur(draftBox());
     fireEvent.blur(draftBox());
     await new Promise((r) => setTimeout(r, 20));
@@ -127,7 +136,7 @@ describe("draft saves (I1, I2, R59)", () => {
       return e.defaultPrevented;
     };
     expect(leave()).toBe(false);
-    await userEvent.type(draftBox(), " unsaved");
+    await enter(draftBox(), " unsaved");
     expect(leave()).toBe(true);
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     document.dispatchEvent(new Event("visibilitychange"));
@@ -140,7 +149,7 @@ describe("draft saves (I1, I2, R59)", () => {
     const { calls } = setup();
     await ready();
     await go(/Your comments/);
-    await userEvent.type(draftBox(), " BLOCKING");
+    await enter(draftBox(), " BLOCKING");
     await userEvent.click(within(actions()).getByRole("button", { name: "Approve…" }));
     await screen.findByRole("dialog", { name: /on GitHub/ });
     const order = calls
@@ -157,7 +166,7 @@ describe("draft saves (I1, I2, R59)", () => {
     });
     await ready();
     await go(/Your comments/);
-    await userEvent.type(draftBox(), " x");
+    await enter(draftBox(), " x");
     await userEvent.click(within(actions()).getByRole("button", { name: "Comment…" }));
     expect((await screen.findAllByText(/Couldn't save the drafts: locked/)).length).toBeGreaterThan(0);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -168,7 +177,7 @@ describe("draft saves (I1, I2, R59)", () => {
     const { calls } = setup();
     await ready();
     await go(/Your comments/);
-    await userEvent.type(draftBox(), " closing");
+    await enter(draftBox(), " closing");
     fireEvent.click(within(workspace()).getByRole("button", { name: "Close Acme/web#3" }));
     await waitFor(() => expect(sent(calls, "PUT", `${API}/drafts`)).toHaveLength(1));
   });
@@ -248,7 +257,7 @@ describe("the posting dialog's focus (I5)", () => {
     });
     await ready();
     await go(/Your comments/);
-    await userEvent.type(draftBox(), " x");
+    await enter(draftBox(), " x");
     fireEvent.blur(draftBox());
     expect(
       await screen.findByText(/^Draft 1 \(src\/billing\/proration\.py:14–15\) can't be saved: reworded entirely\.$/),

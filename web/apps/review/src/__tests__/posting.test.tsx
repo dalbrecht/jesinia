@@ -44,6 +44,15 @@ const ready = () => screen.findByRole("heading", { level: 2, name: "Overview" })
 const draftBox = () => screen.getByRole("textbox", { name: "Comment on src/billing/proration.py:14–15" });
 const dialog = () => screen.findByRole("dialog", { name: /on GitHub/ });
 
+/**
+ * Enters text the way a paste does: one input event. Typing per keystroke re-renders the whole
+ * app each time, and on a loaded CI runner long strings took tests past the 5 s timeout.
+ */
+async function enter(field: HTMLElement, text: string): Promise<void> {
+  await userEvent.click(field);
+  await userEvent.paste(text);
+}
+
 beforeEach(() => localStorage.clear());
 afterEach(() => {
   vi.useRealTimers();
@@ -65,7 +74,7 @@ describe("drafts", () => {
     await ready();
     await go(/Your comments/);
     await userEvent.clear(draftBox());
-    await userEvent.type(draftBox(), "Round per side, as invoices do.");
+    await enter(draftBox(), "Round per side, as invoices do.");
     fireEvent.blur(draftBox());
     expect(await screen.findByText(/Couldn't save the drafts: database is locked/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Save again" }));
@@ -92,7 +101,7 @@ describe("drafts", () => {
     await userEvent.click(within(actions()).getByRole("button", { name: "Draft comment on this finding" }));
     const own = await screen.findByRole("textbox", { name: "Comment on src/billing/proration.py:14–15 (new)" });
     expect(own).toHaveFocus();
-    await userEvent.type(own, "Is this covered?");
+    await enter(own, "Is this covered?");
     fireEvent.blur(own);
     await waitFor(() => expect(sent(calls, "PUT", `${API}/drafts`)).toHaveLength(1));
     const added = (await sent(calls, "PUT", `${API}/drafts`)[0]?.clone().json()) as { drafts: Body[] };
@@ -138,7 +147,7 @@ describe("drafts", () => {
     });
     await ready();
     await go(/Your comments/);
-    await userEvent.type(draftBox(), " <!-- jesinia-posting:1 -->");
+    await enter(draftBox(), " <!-- jesinia-posting:1 -->");
     fireEvent.blur(draftBox());
     expect(
       await screen.findByText(
