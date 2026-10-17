@@ -57,6 +57,7 @@ from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA
 from jesinia.apps.issues.domain.suggestions import (
     OPEN_STATES,
     DuplicateNotCachedError,
+    ItemState,
     Suggestion,
     SuggestionNotFoundError,
     SuggestionStaleError,
@@ -64,6 +65,7 @@ from jesinia.apps.issues.domain.suggestions import (
     apply_failed,
     approved,
     premise_holds,
+    priority_settled,
 )
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.services.github.domain.repo import validate_repo
@@ -115,6 +117,16 @@ def original(cache: PendingCache, repo: str, n: int) -> tuple[Existing, int]:
             f"{repo}#{n} is not in the cache, so its GitHub id is unknown; sync its repo first"
         )
     return Existing(found.issue.repo, n), found.issue.id
+
+
+def _outcomes(result: BatchResult) -> dict[tuple[str, int], tuple[ItemState, str | None]]:
+    """Each issue's outcome in ``result`` (one step per issue in a priority batch)."""
+    states: dict[str, ItemState] = {"done": "applied", "failed": "failed", "skipped": "skipped"}
+    return {
+        step.step.target.key: (states[step.state], step.cause)
+        for step in result.results
+        if step.step.target is not None
+    }
 
 
 def applied_batch(store: ApplyStore, batch_id: str) -> AppliedBatch:
@@ -393,6 +405,10 @@ class ApplyService:
     def _settle(self, suggestion: Suggestion, result: BatchResult) -> Suggestion:
         """Approved when its batch completed; otherwise still open, with the cause."""
         now = self._clock()
+        if suggestion.kind == "priority":
+            settled = priority_settled(suggestion, _outcomes(result), now)
+            self._suggestions.save(settled)
+            return settled
         if result.complete:
             settled = approved(suggestion, now)
         else:

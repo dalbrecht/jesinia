@@ -5306,7 +5306,7 @@
           "issues"
         ],
         "summary": "Get Suggestions",
-        "description": "Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one\nrepo, or all, oldest first and at most ``limit``. ``state`` may repeat (default: the\nopen ones, ``draft`` and ``edited``).",
+        "description": "Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one\nrepo, one batch ``scope`` (with its latest priority ask), or all, oldest first and at\nmost ``limit``. ``state`` may repeat (default: the\nopen ones, ``draft`` and ``edited``).",
         "operationId": "get_suggestions_api_issues_suggestions_get",
         "parameters": [
           {
@@ -5379,6 +5379,24 @@
                 }
               ],
               "title": "Kind"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8000
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
             }
           },
           {
@@ -5586,7 +5604,7 @@
           "issues"
         ],
         "summary": "Suggest Priority",
-        "description": "Ask the agent to prioritise these cached open issues: one draft (``kind``\n``priority``, ``scope`` the batch) with a priority, a rank and a reason per issue. The\nanswer takes as long as the agent does. Approving it (``/suggestions/{id}/approve``)\nsets the priorities.",
+        "description": "Ask the agent to prioritise these cached open issues. The ask runs in the background\n(the request never waits for the agent); poll ``GET /suggestions?scope=`` with the\nanswer's ``scope`` (its ``priority_run``). When it is ``done`` there is one draft\n(``kind`` ``priority``, ``scope`` the batch) with a priority, a rank and a reason per\nissue; approving it (``/suggestions/{id}/approve``) sets the priorities. Asking for a\nbatch that is already being asked returns that run.",
         "operationId": "suggest_priority_api_issues_suggestions_priority_post",
         "parameters": [
           {
@@ -5619,12 +5637,12 @@
           }
         },
         "responses": {
-          "200": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueSuggestionOut"
+                  "$ref": "#/components/schemas/IssuePriorityRunOut"
                 }
               }
             }
@@ -10164,6 +10182,61 @@
         "title": "IssueEventOut",
         "description": "A timeline event; ``source`` is the referencing issue or PR as ``owner/name#n``."
       },
+      "IssuePriorityRunOut": {
+        "properties": {
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "done",
+              "waiting",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "suggestion_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggestion Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope",
+          "status",
+          "cause",
+          "updated_at",
+          "suggestion_id"
+        ],
+        "title": "IssuePriorityRunOut",
+        "description": "A priority ask for a batch of issues: ``scope`` names the batch, ``status`` is\n``running``, ``done`` (``suggestion_id`` is the draft), ``waiting`` (no agent runner; ask\nagain) or ``failed`` (``cause``)."
+      },
       "IssueRefIn": {
         "properties": {
           "repo": {
@@ -10483,7 +10556,7 @@
           "updated_at"
         ],
         "title": "IssueSuggestionOut",
-        "description": "A suggestion draft. ``repo`` and ``n`` name its issue (``scope`` a draft about several\nissues or a queue, from later tasks). ``payload`` is Jesinia's own JSON, by ``kind``:\n\n- ``label`` and ``new_area``: ``{dimension, value}`` (``new_area``: an area not in the\n  schema yet, which approving adds);\n- ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);\n- ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be\n  ``agent-ready``; else what ``agent-ready`` still lacks);\n- ``priority`` (about a batch, so ``scope``): ``{items: [{repo, n, priority, current, rank,\n  reason}]}`` in rank order; ``priority`` is the schema value to set (``null``: none), and\n  ``current`` the priority the issue had, which approving applies against.\n\n``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why\nits last approval didn't apply (it stays approvable)."
+        "description": "A suggestion draft. ``repo`` and ``n`` name its issue (``scope`` a draft about several\nissues or a queue, from later tasks). ``payload`` is Jesinia's own JSON, by ``kind``:\n\n- ``label`` and ``new_area``: ``{dimension, value}`` (``new_area``: an area not in the\n  schema yet, which approving adds);\n- ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);\n- ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be\n  ``agent-ready``; else what ``agent-ready`` still lacks);\n- ``priority`` (about a batch, so ``scope``): ``{items: [{repo, n, priority, current, rank,\n  reason}]}`` in rank order; ``priority`` is the schema value to set (``null``: none), and\n  ``current`` the priority the issue had, which approving applies against. After an\n  approval each item also has ``outcome: {state, cause}``: ``applied``, ``failed`` or\n  ``skipped`` (not applied, with the cause; the next approval tries only these) or\n  ``unchanged`` (nothing to set). The draft is ``approved`` once every item is applied or\n  unchanged; until then ``apply_error`` lists what applied and what didn't.\n\n``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why\nits last approval didn't apply (it stays approvable)."
       },
       "IssueSuggestionRunIn": {
         "properties": {
@@ -10603,6 +10676,16 @@
                 "type": "null"
               }
             ]
+          },
+          "priority_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssuePriorityRunOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -10611,7 +10694,7 @@
           "run"
         ],
         "title": "IssueSuggestionsOut",
-        "description": "Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked\nfor."
+        "description": "Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked\nfor, ``priority_run`` the latest priority ask when a batch ``scope`` was."
       },
       "IssueTargetBody": {
         "properties": {

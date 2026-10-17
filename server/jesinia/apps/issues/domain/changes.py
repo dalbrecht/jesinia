@@ -812,11 +812,13 @@ def approval_batch(suggestion: Suggestion, duplicate_of_id: int | None = None) -
 def _priority_batch(suggestion: Suggestion) -> ChangeBatch:
     """Set each item's priority, as the draft was made against the label it had: filling a gap
     only while it is still missing, replacing a value only while it is still that one. An item
-    without a value to set, or already at it, changes nothing."""
+    without a value to set, already at it, or applied by an earlier approval (its outcome),
+    changes nothing."""
     changes: dict[Target, list[IssueChange]] = {}
     for item in cast(list[dict[str, object]], suggestion.payload["items"]):
         value, current = item["priority"], item["current"]
-        if value is None or value == current:
+        outcome = cast(dict[str, object] | None, item.get("outcome"))
+        if value is None or value == current or (outcome and outcome["state"] == "applied"):
             continue
         target = Existing(str(item["repo"]), cast(int, item["n"]))
         guard = (

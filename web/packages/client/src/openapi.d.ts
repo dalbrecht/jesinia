@@ -1190,7 +1190,8 @@ export interface paths {
         /**
          * Get Suggestions
          * @description Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
-         *     repo, or all, oldest first and at most ``limit``. ``state`` may repeat (default: the
+         *     repo, one batch ``scope`` (with its latest priority ask), or all, oldest first and at
+         *     most ``limit``. ``state`` may repeat (default: the
          *     open ones, ``draft`` and ``edited``).
          */
         get: operations["get_suggestions_api_issues_suggestions_get"];
@@ -1235,10 +1236,12 @@ export interface paths {
         put?: never;
         /**
          * Suggest Priority
-         * @description Ask the agent to prioritise these cached open issues: one draft (``kind``
-         *     ``priority``, ``scope`` the batch) with a priority, a rank and a reason per issue. The
-         *     answer takes as long as the agent does. Approving it (``/suggestions/{id}/approve``)
-         *     sets the priorities.
+         * @description Ask the agent to prioritise these cached open issues. The ask runs in the background
+         *     (the request never waits for the agent); poll ``GET /suggestions?scope=`` with the
+         *     answer's ``scope`` (its ``priority_run``). When it is ``done`` there is one draft
+         *     (``kind`` ``priority``, ``scope`` the batch) with a priority, a rank and a reason per
+         *     issue; approving it (``/suggestions/{id}/approve``) sets the priorities. Asking for a
+         *     batch that is already being asked returns that run.
          */
         post: operations["suggest_priority_api_issues_suggestions_priority_post"];
         delete?: never;
@@ -2184,6 +2187,30 @@ export interface components {
             /** Commit Id */
             commit_id: string | null;
         };
+        /**
+         * IssuePriorityRunOut
+         * @description A priority ask for a batch of issues: ``scope`` names the batch, ``status`` is
+         *     ``running``, ``done`` (``suggestion_id`` is the draft), ``waiting`` (no agent runner; ask
+         *     again) or ``failed`` (``cause``).
+         */
+        IssuePriorityRunOut: {
+            /** Scope */
+            scope: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "done" | "waiting" | "failed";
+            /** Cause */
+            cause: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Suggestion Id */
+            suggestion_id: string | null;
+        };
         /** IssueRefIn */
         IssueRefIn: {
             /** Repo */
@@ -2266,7 +2293,11 @@ export interface components {
          *       ``agent-ready``; else what ``agent-ready`` still lacks);
          *     - ``priority`` (about a batch, so ``scope``): ``{items: [{repo, n, priority, current, rank,
          *       reason}]}`` in rank order; ``priority`` is the schema value to set (``null``: none), and
-         *       ``current`` the priority the issue had, which approving applies against.
+         *       ``current`` the priority the issue had, which approving applies against. After an
+         *       approval each item also has ``outcome: {state, cause}``: ``applied``, ``failed`` or
+         *       ``skipped`` (not applied, with the cause; the next approval tries only these) or
+         *       ``unchanged`` (nothing to set). The draft is ``approved`` once every item is applied or
+         *       unchanged; until then ``apply_error`` lists what applied and what didn't.
          *
          *     ``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why
          *     its last approval didn't apply (it stays approvable).
@@ -2360,12 +2391,13 @@ export interface components {
         /**
          * IssueSuggestionsOut
          * @description Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked
-         *     for.
+         *     for, ``priority_run`` the latest priority ask when a batch ``scope`` was.
          */
         IssueSuggestionsOut: {
             /** Suggestions */
             suggestions: components["schemas"]["IssueSuggestionOut"][];
             run: components["schemas"]["IssueSuggestionRunOut"] | null;
+            priority_run?: components["schemas"]["IssuePriorityRunOut"] | null;
         };
         /**
          * IssueTargetBody
@@ -7422,6 +7454,7 @@ export interface operations {
                 n?: number | null;
                 state?: string[] | null;
                 kind?: string | null;
+                scope?: string | null;
                 limit?: number;
             };
             header?: never;
@@ -7593,12 +7626,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IssueSuggestionOut"];
+                    "application/json": components["schemas"]["IssuePriorityRunOut"];
                 };
             };
             /** @description Bad Request */

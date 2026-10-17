@@ -56,7 +56,12 @@ from jesinia.apps.issues.domain.schema import (
     Canonical,
     LabelSchema,
 )
-from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionKind, SuggestionState
+from jesinia.apps.issues.domain.suggestions import (
+    PriorityRun,
+    Suggestion,
+    SuggestionKind,
+    SuggestionState,
+)
 from jesinia.apps.issues.domain.triage import IssueRow, IssueView
 from jesinia.services.github.domain.issue import (
     COMMENT_BODY_LIMIT,
@@ -452,7 +457,11 @@ class IssueSuggestionOut(BaseModel):
       ``agent-ready``; else what ``agent-ready`` still lacks);
     - ``priority`` (about a batch, so ``scope``): ``{items: [{repo, n, priority, current, rank,
       reason}]}`` in rank order; ``priority`` is the schema value to set (``null``: none), and
-      ``current`` the priority the issue had, which approving applies against.
+      ``current`` the priority the issue had, which approving applies against. After an
+      approval each item also has ``outcome: {state, cause}``: ``applied``, ``failed`` or
+      ``skipped`` (not applied, with the cause; the next approval tries only these) or
+      ``unchanged`` (nothing to set). The draft is ``approved`` once every item is applied or
+      unchanged; until then ``apply_error`` lists what applied and what didn't.
 
     ``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why
     its last approval didn't apply (it stays approvable)."""
@@ -506,10 +515,11 @@ class IssueSuggestionRunOut(BaseModel):
 
 class IssueSuggestionsOut(BaseModel):
     """Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked
-    for."""
+    for, ``priority_run`` the latest priority ask when a batch ``scope`` was."""
 
     suggestions: list[IssueSuggestionOut]
     run: IssueSuggestionRunOut | None
+    priority_run: IssuePriorityRunOut | None = None
 
 
 class IssueSuggestionEditIn(BaseModel):
@@ -530,6 +540,28 @@ class IssueSuggestionRunIn(BaseModel):
     background)."""
 
     refs: list[IssueRefIn] = Field(min_length=1, max_length=MAX_BACKLOG_REFS)
+
+
+class IssuePriorityRunOut(BaseModel):
+    """A priority ask for a batch of issues: ``scope`` names the batch, ``status`` is
+    ``running``, ``done`` (``suggestion_id`` is the draft), ``waiting`` (no agent runner; ask
+    again) or ``failed`` (``cause``)."""
+
+    scope: str
+    status: Literal["running", "done", "waiting", "failed"]
+    cause: str | None
+    updated_at: datetime
+    suggestion_id: str | None
+
+    @classmethod
+    def of(cls, run: PriorityRun) -> IssuePriorityRunOut:
+        return cls(
+            scope=run.scope,
+            status=run.status,
+            cause=run.cause,
+            updated_at=run.updated_at,
+            suggestion_id=run.suggestion_id,
+        )
 
 
 class IssueSuggestionRunsOut(BaseModel):

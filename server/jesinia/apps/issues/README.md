@@ -34,7 +34,9 @@ Task 7 adds the priority and duplicate actions:
 
 - a priority ask over a batch of issues becomes one draft (`kind` `priority`, `scope` the batch)
   with a priority, a rank and a reason per issue; approving it sets each priority through the
-  engine, every change guarded by the label the draft saw. Turning the order into a queue is
+  engine, every change guarded by the label the draft saw. Each item records its outcome (`applied`,
+  `failed`, `skipped` or `unchanged`, with the cause); approving again tries only the items not
+  applied, and the draft is `approved` once every item is. Turning the order into a queue is
   Task 9's;
 - accepting a duplicate closes it as a duplicate of the original (by its database id) and
   comments `Duplicate of owner/repo#n`, always fully qualified.
@@ -154,9 +156,11 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     default is the open ones. With `repo` and `n` the answer carries the issue's latest run.
   - `POST /suggestions/run` with `{refs: [{repo, n}]}`: run suggestions for up to 100 cached
     issues now, in the background (202).
-  - `POST /suggestions/priority` with `{refs: [{repo, n}]}`: ask the agent to prioritise those
-    open cached issues; answers with the one priority draft (it takes as long as the agent).
-    An agent that fails or is away is a 502 or 503, and nothing is stored.
+  - `POST /suggestions/priority` with `{refs: [{repo, n}]}`: ask the agent, in the background
+    (202), to prioritise those open cached issues. The answer names the batch's `scope`; poll
+    `GET /suggestions?scope=` for its `priority_run` (`running`, `done`, `waiting` or `failed`
+    with a cause; kept until the server restarts) and the draft. Asking for a batch already being
+    asked returns that run.
   - `PATCH /suggestions/{id}` with `{payload, reason?}` edits a draft, checked against the
     repo's schema. `POST /suggestions/{id}/dismiss` dismisses it. Neither touches GitHub.
   - `POST /suggestions/{id}/approve` applies a draft to GitHub at once and answers with the

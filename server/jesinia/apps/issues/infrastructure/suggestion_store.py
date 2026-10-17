@@ -101,6 +101,9 @@ class SqliteSuggestionStore:
         if filters.kind is not None:
             where.append("kind = ?")
             params.append(filters.kind)
+        if filters.scope is not None:
+            where.append("scope = ?")
+            params.append(filters.scope)
         clause = f"WHERE {' AND '.join(where)} " if where else ""
         query = f"SELECT {_COLUMNS}, rowid FROM suggestions {clause}"
         if limit is not None:

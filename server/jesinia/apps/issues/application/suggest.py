@@ -53,6 +53,8 @@ from jesinia.apps.issues.domain.suggestions import (
     InvalidSuggestionFilterError,
     PriorityIssue,
     PriorityReply,
+    PriorityRun,
+    PriorityRunStatus,
     Suggestion,
     SuggestionFilters,
     SuggestionJobFailedError,
@@ -204,6 +206,8 @@ class SuggestService:
         self._tick = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
         self._drive_wanted = False
+        self._priority_tasks: set[asyncio.Task[None]] = set()
+        self._priority_runs: dict[str, PriorityRun] = {}
 
     # Queueing ---------------------------------------------------------------------------
 
@@ -264,13 +268,14 @@ class SuggestService:
             log.exception("issues: an on-demand suggestion drive failed")
 
     async def drain(self) -> None:
-        """Wait for the on-demand drives started so far."""
-        while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        """Wait for the on-demand drives and priority asks started so far."""
+        while self._tasks or self._priority_tasks:
+            await asyncio.gather(*self._tasks, *self._priority_tasks, return_exceptions=True)
 
     async def stop(self) -> None:
-        """Cancel the on-demand drives (an interrupted run is queued again at next start)."""
-        for task in list(self._tasks):
+        """Cancel the on-demand drives (an interrupted run is queued again at next start) and
+        the priority asks (asked again by the author)."""
+        for task in [*self._tasks, *self._priority_tasks]:
             task.cancel()
         await self.drain()
 
@@ -446,6 +451,59 @@ class SuggestService:
         self._store.replace_drafts(issue.repo, n, fresh)
         return self._store.suggestions(SuggestionFilters(issue.repo, n))
 
+    async def start_priority(self, refs: Sequence[Ref]) -> PriorityRun:
+        """Start the priority ask for ``refs`` in the background (ruling IR43) and return its
+        run at once; ``priority_run`` tells how it goes. An ask for the batch already running
+        is returned as it is, so concurrent asks for the same issues call the agent once.
+
+        Raises:
+            InvalidSuggestionFilterError, InvalidRepoError, IssueNotCachedError: ``refs`` are
+                refused as ``suggest_priority`` does; nothing starts.
+        """
+        asked = self._priority_asked(refs)
+        scope = priority_scope([(c.issue.repo, c.issue.number) for c in asked])
+        running = self._priority_runs.get(scope)
+        if running is not None and running.status == "running":
+            return running
+        run = PriorityRun(scope, "running", None, self._clock())
+        self._priority_runs[scope] = run
+        task = asyncio.create_task(self._priority_job(scope, refs))
+        self._priority_tasks.add(task)
+        task.add_done_callback(self._priority_tasks.discard)
+        return run
+
+    def priority_run(self, scope: str) -> PriorityRun | None:
+        """The latest priority ask for ``scope`` since the server started."""
+        return self._priority_runs.get(scope)
+
+    async def _priority_job(self, scope: str, refs: Sequence[Ref]) -> None:
+        status: PriorityRunStatus
+        cause: str | None = None
+        made: str | None = None
+        try:
+            made = (await self.suggest_priority(refs)).id
+            status = "done"
+        except SuggestionRunnerUnavailableError as exc:
+            status, cause = "waiting", str(exc)
+        except SuggestionRunError as exc:
+            log.warning("issues: the priority ask for %s failed: %s", scope, exc)
+            status, cause = "failed", f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # error isolation: a background ask never raises
+            log.exception("issues: the priority ask for %s failed unexpectedly", scope)
+            status, cause = "failed", f"unexpected {type(exc).__name__} (see the server log)"
+        self._priority_runs[scope] = PriorityRun(scope, status, cause, self._clock(), made)
+
+    def _priority_asked(self, refs: Sequence[Ref]) -> list[CachedIssue]:
+        if not refs or len(refs) > MAX_BACKLOG_REFS:
+            raise InvalidSuggestionFilterError(
+                f"ask for the priority of 1 to {MAX_BACKLOG_REFS} issues at a time"
+            )
+        found = [self._cached(repo, n) for repo, n in dict.fromkeys(refs)]
+        asked = [c for c in found if c.issue.state == "open"]
+        if not asked:
+            raise InvalidSuggestionFilterError("all of those issues are closed; nothing to rank")
+        return asked
+
     async def suggest_priority(self, refs: Sequence[Ref]) -> Suggestion:
         """Ask the agent to prioritise ``refs`` (open cached issues) and store its answer as
         one draft about the batch: a priority per issue and one order with a reason each (ruling
@@ -461,14 +519,7 @@ class SuggestService:
             SuggestionJobFailedError: an invalid reply after one retry, a reply that ranks
                 none of the issues, a timeout or a failed turn (the cause is kept).
         """
-        if not refs or len(refs) > MAX_BACKLOG_REFS:
-            raise InvalidSuggestionFilterError(
-                f"ask for the priority of 1 to {MAX_BACKLOG_REFS} issues at a time"
-            )
-        found = [self._cached(repo, n) for repo, n in dict.fromkeys(refs)]
-        asked = [c for c in found if c.issue.state == "open"]
-        if not asked:
-            raise InvalidSuggestionFilterError("all of those issues are closed; nothing to rank")
+        asked = self._priority_asked(refs)
         asker, runner = self._asker(), self._runner()
         if asker is None or runner is None:
             raise SuggestionRunnerUnavailableError(

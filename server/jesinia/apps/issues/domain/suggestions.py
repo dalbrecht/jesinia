@@ -79,6 +79,8 @@ GAP_MAX = 200
 GAPS_MAX = 10
 DUPLICATES_MAX = 5
 SIMILARITY_DIGITS = 3
+# A priority draft's apply_error names its items, so it may run longer than one cause.
+APPLY_ERROR_MAX_PRIORITY = 4000
 
 
 class SuggestionDomainError(ValueError):
@@ -190,12 +192,13 @@ class Draft:
 @dataclass(frozen=True)
 class SuggestionFilters:
     """Which suggestions to list: one issue (``repo`` and ``n``), one repo, or all; ``states``
-    (all of them when empty); one ``kind``."""
+    (all of them when empty); one ``kind``; one batch ``scope`` (a draft about several issues)."""
 
     repo: str | None = None
     n: int | None = None
     states: tuple[SuggestionState, ...] = OPEN_STATES
     kind: SuggestionKind | None = None
+    scope: str | None = None
 
     def __post_init__(self) -> None:
         if self.repo is not None:
@@ -509,6 +512,78 @@ def priority_draft(
     return Draft("priority", {"items": items}, f"Priority and order for {len(items)} issues")
 
 
+PriorityRunStatus = Literal["running", "done", "waiting", "failed"]
+ItemState = Literal["applied", "failed", "skipped", "unchanged"]
+# What counts as finished when a priority draft is approved: applied, or nothing to set.
+_ITEM_DONE: tuple[ItemState, ...] = ("applied", "unchanged")
+
+
+@dataclass(frozen=True)
+class PriorityRun:
+    """A priority ask in the background (ruling IR43), keyed by its draft's ``scope``:
+    ``running``, ``done`` (``suggestion_id`` is the draft), ``waiting`` (no runner) or
+    ``failed`` (``cause``). Kept in memory: a restart forgets it, the stored draft stays."""
+
+    scope: str
+    status: PriorityRunStatus
+    cause: str | None
+    updated_at: datetime
+    suggestion_id: str | None = None
+
+
+def _item_key(item: Mapping[str, object]) -> tuple[str, int]:
+    return (str(item["repo"]).casefold(), cast(int, item["n"]))
+
+
+def _item_name(item: Mapping[str, object]) -> str:
+    return f"{item['repo']}#{item['n']}"
+
+
+def priority_settled(
+    suggestion: Suggestion,
+    outcomes: Mapping[tuple[str, int], tuple[ItemState, str | None]],
+    now: datetime,
+) -> Suggestion:
+    """``suggestion`` (a priority draft) after an approval attempt, with every item's outcome
+    recorded in its payload as ``outcome: {state, cause}``:
+
+    - ``applied``: set (or already so on GitHub); never attempted again;
+    - ``failed`` / ``skipped``: not applied, with GitHub's or the engine's cause; the next
+      approval tries only these;
+    - ``unchanged``: nothing to set (no priority to give, or it already had it).
+
+    ``outcomes`` (keyed ``(repo.casefold(), n)``) are this attempt's; an item without one keeps
+    its earlier outcome. The draft is ``approved`` once every item is applied or unchanged;
+    otherwise it stays open, and its ``apply_error`` lists what applied and what didn't."""
+    items: list[dict[str, object]] = []
+    for item in cast(list[dict[str, object]], suggestion.payload["items"]):
+        earlier = cast(dict[str, object] | None, item.get("outcome"))
+        found = outcomes.get(_item_key(item))
+        if found is not None:
+            state, cause = found
+        elif earlier is not None:
+            state, cause = cast(ItemState, earlier["state"]), cast(str | None, earlier["cause"])
+        elif item["priority"] is None or item["priority"] == item["current"]:
+            state, cause = "unchanged", "nothing to set"
+        else:
+            state, cause = "failed", "it was not attempted"
+        items.append({**item, "outcome": {"state": state, "cause": cause}})
+    recorded = replace(suggestion, payload={**suggestion.payload, "items": items})
+    states = [cast(dict[str, ItemState], item["outcome"])["state"] for item in items]
+    if all(state in _ITEM_DONE for state in states):
+        return approved(recorded, now)
+    applied = [_item_name(i) for i, st in zip(items, states, strict=True) if st == "applied"]
+    missed = [
+        f"{_item_name(i)} ({cast(dict[str, str], i['outcome'])['cause']})"
+        for i, st in zip(items, states, strict=True)
+        if st in ("failed", "skipped")
+    ]
+    told = (f"Applied: {', '.join(applied)}. " if applied else "") + (
+        f"Not applied: {'; '.join(missed)}"
+    )
+    return apply_failed(recorded, told, now, APPLY_ERROR_MAX_PRIORITY)
+
+
 # Reruns, edits and dismissals ----------------------------------------------------------------
 
 
@@ -588,10 +663,12 @@ def approved(suggestion: Suggestion, now: datetime) -> Suggestion:
     return replace(suggestion, state="approved", updated_at=now, apply_error=None)
 
 
-def apply_failed(suggestion: Suggestion, cause: str, now: datetime) -> Suggestion:
+def apply_failed(
+    suggestion: Suggestion, cause: str, now: datetime, limit: int = 1000
+) -> Suggestion:
     """``suggestion`` after an approval whose apply failed: still open (approvable again), with
-    the cause."""
-    return replace(suggestion, updated_at=now, apply_error=one_line(cause, 1000))
+    the cause (at most ``limit`` characters)."""
+    return replace(suggestion, updated_at=now, apply_error=one_line(cause, limit))
 
 
 def _require_open(suggestion: Suggestion) -> None:

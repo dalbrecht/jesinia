@@ -29,6 +29,7 @@ from jesinia.apps.issues.api.schemas import (
     REPO_MAX,
     ApplyBatchOut,
     IssueDetailOut,
+    IssuePriorityRunOut,
     IssuesErrorOut,
     IssuesRepoIn,
     IssuesRepoOut,
@@ -363,24 +364,29 @@ def build_router(host: IssuesHost) -> APIRouter:
         n: Annotated[int | None, Query(ge=1, le=999_999_999)] = None,
         state: Annotated[list[str] | None, Query(max_length=4)] = None,
         kind: Annotated[str | None, Query(max_length=32)] = None,
+        scope: Annotated[str | None, Query(min_length=1, max_length=8000)] = None,
         limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     ) -> Response:
         """Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
-        repo, or all, oldest first and at most ``limit``. ``state`` may repeat (default: the
+        repo, one batch ``scope`` (with its latest priority ask), or all, oldest first and at
+        most ``limit``. ``state`` may repeat (default: the
         open ones, ``draft`` and ``edited``)."""
 
         async def run() -> IssueSuggestionsOut:
             states = OPEN_STATES if not state else tuple(parse_state(s) for s in state)
-            filters = SuggestionFilters(repo, n, states, None if kind is None else parse_kind(kind))
+            parsed = None if kind is None else parse_kind(kind)
+            filters = SuggestionFilters(repo, n, states, parsed, scope)
             latest = None
             if repo is not None and n is not None:
                 found = host.suggest.run_state(repo, n)
                 latest = None if found is None else IssueSuggestionRunOut.of(found)
+            asked = None if scope is None else host.suggest.priority_run(scope)
             return IssueSuggestionsOut(
                 suggestions=[
                     IssueSuggestionOut.of(s) for s in host.suggest.suggestions(filters, limit)
                 ],
                 run=latest,
+                priority_run=None if asked is None else IssuePriorityRunOut.of(asked),
             )
 
         return await _respond(run, host.clock)
@@ -402,18 +408,25 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run, host.clock))
 
-    @r.post("/suggestions/priority", response_model=IssueSuggestionOut)
+    @r.post(
+        "/suggestions/priority",
+        response_model=IssuePriorityRunOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
     async def suggest_priority(
         body: IssueSuggestionRunIn, idem: IdempotentCall = keyed
     ) -> Response:
-        """Ask the agent to prioritise these cached open issues: one draft (``kind``
-        ``priority``, ``scope`` the batch) with a priority, a rank and a reason per issue. The
-        answer takes as long as the agent does. Approving it (``/suggestions/{id}/approve``)
-        sets the priorities."""
+        """Ask the agent to prioritise these cached open issues. The ask runs in the background
+        (the request never waits for the agent); poll ``GET /suggestions?scope=`` with the
+        answer's ``scope`` (its ``priority_run``). When it is ``done`` there is one draft
+        (``kind`` ``priority``, ``scope`` the batch) with a priority, a rank and a reason per
+        issue; approving it (``/suggestions/{id}/approve``) sets the priorities. Asking for a
+        batch that is already being asked returns that run."""
 
-        async def run() -> IssueSuggestionOut:
-            drafted = await host.suggest.suggest_priority([(r.repo, r.n) for r in body.refs])
-            return IssueSuggestionOut.of(drafted)
+        async def run() -> Response:
+            started = await host.suggest.start_priority([(r.repo, r.n) for r in body.refs])
+            out = IssuePriorityRunOut.of(started)
+            return JSONResponse(jsonable_encoder(out), status_code=status.HTTP_202_ACCEPTED)
 
         return await idem.run(lambda: _respond(run, host.clock))
 
