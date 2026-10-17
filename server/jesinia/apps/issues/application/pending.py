@@ -333,26 +333,11 @@ class ApplyService:
                 raise SuggestionNotFoundError(f"no suggestion {suggestion_id}")
             if found.state not in OPEN_STATES:
                 raise SuggestionStateError(f"suggestion {found.id} is {found.state} already")
-            if found.repo is None or found.n is None:
-                raise InvalidChangeError(f"a {found.kind} suggestion can't be approved yet")
-            cached = _cached(self._cache, found.repo, found.n)
-            issue = cached.issue
-            if not premise_holds(
-                found,
-                cached.triage,
-                has_parent=issue.parent is not None,
-                is_open=issue.state == "open",
-            ):
-                raise SuggestionStaleError(
-                    f"suggestion {found.id} no longer fits {issue.repo}#{issue.number} as it is "
-                    "now; nothing was applied"
-                )
-            duplicate_id = None
-            if found.kind == "duplicate":
-                _, duplicate_id = original(
-                    self._cache, str(found.payload["repo"]), int(str(found.payload["n"]))
-                )
-            batch = approval_batch(found, duplicate_id)
+            if found.kind == "priority":
+                # About a batch of issues: each change is guarded by the label the draft saw.
+                batch = approval_batch(found)
+            else:
+                batch = self._issue_batch(found)
             if not self._suggestions.claim(found.id, self._clock()):
                 raise SuggestionStateError(f"suggestion {found.id} is being approved already")
             try:
@@ -360,12 +345,42 @@ class ApplyService:
             finally:
                 self._release(found.id)
             conflict = next((r for r in applied.result.results if r.is_conflict), None)
-            if conflict is not None:
-                # The fresh read contradicts the premise (I1): nothing of it was written.
+            if conflict is not None and found.kind != "priority":
+                # The fresh read contradicts the premise (I1): nothing of it was written. (A
+                # priority draft covers several issues: those that still fit applied, and the
+                # approval's failure names the rest.)
                 raise SuggestionStaleError(
                     f"suggestion {found.id} no longer fits: {conflict.cause}"
                 )
             return Approval(settled or found, applied)
+
+    def _issue_batch(self, found: Suggestion) -> ChangeBatch:
+        """The batch approving a suggestion about one issue makes, after its premise check.
+
+        Raises:
+            IssueNotCachedError, SuggestionStaleError, DuplicateNotCachedError,
+            InvalidChangeError: see ``approve``.
+        """
+        if found.repo is None or found.n is None:
+            raise InvalidChangeError(f"a {found.kind} suggestion can't be approved yet")
+        cached = _cached(self._cache, found.repo, found.n)
+        issue = cached.issue
+        if not premise_holds(
+            found,
+            cached.triage,
+            has_parent=issue.parent is not None,
+            is_open=issue.state == "open",
+        ):
+            raise SuggestionStaleError(
+                f"suggestion {found.id} no longer fits {issue.repo}#{issue.number} as it is "
+                "now; nothing was applied"
+            )
+        duplicate_id = None
+        if found.kind == "duplicate":
+            _, duplicate_id = original(
+                self._cache, str(found.payload["repo"]), int(str(found.payload["n"]))
+            )
+        return approval_batch(found, duplicate_id)
 
     def _release(self, suggestion_id: str) -> None:
         """Release a claim, best effort: a failure here must not hide the apply's own outcome

@@ -302,7 +302,7 @@ def test_approval_batches_by_kind() -> None:
         {E1: [Close("duplicate", 1002, E2, "Duplicate of acme/web#2", only_if_open=True)]}
     )
     with pytest.raises(InvalidChangeError):
-        approval_batch(_suggestion("priority", {}))
+        approval_batch(_suggestion("group", {}))
     with pytest.raises(InvalidChangeError):
         approval_batch(_suggestion("group", {}, repo=None))
 

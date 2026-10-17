@@ -449,7 +449,10 @@ class IssueSuggestionOut(BaseModel):
       schema yet, which approving adds);
     - ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);
     - ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be
-      ``agent-ready``; else what ``agent-ready`` still lacks).
+      ``agent-ready``; else what ``agent-ready`` still lacks);
+    - ``priority`` (about a batch, so ``scope``): ``{items: [{repo, n, priority, current, rank,
+      reason}]}`` in rank order; ``priority`` is the schema value to set (``null``: none), and
+      ``current`` the priority the issue had, which approving applies against.
 
     ``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why
     its last approval didn't apply (it stays approvable)."""

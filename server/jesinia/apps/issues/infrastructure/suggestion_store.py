@@ -22,6 +22,7 @@ from jesinia.apps.issues.domain.suggestions import (
     ISSUE_KINDS,
     Suggestion,
     SuggestionFilters,
+    SuggestionKind,
     parse_kind,
     parse_state,
     payload_json,
@@ -123,28 +124,41 @@ class SqliteSuggestionStore:
                 f"AND claimed_at IS NULL AND kind IN ({kinds})",
                 (repo, n, *ISSUE_KINDS),
             )
-            self._conn.executemany(
-                f"INSERT INTO suggestions ({_COLUMNS}) "
-                f"VALUES ({', '.join('?' for _ in range(13))})",
-                [
-                    (
-                        s.id,
-                        s.repo,
-                        s.n,
-                        s.scope,
-                        s.kind,
-                        payload_json(s.payload),
-                        s.reason,
-                        s.state,
-                        _time(s.created_at),
-                        _time(s.updated_at),
-                        _origin_json(s.origin),
-                        s.basis,
-                        s.apply_error,
-                    )
-                    for s in drafts
-                ],
+            self._insert(drafts)
+
+    def replace_scope_drafts(
+        self, scope: str, kind: SuggestionKind, drafts: Sequence[Suggestion]
+    ) -> None:
+        with transaction(self._conn):
+            self._conn.execute(
+                "DELETE FROM suggestions WHERE scope = ? AND kind = ? AND repo IS NULL "
+                "AND state = 'draft' AND claimed_at IS NULL",
+                (scope, kind),
             )
+            self._insert(drafts)
+
+    def _insert(self, drafts: Sequence[Suggestion]) -> None:
+        self._conn.executemany(
+            f"INSERT INTO suggestions ({_COLUMNS}) VALUES ({', '.join('?' for _ in range(13))})",
+            [
+                (
+                    s.id,
+                    s.repo,
+                    s.n,
+                    s.scope,
+                    s.kind,
+                    payload_json(s.payload),
+                    s.reason,
+                    s.state,
+                    _time(s.created_at),
+                    _time(s.updated_at),
+                    _origin_json(s.origin),
+                    s.basis,
+                    s.apply_error,
+                )
+                for s in drafts
+            ],
+        )
 
     def save(self, suggestion: Suggestion) -> None:
         self._conn.execute(

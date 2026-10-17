@@ -773,6 +773,8 @@ def approval_batch(suggestion: Suggestion, duplicate_of_id: int | None = None) -
     Raises:
         InvalidChangeError: not a per-issue suggestion, or a duplicate without its id.
     """
+    if suggestion.kind == "priority":
+        return _priority_batch(suggestion)
     if suggestion.repo is None or suggestion.n is None:
         raise InvalidChangeError(f"a {suggestion.kind} suggestion can't be approved yet")
     target = Existing(suggestion.repo, suggestion.n)
@@ -805,6 +807,25 @@ def approval_batch(suggestion: Suggestion, duplicate_of_id: int | None = None) -
     if kind == "readiness_gap":
         return ChangeBatch()
     raise InvalidChangeError(f"a {kind} suggestion can't be approved yet")
+
+
+def _priority_batch(suggestion: Suggestion) -> ChangeBatch:
+    """Set each item's priority, as the draft was made against the label it had: filling a gap
+    only while it is still missing, replacing a value only while it is still that one. An item
+    without a value to set, or already at it, changes nothing."""
+    changes: dict[Target, list[IssueChange]] = {}
+    for item in cast(list[dict[str, object]], suggestion.payload["items"]):
+        value, current = item["priority"], item["current"]
+        if value is None or value == current:
+            continue
+        target = Existing(str(item["repo"]), cast(int, item["n"]))
+        guard = (
+            SetDimension("priority", str(value), only_if_missing=True)
+            if current is None
+            else SetDimension("priority", str(value), only_if_value=str(current))
+        )
+        changes[target] = [guard]
+    return ChangeBatch.of(changes)
 
 
 # JSON ---------------------------------------------------------------------------------------

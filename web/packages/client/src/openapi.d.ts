@@ -1224,6 +1224,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/issues/suggestions/priority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suggest Priority
+         * @description Ask the agent to prioritise these cached open issues: one draft (``kind``
+         *     ``priority``, ``scope`` the batch) with a priority, a rank and a reason per issue. The
+         *     answer takes as long as the agent does. Approving it (``/suggestions/{id}/approve``)
+         *     sets the priorities.
+         */
+        post: operations["suggest_priority_api_issues_suggestions_priority_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/issues/suggestions/{suggestion_id}": {
         parameters: {
             query?: never;
@@ -2240,7 +2263,10 @@ export interface components {
          *       schema yet, which approving adds);
          *     - ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);
          *     - ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be
-         *       ``agent-ready``; else what ``agent-ready`` still lacks).
+         *       ``agent-ready``; else what ``agent-ready`` still lacks);
+         *     - ``priority`` (about a batch, so ``scope``): ``{items: [{repo, n, priority, current, rank,
+         *       reason}]}`` in rank order; ``priority`` is the schema value to set (``null``: none), and
+         *       ``current`` the priority the issue had, which approving applies against.
          *
          *     ``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why
          *     its last approval didn't apply (it stays approvable).
@@ -7492,6 +7518,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IssueSuggestionRunsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    suggest_priority_api_issues_suggestions_priority_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssueSuggestionRunIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueSuggestionOut"];
                 };
             };
             /** @description Bad Request */

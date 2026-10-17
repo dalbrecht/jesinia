@@ -30,6 +30,15 @@ Task 6 adds the apply engine and the pending-changes tray:
 - every other GitHub-changing action stages in the tray until Apply sends it as one batch;
 - every batch is kept with its result, step by step, so Retry runs only what didn't apply.
 
+Task 7 adds the priority and duplicate actions:
+
+- a priority ask over a batch of issues becomes one draft (`kind` `priority`, `scope` the batch)
+  with a priority, a rank and a reason per issue; approving it sets each priority through the
+  engine, every change guarded by the label the draft saw. Turning the order into a queue is
+  Task 9's;
+- accepting a duplicate closes it as a duplicate of the original (by its database id) and
+  comments `Duplicate of owner/repo#n`, always fully qualified.
+
 Epics, queues and themes come in PR 3, and the web app in PR 4.
 
 ## Layout
@@ -145,6 +154,9 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     default is the open ones. With `repo` and `n` the answer carries the issue's latest run.
   - `POST /suggestions/run` with `{refs: [{repo, n}]}`: run suggestions for up to 100 cached
     issues now, in the background (202).
+  - `POST /suggestions/priority` with `{refs: [{repo, n}]}`: ask the agent to prioritise those
+    open cached issues; answers with the one priority draft (it takes as long as the agent).
+    An agent that fails or is away is a 502 or 503, and nothing is stored.
   - `PATCH /suggestions/{id}` with `{payload, reason?}` edits a draft, checked against the
     repo's schema. `POST /suggestions/{id}/dismiss` dismisses it. Neither touches GitHub.
   - `POST /suggestions/{id}/approve` applies a draft to GitHub at once and answers with the

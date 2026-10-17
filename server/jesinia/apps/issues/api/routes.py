@@ -78,6 +78,8 @@ from jesinia.apps.issues.domain.suggestions import (
     SuggestionDomainError,
     SuggestionFilters,
     SuggestionNotFoundError,
+    SuggestionRunError,
+    SuggestionRunnerUnavailableError,
     SuggestionStaleError,
     SuggestionStateError,
     parse_kind,
@@ -142,6 +144,9 @@ _STATUS: dict[type[Exception], int] = {
     SuggestionStateError: status.HTTP_409_CONFLICT,
     SuggestionStaleError: status.HTTP_409_CONFLICT,
     DuplicateNotCachedError: status.HTTP_409_CONFLICT,
+    # The agent, not the request, failed or is away: suggestions wait, manual triage carries on.
+    SuggestionRunnerUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+    SuggestionRunError: status.HTTP_502_BAD_GATEWAY,
     PendingNotFoundError: status.HTTP_404_NOT_FOUND,
     NothingPendingError: status.HTTP_409_CONFLICT,
     BatchNotFoundError: status.HTTP_404_NOT_FOUND,
@@ -163,6 +168,7 @@ _TYPED = (
     ChangeDomainError,
     LabelPlanError,
     SuggestionDomainError,
+    SuggestionRunError,
     InvalidSettingsSchemaError,
     GitHubError,
     GitHubReferenceError,
@@ -393,6 +399,21 @@ def build_router(host: IssuesHost) -> APIRouter:
             runs = await host.suggest.suggest_backlog([(ref.repo, ref.n) for ref in body.refs])
             out = IssueSuggestionRunsOut(runs=[IssueSuggestionRunOut.of(r) for r in runs])
             return JSONResponse(jsonable_encoder(out), status_code=status.HTTP_202_ACCEPTED)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post("/suggestions/priority", response_model=IssueSuggestionOut)
+    async def suggest_priority(
+        body: IssueSuggestionRunIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Ask the agent to prioritise these cached open issues: one draft (``kind``
+        ``priority``, ``scope`` the batch) with a priority, a rank and a reason per issue. The
+        answer takes as long as the agent does. Approving it (``/suggestions/{id}/approve``)
+        sets the priorities."""
+
+        async def run() -> IssueSuggestionOut:
+            drafted = await host.suggest.suggest_priority([(r.repo, r.n) for r in body.refs])
+            return IssueSuggestionOut.of(drafted)
 
         return await idem.run(lambda: _respond(run, host.clock))
 

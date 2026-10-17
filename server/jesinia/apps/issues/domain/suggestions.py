@@ -418,6 +418,97 @@ def _readiness(
     return []
 
 
+# Priority (Task 7) ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PriorityProposal:
+    repo: str
+    number: int
+    priority: str
+    rank: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class PriorityReply:
+    """A priority reply already valid against ``schemas/priority.json``."""
+
+    items: tuple[PriorityProposal, ...]
+
+    @classmethod
+    def from_json(cls, data: Mapping[str, object]) -> PriorityReply:
+        items = cast(list[dict[str, object]], data["items"])
+        return cls(
+            tuple(
+                PriorityProposal(
+                    str(i["repo"]), cast(int, i["number"]), str(i["priority"]),
+                    cast(int, i["rank"]), str(i["reason"]),
+                )
+                for i in items
+            )
+        )  # fmt: skip
+
+
+@dataclass(frozen=True)
+class PriorityIssue:
+    """An open issue a priority ask is about: ``repo`` as GitHub spells it, the priority label
+    it has now (``current``; ``None`` for none), whether its priority is ``is_conflicted`` (more
+    than one, left to the author) and its repo's ``schema``."""
+
+    repo: str
+    n: int
+    current: str | None
+    is_conflicted: bool
+    schema: LabelSchema
+
+
+def priority_scope(refs: Sequence[tuple[str, int]]) -> str:
+    """The ``scope`` of a priority draft about ``refs``: the batch, sorted and without repeats
+    (ruling IR11), so asking again for the same issues finds the same scope."""
+    return ",".join(sorted({f"{repo.casefold()}#{n}" for repo, n in refs}))
+
+
+def priority_draft(
+    reply: PriorityReply, issues: Mapping[tuple[str, int], PriorityIssue]
+) -> Draft | None:
+    """The draft ``reply`` may produce for the asked ``issues`` (keyed by
+    ``(repo.casefold(), number)``): their order and reasons, and for each the priority value of
+    its repo's schema. Everything else is dropped: issues nobody asked about, repeats, blank
+    reasons. A priority the schema lacks, or for an issue whose priority is conflicted, is kept
+    as ``None`` (the rank still counts, nothing is set). ``None`` when nothing is left.
+
+    The payload is ``{"items": [{repo, n, priority, current, rank, reason}]}`` in rank order,
+    ranks renumbered from 1; ``current`` is the guard an approval applies against."""
+    seen: set[tuple[str, int]] = set()
+    kept: list[PriorityProposal] = []
+    for proposal in sorted(reply.items, key=lambda p: p.rank):
+        key = (proposal.repo.casefold(), proposal.number)
+        if key not in issues or key in seen or not one_line(proposal.reason):
+            continue
+        seen.add(key)
+        kept.append(proposal)
+    if not kept:
+        return None
+    items: list[dict[str, object]] = []
+    for rank, proposal in enumerate(kept, start=1):
+        found = issues[(proposal.repo.casefold(), proposal.number)]
+        value = (
+            None if found.is_conflicted else _canonical(found.schema, PRIORITY, proposal.priority)
+        )
+        items.append(
+            {
+                "repo": found.repo,
+                "n": found.n,
+                "priority": value,
+                "current": found.current,
+                "rank": rank,
+                "reason": one_line(proposal.reason),
+            }
+        )
+    return Draft("priority", {"items": items}, f"Priority and order for {len(items)} issues")
+
+
 # Reruns, edits and dismissals ----------------------------------------------------------------
 
 

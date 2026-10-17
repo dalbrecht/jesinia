@@ -5580,6 +5580,118 @@
         }
       }
     },
+    "/api/issues/suggestions/priority": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Suggest Priority",
+        "description": "Ask the agent to prioritise these cached open issues: one draft (``kind``\n``priority``, ``scope`` the batch) with a priority, a rank and a reason per issue. The\nanswer takes as long as the agent does. Approving it (``/suggestions/{id}/approve``)\nsets the priorities.",
+        "operationId": "suggest_priority_api_issues_suggestions_priority_post",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueSuggestionRunIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueSuggestionOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/suggestions/{suggestion_id}": {
       "patch": {
         "tags": [
@@ -10371,7 +10483,7 @@
           "updated_at"
         ],
         "title": "IssueSuggestionOut",
-        "description": "A suggestion draft. ``repo`` and ``n`` name its issue (``scope`` a draft about several\nissues or a queue, from later tasks). ``payload`` is Jesinia's own JSON, by ``kind``:\n\n- ``label`` and ``new_area``: ``{dimension, value}`` (``new_area``: an area not in the\n  schema yet, which approving adds);\n- ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);\n- ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be\n  ``agent-ready``; else what ``agent-ready`` still lacks).\n\n``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why\nits last approval didn't apply (it stays approvable)."
+        "description": "A suggestion draft. ``repo`` and ``n`` name its issue (``scope`` a draft about several\nissues or a queue, from later tasks). ``payload`` is Jesinia's own JSON, by ``kind``:\n\n- ``label`` and ``new_area``: ``{dimension, value}`` (``new_area``: an area not in the\n  schema yet, which approving adds);\n- ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);\n- ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be\n  ``agent-ready``; else what ``agent-ready`` still lacks);\n- ``priority`` (about a batch, so ``scope``): ``{items: [{repo, n, priority, current, rank,\n  reason}]}`` in rank order; ``priority`` is the schema value to set (``null``: none), and\n  ``current`` the priority the issue had, which approving applies against.\n\n``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why\nits last approval didn't apply (it stays approvable)."
       },
       "IssueSuggestionRunIn": {
         "properties": {

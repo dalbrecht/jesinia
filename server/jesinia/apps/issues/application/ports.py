@@ -13,7 +13,7 @@ from typing import Literal, Protocol, runtime_checkable
 from jesinia.apps.issues.domain.changes import BatchResult, ChangeBatch, PendingChange
 from jesinia.apps.issues.domain.labels import LabelPlan
 from jesinia.apps.issues.domain.schema import LabelSchema, SchemaEntry
-from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionFilters
+from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionFilters, SuggestionKind
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
     IssueRow,
@@ -312,6 +312,13 @@ class SuggestionStore(Protocol):
         """Drop the issue's untouched (``draft``) suggestions of the per-issue kinds and store
         ``drafts`` instead, in one transaction; edited, approved and dismissed ones stay, and so
         does a draft an approval in flight claims (IR40)."""
+
+    def replace_scope_drafts(
+        self, scope: str, kind: SuggestionKind, drafts: Sequence[Suggestion]
+    ) -> None:
+        """Drop the untouched (``draft``) suggestions of this ``kind`` about this ``scope`` (a
+        batch of issues, ruling IR11) that no approval claims and store ``drafts`` instead, in
+        one transaction."""
 
     def save(self, suggestion: Suggestion) -> None:
         """Store an edited or dismissed suggestion (its kind, payload, reason, state, time,

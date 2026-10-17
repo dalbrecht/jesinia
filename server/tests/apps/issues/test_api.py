@@ -185,6 +185,7 @@ WRITES: list[tuple[str, str, dict[str, object] | None]] = [
     ("PATCH", f"{API}/suggestions/x", {"payload": {}}),
     ("POST", f"{API}/suggestions/x/dismiss", None),
     ("POST", f"{API}/suggestions/run", {"refs": [{"repo": REPO, "n": 1}]}),
+    ("POST", f"{API}/suggestions/priority", {"refs": [{"repo": REPO, "n": 1}]}),
     ("POST", f"{API}/suggestions/x/approve", None),
     (
         "POST",
@@ -1065,3 +1066,33 @@ async def test_a_batch_stopped_by_a_rejected_token_points_at_its_retry(env: Env)
     stopped = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
     assert stopped.status_code == 503 and "Retry-After" not in stopped.headers
     assert stopped.headers["Location"].endswith(f"/{stopped.json()['id']}/retry")
+
+
+async def test_priority_is_asked_once_per_key_and_approved_through_the_engine(env: Env) -> None:
+    await env.watch_and_sync()
+    item = {"repo": REPO, "number": 1, "priority": "priority: high", "rank": 1}
+    env.agent.replies = [json.dumps({"items": [{**item, "reason": "blocks the release"}]})]
+    body = {"refs": [{"repo": REPO, "n": 1}]}
+    key = keyed()
+    asked = await env.client.post(f"{SUGGESTIONS}/priority", json=body, headers=key)
+    assert asked.status_code == 200
+    draft = asked.json()
+    assert draft["kind"] == "priority" and draft["repo"] is None and draft["scope"] == f"{REPO}#1"
+    assert draft["payload"]["items"][0]["reason"] == "blocks the release"
+    replay = await env.client.post(f"{SUGGESTIONS}/priority", json=body, headers=key)
+    assert replay.json() == draft and len(env.agent.asks) == 1
+
+    approved = await env.client.post(f"{SUGGESTIONS}/{draft['id']}/approve", headers=keyed())
+    assert approved.status_code == 200 and approved.json()["suggestion"]["state"] == "approved"
+    assert "priority: high" in env.github.issues[(REPO, 1)].labels
+
+
+async def test_priority_errors_are_structured(env: Env) -> None:
+    await env.watch_and_sync()
+    body = {"refs": [{"repo": REPO, "n": 1}]}
+    env.agent.replies = ["nope", "still nope"]
+    failed = await env.client.post(f"{SUGGESTIONS}/priority", json=body, headers=keyed())
+    assert failed.status_code == 502 and failed.json()["error"] == "SuggestionJobFailedError"
+    missing = {"refs": [{"repo": REPO, "n": 99}]}
+    gone = await env.client.post(f"{SUGGESTIONS}/priority", json=missing, headers=keyed())
+    assert gone.status_code == 404 and gone.json()["error"] == "IssueNotCachedError"
