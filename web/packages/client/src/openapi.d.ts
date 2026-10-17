@@ -1180,6 +1180,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/issues/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Suggestions
+         * @description Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
+         *     repo, or all. ``state`` may repeat (default: the open ones, ``draft`` and ``edited``).
+         */
+        get: operations["get_suggestions_api_issues_suggestions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/suggestions/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Suggestions
+         * @description Ask the agent for suggestions on these cached issues now; the runs start in the
+         *     background (two at a time) and their drafts appear as each one finishes. The only way
+         *     a Backlog issue gets suggestions.
+         */
+        post: operations["run_suggestions_api_issues_suggestions_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/suggestions/{suggestion_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit Suggestion
+         * @description Edit a draft (it becomes ``edited``); the payload is checked against the repo's
+         *     schema. Nothing changes on GitHub. An approved or dismissed one is a 409.
+         */
+        patch: operations["edit_suggestion_api_issues_suggestions__suggestion_id__patch"];
+        trace?: never;
+    };
+    "/api/issues/suggestions/{suggestion_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Suggestion
+         * @description Dismiss a draft; a rerun won't propose the same advice again. Dismissing it twice
+         *     changes nothing; an approved one is a 409.
+         */
+        post: operations["dismiss_suggestion_api_issues_suggestions__suggestion_id__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/issues/{view}": {
         parameters: {
             query?: never;
@@ -1191,7 +1276,8 @@ export interface paths {
          * Get View
          * @description The cached Inbox or Backlog, at once, even without the github service;
          *     ``syncing`` and ``sync_error`` report GitHub. ``filter`` is a saved filter
-         *     (``incomplete``, ``stale_90d``).
+         *     (``incomplete``, ``stale_90d``, ``human_needed_could_be_ready``,
+         *     ``possible_duplicates``).
          */
         get: operations["get_view_api_issues__view__get"];
         put?: never;
@@ -1793,6 +1879,13 @@ export interface components {
             /** Commit Id */
             commit_id: string | null;
         };
+        /** IssueRefIn */
+        IssueRefIn: {
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+        };
         /**
          * IssueRowOut
          * @description An Inbox or Backlog row with its triage against the repo's schema.
@@ -1842,6 +1935,126 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * IssueSuggestionEditIn
+         * @description The author's edit: the whole new ``payload`` for the suggestion's kind (see
+         *     ``IssueSuggestionOut``), and optionally a new ``reason``.
+         */
+        IssueSuggestionEditIn: {
+            /** Payload */
+            payload: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * IssueSuggestionOut
+         * @description A suggestion draft. ``repo`` and ``n`` name its issue (``scope`` a draft about several
+         *     issues or a queue, from later tasks). ``payload`` is Jesinia's own JSON, by ``kind``:
+         *
+         *     - ``label`` and ``new_area``: ``{dimension, value}`` (``new_area``: an area not in the
+         *       schema yet, which approving adds);
+         *     - ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);
+         *     - ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be
+         *       ``agent-ready``; else what ``agent-ready`` still lacks).
+         *
+         *     ``reason`` is the agent's one line, untrusted text shown as data.
+         */
+        IssueSuggestionOut: {
+            /** Id */
+            id: string;
+            /** Repo */
+            repo: string | null;
+            /** N */
+            n: number | null;
+            /** Scope */
+            scope: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "label" | "duplicate" | "parent" | "readiness_gap" | "new_area" | "priority" | "group" | "split" | "queue_next" | "queue_order" | "queue_split" | "brief";
+            /** Payload */
+            payload: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Reason */
+            reason: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "draft" | "edited" | "approved" | "dismissed";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * IssueSuggestionRunIn
+         * @description Issues to suggest for now (usually from the Backlog, which never gets suggestions in the
+         *     background).
+         */
+        IssueSuggestionRunIn: {
+            /** Refs */
+            refs: components["schemas"]["IssueRefIn"][];
+        };
+        /**
+         * IssueSuggestionRunOut
+         * @description An issue's latest suggestion run: ``queued`` (until ``due_at``), ``running``, ``done``,
+         *     ``skipped`` (it left the Inbox first), ``waiting`` (no runner; manual triage works) or
+         *     ``failed`` (``cause``). ``source``: ``inbox`` (background) or ``demand``.
+         */
+        IssueSuggestionRunOut: {
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "done" | "skipped" | "waiting" | "failed";
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "inbox" | "demand";
+            /**
+             * Due At
+             * Format: date-time
+             */
+            due_at: string;
+            /** Cause */
+            cause: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** IssueSuggestionRunsOut */
+        IssueSuggestionRunsOut: {
+            /** Runs */
+            runs: components["schemas"]["IssueSuggestionRunOut"][];
+        };
+        /**
+         * IssueSuggestionsOut
+         * @description Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked
+         *     for.
+         */
+        IssueSuggestionsOut: {
+            /** Suggestions */
+            suggestions: components["schemas"]["IssueSuggestionOut"][];
+            run: components["schemas"]["IssueSuggestionRunOut"] | null;
         };
         /**
          * IssueViewOut
@@ -6753,6 +6966,328 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LabelApplyOut"];
+                };
+            };
+        };
+    };
+    get_suggestions_api_issues_suggestions_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+                n?: number | null;
+                state?: string[] | null;
+                kind?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueSuggestionsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    run_suggestions_api_issues_suggestions_run_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssueSuggestionRunIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueSuggestionRunsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    edit_suggestion_api_issues_suggestions__suggestion_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                suggestion_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssueSuggestionEditIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueSuggestionOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    dismiss_suggestion_api_issues_suggestions__suggestion_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                suggestion_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueSuggestionOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
         };

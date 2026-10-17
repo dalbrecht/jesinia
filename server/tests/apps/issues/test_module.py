@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,9 +12,17 @@ from fastapi import HTTPException
 
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.reads import IssueQueries
+from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.domain.suggestions import SuggestionFilters
 from jesinia.apps.issues.domain.triage import IssueFilters
-from jesinia.apps.issues.module import IDEMPOTENCY_PRUNE_JOB, ISSUES_DB, SYNC_JOB, IssuesModule
+from jesinia.apps.issues.module import (
+    IDEMPOTENCY_PRUNE_JOB,
+    ISSUES_DB,
+    SUGGEST_JOB,
+    SYNC_JOB,
+    IssuesModule,
+)
 from jesinia.core.config import Config
 from jesinia.core.db import DbClass, open_db
 from jesinia.core.events import EventBus
@@ -140,3 +150,92 @@ async def test_sync_job_runs_every_five_minutes_and_at_start(cfg: Config) -> Non
     assert scheduler.registered[SYNC_JOB] == (timedelta(minutes=5), True)
     await module.stop()
     await github.aclose()
+
+
+class _Agents:
+    """The agents service's ``one_shot``, as the module finds it in ``ctx.services``."""
+
+    def __init__(self) -> None:
+        self.asks: list[str] = []
+
+    async def one_shot(
+        self, runner: str, pack: object, prompt: str, *, timeout: float = 45.0
+    ) -> str:
+        self.asks.append(runner)
+        return json.dumps(
+            {
+                "labels": [{"dimension": "priority", "value": "priority: high", "reason": "r"}],
+                "duplicates": [],
+                "parent": None,
+                "agent_ready": {"ready": False, "missing": [], "reason": "r"},
+            }
+        )
+
+
+async def test_suggestions_start_with_the_module_and_ask_the_agents_service(
+    cfg: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    module = IssuesModule()
+    with pytest.raises(HTTPException, match="not started"):
+        _ = module.suggest
+    await module.run_suggestions()  # nothing to run before start
+
+    # A run a stop cut off is queued again at start.
+    conn = open_db(cfg.data_dir, ISSUES_DB)
+    conn.execute(
+        "INSERT INTO repos (repo, added_at) VALUES ('acme/web', '2026-10-01T00:00:00+00:00')"
+    )
+    issue_json = json.dumps(
+        {
+            "repo": "acme/web", "number": 1, "id": 11, "title": "t", "body": "b", "state": "open",
+            "state_reason": None, "labels": ["bug"], "milestone": None, "parent": None,
+            "created_at": "2026-10-02T00:00:00.000000+00:00",
+            "updated_at": "2026-10-02T00:00:00.000000+00:00", "url": "u", "author": "a",
+            "linked_pr_state": None, "sub_issue_count": 0,
+        }
+    )  # fmt: skip
+    triage_json = json.dumps(
+        {
+            "complete": False, "missing": ["readiness", "priority", "area"], "conflicts": [],
+            "is_epic": False, "readiness": None, "priority": None, "type": "bug", "areas": [],
+        }
+    )  # fmt: skip
+    conn.execute(
+        "INSERT INTO issues (repo, number, json, complete, missing_json, triage_json, is_epic, "
+        "state, created_at, updated_at, first_seen_at, inbox) VALUES ('acme/web', 1, ?, 0, '[]', "
+        "?, 0, 'open', 'x', 'x', 'x', 1)",
+        (issue_json, triage_json),
+    )
+    conn.execute(
+        "INSERT INTO suggestion_runs (repo, n, status, source, due_at, updated_at) VALUES "
+        "('acme/web', 1, 'running', 'inbox', '2026-10-02T00:00:00.000000+00:00', 'x')"
+    )
+    conn.commit()
+    conn.close()
+
+    scheduler = _RecordingScheduler()
+    ctx = AppContext(cfg, EventBus(), scheduler)
+    agents = _Agents()
+    ctx.services["agents"] = agents
+    ctx.services["agents.runner"] = lambda: "claude-code"
+    with caplog.at_level(logging.INFO):
+        await module.start(ctx)
+    assert "queued 1 issues suggestion runs again" in caplog.text
+    assert scheduler.registered[SUGGEST_JOB] == (timedelta(minutes=1), True)
+    assert isinstance(module.suggest, SuggestService)
+    await ctx.scheduler.run_now(SUGGEST_JOB)
+    assert agents.asks == ["claude-code"]
+    found = module.suggest.suggestions(SuggestionFilters("acme/web", 1))
+    assert [s.payload["value"] for s in found] == ["priority: high"]
+    await module.stop()
+
+    # Without the agents service (or a runner), runs wait.
+    ctx = AppContext(cfg, EventBus(), Scheduler())
+    ctx.services["agents.runner"] = "not callable"
+    await module.start(ctx)
+    module.suggest.edit(found[0].id, {"dimension": "priority", "value": "priority: low"}, None)
+    await module.suggest.suggest_backlog([("acme/web", 1)])
+    await module.suggest.drain()
+    run = module.suggest.run_state("acme/web", 1)
+    assert run is not None and run.status == "waiting"
+    await module.stop()

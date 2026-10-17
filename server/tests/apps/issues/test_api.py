@@ -23,9 +23,12 @@ from jesinia.apps.issues.api.routes import build_router
 from jesinia.apps.issues.api.tools import build_tools
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.reads import IssueQueries
+from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
+from jesinia.apps.issues.domain.suggestions import SuggestionFilters
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
+from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
 from jesinia.apps.issues.module import ISSUES_DB, IssuesModule
 from jesinia.core.app import create_app
 from jesinia.core.auth import register_session_token
@@ -41,6 +44,7 @@ from jesinia.services.github.application.service import (
 )
 from jesinia.services.github.domain.issue import IssueComment, TimelineEvent
 from tests.apps.issues.test_labels import AMICUS_YML, FakeGitHub, Pauses
+from tests.apps.issues.test_suggest import FakeAgent, triage_reply
 from tests.apps.issues.test_sync import COMPLETE, REPO, FakeClock, issue
 from tests.conftest import BASE_URL, bearer, running
 
@@ -56,6 +60,7 @@ class Host:
     sync: SyncService
     labels: LabelSetupService
     queries: IssueQueries
+    suggest: SuggestService
     idempotency: SqliteIdempotencyStore
     clock: FakeClock
 
@@ -89,6 +94,7 @@ class Env:
     store: SqliteIssuesStore
     clock: FakeClock
     host: Host
+    agent: FakeAgent
 
     async def watch_and_sync(self) -> None:
         await self.client.put(
@@ -120,17 +126,24 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
     )
     clock = FakeClock()
     store = SqliteIssuesStore(conn)
-    sync = SyncService(github, store, clock)
+    agent = FakeAgent()
+    suggest = SuggestService(
+        SqliteSuggestionStore(conn), store, lambda: agent, lambda: "claude-code", clock
+    )
+    sync = SyncService(
+        github, store, clock, on_inbox=suggest.queue_new, on_inbox_edit=suggest.queue_edited
+    )
     labels = LabelSetupService(github, store, clock, on_rate_limit=sync.back_off, pause=Pauses())
     queries = IssueQueries(store, clock, sync.is_syncing)
-    host = Host(sync, labels, queries, SqliteIdempotencyStore(conn), clock)
+    host = Host(sync, labels, queries, suggest, SqliteIdempotencyStore(conn), clock)
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport, base_url=BASE_URL, headers=bearer(cfg.token)
         ) as client:
-            yield Env(client, github, store, clock, host)
+            yield Env(client, github, store, clock, host, agent)
+            await suggest.stop()
 
 
 READS = [
@@ -139,10 +152,13 @@ READS = [
     ("GET", f"{API}/backlog", None),
     ("GET", ITEM, None),
 ]
-WRITES = [
+WRITES: list[tuple[str, str, dict[str, object] | None]] = [
     ("PUT", REPO_PATH, {"watched": True, "settings_schema": None}),
     ("POST", f"{REPO_PATH}/sync", None),
     ("POST", f"{ITEM}/refresh", None),
+    ("PATCH", f"{API}/suggestions/x", {"payload": {}}),
+    ("POST", f"{API}/suggestions/x/dismiss", None),
+    ("POST", f"{API}/suggestions/run", {"refs": [{"repo": REPO, "n": 1}]}),
     ("POST", f"{LABELS}/apply", {"kind": "setup", "plan_id": "x"}),
 ]
 
@@ -502,7 +518,7 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
         for route in build_router(env.host).routes
         if "GET" in getattr(route, "methods", set())
     ]
-    assert len(gets) == 3  # repos, a view, an item
+    assert len(gets) == 4  # repos, suggestions, a view, an item
     for path in [*gets, f"{API}/inbox"]:
         response = await env.client.get(path)
         assert response.status_code == 200, path
@@ -683,3 +699,71 @@ async def test_the_repos_endpoint_reports_the_schema_an_apply_validated(env: Env
     assert (await env.client.post(f"{LABELS}/apply", json=body, headers=keyed())).status_code == 200
     repo = (await env.client.get(f"{API}/repos")).json()["repos"][0]
     assert [area["name"] for area in repo["label_schema"]["areas"]] == ["area:apple", "area:web"]
+
+
+# --- suggestions (Task 5) -----------------------------------------------------------------------
+
+SUGGESTIONS = f"{API}/suggestions"
+QueryValues = dict[str, str | int | list[str]]
+
+
+async def test_suggestions_run_on_demand_and_are_edited_and_dismissed(env: Env) -> None:
+    await env.watch_and_sync()
+    env.agent.answer = lambda pack: triage_reply(
+        labels=[("priority", "priority: high"), ("area", "web")]
+    )
+    started = await env.client.post(
+        f"{SUGGESTIONS}/run", json={"refs": [{"repo": REPO, "n": 1}]}, headers=keyed()
+    )
+    assert started.status_code == 202
+    assert [(r["n"], r["status"], r["source"]) for r in started.json()["runs"]] == [
+        (1, "queued", "demand")
+    ]
+    await env.host.suggest.drain()
+
+    listed = (await env.client.get(SUGGESTIONS, params={"repo": REPO, "n": 1})).json()
+    assert listed["run"]["status"] == "done"
+    found = {s["kind"]: s for s in listed["suggestions"]}
+    assert set(found) == {"label", "new_area"}
+    assert found["new_area"]["payload"] == {"dimension": "area", "value": "area:web"}
+    assert (await env.client.get(SUGGESTIONS)).json()["run"] is None
+
+    label = found["label"]["id"]
+    key = keyed()
+    body = {"payload": {"dimension": "priority", "value": "priority: low"}, "reason": "mine"}
+    edited = await env.client.patch(f"{SUGGESTIONS}/{label}", json=body, headers=key)
+    assert edited.status_code == 200
+    assert edited.json()["state"] == "edited" and edited.json()["reason"] == "mine"
+    replay = await env.client.patch(f"{SUGGESTIONS}/{label}", json=body, headers=key)
+    assert replay.json() == edited.json()
+
+    dismissed = await env.client.post(f"{SUGGESTIONS}/{label}/dismiss", headers=keyed())
+    assert dismissed.status_code == 200 and dismissed.json()["state"] == "dismissed"
+    again = await env.client.patch(f"{SUGGESTIONS}/{label}", json=body, headers=keyed())
+    assert again.status_code == 409 and again.json()["error"] == "SuggestionStateError"
+
+    states = {"state": ["dismissed", "edited"], "kind": "label"}
+    only = (await env.client.get(SUGGESTIONS, params=states)).json()["suggestions"]
+    assert [s["id"] for s in only] == [label]
+    assert env.github.writes == []
+
+
+async def test_suggestion_routes_refuse_bad_requests(env: Env) -> None:
+    await env.watch_and_sync()
+    env.agent.answer = lambda pack: triage_reply(labels=[("priority", "priority: high")])
+    await env.host.suggest.triage(REPO, 1)
+    sid = env.host.suggest.suggestions(SuggestionFilters())[0].id
+    cases: list[tuple[str, str, QueryValues | None, dict[str, object] | None, int]] = [
+        ("GET", SUGGESTIONS, {"state": "applied"}, None, 400),
+        ("GET", SUGGESTIONS, {"kind": "close"}, None, 400),
+        ("GET", SUGGESTIONS, {"n": 1}, None, 400),
+        ("GET", SUGGESTIONS, {"state": ["draft"] * 5}, None, 422),
+        ("PATCH", f"{SUGGESTIONS}/missing", None, {"payload": {}}, 404),
+        ("PATCH", f"{SUGGESTIONS}/{sid}", None, {"payload": {"dimension": "type"}}, 400),
+        ("POST", f"{SUGGESTIONS}/missing/dismiss", None, None, 404),
+        ("POST", f"{SUGGESTIONS}/run", None, {"refs": [{"repo": REPO, "n": 99}]}, 404),
+        ("POST", f"{SUGGESTIONS}/run", None, {"refs": []}, 422),
+    ]
+    for method, path, params, body, code in cases:
+        response = await env.client.request(method, path, params=params, json=body, headers=keyed())
+        assert response.status_code == code, (method, path, params, body, response.text)

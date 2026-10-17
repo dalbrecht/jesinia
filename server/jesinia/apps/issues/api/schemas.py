@@ -5,13 +5,20 @@ titles, bodies, labels and comments are the issue authors' text: the PWA shows i
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 from jesinia.apps.issues.application.labels import LabelRun, OpResult
-from jesinia.apps.issues.application.ports import RepoState, SchemaSource
+from jesinia.apps.issues.application.ports import (
+    RepoState,
+    RunSource,
+    RunStatus,
+    SchemaSource,
+    SuggestionRun,
+)
 from jesinia.apps.issues.application.reads import IssueDetail
+from jesinia.apps.issues.application.suggest import MAX_BACKLOG_REFS
 from jesinia.apps.issues.domain.labels import (
     CreateLabel,
     LabelOp,
@@ -26,6 +33,7 @@ from jesinia.apps.issues.domain.schema import (
     Canonical,
     LabelSchema,
 )
+from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionKind, SuggestionState
 from jesinia.apps.issues.domain.triage import IssueRow, IssueView
 from jesinia.services.github.domain.issue import IssueComment, TimelineEvent
 
@@ -400,3 +408,95 @@ class LabelApplyOut(BaseModel):
             rate_limited=run.is_rate_limited,
             rate_limited_until=run.rate_limited_until,
         )
+
+
+# Suggestions (Task 5) ------------------------------------------------------------------------
+
+
+class IssueSuggestionOut(BaseModel):
+    """A suggestion draft. ``repo`` and ``n`` name its issue (``scope`` a draft about several
+    issues or a queue, from later tasks). ``payload`` is Jesinia's own JSON, by ``kind``:
+
+    - ``label`` and ``new_area``: ``{dimension, value}`` (``new_area``: an area not in the
+      schema yet, which approving adds);
+    - ``duplicate``: ``{repo, n, similarity}``; ``parent``: ``{repo, n}`` (the epic);
+    - ``readiness_gap``: ``{ready, missing}`` (``ready``: a ``human-needed`` issue could be
+      ``agent-ready``; else what ``agent-ready`` still lacks).
+
+    ``reason`` is the agent's one line, untrusted text shown as data."""
+
+    id: str
+    repo: str | None
+    n: int | None
+    scope: str | None
+    kind: SuggestionKind
+    payload: dict[str, JsonValue]
+    reason: str
+    state: SuggestionState
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, suggestion: Suggestion) -> IssueSuggestionOut:
+        return cls(
+            id=suggestion.id,
+            repo=suggestion.repo,
+            n=suggestion.n,
+            scope=suggestion.scope,
+            kind=suggestion.kind,
+            payload=cast(dict[str, JsonValue], dict(suggestion.payload)),
+            reason=suggestion.reason,
+            state=suggestion.state,
+            created_at=suggestion.created_at,
+            updated_at=suggestion.updated_at,
+        )
+
+
+class IssueSuggestionRunOut(BaseModel):
+    """An issue's latest suggestion run: ``queued`` (until ``due_at``), ``running``, ``done``,
+    ``skipped`` (it left the Inbox first), ``waiting`` (no runner; manual triage works) or
+    ``failed`` (``cause``). ``source``: ``inbox`` (background) or ``demand``."""
+
+    repo: str
+    n: int
+    status: RunStatus
+    source: RunSource
+    due_at: datetime
+    cause: str | None
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, run: SuggestionRun) -> IssueSuggestionRunOut:
+        return cls(**vars(run))
+
+
+class IssueSuggestionsOut(BaseModel):
+    """Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked
+    for."""
+
+    suggestions: list[IssueSuggestionOut]
+    run: IssueSuggestionRunOut | None
+
+
+class IssueSuggestionEditIn(BaseModel):
+    """The author's edit: the whole new ``payload`` for the suggestion's kind (see
+    ``IssueSuggestionOut``), and optionally a new ``reason``."""
+
+    payload: dict[str, JsonValue] = Field(max_length=8)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class IssueRefIn(BaseModel):
+    repo: str = Field(min_length=3, max_length=REPO_MAX)
+    n: int = Field(ge=1, le=999_999_999)
+
+
+class IssueSuggestionRunIn(BaseModel):
+    """Issues to suggest for now (usually from the Backlog, which never gets suggestions in the
+    background)."""
+
+    refs: list[IssueRefIn] = Field(min_length=1, max_length=MAX_BACKLOG_REFS)
+
+
+class IssueSuggestionRunsOut(BaseModel):
+    runs: list[IssueSuggestionRunOut]

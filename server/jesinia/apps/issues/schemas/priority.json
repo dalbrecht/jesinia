@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "$id": "https://jesinia.local/issues/schemas/priority.json",
+  "title": "priority",
+  "description": "Priorities for a set of issues plus an order within each priority (Task 7), each step with its reasoning: dependencies, impact, age, and what it unblocks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["repo", "number", "priority", "rank", "reason"],
+        "properties": {
+          "repo": {"type": "string", "minLength": 3, "maxLength": 140},
+          "number": {"type": "integer", "minimum": 1, "maximum": 999999999},
+          "priority": {"type": "string", "minLength": 1, "maxLength": 50},
+          "rank": {"type": "integer", "minimum": 1, "maximum": 1000},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "$id": "https://jesinia.local/issues/schemas/triage.json",
+  "title": "triage",
+  "description": "Suggestions for one issue. Advisory: Jesinia keeps only what fits the issue and the repo's schema, and every kept item is a draft the author approves.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["labels", "duplicates", "parent", "agent_ready"],
+  "properties": {
+    "labels": {
+      "description": "A value for each missing dimension, each with a one-line reason.",
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dimension", "value", "reason"],
+        "properties": {
+          "dimension": {"enum": ["readiness", "priority", "type", "area"]},
+          "value": {"type": "string", "minLength": 1, "maxLength": 50},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+        }
+      }
+    },
+    "duplicates": {
+      "description": "Likely duplicates, chosen only from the candidates given.",
+      "type": "array",
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/ref"}
+    },
+    "parent": {
+      "description": "The open epic the issue probably belongs to, chosen only from the epics given, or null.",
+      "anyOf": [{"type": "null"}, {"$ref": "#/$defs/ref"}]
+    },
+    "agent_ready": {
+      "description": "Whether an agent could take the issue on as it is, and what is missing if not.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "missing", "reason"],
+      "properties": {
+        "ready": {"type": "boolean"},
+        "missing": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {"type": "string", "minLength": 1, "maxLength": 200}
+        },
+        "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+      }
+    }
+  },
+  "$defs": {
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "number", "reason"],
+      "properties": {
+        "repo": {"type": "string", "minLength": 3, "maxLength": 140},
+        "number": {"type": "integer", "minimum": 1, "maximum": 999999999},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+      }
+    }
+  }
+}

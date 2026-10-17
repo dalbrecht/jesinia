@@ -16,7 +16,15 @@ This is PR 1 (plan Tasks 1–4). It adds:
 - the label setup and migration batches;
 - the read-only MCP tools.
 
-Suggestions, the apply engine and the pending-changes tray come in PR 2. Epics, queues and
+PR 2 (Tasks 5–7) adds suggestions, the apply engine and the pending-changes tray. Task 5, here
+so far, adds the suggestion drafts:
+
+- agent triage of an issue, stored as drafts (labels for missing dimensions, new areas,
+  duplicates, the likely epic, readiness gaps);
+- background runs for Inbox issues and on-demand runs for the Backlog;
+- listing, editing and dismissing drafts, and the two suggestion-backed saved filters.
+
+Approving a draft (which writes to GitHub) arrives with Task 6's apply engine. Epics, queues and
 themes come in PR 3, and the web app in PR 4.
 
 ## Layout
@@ -27,18 +35,24 @@ domain/           pure rules, 100% covered
   completeness.py when an issue (or an epic or initiative) is complete
   triage.py       the Inbox rule, views, saved filters, the resumable sync cursor
   labels.py       LabelOp (CreateLabel, DeleteLabel), setup and migration plans, plan checks
+  suggestions.py  Suggestion drafts: what a triage reply may draft, edits, dismissals
+  similarity.py   the local TF-IDF that pre-filters duplicate candidates
 application/      orchestration over ports
-  ports.py        what the app needs: IssueReads, LabelWrites, the store protocols
+  ports.py        what the app needs: IssueReads, LabelWrites, AgentAsker, the store protocols
   sync.py         SyncService: watch or unwatch, sync, Settings schemas, recompute
   reads.py        IssueQueries: views, items and search, served from the cache only
   labels.py       LabelPlanner, LabelExecutor (ordered, paced), LabelSetupService
+  suggest.py      SuggestService: triage asks, background and on-demand runs, edits
+  agent_output.py an agent's JSON reply, bounded and validated against schemas/*.json
 infrastructure/
   store.py        SqliteIssuesStore over issues.sqlite
+  suggestion_store.py  SqliteSuggestionStore: drafts, runs, the similarity corpus
 api/
   routes.py       REST under /api/issues
   schemas.py      request and response bodies (the generated web client's types)
   tools.py        the MCP tools
 migrations/       issues.sqlite schema
+schemas/          JSON schemas of the agent jobs' replies (triage now; the rest for Tasks 7–9)
 module.py         IssuesModule: wiring, jobs, the 503 guards
 ```
 
@@ -56,6 +70,13 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `label_plans`: previewed label batches. Each one is consumed by its apply and pruned after
   15 minutes.
 - `idempotency`: the keys of this module's write routes.
+- `suggestions`: the drafts, with their kind, payload, one-line reason and state (`draft`,
+  `edited`, `approved`, `dismissed`). A draft about one issue has `repo` and `n`; later tasks'
+  drafts about several issues or a queue have `scope` instead.
+- `suggestion_runs`: each issue's latest suggestion run, with its status, when it is due, and
+  the cause of a failure.
+- `pending` and `schema_overlay`: the pending-changes tray and the approved schema entries, used
+  from Task 6 on.
 
 ## Jobs
 
@@ -66,6 +87,17 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - Any failure is recorded in that repo's `sync_error`, an unexpected one included, and the
     other repos still sync.
   - A rate limit pauses every sync until GitHub's reset time.
+- `issues.suggest` runs every minute, and once at start. It starts the suggestion runs that are
+  due, two at a time.
+  - Sync queues a run when an issue enters the Inbox (due at once). It queues one again when an
+    Inbox issue changes, due five minutes after the last change, so a burst of edits costs one
+    run.
+  - A queued issue that left the Inbox before its turn is skipped.
+  - Backlog issues are never run in the background, only on demand, so a big first sync costs
+    no agent time.
+  - Each run's failure is logged with its cause and recorded on the run. It never breaks sync
+    or other runs. Without a runner, runs wait.
+  - At start, a run that a stop cut off is queued again.
 - `issues.idempotency-prune` runs daily and drops expired keys.
 
 ## The label schema and labels.yml
@@ -95,6 +127,14 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - `POST /labels/{owner}/{repo}/preview` with `{kind}`. It isn't keyed, on purpose: it writes
     nothing to GitHub.
   - `POST /labels/{owner}/{repo}/apply` with `{kind, plan_id}`: the approval.
+  - `GET /suggestions?repo&n&state&kind`: drafts from the cache. `state` may repeat; the
+    default is the open ones. With `repo` and `n` the answer carries the issue's latest run.
+  - `POST /suggestions/run` with `{refs: [{repo, n}]}`: run suggestions for up to 100 cached
+    issues now, in the background (202).
+  - `PATCH /suggestions/{id}` with `{payload, reason?}` edits a draft, checked against the
+    repo's schema. `POST /suggestions/{id}/dismiss` dismisses it. Neither touches GitHub.
+  - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
+    `possible_duplicates`. The last two read the open suggestions.
   - Typed errors come back as `{error, detail}`. A GitHub rate limit is a 503 with
     `Retry-After`, so the response is never stored under the key.
 - **MCP, read-only:** `issues_search {q, repo?}` and `issues_get {repo, n}`. Both read the
@@ -128,6 +168,28 @@ Jesinia never creates a label implicitly and never changes GitHub without an app
 - **Cache:** after an apply, the label cache and the moved issues are updated at once, best
   effort.
 
+## How suggestions stay safe
+
+Issue titles and bodies are written by whoever can open an issue, so they are untrusted:
+
+- **No GitHub client:** `SuggestService` holds none. A run can only write drafts to
+  `issues.sqlite`. A draft reaches GitHub only when the author approves it (Task 6).
+- **Fenced as data:** the agent is asked through the agents service's one-shot ask, which has no
+  tools. Jesinia's instructions are the role and the prompt. The issue, the repo's label schema,
+  the duplicate candidates and the epics are `UntrustedDoc`s, fenced as data.
+- **Validated:** the reply must be one JSON object valid against `schemas/triage.json`. It is
+  bounded before parsing. An invalid reply gets one retry, which describes the problem without
+  repeating the reply's own values. A second invalid reply fails the run with
+  `SuggestionJobFailedError`.
+- **Jesinia decides what a reply may draft:**
+  - labels only for missing dimensions, as schema values (an area outside the schema is a
+    `new_area`);
+  - duplicates only among the candidates the local TF-IDF found;
+  - a parent only among the open epics listed;
+  - every reason on one line.
+- **Reruns:** a rerun replaces untouched drafts. It never brings back advice the author
+  dismissed, and never doubles advice they edited.
+
 ## Development
 
 ```bash
@@ -137,4 +199,5 @@ make ci           # the full gate
 ```
 
 Tests use in-memory GitHub doubles (`tests/apps/issues/test_sync.py` `FakeIssues`,
-`test_labels.py` `FakeGitHub`), so they make no network calls.
+`test_labels.py` `FakeGitHub`) and a scripted agent (`test_suggest.py` `FakeAgent`), with a
+fake clock, so they make no network calls and never sleep.

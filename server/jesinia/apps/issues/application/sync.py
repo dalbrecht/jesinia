@@ -69,7 +69,8 @@ EPIC_BACKFILL_PER_SYNC = 10
 DETAIL_PAGE_CAP = 10
 
 Clock = Callable[[], datetime]
-# Told which issues just entered the Inbox view (Task 5 queues suggestion jobs from it).
+# Told which issues just entered the Inbox view, or changed while in it (Task 5 queues
+# suggestion runs from them).
 OnInbox = Callable[[str, Sequence[int]], Awaitable[None]]
 
 
@@ -122,6 +123,8 @@ class SyncService:
         clock: the current UTC time.
         on_inbox: awaited with the issues that just entered the Inbox view; best effort, its
             failure is logged and never breaks a sync.
+        on_inbox_edit: awaited with the issues already in the Inbox view that changed on
+            GitHub (its text or labels); best effort, like ``on_inbox``.
     """
 
     def __init__(
@@ -131,11 +134,13 @@ class SyncService:
         clock: Clock,
         *,
         on_inbox: OnInbox | None = None,
+        on_inbox_edit: OnInbox | None = None,
     ) -> None:
         self._github = github
         self._store = store
         self._clock = clock
         self._on_inbox = on_inbox
+        self._on_inbox_edit = on_inbox_edit
         self._locks: dict[str, asyncio.Lock] = {}
         self._syncing: set[str] = set()
         self._backoff_until: datetime | None = None
@@ -284,13 +289,15 @@ class SyncService:
                 if not (cursor.covers(i.updated_at, i.id) and self._store.is_unchanged(repo, i))
             ]
             links = {} if is_first else await self._children(repo, fresh)
-            stored, entered = self._triaged(state, schema, fresh)
+            stored, entered, edited = self._triaged(state, schema, fresh)
             cursor, done = cursor.after_page(
                 [(i.updated_at, i.id) for i in page.items], page.next_token
             )
             self._store.save_page(repo, stored, links, cursor, self._clock())
             if entered:
-                await self._notify(repo, entered)
+                await self._notify(self._on_inbox, repo, entered)
+            if edited:
+                await self._notify(self._on_inbox_edit, repo, edited)
         if not is_first:
             for n in self._store.epics_without_links(repo, EPIC_BACKFILL_PER_SYNC):
                 children = await self._github.sub_issues(repo, n)
@@ -307,12 +314,13 @@ class SyncService:
 
     def _triaged(
         self, state: RepoState, schema: LabelSchema, issues: Sequence[Issue]
-    ) -> tuple[builtins.list[StoredIssue], builtins.list[int]]:
-        """Each issue's triage and Inbox flag, and the issues that just entered the Inbox
-        view."""
+    ) -> tuple[builtins.list[StoredIssue], builtins.list[int], builtins.list[int]]:
+        """Each issue's triage and Inbox flag, the issues that just entered the Inbox view, and
+        those that were in it already and changed (``issues`` are only changed ones)."""
         previous = self._store.previous_triage(state.repo, [i.number for i in issues])
         stored: builtins.list[StoredIssue] = []
         entered: builtins.list[int] = []
+        edited: builtins.list[int] = []
         for issue in issues:
             result = triage(issue.labels, issue.sub_issue_count, schema)
             before = previous.get(issue.number)
@@ -327,15 +335,15 @@ class SyncService:
             was_shown = (
                 before is not None and before.inbox and not before.complete and before.is_open
             )
-            if inbox and not result.complete and not was_shown and issue.state == "open":
-                entered.append(issue.number)
-        return stored, entered
+            if inbox and not result.complete and issue.state == "open":
+                (edited if was_shown else entered).append(issue.number)
+        return stored, entered, edited
 
-    async def _notify(self, repo: str, numbers: Sequence[int]) -> None:
-        if self._on_inbox is None:
+    async def _notify(self, listener: OnInbox | None, repo: str, numbers: Sequence[int]) -> None:
+        if listener is None:
             return
         try:
-            await self._on_inbox(repo, numbers)
+            await listener(repo, numbers)
         except Exception:  # best effort: a failing listener never breaks a sync
             log.exception("issues: the Inbox listener failed for %s %s", repo, list(numbers))
 

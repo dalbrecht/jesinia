@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Issues routes under ``/api/issues``: watched repos and their Settings, the Inbox and
-Backlog, one issue, and the label setup and migration batches.
+Backlog, one issue, the label setup and migration batches, and suggestion drafts (list, edit,
+dismiss, and runs on demand; approving one arrives with Task 6's apply engine, ruling IR36).
 
 Every route needs the owner: the app mounts module routers behind ``require_owner``, so agent
 session tokens are refused (IR2); applying a label batch, the one approval here, also declares
@@ -30,6 +31,12 @@ from jesinia.apps.issues.api.schemas import (
     IssuesRepoIn,
     IssuesRepoOut,
     IssuesReposOut,
+    IssueSuggestionEditIn,
+    IssueSuggestionOut,
+    IssueSuggestionRunIn,
+    IssueSuggestionRunOut,
+    IssueSuggestionRunsOut,
+    IssueSuggestionsOut,
     IssueViewOut,
     LabelApplyIn,
     LabelApplyOut,
@@ -38,6 +45,7 @@ from jesinia.apps.issues.api.schemas import (
 )
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.reads import IssueQueries
+from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.domain.labels import (
     LabelNameCollisionError,
@@ -48,6 +56,15 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlanOutdatedError,
 )
 from jesinia.apps.issues.domain.schema import InvalidSettingsSchemaError, validate_settings_schema
+from jesinia.apps.issues.domain.suggestions import (
+    OPEN_STATES,
+    SuggestionDomainError,
+    SuggestionFilters,
+    SuggestionNotFoundError,
+    SuggestionStateError,
+    parse_kind,
+    parse_state,
+)
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
     IssueNotCachedError,
@@ -80,6 +97,9 @@ class IssuesHost(Protocol):
     def queries(self) -> IssueQueries: ...
 
     @property
+    def suggest(self) -> SuggestService: ...
+
+    @property
     def idempotency(self) -> IdempotencyStore: ...
 
     def clock(self) -> datetime:
@@ -94,6 +114,8 @@ _STATUS: dict[type[Exception], int] = {
     LabelPlanKindMismatchError: status.HTTP_409_CONFLICT,
     LabelPlanOutdatedError: status.HTTP_409_CONFLICT,
     LabelNameCollisionError: status.HTTP_409_CONFLICT,
+    SuggestionNotFoundError: status.HTTP_404_NOT_FOUND,
+    SuggestionStateError: status.HTTP_409_CONFLICT,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -101,6 +123,7 @@ _STATUS: dict[type[Exception], int] = {
     # Anything else the request itself got wrong.
     TriageDomainError: status.HTTP_400_BAD_REQUEST,
     LabelPlanError: status.HTTP_400_BAD_REQUEST,
+    SuggestionDomainError: status.HTTP_400_BAD_REQUEST,
     InvalidSettingsSchemaError: status.HTTP_400_BAD_REQUEST,
     GitHubReferenceError: status.HTTP_400_BAD_REQUEST,
     IssueDomainError: status.HTTP_400_BAD_REQUEST,
@@ -108,6 +131,7 @@ _STATUS: dict[type[Exception], int] = {
 _TYPED = (
     TriageDomainError,
     LabelPlanError,
+    SuggestionDomainError,
     InvalidSettingsSchemaError,
     GitHubError,
     GitHubReferenceError,
@@ -121,6 +145,7 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
 Owner = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Name = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Number = Annotated[int, Path(ge=1, le=999_999_999)]
+SuggestionId = Annotated[str, Path(min_length=1, max_length=64)]
 
 
 def retry_after(reset_at: datetime | None, now: datetime) -> int:
@@ -277,6 +302,72 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run, host.clock))
 
+    @r.get("/suggestions", response_model=IssueSuggestionsOut)
+    async def get_suggestions(
+        repo: Annotated[str | None, Query(max_length=REPO_MAX)] = None,
+        n: Annotated[int | None, Query(ge=1, le=999_999_999)] = None,
+        state: Annotated[list[str] | None, Query(max_length=4)] = None,
+        kind: Annotated[str | None, Query(max_length=32)] = None,
+    ) -> Response:
+        """Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
+        repo, or all. ``state`` may repeat (default: the open ones, ``draft`` and ``edited``)."""
+
+        async def run() -> IssueSuggestionsOut:
+            states = OPEN_STATES if not state else tuple(parse_state(s) for s in state)
+            filters = SuggestionFilters(repo, n, states, None if kind is None else parse_kind(kind))
+            latest = None
+            if repo is not None and n is not None:
+                found = host.suggest.run_state(repo, n)
+                latest = None if found is None else IssueSuggestionRunOut.of(found)
+            return IssueSuggestionsOut(
+                suggestions=[IssueSuggestionOut.of(s) for s in host.suggest.suggestions(filters)],
+                run=latest,
+            )
+
+        return await _respond(run, host.clock)
+
+    @r.post(
+        "/suggestions/run",
+        response_model=IssueSuggestionRunsOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def run_suggestions(body: IssueSuggestionRunIn, idem: IdempotentCall = keyed) -> Response:
+        """Ask the agent for suggestions on these cached issues now; the runs start in the
+        background (two at a time) and their drafts appear as each one finishes. The only way
+        a Backlog issue gets suggestions."""
+
+        async def run() -> Response:
+            runs = await host.suggest.suggest_backlog([(ref.repo, ref.n) for ref in body.refs])
+            out = IssueSuggestionRunsOut(runs=[IssueSuggestionRunOut.of(r) for r in runs])
+            return JSONResponse(jsonable_encoder(out), status_code=status.HTTP_202_ACCEPTED)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.patch("/suggestions/{suggestion_id}", response_model=IssueSuggestionOut)
+    async def edit_suggestion(
+        suggestion_id: SuggestionId, body: IssueSuggestionEditIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Edit a draft (it becomes ``edited``); the payload is checked against the repo's
+        schema. Nothing changes on GitHub. An approved or dismissed one is a 409."""
+
+        async def run() -> IssueSuggestionOut:
+            edited = host.suggest.edit(suggestion_id, body.payload, body.reason)
+            return IssueSuggestionOut.of(edited)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post("/suggestions/{suggestion_id}/dismiss", response_model=IssueSuggestionOut)
+    async def dismiss_suggestion(
+        suggestion_id: SuggestionId, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Dismiss a draft; a rerun won't propose the same advice again. Dismissing it twice
+        changes nothing; an approved one is a 409."""
+
+        async def run() -> IssueSuggestionOut:
+            return IssueSuggestionOut.of(host.suggest.dismiss(suggestion_id))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
     # Last: ``/{view}`` would otherwise also match ``/repos``.
     @r.get("/{view}", response_model=IssueViewOut)
     async def get_view(
@@ -286,7 +377,8 @@ def build_router(host: IssuesHost) -> APIRouter:
     ) -> Response:
         """The cached Inbox or Backlog, at once, even without the github service;
         ``syncing`` and ``sync_error`` report GitHub. ``filter`` is a saved filter
-        (``incomplete``, ``stale_90d``)."""
+        (``incomplete``, ``stale_90d``, ``human_needed_could_be_ready``,
+        ``possible_duplicates``)."""
 
         async def run() -> IssueViewOut:
             filters = IssueFilters(repo, parse_saved_filter(saved))

@@ -83,11 +83,17 @@ def test_views_and_saved_filters_are_validated() -> None:
     assert parse_view("inbox") == "inbox" and parse_view("backlog") == "backlog"
     with pytest.raises(InvalidViewError):
         parse_view("epics")
-    assert SAVED_FILTERS == ("incomplete", "stale_90d")
+    assert SAVED_FILTERS == (
+        "incomplete",
+        "stale_90d",
+        "human_needed_could_be_ready",
+        "possible_duplicates",
+    )
     assert parse_saved_filter(None) is None
     assert parse_saved_filter("stale_90d") == "stale_90d"
+    assert parse_saved_filter("possible_duplicates") == "possible_duplicates"
     with pytest.raises(InvalidFilterError):
-        parse_saved_filter("possible_duplicates")
+        parse_saved_filter("duplicates")
     assert IssueFilters().repo is None
     assert IssueFilters(repo="acme/web", saved="incomplete").saved == "incomplete"
     with pytest.raises(InvalidRepoError):

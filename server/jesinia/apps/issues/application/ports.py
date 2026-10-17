@@ -1,16 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """What the Issues app needs from the outside world; implemented in ``infrastructure`` (the
-store) and ``services/github`` (``IssueClient`` satisfies ``IssueReads``)."""
+stores), ``services/github`` (``IssueClient`` satisfies ``IssueReads``) and ``services/agents``
+(``SessionService`` satisfies ``AgentAsker``)."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 from jesinia.apps.issues.domain.labels import LabelPlan
 from jesinia.apps.issues.domain.schema import LabelSchema
+from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionFilters
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
     IssueRow,
@@ -19,6 +21,7 @@ from jesinia.apps.issues.domain.triage import (
     Triage,
     ViewName,
 )
+from jesinia.services.agents.application.packs import ContextPack
 from jesinia.services.github.domain.issue import (
     Issue,
     IssueComment,
@@ -257,3 +260,100 @@ class LabelPlanStore(Protocol):
         """Remove and return ``repo``'s plan ``plan_id``: each plan is applied at most once."""
 
     def set_migrated(self, repo: str) -> None: ...
+
+
+# Suggestions (Task 5) ------------------------------------------------------------------------
+
+RunStatus = Literal["queued", "running", "done", "skipped", "waiting", "failed"]
+RunSource = Literal["inbox", "demand"]
+
+
+@dataclass(frozen=True)
+class SuggestionRun:
+    """An issue's latest suggestion run. ``due_at`` is when a queued (or waiting) run may
+    start; ``cause`` says why it failed or waits."""
+
+    repo: str
+    n: int
+    status: RunStatus
+    source: RunSource
+    due_at: datetime
+    cause: str | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class CorpusEntry:
+    """A cached issue as the similarity search and the epic list see it. ``title`` and
+    ``body`` are untrusted text."""
+
+    repo: str
+    n: int
+    title: str
+    body: str
+    is_open: bool
+    is_epic: bool
+
+
+class SuggestionStore(Protocol):
+    """Suggestions and their runs in ``issues.sqlite``."""
+
+    def suggestions(self, filters: SuggestionFilters) -> list[Suggestion]:
+        """Matching suggestions, oldest first."""
+
+    def suggestion(self, suggestion_id: str) -> Suggestion | None: ...
+
+    def replace_drafts(self, repo: str, n: int, drafts: Sequence[Suggestion]) -> None:
+        """Drop the issue's untouched (``draft``) suggestions of the per-issue kinds and store
+        ``drafts`` instead, in one transaction; edited, approved and dismissed ones stay."""
+
+    def save(self, suggestion: Suggestion) -> None:
+        """Store an edited or dismissed suggestion (its kind, payload, reason, state, time)."""
+
+    def queue_run(
+        self, repo: str, n: int, due_at: datetime, source: RunSource, now: datetime
+    ) -> None:
+        """Queue (or re-queue) the issue's run to start at ``due_at``."""
+
+    def due_runs(self, now: datetime, limit: int) -> list[SuggestionRun]:
+        """Queued or waiting runs due by ``now``, the longest due first."""
+
+    def set_run(
+        self,
+        repo: str,
+        n: int,
+        status: RunStatus,
+        cause: str | None,
+        now: datetime,
+        *,
+        only_if: RunStatus | None = None,
+    ) -> None:
+        """Record a run's status; with ``only_if``, only while it still has that status (an
+        edit may have queued it again meanwhile)."""
+
+    def run(self, repo: str, n: int) -> SuggestionRun | None: ...
+
+    def requeue_running(self, now: datetime) -> int:
+        """Queue again the runs a stop interrupted (at start nothing runs yet)."""
+
+    def corpus(self) -> list[CorpusEntry]:
+        """Every cached issue of a watched repo, open or closed."""
+
+
+class SuggestionCache(Protocol):
+    """The issue cache a suggestion run reads (``SqliteIssuesStore`` has it)."""
+
+    def repo(self, repo: str) -> RepoState | None: ...
+
+    def cached_issue(self, repo: str, n: int) -> CachedIssue | None: ...
+
+
+@runtime_checkable
+class AgentAsker(Protocol):
+    """A one-shot ask of the user's agent with no tools (``SessionService.one_shot``). The
+    pack's untrusted docs reach the agent fenced as data. May raise ``RunnerUnavailable``,
+    ``TurnFailed``, ``TimeoutError`` (or other agent errors)."""
+
+    async def one_shot(
+        self, runner: str, pack: ContextPack, prompt: str, *, timeout: float = 45.0
+    ) -> str: ...

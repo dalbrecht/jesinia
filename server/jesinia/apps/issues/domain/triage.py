@@ -30,8 +30,12 @@ from jesinia.apps.issues.domain.schema import LabelSchema, classify
 from jesinia.services.github.domain.repo import validate_repo
 
 ViewName = Literal["inbox", "backlog"]
-# Task 5 adds ``human_needed_could_be_ready`` and ``possible_duplicates`` (ruling IR10).
-SavedFilter = Literal["incomplete", "stale_90d"]
+# Saved filters (spec §3.2, ruling IR10): ``incomplete``; ``stale_90d`` (no activity in 90
+# days); ``human_needed_could_be_ready`` (``human-needed`` with an open suggestion that it could
+# be ``agent-ready``); ``possible_duplicates`` (an open duplicate suggestion).
+SavedFilter = Literal[
+    "incomplete", "stale_90d", "human_needed_could_be_ready", "possible_duplicates"
+]
 SAVED_FILTERS: tuple[SavedFilter, ...] = get_args(SavedFilter)
 _VIEWS: tuple[ViewName, ...] = get_args(ViewName)
 STALE_AFTER = timedelta(days=90)

@@ -28,6 +28,7 @@ from jesinia.apps.issues.domain.labels import (
     parse_plan_kind,
 )
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, Canonical, LabelSchema
+from jesinia.apps.issues.domain.suggestions import HUMAN_NEEDED
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
     IssueRow,
@@ -49,6 +50,12 @@ from jesinia.services.github.domain.issue import (
 
 _SOURCES: tuple[SchemaSource, ...] = ("default", "repo", "settings")
 _IN_INBOX = "(issues.inbox = 1 AND issues.complete = 0)"
+# An open (draft or edited) suggestion of ``kind`` about the issue, for the saved filters.
+_HAS_OPEN_SUGGESTION = (
+    "EXISTS (SELECT 1 FROM suggestions WHERE suggestions.repo = issues.repo "
+    "AND suggestions.n = issues.number AND suggestions.state IN ('draft', 'edited') "
+    "AND suggestions.kind = ?{extra})"
+)
 _REPO_COLUMNS = (
     "repo, watched, added_at, schema_source, schema_json, migrated, cursor_json, synced_at, "
     "sync_error, settings_schema_json"
@@ -690,6 +697,17 @@ class SqliteIssuesStore:
         elif filters.saved == "stale_90d":
             where.append("issues.updated_at < ?")
             params.append(_time(stale_before(now)))
+        elif filters.saved == "human_needed_could_be_ready":
+            where.append("json_extract(issues.triage_json, '$.readiness') = ?")
+            where.append(
+                _HAS_OPEN_SUGGESTION.format(
+                    extra=" AND json_extract(suggestions.payload_json, '$.ready') = 1"
+                )
+            )
+            params.extend([HUMAN_NEEDED, "readiness_gap"])
+        elif filters.saved == "possible_duplicates":
+            where.append(_HAS_OPEN_SUGGESTION.format(extra=""))
+            params.append("duplicate")
         query = (
             "SELECT issues.json, issues.triage_json FROM issues "
             "JOIN repos ON repos.repo = issues.repo "
