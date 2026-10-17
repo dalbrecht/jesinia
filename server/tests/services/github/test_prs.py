@@ -629,3 +629,38 @@ async def test_inbox_search_stops_at_githubs_thousand_result_cap(prs: PrClient) 
     assert [(pr.repo, pr.number) for pr in inbox] == [("acme/api", 7)]
     pages = [int(c.request.url.params["page"]) for c in route.calls]
     assert max(pages) == SEARCH_MAX_PAGES == 10
+
+
+@respx.mock
+async def test_pr_repo_is_githubs_canonical_spelling(prs: PrClient) -> None:
+    respx.get(f"{API}/user").mock(return_value=Response(200, json=fixture("user")))
+    respx.get(f"{API}/repos/ACME/Web/pulls/8").mock(
+        return_value=Response(200, json=fixture("pull_web_8"))
+    )
+    pr = await prs.get("ACME/Web", 8)
+    assert pr.repo == "acme/web"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [f"{API}/orgs/acme", f"{API}/repos/acme", f"{API}/repos/../../user", f"{API}/repos/a/b/c"],
+)
+@respx.mock
+async def test_search_hits_with_a_bad_repository_url_are_typed_errors(
+    prs: PrClient, url: str
+) -> None:
+    item = {
+        "repository_url": url,
+        "number": 1,
+        "title": "t",
+        "html_url": "https://github.com/acme/api/pull/1",
+        "user": {"login": "alice", "type": "User"},
+        "state": "open",
+        "created_at": "2026-10-14T09:30:00Z",
+    }
+    respx.get(f"{API}/search/issues").mock(
+        return_value=Response(200, json={"total_count": 1, "items": [item]})
+    )
+    respx.get(f"{API}/user").mock(return_value=Response(200, json=fixture("user")))
+    with pytest.raises(GitHubPayloadError, match="repository_url"):
+        await prs.list_review_inbox(["acme/api"])

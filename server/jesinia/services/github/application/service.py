@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """GitHub REST/GraphQL access with ETag revalidation (spec §4.5).
 
-The token comes from ``gh`` or the Keychain on every call and is never stored. A 304
-answer is served from ``github.sqlite`` (304s do not count against the rate limit).
+The token comes from ``gh`` or the Keychain and is held in memory only, for at most
+``TOKEN_TTL_SECONDS``; it is never written anywhere or logged. A 401 drops it and retries
+once with a fresh one. One HTTP client (and its connection pool) serves every request until
+``aclose``. A 304 answer is served from ``github.sqlite`` (304s do not count against the
+rate limit).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import asyncio
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -24,6 +29,8 @@ from jesinia.services.github.domain.pr import (
 
 API = "https://api.github.com"
 TIMEOUT = httpx.Timeout(20.0)
+# `gh auth token` costs a process start per call; an inbox sync makes hundreds of requests.
+TOKEN_TTL_SECONDS = 300.0
 
 
 class GitHubError(RuntimeError):
@@ -91,33 +98,66 @@ def _comment_payload(comment: DraftComment) -> dict[str, object]:
 
 
 class GitHubService:
+    """Shared GitHub access.
+
+    Args:
+        token: where a token comes from (``gh``, then the Keychain).
+        cache: ETag cache for GETs.
+        transport: an httpx transport for tests.
+        clock: seconds, monotonic; for tests of the token's lifetime.
+    """
+
     def __init__(
         self,
         token: TokenSource,
         cache: GitHubCache,
         transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._token = token
         self._cache = cache
         self._transport = transport
+        self._clock = clock
+        self._cached_token: str | None = None
+        self._token_expires = 0.0
+        self._token_lock = asyncio.Lock()
+        self._http: httpx.AsyncClient | None = None
+        self.closed = False
 
-    async def _headers(self) -> dict[str, str]:
-        token = await self._token()
-        if not token:
-            raise GitHubUnavailable(
-                "no GitHub token: run `gh auth login`, or store a PAT in the Keychain "
-                "as `jesinia-github`"
-            )
-        return {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
+    async def aclose(self) -> None:
+        """Close the shared HTTP client; safe to call more than once."""
+        self.closed = True
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
+
+    async def _current_token(self, *, refresh: bool = False) -> str:
+        """The in-memory token, looked up again when it is older than the TTL or when
+        GitHub rejected it. Concurrent callers share one lookup."""
+        async with self._token_lock:
+            if refresh or self._cached_token is None or self._clock() >= self._token_expires:
+                self._cached_token = None
+                token = await self._token()
+                if not token:
+                    raise GitHubUnavailable(
+                        "no GitHub token: run `gh auth login`, or store a PAT in the Keychain "
+                        "as `jesinia-github`"
+                    )
+                self._cached_token = token
+                self._token_expires = self._clock() + TOKEN_TTL_SECONDS
+            return self._cached_token
+
+    @staticmethod
+    def _headers() -> dict[str, str]:
+        return {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=API, timeout=TIMEOUT, transport=self._transport, trust_env=False
-        )
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                base_url=API, timeout=TIMEOUT, transport=self._transport, trust_env=False
+            )
+        return self._http
 
     async def _send(
         self,
@@ -128,24 +168,27 @@ class GitHubService:
         params: Mapping[str, str] | None = None,
         payload: Mapping[str, object] | None = None,
     ) -> httpx.Response:
-        """One request; a network failure becomes a typed error that keeps httpx's cause."""
-        try:
-            async with self._client() as client:
-                resp = await client.request(
+        """One request, authorized with the in-memory token. A 401 drops the token and
+        retries once with a fresh one; a network failure becomes a typed error that keeps
+        httpx's cause."""
+        for attempt in range(2):
+            token = await self._current_token(refresh=attempt > 0)
+            try:
+                resp = await self._client().request(
                     method,
                     path,
                     params=params,
                     json=None if payload is None else dict(payload),
-                    headers=headers,
+                    headers={**headers, "Authorization": f"Bearer {token}"},
                 )
-        except httpx.HTTPError as exc:
-            raise GitHubRequestError(None, str(exc) or type(exc).__name__) from exc
-        if resp.status_code == 401:
-            raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")
-        return resp
+            except httpx.HTTPError as exc:
+                raise GitHubRequestError(None, str(exc) or type(exc).__name__) from exc
+            if resp.status_code != 401:
+                return resp
+        raise GitHubUnavailable("GitHub rejected the token: run `gh auth login` again")
 
     async def get(self, path: str, params: Mapping[str, str] | None = None) -> GitHubResponse:
-        headers = await self._headers()
+        headers = self._headers()
         query = urlencode(sorted((params or {}).items()))
         key = f"{path}?{query}" if query else path
         cached = self._cache.get(key)
@@ -161,7 +204,7 @@ class GitHubService:
         return GitHubResponse(resp.status_code, data, False)
 
     async def graphql(self, query: str, variables: Mapping[str, object]) -> dict[str, object]:
-        headers = await self._headers()
+        headers = self._headers()
         resp = await self._send(
             "POST", "/graphql", headers, payload={"query": query, "variables": dict(variables)}
         )
@@ -178,7 +221,7 @@ class GitHubService:
 
     async def _post(self, path: str, payload: Mapping[str, object]) -> object:
         """A write: never cached or revalidated, and every failure keeps GitHub's cause."""
-        resp = await self._send("POST", path, await self._headers(), payload=payload)
+        resp = await self._send("POST", path, self._headers(), payload=payload)
         data = _json(resp)
         if not resp.is_success:
             raise GitHubRequestError(resp.status_code, github_error_message(data))

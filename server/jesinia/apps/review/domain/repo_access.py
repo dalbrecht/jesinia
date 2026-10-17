@@ -42,8 +42,10 @@ _MAX_PATHS = 8
 _MAX_OPTION_VALUE_CHARS = 100
 
 # Revisions start with an alphanumeric (never an option) and use only ref-name characters
-# plus the ancestry operators ~ ^ and @{...}; ``..`` ranges and ``:`` are refused separately.
-_REVISION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/~^@{}+-]{0,199}")
+# plus the ancestry operators ~ and ^; ``..`` ranges and ``:`` are refused separately. No
+# braces: ``^{/regex}`` would search commit messages with an unbudgeted regex, and the
+# ``@{...}`` reflog forms name nothing in a review worktree.
+_REVISION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/~^@+-]{0,199}")
 _COUNT = re.compile(r"[1-9][0-9]{0,5}")
 # `-L <start>,<end>` only: no `:funcname` regex, no `/regex/` ranges.
 _LINE_SPAN = re.compile(r"([0-9]{1,9}),([0-9]{1,9})")
@@ -258,7 +260,7 @@ def _bracket_end(pattern: str, start: int) -> int:
     return index
 
 
-_REGEX_SUBSET = (
+REGEX_SUBSET = (
     "Allowed: literal text; \\w \\s \\d \\b and \\W \\S \\D; escaped punctuation (\\( \\. \\{); "
     ". [classes] ^ $; * + ? {m} {m,n} (n <= 50) right after one character, class, escape "
     "or .; at most 8 variable repeats (? * + {m,n}), of which at most 4 open-ended (* +), "
@@ -306,12 +308,12 @@ def regex_problem(pattern: str, dialect: RegexDialect) -> str | None:
             elif escaped in tuple("wsdWSD") or (escaped and _is_punctuation(escaped)):
                 previous = "atom"
             else:
-                return f"\\{escaped} is not supported. {_REGEX_SUBSET}"
+                return f"\\{escaped} is not supported. {REGEX_SUBSET}"
             step = 2
         elif char == "[":
             end = _bracket_end(pattern, index)
             if end == len(pattern):
-                return f"a [class] is not closed. {_REGEX_SUBSET}"
+                return f"a [class] is not closed. {REGEX_SUBSET}"
             previous, step = "atom", end - index + 1
         elif char in "^$":
             previous = "anchor"
@@ -319,21 +321,21 @@ def regex_problem(pattern: str, dialect: RegexDialect) -> str | None:
             depth, previous = depth + 1, "start"
         elif char == ")":
             if depth == 0:
-                return f"a ) has no matching (; escape it as \\). {_REGEX_SUBSET}"
+                return f"a ) has no matching (; escape it as \\). {REGEX_SUBSET}"
             if previous == "start":
-                return f"empty groups and empty alternatives are refused. {_REGEX_SUBSET}"
+                return f"empty groups and empty alternatives are refused. {REGEX_SUBSET}"
             depth, previous = depth - 1, "group"
         elif char == "|":
             alternatives += 1
             if previous == "start":
-                return f"empty groups and empty alternatives are refused. {_REGEX_SUBSET}"
+                return f"empty groups and empty alternatives are refused. {REGEX_SUBSET}"
             if alternatives > REGEX_MAX_ALTERNATIVES:
-                return f"at most {REGEX_MAX_ALTERNATIVES} alternatives. {_REGEX_SUBSET}"
+                return f"at most {REGEX_MAX_ALTERNATIVES} alternatives. {REGEX_SUBSET}"
             previous = "start"
         elif char in "*+?{":
             repeat = _REPEAT.match(pattern, index) if char == "{" else None
             if char == "{" and repeat is None:
-                return f"{{ starts a repeat {{m}} or {{m,n}}; escape it as \\{{. {_REGEX_SUBSET}"
+                return f"{{ starts a repeat {{m}} or {{m,n}}; escape it as \\{{. {REGEX_SUBSET}"
             if repeat is not None:
                 low, high = int(repeat[1]), int(repeat[2] or repeat[1])
                 if not low <= high <= REGEX_MAX_REPEAT:
@@ -347,26 +349,24 @@ def regex_problem(pattern: str, dialect: RegexDialect) -> str | None:
             if variable > REGEX_MAX_VARIABLE:
                 return (
                     f"at most {REGEX_MAX_VARIABLE} variable repeats (? * + {{m,n}}). "
-                    + _REGEX_SUBSET
+                    + REGEX_SUBSET
                 )
             if unbounded > REGEX_MAX_UNBOUNDED:
-                return f"at most {REGEX_MAX_UNBOUNDED} open-ended repeats (* +). {_REGEX_SUBSET}"
+                return f"at most {REGEX_MAX_UNBOUNDED} open-ended repeats (* +). {REGEX_SUBSET}"
             if bound_total > REGEX_MAX_BOUND_TOTAL:
-                return (
-                    f"{{m,n}} upper bounds may add up to {REGEX_MAX_BOUND_TOTAL}. {_REGEX_SUBSET}"
-                )
+                return f"{{m,n}} upper bounds may add up to {REGEX_MAX_BOUND_TOTAL}. {REGEX_SUBSET}"
             if previous == "group":
-                return f"groups can't be repeated. {_REGEX_SUBSET}"
+                return f"groups can't be repeated. {REGEX_SUBSET}"
             if previous != "atom":
-                return f"a repeat must follow one character, class, escape or '.'. {_REGEX_SUBSET}"
+                return f"a repeat must follow one character, class, escape or '.'. {REGEX_SUBSET}"
             previous = "repeat"
         else:
             previous = "atom"  # a literal, ".", or a lone "]" or "}" (literals in ERE)
         index += step
     if depth:
-        return f"a ( is not closed. {_REGEX_SUBSET}"
+        return f"a ( is not closed. {REGEX_SUBSET}"
     if previous == "start" and alternatives > 1:
-        return f"empty groups and empty alternatives are refused. {_REGEX_SUBSET}"
+        return f"empty groups and empty alternatives are refused. {REGEX_SUBSET}"
     return None
 
 

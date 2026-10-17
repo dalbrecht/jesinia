@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -12,7 +14,11 @@ from httpx import Response
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
 from jesinia.core.db import DbClass, ModuleDb, open_db
+from jesinia.core.events import EventBus
+from jesinia.core.module import AppContext
+from jesinia.core.scheduler import Scheduler
 from jesinia.services.github.application.service import (
+    TOKEN_TTL_SECONDS,
     GitHubRequestError,
     GitHubService,
     GitHubUnavailable,
@@ -203,3 +209,102 @@ async def test_graphql_server_errors_are_typed(gh: GitHubService) -> None:
         await gh.graphql("{ x }", {})
     respx.post("https://api.github.com/graphql").mock(return_value=Response(200, json={}))
     assert await gh.graphql("{ x }", {}) == {}
+
+
+class _Tokens:
+    """A token source that counts lookups and hands out a new token each time."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self) -> str | None:
+        self.calls += 1
+        return f"gho_secret_{self.calls}"
+
+
+@respx.mock
+async def test_token_is_looked_up_once_per_five_minutes(cache: SqliteGitHubCache) -> None:
+    tokens = _Tokens()
+    now = [1000.0]
+    gh = GitHubService(tokens, cache, clock=lambda: now[0])
+    route = respx.get("https://api.github.com/user").mock(return_value=Response(200, json={}))
+    await asyncio.gather(*(gh.get("/user") for _ in range(10)))
+    for _ in range(10):
+        await gh.get("/user")
+    assert tokens.calls == 1 and route.call_count == 20
+    now[0] += TOKEN_TTL_SECONDS - 1
+    await gh.get("/user")
+    assert tokens.calls == 1
+    now[0] += 2  # past five minutes since the lookup
+    await gh.get("/user")
+    assert tokens.calls == 2
+    assert route.calls[-1].request.headers["Authorization"] == "Bearer gho_secret_2"
+    await gh.aclose()
+
+
+@respx.mock
+async def test_a_401_refreshes_the_token_and_retries_once(cache: SqliteGitHubCache) -> None:
+    tokens = _Tokens()
+    gh = GitHubService(tokens, cache)
+    route = respx.get("https://api.github.com/user").mock(
+        side_effect=[Response(401, json={"message": "Bad credentials"}), Response(200, json={})]
+    )
+    assert (await gh.get("/user")).status == 200
+    assert tokens.calls == 2 and route.call_count == 2
+    assert route.calls[1].request.headers["Authorization"] == "Bearer gho_secret_2"
+    await gh.aclose()
+
+
+@respx.mock
+async def test_a_second_401_is_typed_and_never_shows_the_token(
+    cache: SqliteGitHubCache,
+) -> None:
+    tokens = _Tokens()
+    gh = GitHubService(tokens, cache)
+    route = respx.post("https://api.github.com/graphql").mock(
+        return_value=Response(401, json={"message": "Bad credentials"})
+    )
+    with pytest.raises(GitHubUnavailable) as caught:
+        await gh.graphql("{ viewer { login } }", {})
+    assert tokens.calls == 2 and route.call_count == 2
+    assert "gho_secret" not in str(caught.value) and "gho_secret" not in repr(caught.value)
+    await gh.aclose()
+
+
+@respx.mock
+async def test_one_http_client_serves_every_request(
+    cache: SqliteGitHubCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[httpx.AsyncClient] = []
+    real = httpx.AsyncClient
+
+    def counting(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        client = real(*args, **kwargs)
+        made.append(client)
+        return client
+
+    monkeypatch.setattr("jesinia.services.github.application.service.httpx.AsyncClient", counting)
+    gh = GitHubService(_Tokens(), cache)
+    respx.get("https://api.github.com/user").mock(return_value=Response(200, json={}))
+    respx.post("https://api.github.com/graphql").mock(return_value=Response(200, json={"data": {}}))
+    await gh.get("/user")
+    await gh.graphql("{ x }", {})
+    await gh.get("/user")
+    assert len(made) == 1
+    await gh.aclose()
+    assert gh.closed and made[0].is_closed
+    await gh.aclose()  # idempotent
+
+
+@respx.mock
+async def test_the_client_is_closed_when_the_module_stops(cfg: Config) -> None:
+    mod = GitHubModule(token=_Tokens())
+    ctx = AppContext(cfg, EventBus(), Scheduler())
+    await mod.start(ctx)
+    service = ctx.services["github"]
+    assert isinstance(service, GitHubService)
+    respx.get("https://api.github.com/user").mock(return_value=Response(200, json={}))
+    await service.get("/user")
+    assert not service.closed
+    await mod.stop()
+    assert service.closed

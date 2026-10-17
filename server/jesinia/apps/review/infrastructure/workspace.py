@@ -115,6 +115,7 @@ _DIFF_OPTIONS = (
     "--diff-algorithm=myers",
     "--indent-heuristic",
 )
+_KEEP_PREFIX = "refs/jesinia/keep/"
 _FILE_HEADER = re.compile(rb"^(?=diff --git )", re.MULTILINE)
 _TEMPORARY_PREFIX = ".tmp-"
 
@@ -161,9 +162,12 @@ class GitWorkspace:
 
     async def fetch(self, repo: str, refs: list[str]) -> None:
         mirror = self._mirror(repo)
-        # Refs land under their own names so the objects stay reachable; SHAs as given.
+        # Refs land under their own names, and SHAs under a keep ref, so every fetched
+        # commit stays reachable: `git gc --auto` would otherwise drop a SHA fetched bare
+        # (only FETCH_HEAD names it) weeks later, when a rebase check still needs it.
         specs = [
-            ref if _is_valid(check_sha, ref) else f"+{ref}:{ref}" for ref in map(check_ref, refs)
+            f"+{ref}:{_KEEP_PREFIX}{ref}" if _is_valid(check_sha, ref) else f"+{ref}:{ref}"
+            for ref in map(check_ref, refs)
         ]
         if not specs:
             return
@@ -306,10 +310,16 @@ class GitWorkspace:
         return code == 0
 
     async def prune(self, keep: set[tuple[str, str]]) -> int:
+        """Remove worktrees and keep refs whose ``(repo, sha)`` isn't in ``keep``; return
+        how many worktrees went."""
         kept = {(canonical_repo(repo), check_sha(sha)) for repo, sha in keep}
         removed = 0
-        for trees in sorted(self.root.glob("*/*/trees")):
-            repo = f"{trees.parent.parent.name}/{trees.parent.name}"
+        repos = {
+            p.parent for p in (*self.root.glob("*/*/trees"), *self.root.glob("*/*/mirror.git"))
+        }
+        for repo_dir in sorted(repos):
+            repo = f"{repo_dir.parent.name}/{repo_dir.name}"
+            trees = repo_dir / "trees"
             if not _is_valid(parse_repo, repo) or repo != canonical_repo(repo):
                 continue  # not a directory this workspace created
             try:
@@ -319,14 +329,22 @@ class GitWorkspace:
                 log.warning("review.prune skipped %s: %s", trees, exc)
                 continue
             async with self._lock(repo):
-                for tree in sorted(trees.iterdir()):
+                for tree in sorted(trees.iterdir()) if trees.is_dir() else []:
                     if tree.name.startswith(_TEMPORARY_PREFIX):
                         await _remove(tree)  # left behind by a crash mid-checkout
                     elif _is_valid(check_sha, tree.name) and (repo, tree.name) not in kept:
                         await _remove(tree)
                         removed += 1
                 await self._git(_bare(mirror), "worktree", "prune")
+                await self._drop_keep_refs(mirror, {sha for name, sha in kept if name == repo})
         return removed
+
+    async def _drop_keep_refs(self, mirror: Path, kept: set[str]) -> None:
+        listed = await self._git(_bare(mirror), "for-each-ref", "--format=%(refname)", _KEEP_PREFIX)
+        unkept = [ref for ref in listed.split() if ref.removeprefix(_KEEP_PREFIX) not in kept]
+        if unkept:
+            commands = "".join(f"delete {ref}\n" for ref in unkept)
+            await self._git(_bare(mirror), "update-ref", "--stdin", stdin=commands.encode())
 
     def _mirror(self, repo: str) -> Path:
         owner, name = parse_repo(repo)

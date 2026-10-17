@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from jesinia.services.github.application.service import (
+    API,
     GitHubError,
     GitHubRequestError,
     GitHubService,
@@ -22,6 +23,7 @@ from jesinia.services.github.application.service import (
 from jesinia.services.github.domain.pr import (
     Check,
     CheckState,
+    InvalidPullRequestReferenceError,
     PrCommit,
     PrFile,
     PullRequest,
@@ -151,9 +153,21 @@ def _search_queries(qualifier: str, repos: Sequence[str]) -> list[str]:
     return queries
 
 
+def _payload_repo(repo: str, what: str) -> str:
+    """A repo name GitHub sent, checked before it can reach a request path or a key."""
+    try:
+        return validate_repo(repo)
+    except InvalidPullRequestReferenceError as exc:
+        raise GitHubPayloadError(f"unexpected {what}: {exc}") from exc
+
+
 def _repo_of_search_item(item: Mapping[str, object]) -> str:
-    # repository_url is https://api.github.com/repos/{owner}/{name}
-    return _text(item, "repository_url").split("/repos/", 1)[1]
+    """``owner/name`` from a hit's ``https://api.github.com/repos/{owner}/{name}``."""
+    url = _text(item, "repository_url")
+    prefix = f"{API}/repos/"
+    if not url.startswith(prefix):
+        raise GitHubPayloadError(f"unexpected repository_url in a search hit: {url!r}")
+    return _payload_repo(url.removeprefix(prefix), "repository_url in a search hit")
 
 
 def _pull_request(repo: str, data: Mapping[str, object], viewer: str) -> PullRequest:
@@ -166,8 +180,12 @@ def _pull_request(repo: str, data: Mapping[str, object], viewer: str) -> PullReq
         for r in _list(data.get("requested_reviewers", []), "requested_reviewers")
     )
     state = "merged" if data.get("merged_at") else _text(data, "state")
+    base_repo = _optional_mapping(base, "repo")
     return PullRequest(
-        repo=repo,
+        # GitHub's own spelling: the caller's may differ in case, and queue keys must not.
+        repo=repo
+        if base_repo is None
+        else _payload_repo(_text(base_repo, "full_name"), "base repo"),
         number=_number(data, "number"),
         title=_text(data, "title"),
         body=_optional_text(data, "body") or "",
@@ -196,7 +214,7 @@ def _pull_request_from_search(
     """What a search hit alone says about a PR whose own fetch failed."""
     author, author_is_bot = _account(item, "user")
     return PullRequest(
-        repo=repo,
+        repo=repo,  # from the hit's repository_url: already GitHub's spelling
         number=_number(item, "number"),
         title=_text(item, "title"),
         body=_optional_text(item, "body") or "",

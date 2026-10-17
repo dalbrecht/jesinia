@@ -36,6 +36,7 @@ from jesinia.apps.review.domain.repo_access import (
     GREP_MAX_MATCHES,
     READ_LINES_PER_CALL,
     READ_MAX_BYTES,
+    REGEX_SUBSET,
     AllowanceExhaustedError,
     AutoSkippedFileError,
     CappedOutput,
@@ -497,6 +498,18 @@ async def test_grep_refuses_oversized_or_invalid_patterns(tools: RepoTools) -> N
         await tools.grep(SESSION, "(unclosed")  # git rejects it; the cause is kept
 
 
+def test_grep_description_states_the_regex_subset() -> None:
+    (grep,) = [tool for tool in build_tools(_NoHost()) if tool.name == "repo_grep"]
+    assert REGEX_SUBSET in grep.description
+    assert "nested quantifiers" not in grep.description
+
+
+class _NoHost:
+    @property
+    def repo_tools(self) -> RepoTools:
+        raise AssertionError("descriptions don't need the tools")
+
+
 def test_check_glob_matches_bare_names_at_any_depth() -> None:
     assert check_glob("*.py") == ":(glob)**/*.py"
     assert check_glob("src/*.py") == ":(glob)src/*.py"
@@ -594,6 +607,15 @@ async def test_repo_git_rejects_unsafe_args(tools: RepoTools) -> None:
 )
 def test_check_revision_accepts_ordinary_revisions(revision: str) -> None:
     assert check_revision(revision) == revision
+
+
+@pytest.mark.parametrize(
+    "revision", ["HEAD^{/a.+.+}", "HEAD^{tree}", "main@{0}", "HEAD@{1}", "@{upstream}"]
+)
+def test_check_revision_refuses_brace_syntax(revision: str) -> None:
+    # ^{/regex} would run an unbudgeted regex over commit messages.
+    with pytest.raises(UnsafeGitArgumentError):
+        check_revision(revision)
 
 
 async def test_repo_git_runs_allowlisted_log_show_and_blame(tools: RepoTools, tree: Tree) -> None:
@@ -769,7 +791,7 @@ async def test_spelling_aliases_share_the_allowance(tools: RepoTools, tree: Tree
 
 async def test_show_refuses_blobs_and_trees(tools: RepoTools, tree: Tree) -> None:
     blob = git(tree.path, "rev-parse", "HEAD:pnpm-lock.yaml")
-    for revision in (blob, blob[:10], "HEAD^{tree}", git(tree.path, "rev-parse", "HEAD^{tree}")):
+    for revision in (blob, blob[:10], git(tree.path, "rev-parse", "HEAD^{tree}")):
         with pytest.raises(NotACommitError, match="repo_read"):
             await tools.git(SESSION, "show", [revision])
     with pytest.raises(NotACommitError):
@@ -1151,12 +1173,36 @@ async def test_separate_sessions_still_run_in_parallel(tree: Tree, tmp_path: Pat
     sessions = ReviewSessionRegistry()
     sessions.bind("s1", tree.path)
     sessions.bind("s2", tree.other_tree)
-    counting = _CountingGit(tree.workspace)
+    workspace = tree.workspace
+    both_running = asyncio.Event()
+    running = 0
+    peak = 0
+
+    class Overlapping:
+        async def read_in_tree(
+            self, tree: Path, args: Sequence[str], **kwargs: Any
+        ) -> CappedOutput:
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            if running == 2:
+                both_running.set()
+            try:
+                # Held until the other session's git has started too: if the sessions ran
+                # one after the other, this would time out instead.
+                await asyncio.wait_for(both_running.wait(), timeout=5)
+                return await workspace.read_in_tree(tree, args, **kwargs)
+            finally:
+                running -= 1
+
+        async def regex_dialect(self) -> RegexDialect:
+            return await workspace.regex_dialect()
+
     tools = RepoTools(
-        sessions.worktree_for, counting, sessions.allowance, git_slots=sessions.git_slot
+        sessions.worktree_for, Overlapping(), sessions.allowance, git_slots=sessions.git_slot
     )
     await asyncio.gather(tools.grep("s1", "needle"), tools.grep("s2", "other PR"))
-    assert set(counting.peak.values()) == {1} and len(counting.peak) == 2
+    assert peak == 2
 
 
 async def test_searches_get_a_shorter_time_limit(

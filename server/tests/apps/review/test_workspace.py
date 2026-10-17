@@ -737,3 +737,48 @@ async def test_the_regex_probe_runs_hardened(
     for argv, env in seen:
         assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_TERMINAL_PROMPT"] == "0"
         assert "--no-pager" in argv and "grep.threads=2" in argv
+
+
+def _keep_refs(mirror: Path) -> set[str]:
+    out = subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(mirror),
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/jesinia/keep/",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return set(out.split())
+
+
+async def test_commits_fetched_by_sha_survive_gc(tmp_path: Path, fixture: Fixture) -> None:
+    ws = make_workspace(tmp_path, fixture)
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, [fixture.base, fixture.conflict_head])  # by SHA: no branch refs
+    mirror = ws.root.resolve() / "acme" / "widget" / "mirror.git"
+    (mirror / "FETCH_HEAD").unlink(missing_ok=True)  # weeks later, it names other fetches
+    subprocess.run(
+        ["git", "--git-dir", str(mirror), "gc", "-q", "--prune=now"],
+        check=True,
+        capture_output=True,
+    )
+    assert await ws.merge_base(REPO, fixture.base, fixture.conflict_head) == fixture.base
+    assert _keep_refs(mirror) == {
+        f"refs/jesinia/keep/{fixture.base}",
+        f"refs/jesinia/keep/{fixture.conflict_head}",
+    }
+
+
+async def test_prune_drops_keep_refs_outside_the_keep_set(tmp_path: Path, fixture: Fixture) -> None:
+    ws = make_workspace(tmp_path, fixture)
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, [fixture.base, fixture.head, fixture.conflict_head])
+    mirror = ws.root.resolve() / "acme" / "widget" / "mirror.git"
+    assert not (mirror.parent / "trees").exists()  # a repo with no worktrees yet
+    assert await ws.prune({(REPO, fixture.head)}) == 0
+    assert _keep_refs(mirror) == {f"refs/jesinia/keep/{fixture.head}"}

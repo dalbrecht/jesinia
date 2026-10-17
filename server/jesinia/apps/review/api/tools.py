@@ -14,7 +14,7 @@ from jesinia.apps.review.domain.repo_access import (
     GREP_MAX_MATCHES,
     GREP_MAX_PATTERN_CHARS,
     READ_LINES_PER_CALL,
-    REGEX_MAX_REPEAT,
+    REGEX_SUBSET,
 )
 from jesinia.core.module import CallContext, ToolDef
 
@@ -98,10 +98,9 @@ def build_tools(host: RepoToolsHost) -> Sequence[ToolDef]:
         ToolDef(
             "repo_grep",
             "Search the PR's tracked files: plain text literally, otherwise as an extended "
-            "regex (\\w, \\s and \\d work; backreferences, nested quantifiers and repeat "
-            f"counts over {REGEX_MAX_REPEAT} are refused). Optionally limited by a glob. At most "
-            f"{GREP_MAX_MATCHES} matches; matched lines count against the per-file allowance. "
-            f"{scope}",
+            f"regex limited to a safe subset. {REGEX_SUBSET} Optionally limited by a glob. "
+            f"At most {GREP_MAX_MATCHES} matches; matched lines count against the per-file "
+            f"allowance. {scope}",
             RepoGrepIn,
             repo_grep,
             False,

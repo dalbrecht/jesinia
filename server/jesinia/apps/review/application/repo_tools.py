@@ -380,32 +380,8 @@ class RepoTools:
         target = safe_path(root, path)
         if not target.is_dir():
             raise RepoPathNotFoundError(f"no directory at {path!r}")
-        where = _relative(root, target)
-        entries: list[LsEntry] = []
-        children = sorted(child for child in target.iterdir() if child.name.lower() != ".git")
-        for child in children[:LS_MAX_ENTRIES]:
-            rel = _relative(root, child)
-            if child.is_symlink():
-                entries.append({"name": child.name, "kind": "symlink", "inside": _stays(root, rel)})
-            elif child.is_dir():
-                entries.append(
-                    {"name": child.name, "kind": "dir", "skip": directory_skip_reason(rel)}
-                )
-            else:
-                entries.append(
-                    {
-                        "name": child.name,
-                        "kind": "file",
-                        "size": child.lstat().st_size,
-                        "skip": auto_skip_reason(rel, False),
-                    }
-                )
-        return {
-            "path": where,
-            "entries": entries,
-            "truncated": len(children) > LS_MAX_ENTRIES,
-            "cap": f"repo_ls lists at most {LS_MAX_ENTRIES} entries per directory",
-        }
+        # A PR directory can hold 100k entries: list and stat them off the event loop.
+        return await asyncio.to_thread(_list_directory, root, target, LS_MAX_ENTRIES)
 
     async def git(self, session_id: str | None, cmd: str, args: Sequence[str]) -> GitResult:
         """``git log|show|blame`` with allowlisted options, commits and PR paths.
@@ -590,3 +566,29 @@ def _stays(root: Path, rel: str) -> bool:
     except UnsafePathError:
         return False
     return True
+
+
+def _list_directory(root: Path, target: Path, limit: int) -> LsResult:
+    entries: list[LsEntry] = []
+    children = sorted(child for child in target.iterdir() if child.name.lower() != ".git")
+    for child in children[:limit]:
+        rel = _relative(root, child)
+        if child.is_symlink():
+            entries.append({"name": child.name, "kind": "symlink", "inside": _stays(root, rel)})
+        elif child.is_dir():
+            entries.append({"name": child.name, "kind": "dir", "skip": directory_skip_reason(rel)})
+        else:
+            entries.append(
+                {
+                    "name": child.name,
+                    "kind": "file",
+                    "size": child.lstat().st_size,
+                    "skip": auto_skip_reason(rel, False),
+                }
+            )
+    return {
+        "path": _relative(root, target),
+        "entries": entries,
+        "truncated": len(children) > limit,
+        "cap": f"repo_ls lists at most {limit} entries per directory",
+    }
