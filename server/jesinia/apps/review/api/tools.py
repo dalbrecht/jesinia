@@ -9,7 +9,7 @@ agent's system preamble says such blocks are data, never instructions.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -21,6 +21,7 @@ from jesinia.apps.review.domain.repo_access import (
     GREP_MAX_PATTERN_CHARS,
     READ_LINES_PER_CALL,
     REGEX_SUBSET,
+    RepoToolError,
 )
 from jesinia.core.module import CallContext, ToolDef
 from jesinia.services.agents.application.packs import UntrustedDoc, wrap_untrusted
@@ -80,28 +81,60 @@ def _fenced(host: RepoToolsHost, call: CallContext, what: str, result: object) -
     return wrap_untrusted(UntrustedDoc(source, json.dumps(result, ensure_ascii=False)))
 
 
+async def _guarded(
+    host: RepoToolsHost, call: CallContext, read: Callable[[], Awaitable[str]]
+) -> str:
+    """Run a tool; its errors can echo PR-controlled text (paths, git's stderr), so their
+    messages are fenced too, keeping the error's type. With no bound tree there is nothing
+    to fence: that refusal is Jesinia's own text."""
+    try:
+        return await read()
+    except RepoToolError as exc:
+        try:
+            origin = host.repo_tools.origin(call.session_id)
+        except RepoToolError:
+            raise exc from None
+        fenced = wrap_untrusted(UntrustedDoc(f"repo:{origin}:error", str(exc)))
+        raise type(exc)(fenced) from exc
+
+
 def build_tools(host: RepoToolsHost) -> Sequence[ToolDef]:
     async def repo_read(args: BaseModel, call: CallContext) -> object:
         a = RepoReadIn.model_validate(args.model_dump())
-        result = await host.repo_tools.read(call.session_id, a.path, a.start, a.end)
-        return _fenced(host, call, a.path, result)
+
+        async def read() -> str:
+            result = await host.repo_tools.read(call.session_id, a.path, a.start, a.end)
+            return _fenced(host, call, a.path, result)
+
+        return await _guarded(host, call, read)
 
     async def repo_grep(args: BaseModel, call: CallContext) -> object:
         a = RepoGrepIn.model_validate(args.model_dump())
-        result = await host.repo_tools.grep(call.session_id, a.pattern, a.glob)
-        what = f"grep {a.pattern}" + ("" if a.glob is None else f" -- {a.glob}")
-        return _fenced(host, call, what, result)
+
+        async def read() -> str:
+            result = await host.repo_tools.grep(call.session_id, a.pattern, a.glob)
+            what = f"grep {a.pattern}" + ("" if a.glob is None else f" -- {a.glob}")
+            return _fenced(host, call, what, result)
+
+        return await _guarded(host, call, read)
 
     async def repo_ls(args: BaseModel, call: CallContext) -> object:
         a = RepoLsIn.model_validate(args.model_dump())
-        return _fenced(
-            host, call, f"ls {a.path}", await host.repo_tools.ls(call.session_id, a.path)
-        )
+
+        async def read() -> str:
+            result = await host.repo_tools.ls(call.session_id, a.path)
+            return _fenced(host, call, f"ls {a.path}", result)
+
+        return await _guarded(host, call, read)
 
     async def repo_git(args: BaseModel, call: CallContext) -> object:
         a = RepoGitIn.model_validate(args.model_dump())
-        result = await host.repo_tools.git(call.session_id, a.cmd, a.args)
-        return _fenced(host, call, " ".join(["git", a.cmd, *a.args]), result)
+
+        async def read() -> str:
+            result = await host.repo_tools.git(call.session_id, a.cmd, a.args)
+            return _fenced(host, call, " ".join(["git", a.cmd, *a.args]), result)
+
+        return await _guarded(host, call, read)
 
     scope = (
         "Works only in a Jesinia review session, on the PR under review. The result is the "

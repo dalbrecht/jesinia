@@ -120,6 +120,9 @@ _DIFF_OPTIONS = (
     "--indent-heuristic",
 )
 _KEEP_PREFIX = "refs/jesinia/keep/"
+# The remote's default branch (its HEAD) as last fetched: where the repo's review standards
+# are read from (R39). Outside the keep prefix, so a prune never drops it.
+_DEFAULT_BRANCH_REF = "refs/jesinia/default-branch"
 _FILE_HEADER = re.compile(rb"^(?=diff --git )", re.MULTILINE)
 _TEMPORARY_PREFIX = ".tmp-"
 
@@ -181,6 +184,49 @@ class GitWorkspace:
                 *("fetch", "-q", "--no-tags", "--no-recurse-submodules", "origin", *specs),
                 timeout=self._fetch_timeout,
             )
+
+    async def fetch_default_branch(self, repo: str) -> str:
+        """Fetch the remote's default branch (whatever its HEAD names) into the mirror under
+        its own ref, and return its tip.
+
+        Raises:
+            GitCommandError, GitTimeoutError: e.g. the remote can't be reached.
+        """
+        mirror = self._mirror(repo)
+        async with self._lock(repo):
+            await self._git(
+                _bare(mirror),
+                *("fetch", "-q", "--no-tags", "--no-recurse-submodules", "origin"),
+                f"+HEAD:{_DEFAULT_BRANCH_REF}",
+                timeout=self._fetch_timeout,
+            )
+        tip = await self._git(
+            _bare(mirror),
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{_DEFAULT_BRANCH_REF}^{{commit}}",
+        )
+        return check_sha(tip.strip())
+
+    async def default_branch_head(self, repo: str) -> str:
+        """The default branch's tip as last fetched; fetched now if it never was.
+
+        Raises:
+            GitCommandError, GitTimeoutError: as ``fetch_default_branch``.
+        """
+        tip = await self._commit_of(self._mirror(repo), _DEFAULT_BRANCH_REF)
+        return tip if tip is not None else await self.fetch_default_branch(repo)
+
+    async def _commit_of(self, mirror: Path, ref: str) -> str | None:
+        argv, out, err, code, _ = await self._execute(
+            _bare(mirror), ("rev-parse", "--verify", "-q", "--end-of-options", f"{ref}^{{commit}}")
+        )
+        if code == 1:
+            return None  # no such ref
+        if code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return check_sha(out.decode().strip())
 
     async def worktree(self, repo: str, sha: str) -> Path:
         mirror = self._mirror(repo)

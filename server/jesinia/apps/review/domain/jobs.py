@@ -56,6 +56,10 @@ AGENT_LOGINS = frozenset(
 )
 
 
+class ReviewJobError(Exception):
+    """Base for a review agent job that could not produce its result."""
+
+
 class JobKind(StrEnum):
     """What a review agent job produces; each has a JSON schema in ``schemas/``."""
 
@@ -188,10 +192,16 @@ def recommend(
     - **request_changes** whenever the agent suggests it (it never approves anything);
     - otherwise **needs_closer_look**, with the reasons.
 
-    Malformed evidence (a correctness result without a findings list, a finding with an
-    unknown group or severity) counts as missing, never as clean.
+    Malformed evidence (a correctness result without a findings list or with no checked
+    lines, a finding with an unknown group or severity) counts as missing, never as clean.
     """
-    pass_findings = _findings(correctness.get("findings")) if correctness is not None else None
+    # A pass that reports no checked lines didn't do its job, whatever it found.
+    checked = correctness.get("checked") if correctness is not None else None
+    pass_findings = (
+        _findings(correctness.get("findings"))
+        if correctness is not None and isinstance(checked, list) and checked
+        else None
+    )
     extra = _findings(list(findings))
     blockers: list[str] = []
     state = "none" if ci is None else ci.state

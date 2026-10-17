@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Loads the layered review standards for one PR (spec §5.2).
 
-The repo's own files (``.standards.yml`` and ``.jesinia/review.md``) are read from the PR's
-**base** commit in the bare mirror, through the workspace's hardened git: never from the
-PR's head (a PR can't rewrite the standards it is judged by) and never from a checkout (a
-symlink in the repo is never followed). The author's coding-standards checkout and their
-own standards folder are local files, opened without following symlinks and only when
-they are regular files. Every document is capped at ``MAX_DOCUMENT_BYTES``.
+The repo's own files (``.standards.yml`` and ``.jesinia/review.md``) are read at the commit
+the caller names, from the bare mirror, through the workspace's hardened git. Jobs name the
+tip of the repo's **default branch** (R39): never the PR's head, and never its base, which
+for a stacked PR is another PR's branch, so no PR can rewrite the standards it is judged
+by. Nothing is read from a checkout, so a symlink in the repo is never followed. Parsing
+and layering run in a worker thread, so a large document never stalls the event loop.
+
+The author's coding-standards checkout and their own standards folder are local files,
+opened without following symlinks and only when they are regular files. Every document is
+capped at ``MAX_DOCUMENT_BYTES`` (the config at ``MAX_CONFIG_BYTES``).
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import yaml
 
 from jesinia.apps.review.application.ports import MirrorFiles
 from jesinia.apps.review.domain.standards import (
+    MAX_CONFIG_BYTES,
     MAX_DOCUMENT_BYTES,
     REPO_REVIEW_FILE,
     REPO_STANDARDS_CONFIG,
@@ -34,6 +39,7 @@ from jesinia.apps.review.domain.standards import (
     StandardsDocumentTooLargeError,
     StandardsUnreadableError,
     applies,
+    check_config_nesting,
     expand_languages,
     layer_standards,
     parse_languages,
@@ -68,14 +74,17 @@ class StandardsLoader:
         self._standards_dir = standards_dir
 
     async def load(
-        self, repo: str, base_sha: str, user_dir: Path | None, overrides: Sequence[Override]
+        self, repo: str, standards_sha: str, user_dir: Path | None, overrides: Sequence[Override]
     ) -> Standards:
-        """The merged standards for a PR of ``repo`` whose base commit is ``base_sha``.
+        """The merged standards for a PR of ``repo``, with the repo layer read at commit
+        ``standards_sha`` (the default branch's tip).
 
-        A missing file or folder means that layer is absent.
+        A missing file or folder means that layer is absent; so does a ``review.md`` that
+        isn't text (not UTF-8, or holding a NUL).
 
         Raises:
-            StandardsDocumentTooLargeError: a document over ``MAX_DOCUMENT_BYTES``.
+            StandardsDocumentTooLargeError: a document over its cap.
+            TooManyStandardsSectionsError: a document with too many rules.
             InvalidStandardsConfigError: the repo's ``.standards.yml`` can't be parsed.
             StandardsUnreadableError: the mirror couldn't be read (e.g. it lacks the commit).
         """
@@ -83,25 +92,55 @@ class StandardsLoader:
             canonical = canonical_repo(repo)
         except WorkspaceError as exc:
             raise StandardsUnreadableError(str(exc)) from exc
-        config = await self._repo_file(canonical, base_sha, REPO_STANDARDS_CONFIG)
-        languages = expand_languages(_languages(config))
-        review = await self._repo_file(canonical, base_sha, REPO_REVIEW_FILE)
-        base = await asyncio.to_thread(_base_documents, self._standards_dir(), languages)
-        user = await asyncio.to_thread(_user_documents, user_dir)
-        repo_layer = [] if review is None else [Document(REPO_REVIEW_FILE, "repo", _text(review))]
-        return layer_standards([*base, *repo_layer, *user], overrides)
+        config = await self._repo_file(
+            canonical, standards_sha, REPO_STANDARDS_CONFIG, MAX_CONFIG_BYTES
+        )
+        review = await self._repo_file(
+            canonical, standards_sha, REPO_REVIEW_FILE, MAX_DOCUMENT_BYTES
+        )
+        return await asyncio.to_thread(
+            _assemble, config, review, self._standards_dir(), user_dir, list(overrides)
+        )
 
-    async def _repo_file(self, repo: str, sha: str, path: str) -> bytes | None:
+    async def _repo_file(self, repo: str, sha: str, path: str, limit: int) -> bytes | None:
         try:
-            return await self._mirror.show_file(repo, sha, path, limit=MAX_DOCUMENT_BYTES)
+            return await self._mirror.show_file(repo, sha, path, limit=limit)
         except MirrorFileTooLargeError as exc:
             raise StandardsDocumentTooLargeError(
-                f"{path} in {repo} is over {MAX_DOCUMENT_BYTES // 1024} KB: {exc}"
+                f"{path} in {repo} is over {limit // 1024} KB: {exc}"
             ) from exc
         except WorkspaceError as exc:
             raise StandardsUnreadableError(
                 f"could not read {path} at {sha} in {repo}: {exc}"
             ) from exc
+
+
+def _assemble(
+    config: bytes | None,
+    review: bytes | None,
+    standards_dir: Path | None,
+    user_dir: Path | None,
+    overrides: list[Override],
+) -> Standards:
+    """Parse and layer everything (CPU-bound: run in a worker thread)."""
+    languages = expand_languages(_languages(config))
+    base = _base_documents(standards_dir, languages)
+    repo_text = _repo_review_text(review)
+    repo_layer = [] if repo_text is None else [Document(REPO_REVIEW_FILE, "repo", repo_text)]
+    return layer_standards([*base, *repo_layer, *_user_documents(user_dir)], overrides)
+
+
+def _repo_review_text(review: bytes | None) -> str | None:
+    if review is None:
+        return None
+    try:
+        text = review.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is None or "\0" in text:
+        log.warning("review.standards ignored %s: it is not text", REPO_REVIEW_FILE)
+        return None
+    return text
 
 
 def _text(data: bytes) -> str:
@@ -112,8 +151,12 @@ def _languages(config: bytes | None) -> tuple[str, ...]:
     if config is None:
         return ()
     try:
-        return parse_languages(yaml.safe_load(config.decode("utf-8")))
-    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        text = config.decode("utf-8")
+        check_config_nesting(text)
+        return parse_languages(yaml.safe_load(text))
+    except (UnicodeDecodeError, yaml.YAMLError, RecursionError, ValueError) as exc:
+        # ValueError and RecursionError: what a parser raises on hostile input it didn't
+        # anticipate (the nesting check above should stop the deep cases first).
         raise InvalidStandardsConfigError(f"{REPO_STANDARDS_CONFIG} is not valid: {exc}") from exc
 
 

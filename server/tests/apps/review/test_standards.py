@@ -10,6 +10,7 @@ import errno
 import os
 import sqlite3
 import subprocess
+import time
 from collections.abc import Iterator
 from importlib.resources import files
 from pathlib import Path
@@ -17,7 +18,10 @@ from pathlib import Path
 import pytest
 
 from jesinia.apps.review.domain.standards import (
+    MAX_CONFIG_BYTES,
     MAX_DOCUMENT_BYTES,
+    MAX_RULE_DEPTH,
+    MAX_SECTIONS,
     REPO_REVIEW_FILE,
     REPO_STANDARDS_CONFIG,
     Document,
@@ -28,7 +32,9 @@ from jesinia.apps.review.domain.standards import (
     Standards,
     StandardsDocumentTooLargeError,
     StandardsUnreadableError,
+    TooManyStandardsSectionsError,
     applies,
+    check_config_nesting,
     expand_languages,
     layer_standards,
     parse_languages,
@@ -152,6 +158,65 @@ def test_overrides_are_validated() -> None:
         Override(PY, ("A", " "), "x")
 
 
+def test_layering_is_linear_in_the_number_of_rules() -> None:
+    documents = [
+        Document(f"doc{d}.md", "base", "".join(f"# h{i}\nrule {i}\n" for i in range(2_000)))
+        for d in range(10)
+    ]
+    # Each user document replaces every other rule of one base document.
+    users = [
+        Document(
+            f"mine{d}.md",
+            "user",
+            "".join(f"# doc{d}.md › h{i}\nnew {i}\n" for i in range(0, 2_000, 2)),
+        )
+        for d in range(10)
+    ]
+    started = time.perf_counter()
+    standards = layer_standards([*documents, *users], [])
+    assert time.perf_counter() - started < 0.5
+    assert len(standards.sections) == 20_000
+    assert standards.sections[0].text == "new 0" and standards.sections[1].text == "rule 1"
+
+
+def test_a_document_with_too_many_rules_is_refused() -> None:
+    doc = Document("big.md", "repo", "".join(f"# h{i}\nx\n" for i in range(MAX_SECTIONS + 1)))
+    with pytest.raises(TooManyStandardsSectionsError, match="big.md"):
+        split_sections(doc)
+
+
+def test_rule_ids_are_capped_in_depth() -> None:
+    deep = " › ".join(f"h{i}" for i in range(MAX_RULE_DEPTH + 1))
+    (section,) = split_sections(Document("d.md", "repo", f"# PY.md › {deep}\nx\n"))
+    assert section.doc == "d.md"  # too deep to be a rule ID: an ordinary heading
+    with pytest.raises(InvalidOverrideError, match="deep"):
+        Override("d.md", tuple(f"h{i}" for i in range(MAX_RULE_DEPTH + 1)), "x")
+
+
+def test_standards_over_the_budget_drop_the_base_layer_first_and_say_so() -> None:
+    base = Document(PY, "base", "".join(f"# b{i}\n{'x' * 900}\n" for i in range(20)))
+    repo = Document(REPO_REVIEW_FILE, "repo", f"# r\nrepo rule {'r' * 400}\n")
+    user = Document("mine.md", "user", "# u\nuser rule\n")
+    standards = layer_standards([base, repo, user], [])
+    full = standards.as_prompt()
+    assert standards.as_prompt(limit=len(full)) == full
+    trimmed = standards.as_prompt(limit=8_000)
+    assert len(trimmed) <= 8_000
+    assert "repo rule" in trimmed and "user rule" in trimmed
+    assert "rules from the base layer were left out" in trimmed
+    assert f"## {PY} › b0 [base]" in trimmed  # base rules stay in order while they fit
+    assert f"## {PY} › b19 [base]" not in trimmed
+    tiny = standards.as_prompt(limit=800)
+    assert "user rule" in tiny and "repo rule" not in tiny and len(tiny) <= 800
+    assert "rules from the repo layer were left out (1 of them)" in tiny
+
+
+def test_config_nesting_ignores_quoted_text_and_comments() -> None:
+    check_config_nesting('a: "x \\" [[[[" # [[[[\nb: \'[[[[\'\nc: [d] # [[[[\n# {{{{{\n' + "[" * 32)
+    with pytest.raises(InvalidStandardsConfigError, match="32"):
+        check_config_nesting("[" * 33)
+
+
 def test_no_standards_says_so() -> None:
     assert "No review standards" in layer_standards([], []).as_prompt()
 
@@ -242,7 +307,7 @@ async def test_languages_filter_documents(standards_dir: Path) -> None:
     }
 
 
-async def test_the_loader_reads_repo_files_only_from_the_base_commit(
+async def test_the_loader_reads_repo_files_only_at_the_commit_it_is_given(
     standards_dir: Path, tmp_path: Path
 ) -> None:
     mirror = FakeMirror(
@@ -262,7 +327,6 @@ async def test_the_loader_reads_repo_files_only_from_the_base_commit(
         (REPO, BASE, REPO_STANDARDS_CONFIG),
         (REPO, BASE, REPO_REVIEW_FILE),
     }
-    assert all(limit == MAX_DOCUMENT_BYTES for *_, limit in mirror.calls)
     by_id = {Standards.rule_id(s): s for s in loaded.sections}
     assert (by_id[f"{PY} › Python"].layer, by_id[f"{PY} › Python"].text) == (
         "user",
@@ -317,9 +381,31 @@ async def test_mirror_failures_and_bad_configs_are_typed(standards_dir: Path) ->
         with pytest.raises(InvalidStandardsConfigError):
             await StandardsLoader(bad, lambda: None).load(REPO, BASE, None, [])
 
-    undecodable = FakeMirror({(BASE, REPO_REVIEW_FILE): b"# T\n\xff\n"})
-    loaded = await StandardsLoader(undecodable, lambda: None).load(REPO, BASE, None, [])
-    assert loaded.sections[0].text == "�"
+
+async def test_a_binary_or_undecodable_repo_layer_is_absent() -> None:
+    for content in (b"# T\n\xff\n", b"# T\nnul\0here\n"):
+        mirror = FakeMirror({(BASE, REPO_REVIEW_FILE): content})
+        loaded = await StandardsLoader(mirror, lambda: None).load(REPO, BASE, None, [])
+        assert loaded.sections == []
+
+
+async def test_hostile_standards_configs_are_typed_never_raw() -> None:
+    deep = b"languages: " + b"[" * 50_000 + b"]" * 50_000 + b"\n"
+    nested_maps = b"languages: " + b"{a: " * 5_000 + b"1" + b"}" * 5_000 + b"\n"
+    for config in (deep, nested_maps):
+        mirror = FakeMirror({(BASE, REPO_STANDARDS_CONFIG): config})
+        with pytest.raises(InvalidStandardsConfigError, match="nest"):
+            await StandardsLoader(mirror, lambda: None).load(REPO, BASE, None, [])
+    # Brackets inside quoted strings are text, not nesting.
+    quoted = b"version: 1\nlanguages: [python]\nnote: '" + b"[" * 100 + b"'\n"
+    ok = FakeMirror({(BASE, REPO_STANDARDS_CONFIG): quoted})
+    assert (await StandardsLoader(ok, lambda: None).load(REPO, BASE, None, [])).sections == []
+    # The config gets its own, smaller cap.
+    capped = FakeMirror({})
+    await StandardsLoader(capped, lambda: None).load(REPO, BASE, None, [])
+    limits = {path: limit for _, _, path, limit in capped.calls}
+    assert limits[REPO_STANDARDS_CONFIG] == MAX_CONFIG_BYTES
+    assert limits[REPO_REVIEW_FILE] == MAX_DOCUMENT_BYTES
 
 
 async def test_symlinks_and_special_files_in_local_layers_are_not_followed(
@@ -492,3 +578,92 @@ async def test_unreadable_local_files_and_bad_repo_names_are_typed(
     loader = StandardsLoader(FakeMirror({}), lambda: standards_dir)
     with pytest.raises(StandardsUnreadableError, match="Permission denied"):
         await loader.load(REPO, BASE, None, [])
+
+
+async def test_loading_large_standards_never_blocks_the_event_loop(standards_dir: Path) -> None:
+    body = "".join(f"# h{i}\n{'w' * 80}\n" for i in range(MAX_SECTIONS))
+    mirror = FakeMirror({(BASE, REPO_REVIEW_FILE): body.encode()})
+    loader = StandardsLoader(mirror, lambda: standards_dir)
+    gaps: list[float] = []
+    done = asyncio.Event()
+
+    async def ticker() -> None:
+        last = time.perf_counter()
+        while not done.is_set():
+            await asyncio.sleep(0.005)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+
+    tick = asyncio.create_task(ticker())
+    loaded = await loader.load(REPO, BASE, None, [])
+    done.set()
+    await tick
+    assert len(loaded.sections) > MAX_SECTIONS
+    assert max(gaps) < 0.25
+
+
+@pytest.fixture
+def stacked_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[GitWorkspace, Path, str]]:
+    """main carries the repo's real standards; stack-a (another PR's branch, the base of a
+    stacked PR) rewrites them."""
+    for key, value in GIT_ENV.items():
+        monkeypatch.setenv(key, value)
+    empty = tmp_path / "empty-gitconfig"
+    empty.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    work = tmp_path / "work"
+    subprocess.run(["git", "clone", "-q", str(remote), str(work)], check=True)
+    git(work, "checkout", "-q", "-b", "main")
+    _write(work / REPO_STANDARDS_CONFIG, "version: 1\nlanguages: [python]\n")
+    _write(work / REPO_REVIEW_FILE, "# Tests\nEvery bug fix needs a regression test.\n")
+    main = commit_all(work, "main")
+    git(work, "checkout", "-q", "-b", "stack-a")
+    _write(work / REPO_STANDARDS_CONFIG, "version: 1\nlanguages: [typescript]\n")
+    _write(work / REPO_REVIEW_FILE, "# sec-01_security_standards.md › Security\n\n")
+    commit_all(work, "PR A weakens the standards")
+    git(work, "push", "-q", "origin", "main", "stack-a")
+    workspace = GitWorkspace(tmp_path / "data" / "review" / "repos", lambda repo: str(remote))
+
+    async def fetch() -> None:
+        await workspace.ensure_mirror(REPO)
+        await workspace.fetch(REPO, ["refs/heads/stack-a"])
+
+    asyncio.run(fetch())
+    yield workspace, work, main
+
+
+async def test_a_stacked_base_branch_cannot_rewrite_the_standards(
+    stacked_repo: tuple[GitWorkspace, Path, str], standards_dir: Path
+) -> None:
+    workspace, work, main = stacked_repo
+    # The default branch's tip is fetched on first use and kept under its own ref.
+    assert await workspace.default_branch_head(REPO) == main
+    loader = StandardsLoader(workspace, lambda: standards_dir)
+    standards = await loader.load(REPO, main, None, [])
+    assert PY in _docs(standards) and "lang-06_typescript_standards.md" not in _docs(standards)
+    assert "sec-01_security_standards.md" in _docs(standards)
+    assert "Every bug fix needs a regression test." in standards.as_prompt()
+
+    # A newer default-branch tip is picked up by the next refresh, not before.
+    git(work, "checkout", "-q", "main")
+    _write(work / "README.md", "moved on\n")
+    newer = commit_all(work, "main moves on")
+    git(work, "push", "-q", "origin", "main")
+    assert await workspace.default_branch_head(REPO) == main
+    assert await workspace.fetch_default_branch(REPO) == newer
+    assert await workspace.default_branch_head(REPO) == newer
+
+
+async def test_mirror_reads_of_missing_repos_and_commits_fail_typed(
+    stacked_repo: tuple[GitWorkspace, Path, str], tmp_path: Path
+) -> None:
+    workspace, _, main = stacked_repo
+    with pytest.raises(GitCommandError):
+        await workspace.default_branch_head("acme/never-mirrored")
+    with pytest.raises(GitCommandError):
+        await workspace.commit_messages(REPO, "e" * 40, main, limit=1 << 20)

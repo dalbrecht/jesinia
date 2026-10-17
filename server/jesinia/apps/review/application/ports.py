@@ -43,6 +43,13 @@ class Workspace(Protocol):
     async def fetch(self, repo: str, refs: list[str]) -> None:
         """Fetch full refs (``refs/pull/7/head``) into the same names, or bare SHAs."""
 
+    async def fetch_default_branch(self, repo: str) -> str:
+        """Fetch the remote's default branch into the mirror (with the PR's refs, so the
+        repo's review standards are current) and return its tip."""
+
+    async def default_branch_head(self, repo: str) -> str:
+        """The default branch's tip as last fetched (fetched now if never)."""
+
     async def worktree(self, repo: str, sha: str) -> Path:
         """A detached checkout of ``sha``; calling again returns the same path."""
 

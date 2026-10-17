@@ -5,7 +5,8 @@ Three layers, applied in order, later ones winning:
 
 - ``base``: the author's coding-standards checkout, filtered to the repo's languages (per
   the repo's ``.standards.yml``) plus the common documents;
-- ``repo``: ``.jesinia/review.md`` in the reviewed repo, as of the PR's base commit;
+- ``repo``: ``.jesinia/review.md`` in the reviewed repo, at the tip of its default branch
+  (never PR content);
 - ``user``: the author's own documents, then the overrides stored in ``review.sqlite``.
 
 A rule is a Markdown section, identified by its document and heading path
@@ -18,6 +19,7 @@ new rule of the document it is in. A replacement with no text removes the rule.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -27,6 +29,13 @@ LAYERS: tuple[Layer, ...] = ("base", "repo", "user")
 RULE_SEPARATOR = " › "
 # Every standards document (base files, the repo's file, user files) is refused past this.
 MAX_DOCUMENT_BYTES = 256 * 1024
+# The repo's .standards.yml is a short config: refused past this, and past this nesting.
+MAX_CONFIG_BYTES = 64 * 1024
+MAX_CONFIG_NESTING = 32
+# Rules per document, and headings in a rule ID: past these a document is refused (or a
+# heading isn't read as a rule ID), so layering stays fast whatever a repo commits.
+MAX_SECTIONS = 2_000
+MAX_RULE_DEPTH = 12
 REPO_STANDARDS_CONFIG = ".standards.yml"
 REPO_REVIEW_FILE = ".jesinia/review.md"
 
@@ -48,12 +57,16 @@ class InvalidStandardsConfigError(StandardsError):
     """The repo's ``.standards.yml`` isn't valid YAML of the documented shape."""
 
 
+class TooManyStandardsSectionsError(StandardsError):
+    """A standards document has more than ``MAX_SECTIONS`` rules."""
+
+
 class StandardsDocumentTooLargeError(StandardsError):
     """A standards document is over ``MAX_DOCUMENT_BYTES``; it was not read."""
 
 
 class StandardsUnreadableError(StandardsError):
-    """A standards layer couldn't be read (the mirror lacks the base commit, git failed)."""
+    """A standards layer couldn't be read (the mirror lacks the commit, git failed)."""
 
 
 class InvalidOverrideError(StandardsError):
@@ -92,6 +105,8 @@ class Override:
             raise InvalidOverrideError("an override must name a document")
         if any(not heading.strip() for heading in self.heading_path):
             raise InvalidOverrideError(f"an override has an empty heading: {self.heading_path!r}")
+        if len(self.heading_path) > MAX_RULE_DEPTH:
+            raise InvalidOverrideError(f"an override is nested too deep (over {MAX_RULE_DEPTH})")
 
 
 @dataclass(frozen=True)
@@ -105,25 +120,55 @@ class Standards:
         """``doc › h1 › h2``: how findings and metrics name the rule they apply."""
         return RULE_SEPARATOR.join((section.doc, *section.heading_path))
 
-    def as_prompt(self) -> str:
-        """The rules as Markdown for an agent, each headed by its rule ID and layer."""
+    def as_prompt(self, limit: int | None = None) -> str:
+        """The rules as Markdown for an agent, each headed by its rule ID and layer.
+
+        With ``limit`` (characters), rules are left out until the text fits: the base
+        layer's from its end first, then the repo layer's, then the user layer's, and the
+        text says how many were left out from which layer.
+        """
         if not self.sections:
             return (
                 "# Review standards\n\nNo review standards are configured: judge by general "
                 "good practice, and leave each finding's rule empty."
             )
-        rules = "\n\n".join(
+        blocks = [
             f"## {self.rule_id(section)} [{section.layer}]\n\n{section.text}"
             for section in self.sections
-        )
-        return (
-            "# Review standards\n\n"
-            "Layers, earliest first: base (the author's coding standards), repo (the repo's "
-            ".jesinia/review.md at the PR's base commit) and user (the author's own "
-            "overrides); later layers have already replaced what they override. When a "
-            "finding or metric applies a rule, cite its rule ID (the heading below, without "
-            "the layer) and its layer.\n\n" + rules
-        )
+        ]
+        kept = [True] * len(blocks)
+        dropped: Counter[str] = Counter()
+
+        def render() -> str:
+            notes = "".join(
+                f"Note: rules from the {layer} layer were left out ({dropped[layer]} of them) "
+                f"because the standards exceed this prompt's {limit}-character budget.\n\n"
+                for layer in LAYERS
+                if dropped[layer]
+            )
+            rules = "\n\n".join(block for block, keep in zip(blocks, kept, strict=True) if keep)
+            return f"{_PROMPT_HEADER}{notes}{rules}"
+
+        size = len(render())
+        for layer in LAYERS:
+            for index in reversed(range(len(blocks))):
+                if limit is None or size <= limit:
+                    break
+                if self.sections[index].layer == layer:
+                    kept[index] = False
+                    dropped[layer] += 1
+                    size = len(render()) if dropped[layer] == 1 else size - len(blocks[index]) - 2
+        text = render()
+        return text if limit is None else text[:limit]
+
+
+_PROMPT_HEADER = (
+    "# Review standards\n\n"
+    "Layers, earliest first: base (the author's coding standards), repo (the repo's "
+    ".jesinia/review.md on its default branch) and user (the author's own overrides); later "
+    "layers have already replaced what they override. When a finding or metric applies a "
+    "rule, cite its rule ID (the heading below, without the layer) and its layer.\n\n"
+)
 
 
 def _target(heading: str) -> tuple[str, tuple[str, ...]] | None:
@@ -131,7 +176,7 @@ def _target(heading: str) -> tuple[str, tuple[str, ...]] | None:
     if RULE_SEPARATOR.strip() not in heading:
         return None
     parts = [part.strip() for part in heading.split(RULE_SEPARATOR.strip())]
-    if any(not part for part in parts):
+    if any(not part for part in parts) or len(parts) - 1 > MAX_RULE_DEPTH:
         return None
     return parts[0], tuple(parts[1:])
 
@@ -151,6 +196,10 @@ def split_sections(document: Document) -> list[Section]:
     def close() -> None:
         text = "\n".join(lines).strip()
         if path or text:
+            if len(sections) == MAX_SECTIONS:
+                raise TooManyStandardsSectionsError(
+                    f"{document.name} has more than {MAX_SECTIONS} rules"
+                )
             sections.append(Section(doc, path, document.layer, text))
 
     for line in document.text.splitlines():
@@ -183,8 +232,7 @@ def split_sections(document: Document) -> list[Section]:
     return sections
 
 
-def _is_within(key: tuple[str, tuple[str, ...]], root: tuple[str, tuple[str, ...]]) -> bool:
-    return key[0] == root[0] and key[1][: len(root[1])] == root[1]
+Key = tuple[str, tuple[str, ...]]
 
 
 def layer_standards(documents: Iterable[Document], overrides: Sequence[Override]) -> Standards:
@@ -192,7 +240,11 @@ def layer_standards(documents: Iterable[Document], overrides: Sequence[Override]
     layer), then the stored ``overrides``. A rule from a later source replaces the earlier
     rule with its ID, in its place, together with every rule beneath it from earlier
     sources; a replacement with blank text removes the rule. Rules with no text of their
-    own are left out."""
+    own are left out.
+
+    Linear in the number of rules: each rule is indexed under every heading above it, so
+    a replacement finds the rules beneath it without scanning the rest.
+    """
     ordered = sorted(documents, key=lambda document: LAYERS.index(document.layer))
     # (source, section): each document is one source and each override another, in order.
     incoming = [
@@ -204,17 +256,60 @@ def layer_standards(documents: Iterable[Document], overrides: Sequence[Override]
         (len(ordered) + index, Section(o.doc, o.heading_path, "user", o.text.strip()))
         for index, o in enumerate(overrides)
     ]
-    merged: dict[tuple[str, tuple[str, ...]], tuple[int, Section]] = {}
+    merged: dict[Key, tuple[int, Section]] = {}
+    beneath: dict[Key, set[Key]] = {}
+
+    def prefixes(key: Key) -> Iterable[Key]:
+        return ((key[0], key[1][:depth]) for depth in range(len(key[1])))
+
     for source, section in incoming:
         key = (section.doc, section.heading_path)
-        for other in [
-            other
-            for other, (earlier, _) in merged.items()
-            if other != key and earlier < source and _is_within(other, key)
-        ]:
+        for other in [o for o in beneath.get(key, ()) if merged[o][0] < source]:
             del merged[other]
+            for prefix in prefixes(other):
+                beneath[prefix].discard(other)
+        if key not in merged:
+            for prefix in prefixes(key):
+                beneath.setdefault(prefix, set()).add(key)
         merged[key] = (source, section)  # an existing key keeps its place in the order
     return Standards([section for _, section in merged.values() if section.text.strip()])
+
+
+def check_config_nesting(text: str) -> None:
+    """Refuse a ``.standards.yml`` whose flow collections (``[``/``{``) nest deeper than
+    ``MAX_CONFIG_NESTING``, before a YAML parser recurses into it. Quoted strings and
+    comments don't count.
+
+    Raises:
+        InvalidStandardsConfigError: nested too deep.
+    """
+    depth = 0
+    quote: str | None = None
+    escaped = comment = False
+    previous = "\n"
+    for char in text:
+        if comment:
+            comment = char != "\n"
+        elif quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "#" and previous in " \t\n":
+            comment = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_CONFIG_NESTING:
+                raise InvalidStandardsConfigError(
+                    f"{REPO_STANDARDS_CONFIG} nests deeper than {MAX_CONFIG_NESTING} levels"
+                )
+        elif char in "]}":
+            depth = max(0, depth - 1)
+        previous = char
 
 
 def parse_languages(config: object) -> tuple[str, ...]:
