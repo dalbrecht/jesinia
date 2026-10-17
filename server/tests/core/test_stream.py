@@ -187,7 +187,9 @@ async def test_event_ids_keep_rising_across_restarts() -> None:
 
 
 def test_boot_id_is_the_time_in_microseconds(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import time
+
     from jesinia.core import stream
 
-    monkeypatch.setattr(stream.time, "time_ns", lambda: 1_790_000_000_123_456_789)
+    monkeypatch.setattr(time, "time_ns", lambda: 1_790_000_000_123_456_789)
     assert stream.boot_id() == 1_790_000_000_123_456
