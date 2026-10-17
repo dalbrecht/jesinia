@@ -5584,7 +5584,7 @@
           "review"
         ],
         "summary": "Preview",
-        "description": "Exactly what posting would send, its warnings and the digest to post it with.\nChanges nothing (beyond seeding the drafts), so it takes no key.",
+        "description": "Exactly what posting would send, its warnings and the digest to post it with.",
         "operationId": "preview_api_review_prs__owner___repo___number__post_preview_post",
         "parameters": [
           {
@@ -6439,6 +6439,18 @@
             "type": "boolean",
             "title": "Outside Diff",
             "default": false
+          },
+          "in_body": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Body",
+            "description": "Read only: whether it posts in the review body (GitHub can't anchor it inline); null while GitHub's file list for the head isn't cached"
           }
         },
         "type": "object",
@@ -6486,13 +6498,19 @@
             },
             "type": "array",
             "title": "Drafts"
+          },
+          "files_pending": {
+            "type": "boolean",
+            "title": "Files Pending",
+            "description": "GitHub's file list for the head isn't cached yet, so where each draft posts is unknown; the preview reads it"
           }
         },
         "type": "object",
         "required": [
           "round_id",
           "summary",
-          "drafts"
+          "drafts",
+          "files_pending"
         ],
         "title": "DraftsOut"
       },

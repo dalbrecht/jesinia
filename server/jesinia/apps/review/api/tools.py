@@ -11,6 +11,7 @@ agent's system preamble says such blocks are data, never instructions.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Literal, Protocol
 
@@ -215,6 +216,8 @@ class ReviewPrIn(BaseModel):
 
 
 _GROUPS = frozenset({"correctness", "design", "style"})
+# A GitHub login (apps end in [bot]); anything else is fenced like the PR's text.
+_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?")
 _SEVERITIES = frozenset({"critical", "important", "minor"})
 
 
@@ -237,7 +240,9 @@ def _row_for_agent(row: QueueRow) -> dict[str, object]:
     return {
         "repo": row.repo,
         "number": row.number,
-        "author": row.author,
+        "author": row.author
+        if _LOGIN.fullmatch(row.author)
+        else _untrusted(f"{where}:author", row.author),
         "author_kind": row.author_kind,
         "kind": row.kind,
         "depth": row.depth,
@@ -295,7 +300,10 @@ def build_review_tools(host: ReviewToolsHost) -> Sequence[ToolDef]:
         return {
             "synced_at": None if view.synced_at is None else view.synced_at.isoformat(),
             "syncing": view.syncing,
-            "sync_error": view.sync_error,
+            # GitHub's and the network's error text: not Jesinia's words.
+            "sync_error": None
+            if view.sync_error is None
+            else _untrusted("github:sync", view.sync_error),
             "rows": [_row_for_agent(row) for row in view.rows],
         }
 

@@ -1183,7 +1183,6 @@ export interface paths {
         /**
          * Preview
          * @description Exactly what posting would send, its warnings and the digest to post it with.
-         *     Changes nothing (beyond seeding the drafts), so it takes no key.
          */
         post: operations["preview_api_review_prs__owner___repo___number__post_preview_post"];
         delete?: never;
@@ -1356,6 +1355,11 @@ export interface components {
              * @default false
              */
             outside_diff: boolean;
+            /**
+             * In Body
+             * @description Read only: whether it posts in the review body (GitHub can't anchor it inline); null while GitHub's file list for the head isn't cached
+             */
+            in_body?: boolean | null;
         };
         /** DraftsIn */
         DraftsIn: {
@@ -1376,6 +1380,11 @@ export interface components {
             summary: string;
             /** Drafts */
             drafts: components["schemas"]["DraftBody"][];
+            /**
+             * Files Pending
+             * @description GitHub's file list for the head isn't cached yet, so where each draft posts is unknown; the preview reads it
+             */
+            files_pending: boolean;
         };
         /** EngageIn */
         EngageIn: {

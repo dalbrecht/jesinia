@@ -414,7 +414,8 @@ class RepoTools:
                 withheld += 1
                 continue
             size += entry_size
-            if self._reads is not None:
+            if self._reads is not None and len(text) <= GREP_MAX_LINE_CHARS:
+                # A line shown cut short wasn't read: only whole lines count (M7).
                 self._reads.record(session, rel, line, line)
             matches.append(
                 {

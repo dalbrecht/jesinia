@@ -289,7 +289,10 @@ async def test_post_is_one_atomic_review(env: Env) -> None:
     assert await env.post("REQUEST_CHANGES", key="k2") == URL
     assert len(env.github.posted) == 1
     sent = env.github.posted[0]
-    assert sent["body"] == preview.body and sent["comments"] == list(preview.comments)
+    attempt = env.store.postings(env.round_id)[-1]
+    assert sent["body"] == f"{preview.body}\n\n<!-- jesinia-posting:{attempt.id} -->"
+    assert sent["comments"] == list(preview.comments)
+    assert "invisible marker" in " ".join(preview.notes)
     stored = env.store.round(env.round_id)
     assert stored is not None and stored.posted_review_url == URL and stored.done
     # The same key again is the same posting: nothing new is sent.
@@ -301,11 +304,13 @@ async def test_outside_diff_findings_go_in_the_body_and_the_review_posts(
     conn: sqlite3.Connection,
 ) -> None:
     env = _env(conn, [finding(2, 3, "Inside the diff."), finding(40, 41, "Far below the diff.")])
-    drafts = (await env.service.drafts(env.round_id)).drafts
-    assert [("Inside the diff." in d.body, d.outside_diff) for d in drafts] == [
+    shown = await env.service.drafts(env.round_id)
+    assert not shown.files_pending
+    assert [("Inside the diff." in d.body, d.outside_diff) for d in shown.drafts] == [
         (True, False),
-        (False, True),
+        (False, False),  # only the author marks a draft outside the diff
     ]
+    assert shown.in_body == (False, True)  # where it posts, worked out on each read
     preview = await env.service.preview(env.round_id, "COMMENT")
     assert len(preview.comments) == 1 and preview.comments[0].line == 3
     assert "Far below the diff." in preview.body and "src/app.py" in preview.body
@@ -404,10 +409,25 @@ async def test_a_stale_preview_is_refused(env: Env) -> None:
 async def test_a_comment_needs_a_body_or_comments(env: Env) -> None:
     await env.service.save_drafts(env.round_id, "   ", [])
     preview = await env.service.preview(env.round_id, "COMMENT")
-    assert "needs a summary" in " ".join(preview.notes)
-    with pytest.raises(EmptyReview):
-        await env.post("COMMENT")
+    assert "needs a summary or an inline comment" in " ".join(preview.notes)
+    for event in ("COMMENT", "REQUEST_CHANGES"):
+        with pytest.raises(EmptyReview):
+            await env.post(event)
     assert await env.post("APPROVE") == URL  # an approval may be bare
+
+
+async def test_an_inline_only_request_changes_posts(env: Env) -> None:
+    only = [Draft("src/app.py", "Fix this line.", line=3, side="RIGHT")]
+    await env.service.save_drafts(env.round_id, "", only)
+    preview = await env.service.preview(env.round_id, "REQUEST_CHANGES")
+    assert (
+        preview.body == ""
+        and len(preview.comments) == 1
+        and not any("needs a summary" in note for note in preview.notes)
+    )
+    assert await env.post("REQUEST_CHANGES") == URL
+    sent = env.github.posted[0]
+    assert str(sent["body"]).startswith("<!-- jesinia-posting:")  # the marker alone
 
 
 async def test_a_draft_outside_githubs_diff_moves_to_the_body(env: Env) -> None:
@@ -428,12 +448,27 @@ async def test_a_draft_outside_githubs_diff_moves_to_the_body(env: Env) -> None:
         assert text in preview.body
 
 
+async def test_drafts_never_read_github_and_a_missing_file_list_is_not_stored(env: Env) -> None:
+    conn = env.store._conn
+    conn.execute("DELETE FROM pr_files")
+    env.source.error = AssertionError("drafts must not ask GitHub")
+    shown = await env.service.drafts(env.round_id)
+    assert shown.files_pending and shown.in_body is None and env.source.calls == 0
+    assert [d.outside_diff for d in shown.drafts] == [False]  # seeded inline regardless
+    # GitHub is back: the preview reads the list and the finding anchors inline.
+    env.source.error = None
+    env.source.result = [PrFile("src/app.py", "modified", 3, 2, PATCH, None)]
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    assert len(preview.comments) == 1
+
+
 async def test_files_missing_from_the_cache_are_read_once_or_degrade_visibly(env: Env) -> None:
     conn = env.store._conn
     conn.execute("DELETE FROM pr_files")
     env.source.result = [PrFile("src/app.py", "modified", 3, 2, PATCH, None)]
     preview = await env.service.preview(env.round_id, "COMMENT")
-    assert len(preview.comments) == 1 and env.source.calls == 1 and preview.notes == ()
+    assert len(preview.comments) == 1 and env.source.calls == 1
+    assert not any("couldn't be read" in note for note in preview.notes)
 
     conn.execute("DELETE FROM pr_files")
     env.source.error = PrHeadMovedError("acme/web#1 is now at ffff")
@@ -516,7 +551,6 @@ def test_drafts_are_validated_like_githubs_comments() -> None:
 
 
 def test_seed_drafts_take_well_formed_findings_only() -> None:
-    lines = commentable_lines([PrFile("src/app.py", "modified", 3, 2, PATCH, None)])
     seeded = seed_drafts(
         [
             finding(3, 3, "One line."),
@@ -526,35 +560,84 @@ def test_seed_drafts_take_well_formed_findings_only() -> None:
             {"severity": "bogus"},
             "not a finding",
             finding(5, 2, "Backwards."),
+            finding(40, 40, "Outside GitHub's diff, still inline until placed."),
         ],
-        lines,
     )  # fmt: skip
     assert [(d.line, d.start_line, d.outside_diff) for d in seeded] == [
         (3, None, False),
         (4, 2, False),
         (12, None, False),
+        (40, None, False),
     ]
     assert seeded[0].body.startswith("**Important** (correctness)")
     assert "lang-01_python_standards.md › Errors" in seeded[0].body
     assert seeded[2].origin_finding == "style/minor"
 
 
-async def test_a_lost_review_found_after_the_drafts_changed_is_kept_but_not_reused(
-    env: Env,
-) -> None:
+async def test_a_lost_response_then_a_changed_digest_gives_exactly_one_review(env: Env) -> None:
     env.github.error, env.github.lose_response = GitHubRequestError(None, "ReadTimeout"), True
     with pytest.raises(PostingFailed):
         await env.post("COMMENT")
     env.github.error, env.github.lose_response = None, False
     await env.service.save_drafts(env.round_id, "A second, different review.", [])
-    env.github.reviews_on_pr.append(  # GitHub lists the review without its URL once
-        ReviewSummary("me", False, "COMMENTED", HEAD, env.clock(), 0, "x", None)
-    )
-    assert await env.post("COMMENT", key="k2") == URL  # the fake's URL for every post
-    assert len(env.github.posted) == 2
-    attempts = env.store.postings(env.round_id)
-    # The lost first review is on GitHub (kept with the round); the new one was posted.
-    assert [a.state for a in attempts] == ["posted", "posted"]
+    # The new preview's digest differs; the uncertain posting is reconciled first.
+    assert await env.post("COMMENT", key="k2") == URL
+    assert len(env.github.posted) == 1
+    assert [a.state for a in env.store.postings(env.round_id)] == ["posted"]
+
+
+async def test_a_5xx_on_create_review_is_uncertain_and_the_retry_adopts(env: Env) -> None:
+    env.github.error, env.github.lose_response = GitHubRequestError(502, "Bad Gateway"), True
+    with pytest.raises(PostingFailed) as lost:
+        await env.post("COMMENT")
+    assert lost.value.maybe_posted
+    assert [a.state for a in env.store.postings(env.round_id)] == ["uncertain"]
+    env.github.error, env.github.lose_response = None, False
+    assert await env.post("COMMENT", key="k2") == URL
+    assert len(env.github.posted) == 1
+
+
+async def test_adoption_matches_only_jesinias_marker(env: Env) -> None:
+    preview = await env.service.preview(env.round_id, "COMMENT")
+    env.github.error = GitHubRequestError(None, "ConnectError")  # never reached GitHub
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error = None
+    # A manual review with the very same body, and a bare approval, by the viewer.
+    env.github.reviews_on_pr = [
+        ReviewSummary("me", False, "COMMENTED", HEAD, env.clock(), 0, preview.body, "u1"),
+        ReviewSummary("me", False, "APPROVED", HEAD, env.clock(), 0, "", "u2"),
+        ReviewSummary("bob", False, "COMMENTED", HEAD, env.clock(), 0,
+                      "<!-- jesinia-posting:1 -->", "u3"),
+        ReviewSummary("me", False, "COMMENTED", NEW_HEAD, env.clock(), 0,
+                      "<!-- jesinia-posting:1 -->", "u4"),
+    ]  # fmt: skip
+    assert await env.post("COMMENT", key="k2") == URL  # posted, not adopted
+    assert len(env.github.posted) == 1
+    assert [a.state for a in env.store.postings(env.round_id)] == ["not_posted", "posted"]
+
+
+async def test_a_marked_review_listed_without_a_url_is_adopted_with_the_prs(env: Env) -> None:
+    env.github.error, env.github.lose_response = GitHubRequestError(None, "ReadTimeout"), True
+    with pytest.raises(PostingFailed):
+        await env.post("COMMENT")
+    env.github.error, env.github.lose_response = None, False
+    env.github.reviews_on_pr = [replace(r, url=None) for r in env.github.reviews_on_pr]
+    assert await env.post("COMMENT") == "https://github.com/acme/web/pull/1"
+    assert len(env.github.posted) == 1
+
+
+def test_only_one_posting_per_round_is_in_flight(env: Env) -> None:
+    env.store.start_posting(env.round_id, "COMMENT", "a", "d", "b", [], env.clock())
+    with pytest.raises(sqlite3.IntegrityError):
+        env.store.start_posting(env.round_id, "COMMENT", "b", "d", "b", [], env.clock())
+
+
+async def test_a_reused_key_of_a_posted_attempt_is_never_sent_again(env: Env) -> None:
+    assert await env.post("COMMENT", key="same") == URL
+    await env.service.save_drafts(env.round_id, "Different now.", [])
+    assert await env.post("COMMENT", key="same") == URL
+    assert len(env.github.posted) == 1
 
 
 async def test_drafts_are_seeded_once_from_both_passes_without_repeats(

@@ -6,10 +6,19 @@ comment) with its warnings and a digest. ``post`` posts that, and only that: the
 passes the digest of the preview the author confirmed, every warning must be confirmed, and
 the review goes to GitHub as one atomic review against the round's head.
 
-A post is recorded (``postings``) before GitHub is called. If the response is lost (a
-timeout after GitHub took the review), a retry, with the same idempotency key or another,
-first looks for the review on GitHub (by the viewer, on the round's commit, with the same
-state and body, submitted since the attempt began) and adopts it instead of posting twice.
+The digest is an integrity check ("what you saw is what posts"): a deterministic hash of
+server state the client can read, not a nonce proving a preview was requested.
+
+Exactly once (rulings R43, R44): a post is recorded (``postings``) before GitHub is called,
+and the body it sends ends with the attempt's invisible marker. A lost response, a timeout
+or any 5xx leaves the attempt ``uncertain``, and while a round has one nothing new is
+posted: the next post, whatever its key or digest, first lists the PR's reviews. A review by
+the viewer on the round's commit carrying that marker is adopted (and its URL returned);
+otherwise the attempt is ``not_posted`` and the post goes on. Nothing else (time, body or
+state) ever makes a review count as Jesinia's, so a review posted by hand is never adopted.
+
+Drafts are read from the store only (carry f): where each one posts is worked out from the
+cached file list on each read, and reported as pending when GitHub's list isn't cached.
 
 Bodies and tokens are never logged: only the round, the event and the review's URL.
 """
@@ -21,14 +30,15 @@ import builtins
 import logging
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Protocol
 
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
     DRAFTS_MAX,
-    EVENT_STATES,
+    MARKER_NOTE,
     REVIEW_EVENTS,
+    UNSETTLED,
     CommentableLines,
     CommentOnlyOnOwnPr,
     Draft,
@@ -37,14 +47,18 @@ from jesinia.apps.review.domain.posting import (
     NeedsConfirmation,
     NoReviewRound,
     Posting,
+    PostingState,
     PostWarning,
     PreviewOutdated,
+    Review,
     ReviewedHeadGone,
     commentable_lines,
     compose_review,
+    marked_body,
+    needs_body,
+    posting_marker,
     review_digest,
     review_warnings,
-    same_body,
     seed_drafts,
 )
 from jesinia.apps.review.domain.queue import PrRef, QueueDomainError, RoundRecord
@@ -52,7 +66,6 @@ from jesinia.apps.review.domain.workspace import WorkspaceError
 from jesinia.services.github.application.prs import GitHubPayloadError
 from jesinia.services.github.application.service import (
     GitHubError,
-    GitHubRateLimitedError,
     GitHubRequestError,
 )
 from jesinia.services.github.domain.pr import (
@@ -68,16 +81,14 @@ from jesinia.services.github.domain.pr import (
 log = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
-# GitHub's clock and ours may disagree: a review submitted this long before an attempt
-# began still counts as that attempt's.
-ADOPT_SKEW = timedelta(minutes=5)
 _FILE_ERRORS = (GitHubError, GitHubPayloadError, PullRequestDomainError, QueueDomainError)
 
 
 class PostingFailed(GitHubError):  # noqa: N818 - the error code clients see
     """GitHub didn't confirm the review. ``maybe_posted``: the request may have reached
-    GitHub (its response was lost), so a retry looks for it before posting again; otherwise
-    nothing was posted. The drafts are kept either way; ``__cause__`` is GitHub's error."""
+    GitHub (a lost response, a timeout, a 5xx), so the next post reconciles it before
+    anything else is sent; otherwise GitHub refused it and nothing was posted. The drafts
+    are kept either way; ``__cause__`` is GitHub's error."""
 
     def __init__(self, cause: Exception, *, maybe_posted: bool) -> None:
         outcome = (
@@ -159,16 +170,23 @@ class PostingStore(Protocol):
 
     def finish_posting(self, posting_id: int, review_url: str) -> None: ...
 
-    def fail_posting(self, posting_id: int, error: str) -> None: ...
+    def settle_posting(self, posting_id: int, state: PostingState, error: str) -> None: ...
 
 
 @dataclass(frozen=True)
 class DraftSet:
-    """A round's review summary and drafts, as the author edits them."""
+    """A round's review summary and drafts, as the author edits them. ``in_body`` says, per
+    draft, whether it posts in the review body (GitHub can't anchor it inline); it is
+    ``None`` while GitHub's file list for the head isn't cached (``files_pending``)."""
 
     round_id: int
     summary: str
     drafts: tuple[Draft, ...]
+    in_body: tuple[bool, ...] | None = None
+
+    @property
+    def files_pending(self) -> bool:
+        return self.in_body is None
 
 
 @dataclass(frozen=True)
@@ -214,6 +232,7 @@ class PostingService:
         self._store = store
         self._clock = clock
         self._locks: dict[int, asyncio.Lock] = {}
+        self._lock_users: dict[int, int] = {}
 
     async def round_for(self, ref: PrRef) -> int:
         """The PR's latest round, the one drafts and posts apply to.
@@ -241,9 +260,8 @@ class PostingService:
             NoReviewRound: no such round.
         """
         rnd = self._round(round_id)
-        commentable, _ = await self._commentable(rnd)
-        self._seed(rnd, commentable)
-        return self._draft_set(round_id)
+        self._seed(rnd)
+        return self._draft_set(rnd)
 
     async def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> DraftSet:
         """Replace the round's summary and drafts (the author's edit, including deletions).
@@ -252,20 +270,26 @@ class PostingService:
             NoReviewRound: no such round.
             InvalidDraftError: too many drafts, or a summary over the body limit.
         """
-        self._round(round_id)
+        rnd = self._round(round_id)
         if len(drafts) > DRAFTS_MAX:
             raise InvalidDraftError(f"a review takes at most {DRAFTS_MAX} drafts")
         if len(summary) > BODY_MAX:
             raise InvalidDraftError(f"the summary is at most {BODY_MAX} characters")
         self._store.save_drafts(round_id, summary, drafts)
-        return self._draft_set(round_id)
+        return self._draft_set(rnd)
 
-    def _draft_set(self, round_id: int) -> DraftSet:
-        return DraftSet(
-            round_id, self._store.review_summary(round_id), tuple(self._store.drafts(round_id))
-        )
+    def _draft_set(self, rnd: RoundRecord) -> DraftSet:
+        """The drafts from the store, each placed against the cached file list (never
+        fetched here: a GET must not wait for GitHub)."""
+        drafts = tuple(self._store.drafts(rnd.id))
+        files = self._store.pr_files(rnd.ref, rnd.head_sha)
+        placed = None
+        if files is not None:
+            commentable = commentable_lines(files)
+            placed = tuple(not commentable.anchors(draft) for draft in drafts)
+        return DraftSet(rnd.id, self._store.review_summary(rnd.id), drafts, placed)
 
-    def _seed(self, rnd: RoundRecord, commentable: CommentableLines) -> None:
+    def _seed(self, rnd: RoundRecord) -> None:
         """Seed the round's drafts from its findings, once."""
         found = self._store.artifact(rnd.id, "findings")
         correctness = self._store.artifact(rnd.id, "correctness")
@@ -273,7 +297,7 @@ class PostingService:
             *_findings_of(correctness),
             *_findings_of(found),
         ]
-        self._store.seed_drafts(rnd.id, seed_drafts(_unique(findings), commentable))
+        self._store.seed_drafts(rnd.id, seed_drafts(_unique(findings)))
 
     async def _commentable(self, rnd: RoundRecord) -> tuple[CommentableLines, list[str]]:
         """Where GitHub takes comments on the round's head: its cached file list, read once
@@ -302,8 +326,8 @@ class PostingService:
             GitHubError: GitHub couldn't be read.
         """
         rnd = self._round(round_id)
+        self._seed(rnd)
         commentable, notes = await self._commentable(rnd)
-        self._seed(rnd, commentable)
         live = await self._github.get(rnd.ref.repo, rnd.ref.number)
         newer_head = await self._newer_head(rnd, live)
         viewer = self._store.viewer() or await self._github.viewer()
@@ -311,8 +335,10 @@ class PostingService:
         review = compose_review(
             self._store.review_summary(round_id), self._store.drafts(round_id), commentable
         )
-        if event != "APPROVE" and not review.body:
-            notes.append(f"GitHub needs a summary to post {event.lower().replace('_', ' ')}")
+        if needs_body(event, review):
+            what = event.lower().replace("_", " ")
+            notes.append(f"GitHub needs a summary or an inline comment to post {what}")
+        notes.append(MARKER_NOTE)
         return PostPreview(
             round_id=round_id,
             head_sha=rnd.head_sha,
@@ -365,29 +391,48 @@ class PostingService:
         """
         rnd = self._round(round_id)
         # One post per round at a time: two clicks with different keys can't both post.
-        async with self._locks.setdefault(round_id, asyncio.Lock()):
-            preview = await self.preview(round_id, event)
-            if digest != preview.digest:
-                raise PreviewOutdated("the review changed since its preview; preview it again")
-            if event not in preview.allowed_events:
-                raise CommentOnlyOnOwnPr("on your own PR, only a comment can be posted")
-            if any(warning not in confirm for warning in preview.warnings):
-                raise NeedsConfirmation(preview.warnings)
-            if event != "APPROVE" and not preview.body:
-                raise EmptyReview("write a summary: GitHub needs one to comment or request changes")
-            done = await self._already_posted(rnd, preview)
-            if done is not None:
-                return done
-            attempt = self._store.start_posting(
-                round_id,
-                event,
-                key,
-                preview.digest,
-                preview.body,
-                [asdict(comment) for comment in preview.comments],
-                self._clock(),
+        self._lock_users[round_id] = self._lock_users.get(round_id, 0) + 1
+        try:
+            async with self._locks.setdefault(round_id, asyncio.Lock()):
+                return await self._post(rnd, event, confirm, key, digest)
+        finally:
+            self._lock_users[round_id] -= 1
+            if not self._lock_users[round_id]:  # nobody holds or waits for it
+                del self._lock_users[round_id], self._locks[round_id]
+
+    async def _post(
+        self, rnd: RoundRecord, event: ReviewEvent, confirm: Collection[str], key: str, digest: str
+    ) -> str:
+        adopted = await self._reconcile(rnd)
+        if adopted is not None:
+            return adopted  # the earlier attempt is on GitHub: never a second review
+        preview = await self.preview(rnd.id, event)
+        if digest != preview.digest:
+            raise PreviewOutdated("the review changed since its preview; preview it again")
+        if event not in preview.allowed_events:
+            raise CommentOnlyOnOwnPr("on your own PR, only a comment can be posted")
+        if any(warning not in confirm for warning in preview.warnings):
+            raise NeedsConfirmation(preview.warnings)
+        if needs_body(event, Review(preview.body, preview.comments)):
+            raise EmptyReview(
+                "write a summary or an inline comment: GitHub needs one to comment or "
+                "request changes"
             )
-            return await self._send(rnd, attempt, preview)
+        for earlier in self._store.postings(rnd.id):
+            if earlier.state == "posted" and earlier.digest == preview.digest:
+                return earlier.review_url or _pr_url(rnd)  # this very review, posted
+        attempt = self._store.start_posting(
+            rnd.id,
+            event,
+            key,
+            preview.digest,
+            preview.body,
+            [asdict(comment) for comment in preview.comments],
+            self._clock(),
+        )
+        if attempt.state == "posted":  # the key of a posted attempt: never sent again
+            return attempt.review_url or _pr_url(rnd)
+        return await self._send(rnd, attempt, preview)
 
     async def _send(self, rnd: RoundRecord, attempt: Posting, preview: PostPreview) -> str:
         try:
@@ -396,64 +441,71 @@ class PostingService:
                 rnd.ref.number,
                 commit_sha=rnd.head_sha,
                 event=preview.event,
-                body=preview.body,
+                body=marked_body(preview.body, attempt.id),
                 comments=preview.comments,
             )
-        except (GitHubRateLimitedError, GitHubRequestError) as exc:
-            # No status: the request failed in transit and may have reached GitHub.
-            unknown = exc.status is None
-            if not unknown:
-                self._store.fail_posting(attempt.id, str(exc))
+        except GitHubRequestError as exc:
+            # No status (in transit, a timeout) or a 5xx: GitHub may have stored it.
+            uncertain = exc.status is None or exc.status >= 500
+            state: PostingState = "uncertain" if uncertain else "failed"
+            self._store.settle_posting(attempt.id, state, str(exc))
             log.warning(
-                "review.post round=%d event=%s failed (maybe posted: %s): %s",
+                "review.post round=%d posting=%d event=%s %s: %s",
                 rnd.id,
+                attempt.id,
                 preview.event,
-                unknown,
+                state,
                 exc.github_message if exc.status is not None else type(exc.__cause__).__name__,
             )
-            raise PostingFailed(exc, maybe_posted=unknown) from exc
+            raise PostingFailed(exc, maybe_posted=uncertain) from exc
         except GitHubError as exc:  # no token: nothing left Jesinia
-            self._store.fail_posting(attempt.id, str(exc))
+            self._store.settle_posting(attempt.id, "failed", str(exc))
             raise PostingFailed(exc, maybe_posted=False) from exc
         self._store.finish_posting(attempt.id, url)
-        log.info("review.post round=%d event=%s posted %s", rnd.id, preview.event, url)
+        log.info("review.post round=%d posting=%d posted %s", rnd.id, attempt.id, url)
         return url
 
-    async def _already_posted(self, rnd: RoundRecord, preview: PostPreview) -> str | None:
-        """The URL of this very review if an earlier attempt posted it: one that was
-        confirmed, or one whose response was lost but which GitHub holds (adopted now).
-        Attempts that left nothing on GitHub are marked failed."""
-        attempts = [p for p in self._store.postings(rnd.id) if p.digest == preview.digest]
-        for attempt in attempts:
-            if attempt.state == "posted" and attempt.review_url is not None:
-                return attempt.review_url
-        unsettled = [p for p in self._store.postings(rnd.id) if p.state == "started"]
+    async def _reconcile(self, rnd: RoundRecord) -> str | None:
+        """Settle the round's attempts whose outcome isn't known (a crash leaves
+        ``started``, a lost response ``uncertain``): adopt the review carrying an attempt's
+        marker, by the viewer on the round's commit, or mark the attempt ``not_posted``.
+        Returns the adopted review's URL, if any.
+
+        Raises:
+            GitHubError: the reviews couldn't be listed (the attempt stays unsettled, so
+                nothing is posted until they can be).
+        """
+        unsettled = [p for p in self._store.postings(rnd.id) if p.state in UNSETTLED]
         if not unsettled:
             return None
         viewer = (self._store.viewer() or await self._github.viewer()).lower()
         reviews = await self._github.reviews(rnd.ref.repo, rnd.ref.number)
         adopted = None
         for attempt in unsettled:
-            found = next((r for r in reviews if _is_attempt(r, attempt, viewer, rnd)), None)
-            if found is None or found.url is None:
-                self._store.fail_posting(attempt.id, "no review was found on GitHub for it")
+            marker = posting_marker(attempt.id)
+            found = next(
+                (
+                    r
+                    for r in reviews
+                    if r.author.lower() == viewer
+                    and r.commit_sha == rnd.head_sha
+                    and marker in r.body
+                ),
+                None,
+            )
+            if found is None:
+                self._store.settle_posting(attempt.id, "not_posted", "not on GitHub")
                 continue
-            self._store.finish_posting(attempt.id, found.url)
-            log.info("review.post round=%d adopted %s after a lost response", rnd.id, found.url)
-            if attempt.digest == preview.digest:
-                adopted = found.url
+            # GitHub's list may lack a review's page; the PR's page then stands in for it.
+            adopted = found.url or _pr_url(rnd)
+            self._store.finish_posting(attempt.id, adopted)
+            log.info("review.post round=%d posting=%d adopted %s", rnd.id, attempt.id, adopted)
         return adopted
 
 
-def _is_attempt(review: ReviewSummary, attempt: Posting, viewer: str, rnd: RoundRecord) -> bool:
-    return (
-        review.author.lower() == viewer
-        and review.commit_sha == rnd.head_sha
-        and review.state == EVENT_STATES[attempt.event]
-        and review.submitted_at is not None
-        and review.submitted_at >= attempt.started_at - ADOPT_SKEW
-        and same_body(review.body, attempt.body)
-    )
+def _pr_url(rnd: RoundRecord) -> str:
+    """The PR's page on GitHub."""
+    return f"https://github.com/{rnd.ref.repo}/pull/{rnd.ref.number}"
 
 
 def _findings_of(artifact: object) -> list[object]:

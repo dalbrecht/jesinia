@@ -20,7 +20,9 @@ It uses the `github` service (`services/github/`) for pull request data and for 
 - **Posting** (`application/posting.py`) is the only GitHub write.
   - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `newer_head`, `own_pr_comment_only`) and a digest.
   - A post must carry that digest and confirm every warning. It goes out as one atomic review on the round's head. Drafts GitHub can't anchor go in the body.
-  - Each attempt is recorded before GitHub is called. After a lost response, a retry adopts the review GitHub already has instead of posting it twice.
+  - Each attempt is recorded before GitHub is called, and its body ends with an invisible marker (`<!-- jesinia-posting:<id> -->`).
+  - A lost response, a timeout or a 5xx leaves the attempt `uncertain`. Until it is reconciled, nothing else is posted for that round. The next post first looks for a review carrying that marker and adopts it, or marks the attempt `not_posted`. A review posted by hand is never adopted.
+  - `GET …/drafts` reads the cache only: `files_pending` says where drafts post isn't known yet.
   - Bodies and tokens are never logged.
 - **MCP, read-only:** `review_queue`, `review_get` and `review_findings`. They read the cache only. Every PR-derived text comes back inside `<untrusted-data>` fences.
 - **Correctness evidence:** the correctness pass's claimed `checked` ranges count only where its repo tools actually returned those lines (`ReadLog`). The evidence shows the claimed coverage beside the verified one.

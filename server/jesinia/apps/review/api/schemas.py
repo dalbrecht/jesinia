@@ -253,9 +253,14 @@ class DraftBody(BaseModel):
     origin_finding: str | None = Field(default=None, max_length=100)
     outdated: bool = False
     outside_diff: bool = False
+    in_body: bool | None = Field(
+        default=None,
+        description="Read only: whether it posts in the review body (GitHub can't anchor it "
+        "inline); null while GitHub's file list for the head isn't cached",
+    )
 
     @classmethod
-    def of(cls, draft: Draft) -> DraftBody:
+    def of(cls, draft: Draft, in_body: bool | None = None) -> DraftBody:
         return cls(
             id=draft.id,
             path=draft.path,
@@ -267,6 +272,7 @@ class DraftBody(BaseModel):
             origin_finding=draft.origin_finding,
             outdated=draft.outdated,
             outside_diff=draft.outside_diff,
+            in_body=in_body,
         )
 
     def draft(self) -> Draft:
@@ -293,13 +299,19 @@ class DraftsOut(BaseModel):
     round_id: int
     summary: str
     drafts: list[DraftBody]
+    files_pending: bool = Field(
+        description="GitHub's file list for the head isn't cached yet, so where each draft "
+        "posts is unknown; the preview reads it"
+    )
 
     @classmethod
     def of(cls, drafts: DraftSet) -> DraftsOut:
+        placed = drafts.in_body or (None,) * len(drafts.drafts)
         return cls(
             round_id=drafts.round_id,
             summary=drafts.summary,
-            drafts=[DraftBody.of(draft) for draft in drafts.drafts],
+            drafts=[DraftBody.of(d, where) for d, where in zip(drafts.drafts, placed, strict=True)],
+            files_pending=drafts.files_pending,
         )
 
 

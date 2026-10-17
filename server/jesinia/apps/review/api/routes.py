@@ -279,8 +279,9 @@ def build_router(host: ReviewHost) -> APIRouter:
 
     @r.post(f"{pr_path}/post/preview", response_model=PreviewOut)
     async def preview(owner: Owner, repo: Name, number: Number, body: PreviewIn) -> Response:
-        """Exactly what posting would send, its warnings and the digest to post it with.
-        Changes nothing (beyond seeding the drafts), so it takes no key."""
+        """Exactly what posting would send, its warnings and the digest to post it with."""
+        # No Idempotency-Key: a POST only for its body; it is safe to repeat (its one write,
+        # seeding the drafts, happens once whatever the number of calls).
 
         async def run() -> PreviewOut:
             round_id = await host.posting.round_for(_ref(owner, repo, number))

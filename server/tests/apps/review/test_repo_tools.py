@@ -1494,3 +1494,14 @@ async def test_read_and_grep_record_the_lines_a_session_saw(
     ]
     registry.unbind(SESSION)
     assert registry.reads_of(SESSION) == []
+
+
+async def test_a_grep_line_cut_short_is_not_counted_as_read(
+    tree: Tree, registry: ReviewSessionRegistry
+) -> None:
+    tools = RepoTools(
+        registry.worktree_for, tree.workspace, registry.allowance, reads=registry.reads
+    )
+    found = await tools.grep(SESSION, "needle", "long.txt")
+    assert found["matches"] and found["matches"][0]["line_truncated"]
+    assert registry.reads_of(SESSION) == []

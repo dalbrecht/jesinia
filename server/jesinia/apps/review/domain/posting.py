@@ -26,7 +26,9 @@ from jesinia.services.github.domain.pr import (
     ReviewSide,
 )
 
-PostingState = Literal["started", "posted", "failed"]
+PostingState = Literal["started", "uncertain", "posted", "not_posted", "failed"]
+# Attempts whose outcome isn't known yet: they block new posts until reconciled.
+UNSETTLED: Final[frozenset[str]] = frozenset({"started", "uncertain"})
 PostWarning = Literal["blocking_comment", "newer_head", "own_pr_comment_only"]
 POST_WARNINGS: Final[tuple[PostWarning, ...]] = (
     "blocking_comment",
@@ -38,12 +40,10 @@ REVIEW_EVENTS: Final[tuple[ReviewEvent, ...]] = ("APPROVE", "REQUEST_CHANGES", "
 BODY_MAX: Final = 65_000
 PATH_MAX: Final = 1024
 DRAFTS_MAX: Final = 500
-# GitHub's review state for each event, to recognise a review that was already posted.
-EVENT_STATES: Final[Mapping[ReviewEvent, str]] = {
-    "APPROVE": "APPROVED",
-    "REQUEST_CHANGES": "CHANGES_REQUESTED",
-    "COMMENT": "COMMENTED",
-}
+MARKER_NOTE: Final = (
+    "Jesinia adds an invisible marker (an HTML comment) to the end of the body, so a retry "
+    "after a lost response finds this review instead of posting it twice"
+)
 
 _BLOCKING = re.compile("blocking", re.IGNORECASE)
 _HUNK = re.compile(r"^@@ -(\d{1,10})(?:,(\d{1,10}))? \+(\d{1,10})(?:,(\d{1,10}))? @@", re.M)
@@ -283,21 +283,29 @@ def review_digest(round_id: int, head_sha: str, event: ReviewEvent, review: Revi
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
 
 
-def same_body(posted: str, ours: str) -> bool:
-    """Whether a review GitHub holds has the body Jesinia sent (GitHub may change line
-    endings and trailing space)."""
+def posting_marker(posting_id: int) -> str:
+    """The invisible tag ending every body Jesinia posts: how a review is recognised as
+    that attempt's (and never a review the author posted by hand)."""
+    return f"<!-- jesinia-posting:{posting_id} -->"
 
-    def norm(text: str) -> str:
-        return text.replace("\r\n", "\n").strip()
 
-    return norm(posted) == norm(ours)
+def marked_body(body: str, posting_id: int) -> str:
+    """``body`` as sent: with the attempt's marker at its end."""
+    marker = posting_marker(posting_id)
+    return f"{body}\n\n{marker}" if body else marker
+
+
+def needs_body(event: ReviewEvent, review: Review) -> bool:
+    """GitHub refuses a comment or request for changes with neither a body nor an inline
+    comment; an approval may be bare."""
+    return event != "APPROVE" and not review.body and not review.comments
 
 
 def _int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _finding_draft(item: object, commentable: CommentableLines) -> Draft | None:
+def _finding_draft(item: object) -> Draft | None:
     if not isinstance(item, Mapping):
         return None
     group, severity, path = item.get("group"), item.get("severity"), item.get("path")
@@ -324,20 +332,12 @@ def _finding_draft(item: object, commentable: CommentableLines) -> Draft | None:
         )
     except InvalidDraftError:
         return None
-    if commentable.anchors(draft):
-        return draft
-    return Draft(
-        path,
-        draft.body,
-        line=end,
-        start_line=draft.start_line,
-        origin_finding=draft.origin_finding,
-        outside_diff=True,
-    )
+    return draft
 
 
-def seed_drafts(findings: Sequence[object], commentable: CommentableLines) -> list[Draft]:
+def seed_drafts(findings: Sequence[object]) -> list[Draft]:
     """A round's first drafts, one per well-formed finding (agent output: anything else is
-    dropped), anchored where GitHub can take them and outside the diff otherwise."""
-    drafts = [_finding_draft(item, commentable) for item in findings]
+    dropped), each on its lines. Where it posts (inline, or in the body when GitHub can't
+    anchor it) is worked out from GitHub's file list each time, never stored."""
+    drafts = [_finding_draft(item) for item in findings]
     return [draft for draft in drafts if draft is not None][:DRAFTS_MAX]

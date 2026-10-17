@@ -673,15 +673,19 @@ class SqliteReviewStore:
         comments: object,
         started_at: datetime,
     ) -> Posting:
-        """Record an attempt before GitHub is called; a failed attempt with the same key is
-        started again. Returns the attempt as stored (an existing posted one unchanged)."""
+        """Record an attempt before GitHub is called; a settled unposted attempt with the same
+        key is started again. Returns the attempt as stored (a posted one unchanged).
+
+        Raises:
+            sqlite3.IntegrityError: another attempt of the round is still in flight.
+        """
         self._conn.execute(
             "INSERT INTO postings (round_id, event, key, digest, body, comments, started_at, "
             "state) VALUES (?, ?, ?, ?, ?, ?, ?, 'started') "
             "ON CONFLICT (round_id, key) DO UPDATE SET event = excluded.event, "
             "digest = excluded.digest, body = excluded.body, comments = excluded.comments, "
             "started_at = excluded.started_at, state = 'started', error = NULL "
-            "WHERE postings.state = 'failed'",
+            "WHERE postings.state IN ('failed', 'not_posted')",
             (round_id, event, key, digest, body, json.dumps(comments), _time(started_at)),
         )
         row = self._conn.execute(
@@ -703,10 +707,11 @@ class SqliteReviewStore:
                 (review_url, posting_id),
             )
 
-    def fail_posting(self, posting_id: int, error: str) -> None:
-        """Nothing was posted by this attempt."""
+    def settle_posting(self, posting_id: int, state: PostingState, error: str) -> None:
+        """Record how an unposted attempt ended: ``failed`` (GitHub refused it),
+        ``uncertain`` (it may be on GitHub) or ``not_posted`` (reconciled: it isn't)."""
         self._conn.execute(
-            "UPDATE postings SET state = 'failed', error = ? WHERE id = ?", (error, posting_id)
+            "UPDATE postings SET state = ?, error = ? WHERE id = ?", (state, error, posting_id)
         )
 
     def set_verdict(self, round_id: int, verdict: str) -> None:

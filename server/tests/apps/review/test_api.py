@@ -470,6 +470,18 @@ def _outside_fences(value: object) -> str:
     return text
 
 
+async def test_review_mcp_tools_fence_sync_errors_and_odd_authors(env: Env) -> None:
+    env.store.record_sync(None, INJECTION)
+    odd = snapshot_of(replace(pull(2), author="not a login"), ci_state="passing", reviews=[],
+                      automated_reviewer=None, viewer="me")  # fmt: skip
+    env.store.apply_sync([odd], [], [], env.clock())
+    queue = await _call(_tools(env)["review_queue"])
+    assert isinstance(queue, dict) and str(queue["sync_error"]).startswith("<untrusted-data")
+    authors = {row["number"]: row["author"] for row in queue["rows"]}
+    assert authors[1] == "alice" and str(authors[2]).startswith("<untrusted-data")
+    assert "Ignore previous" not in _outside_fences(queue)
+
+
 async def test_review_mcp_tools_are_read_only(env: Env) -> None:
     tools = _tools(env)
     assert sorted(tools) == ["review_findings", "review_get", "review_queue"]
@@ -546,3 +558,53 @@ def test_review_schemas_never_clash_with_other_modules(cfg: Config) -> None:
     schemas = create_app(cfg, modules()).openapi()["components"]["schemas"]
     assert not [name for name in schemas if "__" in name]
     assert {"ReviewSettingsBody", "SettingsBody", "QueueOut", "PreviewOut"} <= set(schemas)
+
+
+class _TripwireError(Exception):
+    """Raised by every GitHub double: a GET route must never get here."""
+
+
+async def test_no_get_route_ever_calls_github(env: Env) -> None:
+    env.round()
+    env.store._conn.execute("DELETE FROM pr_files")  # drafts would need GitHub's file list
+    calls: list[str] = []
+
+    def trip(name: str) -> _TripwireError:
+        calls.append(name)
+        return _TripwireError(name)
+
+    env.prs.error = trip("queue")  # every FakePullRequests call raises it
+    env.poster.get_error = trip("posting")
+    for name in ("commits_of", "reviews", "viewer", "create_review"):
+
+        async def tripped(*args: object, _name: str = name, **kwargs: object) -> object:
+            raise trip(_name)
+
+        setattr(env.poster, name, tripped)
+    calls.clear()
+    gets = [
+        str(getattr(route, "path", "")).format(owner="acme", repo="web", number=1)
+        for route in build_router(env.host).routes
+        if "GET" in getattr(route, "methods", set())
+    ]
+    assert len(gets) == 4  # queue, the PR, its drafts, settings
+    for path in gets:
+        response = await env.client.get(path)
+        assert response.status_code == 200, path
+    assert calls == []
+    drafts = (await env.client.get(f"{PR}/drafts")).json()
+    assert drafts["files_pending"] is True
+    assert [d["in_body"] for d in drafts["drafts"]] == [None]
+
+
+async def test_drafts_say_where_each_one_posts_once_files_are_cached(env: Env) -> None:
+    env.round()
+    body = {"summary": "", "drafts": [
+        {"path": "src/app.py", "body": "In.", "line": 3, "side": "RIGHT"},
+        {"path": "src/app.py", "body": "Out.", "line": 40, "side": "RIGHT"},
+    ]}  # fmt: skip
+    await env.client.put(f"{PR}/drafts", json=body, headers=keyed())
+    shown = (await env.client.get(f"{PR}/drafts")).json()
+    assert shown["files_pending"] is False
+    assert [d["in_body"] for d in shown["drafts"]] == [False, True]
+    assert [d["outside_diff"] for d in shown["drafts"]] == [False, False]
