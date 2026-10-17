@@ -141,7 +141,7 @@ tagged KB pages, plus a KB-wide tag catalog shared by every app and agent.
   - `TAG_LINE_PREFIX = "Tags:"`;
   - `render_tag_line(tags: Sequence[str]) -> str`, which returns `"Tags: #a #b"`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_extract_ignores_code_urls_headings_and_suffix_hashes() -> None:
@@ -166,13 +166,13 @@ def test_near_matches() -> None:
     assert near_matches("rust", known) == []
 ```
 
-- [ ] **Step 2: Run** `make test-py` (or the pytest file through `make`). Expected: FAIL,
+- [x] **Step 2: Run** `make test-py` (or the pytest file through `make`). Expected: FAIL,
   because the module doesn't exist yet.
-- [ ] **Step 3: Implement** the functions in `tags.py` with the grammar from Global
+- [x] **Step 3: Implement** the functions in `tags.py` with the grammar from Global
   Constraints. The regex must skip fenced blocks and inline code by masking them first.
   Levenshtein is a small pure function in the same file, so there's no dependency.
-- [ ] **Step 4: Run.** Expected: PASS, with `domain/tags.py` at 100% coverage.
-- [ ] **Step 5: Commit** `feat(kb): tag grammar and near-matching`.
+- [x] **Step 4: Run.** Expected: PASS, with `domain/tags.py` at 100% coverage.
+- [x] **Step 5: Commit** `feat(kb): tag grammar and near-matching`.
 
 ### Task 2: The tag catalog page (domain)
 
@@ -196,7 +196,7 @@ def test_near_matches() -> None:
   - `with_entry(cat: TagCatalog, entry: CatalogEntry) -> TagCatalog`;
   - `CATALOG_TITLE = "Tags"`, `CATALOG_KIND = "tag-catalog"`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
@@ -210,12 +210,12 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     assert out.count("#sqlite") == 1
 ```
 
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement** a line parser that keeps any non-entry line in `lines`, in place.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement** a line parser that keeps any non-entry line in `lines`, in place.
   The render writes known entries back in their original slots and appends new entries at
   the end.
-- [ ] **Step 4: Run.** Expected: PASS, at 100%.
-- [ ] **Step 5: Commit** `feat(kb): tag catalog page format`.
+- [x] **Step 4: Run.** Expected: PASS, at 100%.
+- [x] **Step 5: Commit** `feat(kb): tag catalog page format`.
 
 ### Task 3: Tags and sources in the KB index
 
@@ -244,18 +244,18 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   so a tag only counts pages that use it. Test: `test_catalog_page_does_not_count_as_a_use`
   (an approved tag no content page uses has count 0).
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_write_indexes_tags_and_source` writes a page with `#a #b` and `jesinia.source=u`.
     It asserts `tag_counts()=={"a":1,"b":1}` and `by_source(u)==id`.
   - `test_scan_indexes_hand_edited_tags` edits a file on disk, scans, and checks the counts
     follow.
   - `test_reserved_folders_are_not_indexed` checks a `Journal/x.md` with `#a` doesn't count.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement** the migration, the index methods, and the calls next to every
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement** the migration, the index methods, and the calls next to every
   `set_links` call.
-- [ ] **Step 4: Run.** Expected: PASS. `make ci` stays green, because `jesinia reindex`
+- [x] **Step 4: Run.** Expected: PASS. `make ci` stays green, because `jesinia reindex`
   rebuilds the new tables.
-- [ ] **Step 5: Commit** `feat(kb): index page tags and sources`.
+- [x] **Step 5: Commit** `feat(kb): index page tags and sources`.
 
 ### Task 4: `TagService`, REST and MCP
 
@@ -309,7 +309,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `POST /rename/preview`, `POST /rename`, `POST /merge`, `POST /retire`, `POST /adopt`, `POST /ignore`.
 - MCP (read-only, `writes=False`): `tags_list`, `tags_suggest {text}`, `tags_check {tag}`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_add_refuses_near_duplicates_unless_forced` (adding `SQLite` when `sqlite` exists
     raises `TagExists`; `database` vs `databases` raises `NearDuplicate`);
   - `test_suggest_prefers_catalog_and_flags_new`;
@@ -321,12 +321,12 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `test_tools_are_read_only`;
   - one API test per route, covering status codes and the 409 on `NearDuplicate` with
     `near` in the body.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Writes go through `KbService.write` / `update_body` with base
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.** Writes go through `KbService.write` / `update_body` with base
   revisions. Reserved paths come from `kb/domain/paths.is_reserved`, scanning the root's
   reserved folders read-only only to list them.
-- [ ] **Step 4: Run.** Expected: PASS at 95%+, then `make gen-client`.
-- [ ] **Step 5: Commit** `feat(kb): tag catalog service, REST and MCP tools`.
+- [x] **Step 4: Run.** Expected: PASS at 95%+, then `make gen-client`.
+- [x] **Step 5: Commit** `feat(kb): tag catalog service, REST and MCP tools`.
 
 ### Task 5: One-shot agent asks and the tag advisor
 
@@ -359,7 +359,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   time, because `kb` starts before `agents` in `registry.py`. The runner is the first
   available one, preferring `claude-code`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_one_shot_returns_text_and_closes_session` (FakeRunner);
   - `test_one_shot_times_out`;
   - `test_ask_continues_an_existing_session`, which asserts the turn carries the session's
@@ -367,10 +367,10 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `test_advisor_parses_json_and_ignores_garbage`;
   - `test_advisor_treats_post_text_as_untrusted`, which asserts the prompt contains the
     `<untrusted-data` fence.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(agents): one-shot asks; tag advisor`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(agents): one-shot asks; tag advisor`.
 
 ### Task 6: Settings → Tags
 
@@ -392,16 +392,16 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - After Apply, a toast: "Renamed #a to #b in N pages." If any page was skipped: "… N
     changed since the preview and were skipped."
 
-- [ ] **Step 1: Failing tests (vitest, fakeClient):**
+- [x] **Step 1: Failing tests (vitest, fakeClient):**
   - lists the catalog with counts;
   - the rename preview shows reserved pages as not updated, and Apply posts the revisions;
   - a 409 near-duplicate on add shows "Use #sqlite?" with a one-click accept;
   - adopt and ignore from the Uncataloged panel.
-- [ ] **Step 2: Run** `make test-js`. Expected: FAIL.
-- [ ] **Step 3: Implement** with `@jesinia/design` components only (Table/List, Dialog,
+- [x] **Step 2: Run** `make test-js`. Expected: FAIL.
+- [x] **Step 3: Implement** with `@jesinia/design` components only (Table/List, Dialog,
   Button, Input, Badge).
-- [ ] **Step 4: Run.** Expected: PASS, with launcher thresholds met.
-- [ ] **Step 5: Commit** `feat(launcher): Settings → Tags`.
+- [x] **Step 4: Run.** Expected: PASS, with launcher thresholds met.
+- [x] **Step 5: Commit** `feat(launcher): Settings → Tags`.
 
 ### Task 7: Tag chips on Save note, Pigeonpile compatibility, and docs
 
@@ -426,22 +426,22 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   `render_tag_line` after the user text. A tag accepted as *new* is added to the catalog
   first through `TagService.add`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `TagPicker` (suggestions render, new badge, near-match accept);
   - `test_save_note_writes_tag_line_and_catalogs_new_tags`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Compatibility fixture.** Add a fixture page `Ideas/Tag grammar.md` using
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Compatibility fixture.** Add a fixture page `Ideas/Tag grammar.md` using
   `#SQLite #sqlite #wal-mode #2026 #ünïcode`, and an ADR 0007 addendum row "tag grammar"
   marked *pending manual check*.
   - The author confirms in the Wiki whether case folds and whether hyphens, digits and
     Unicode are accepted.
   - Narrow the grammar if they aren't, with a follow-up issue if needed.
-- [ ] **Step 5: Docs.**
+- [x] **Step 5: Docs.**
   - `kb-format.md`: the tag grammar, the `Tags:` line, the catalog page.
   - Skills: agents use `tags_suggest` / `tags_check` before writing tags, and never invent
     near-duplicates.
-- [ ] **Step 6: Run** `make ci`. Expected: PASS. **Commit**
+- [x] **Step 6: Run** `make ci`. Expected: PASS. **Commit**
   `feat(notes): tag suggestions on Save note; tag docs`.
 
 ### Task 7A: Idempotency keys and tag restore
@@ -463,18 +463,18 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   7 days are pruned daily.
 - **`TagService.restore(tag) -> None`** clears `retired`; `POST /api/kb/tags/restore {tag}`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_repeated_key_returns_stored_response_without_acting`;
   - `test_missing_key_is_400`;
   - `test_same_key_different_route_is_independent`;
   - `test_rename_retry_does_not_rewrite_twice`;
   - `test_restore_unretires_a_tag`;
   - web: mutating calls send a key; Restore shows on retired rows.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(core): idempotency keys; restore retired tags`.
-- [ ] **Step 6: Open PR 1** (`feat(kb): KB-wide tag catalog`), then the Codex loop and merge.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(core): idempotency keys; restore retired tags`.
+- [x] **Step 6: Open PR 1** (`feat(kb): KB-wide tag catalog`), then the Codex loop and merge.
 
 ## PR 2: RSS backend (Tasks 8–12)
 
@@ -503,12 +503,12 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 - **HN items** (`news.ycombinator.com` feeds): `url` is the linked article and
   `discussion_url` is the comments link.
 
-- [ ] **Step 1: Failing tests:** one per fixture, plus
+- [x] **Step 1: Failing tests:** one per fixture, plus
   `test_parse_caps_items_and_sanitises_content` and `test_hn_items_link_article_and_discussion`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(rss): feed parsing and discovery`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(rss): feed parsing and discovery`.
 
 ### Task 9: The `rss` module, schema, feeds and OPML
 
@@ -559,14 +559,14 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - every POST/PATCH/DELETE here uses the Task 7A idempotency dependency;
   - `PATCH /folders/{id}`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_opml_round_trip_keeps_one_folder_level`;
   - `test_import_opml_skips_existing_and_reports_failures`;
   - API tests for each route (auth required, 404/409 shapes).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(rss): module, feeds and OPML`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(rss): module, feeds and OPML`.
 
 ### Task 10: Polling
 
@@ -597,7 +597,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   `_pace` only spaces request starts). The
   `ETag`/`Last-Modified` values are passed through.
 
-- [ ] **Step 1: Failing tests (fake clock, fake fetch):**
+- [x] **Step 1: Failing tests (fake clock, fake fetch):**
   - `test_interval_adapts_between_bounds`;
   - `test_failures_back_off_and_warn_after_three`;
   - `test_poll_caps_items_and_isolates_a_hostile_feed` (a 5 MB body hits the `FetchTooLarge`
@@ -606,10 +606,10 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `test_new_items_dedupe_by_guid_per_feed`;
   - `test_refresh_polls_everything_now`;
   - `test_one_request_in_flight_per_host` (two feeds on one slow host never overlap).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(rss): adaptive polling`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(rss): adaptive polling`.
 
 ### Task 11: Posts, views, retention, full article, MCP reads
 
@@ -651,17 +651,17 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 - **MCP (read-only):** `rss_search_posts {q}`, `rss_get_post {id}`. The post text is returned
   marked as untrusted source text.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_views_and_keyset_pagination`;
   - `test_mark_read_above_respects_the_current_view`;
   - `test_prune_keeps_kept_and_prunes_undated_by_first_seen`;
   - `test_full_article_caches_and_reports_cause`;
   - `test_extract_article_returns_markdown_and_images` (from a fixture HTML);
   - `test_mcp_tools_are_read_only`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(rss): posts, retention and full articles`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(rss): posts, retention and full articles`.
 
 ### Task 12: Keep, archive, Engage
 
@@ -721,7 +721,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `POST /posts/{id}/engage {runner}`;
   - `POST /api/rss/sessions/{id}/takeaway`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_keep_writes_source_page_in_spec_order`, which asserts the front matter keys, the
     `Tags:` line, and `## Article`;
   - `test_keep_from_two_feeds_updates_one_page`;
@@ -736,10 +736,10 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - `test_engaged_keep_wraps_takeaway_in_provenance`;
   - `test_keep_is_refused_while_the_kb_is_unavailable` (a 503 with the KB's cause, and
     nothing queued).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS, then `make gen-client`.
-- [ ] **Step 5: Commit** `feat(rss): keep, archive and engage`. **Open PR 2**
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS, then `make gen-client`.
+- [x] **Step 5: Commit** `feat(rss): keep, archive and engage`. **Open PR 2**
   (`feat(rss): reader backend`), stacked on PR 1, then the Codex loop and merge.
 
 ## PR 3: RSS app (Tasks 13–15)
@@ -780,7 +780,7 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
     the feed marks it as a summary;
   - an "Archiving…" / "In KB" / "Archive incomplete — Retry" status.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - the key map, covering every key, focus suppression and the `g` chord;
   - `999+`;
   - selecting marks read;
@@ -788,10 +788,10 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   - the narrow layout switches list → reader → back;
   - Load full article shows its cause on failure;
   - `icons.test.ts`, copied from Notes with `BASE="/rss"`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(rss): reader app, three panes and keys`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(rss): reader app, three panes and keys`.
 
 ### Task 14: Keep popover, Engage rail, shared chat
 
@@ -815,17 +815,17 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
 - **"Keep with this conversation":** calls `/takeaway`, then opens `KeepPopover` with the
   takeaway editable and the note prefilled from the last user message.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `n` opens the popover focused on the note;
   - `⌘↵` posts note, tags and takeaway;
   - near-match acceptance through TagPicker;
   - Engage opens the rail and creates a session;
   - Keep with conversation shows an editable takeaway;
   - the Notes chat tests pass unchanged after the move.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(rss): keep and engage`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(rss): keep and engage`.
 
 ### Task 15: Feed management, e2e, docs, acceptance
 
@@ -855,13 +855,13 @@ def test_catalog_parse_is_lenient_and_round_trips_unknown_lines() -> None:
   3. In Settings → RSS, import an OPML with 2 feeds into a folder; back in RSS, see the folder
      with counts.
 
-- [ ] **Step 1: Write the e2e spec and the ManageFeeds vitest tests.** Expected: FAIL.
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Run** `make ci` and `make test-e2e`, including
+- [x] **Step 1: Write the e2e spec and the ManageFeeds vitest tests.** Expected: FAIL.
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Run** `make ci` and `make test-e2e`, including
   `GIT_CONFIG_GLOBAL=/dev/null make test-e2e`. Expected: PASS.
-- [ ] **Step 4: Commit** `feat(rss): feed management, e2e and docs`.
-- [ ] **Step 5: Open PR 3** (`feat(rss): reader app`), then the Codex loop and merge.
-- [ ] **Step 6: Acceptance on the author's Mac** (the auto-updated install):
+- [x] **Step 4: Commit** `feat(rss): feed management, e2e and docs`.
+- [x] **Step 5: Open PR 3** (`feat(rss): reader app`), then the Codex loop and merge.
+- [x] **Step 6: Acceptance on the author's Mac** (the auto-updated install):
   1. import the author's OPML or add HN plus a few blogs;
   2. keep one post quickly and one through Engage;
   3. check both pages in Notes and the Pigeonpile Wiki;
