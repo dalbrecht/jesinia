@@ -10,6 +10,15 @@ export type QueueRow = components["schemas"]["QueueRowOut"];
 export type Queue = components["schemas"]["QueueOut"];
 export type PrView = components["schemas"]["PrOut"];
 export type OpenResult = components["schemas"]["OpenOut"];
+export type OpenRequest = components["schemas"]["OpenIn"];
+export type PrFile = components["schemas"]["PrFileOut"];
+export type DraftSet = components["schemas"]["DraftsOut"];
+export type Draft = components["schemas"]["DraftBody"];
+export type DraftsUpdate = components["schemas"]["DraftsIn"];
+export type PostPreview = components["schemas"]["PreviewOut"];
+export type ReviewEvent = PostPreview["event"];
+export type PostWarning = PostPreview["warnings"][number];
+export type Round = components["schemas"]["RoundOut"];
 
 /** The queue's sections (design pass pattern 2), in tab order. */
 export type SectionId = "ready" | "waiting" | "loaded" | "approved";
@@ -137,20 +146,57 @@ export function syncedAgo(at: string, now: Date = new Date()): string | null {
   return `on ${then.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" })}`;
 }
 
+/** What a structured review error carries besides its cause (`ReviewErrorOut`). */
+export type ErrorFacts = {
+  /** The typed error's name, such as `EarlierReviewPosted`; null for an untyped answer. */
+  code: string | null;
+  /** Seconds to wait before retrying the same action (PostingStillUncertain, PostingInProgress). */
+  retryAfter: number | null;
+  /** EarlierReviewPosted: the review GitHub already has. */
+  reviewUrl: string | null;
+  /** NeedsConfirmation: every warning to confirm. */
+  warnings: PostWarning[] | null;
+};
+
+const NO_FACTS: ErrorFacts = { code: null, retryAfter: null, reviewUrl: null, warnings: null };
+
 /** A failed review request, carrying the server's cause (`detail`) as its message. */
 export class ReviewRequestError extends Error {
+  readonly facts: ErrorFacts;
+
   constructor(
     message: string,
     readonly status: number,
+    facts: Partial<ErrorFacts> = {},
   ) {
     super(message);
     this.name = "ReviewRequestError";
+    this.facts = { ...NO_FACTS, ...facts };
   }
 
-  /** The server couldn't say whether the action happened (or asks to retry): same key again. */
-  get isTransient(): boolean {
-    return this.status >= 500;
+  get code(): string | null {
+    return this.facts.code;
   }
+
+  /**
+   * The server couldn't say whether the action happened, or asks to retry it later
+   * (`Retry-After`): the retry is the same action, with the same key.
+   */
+  get isTransient(): boolean {
+    return this.status >= 500 || this.facts.retryAfter !== null;
+  }
+}
+
+function factsOf(error: unknown, response: Response): Partial<ErrorFacts> {
+  const body = error !== null && typeof error === "object" ? (error as Record<string, unknown>) : {};
+  const header = Number(response.headers.get("Retry-After"));
+  const retry = typeof body.retry_after === "number" ? body.retry_after : header > 0 ? header : null;
+  return {
+    code: typeof body.error === "string" ? body.error : null,
+    retryAfter: retry,
+    reviewUrl: typeof body.review_url === "string" ? body.review_url : null,
+    warnings: Array.isArray(body.warnings) ? (body.warnings as PostWarning[]) : null,
+  };
 }
 
 /** The next step when Jesinia never answered (§9: the cause, then the fix). */
@@ -195,7 +241,11 @@ type Result<T> = { data?: T; error?: unknown; response: Response };
 
 function unwrap<T>(r: Result<T>): T {
   if (!r.response.ok) {
-    throw new ReviewRequestError(errorText(r.error, `HTTP ${r.response.status}`), r.response.status);
+    throw new ReviewRequestError(
+      errorText(r.error, `HTTP ${r.response.status}`),
+      r.response.status,
+      factsOf(r.error, r.response),
+    );
   }
   return r.data as T;
 }
@@ -256,6 +306,87 @@ export async function confirmRepo(client: JesiniaClient, repo: string, key: stri
   unwrap(
     await client.POST("/api/review/repos/{owner}/{repo}/confirm", {
       params: { path: split(repo), header: withIdempotency(key) },
+    }),
+  );
+}
+
+type PrParams = { path: { owner: string; repo: string; number: number } };
+const prParams = (repo: string, number: number): PrParams => ({ path: { ...split(repo), number } });
+
+/**
+ * Open the PR (the author is looking now): start what its round lacks, or say which gate holds
+ * it. `request` may choose the depth, or ask to walk everything (spec §3.1).
+ */
+export async function openPr(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  request?: OpenRequest,
+): Promise<OpenResult> {
+  const params = { ...prParams(repo, number), header: withIdempotency(key) };
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/open", request ? { params, body: request } : { params }),
+  );
+}
+
+export async function getDrafts(client: JesiniaClient, repo: string, number: number): Promise<DraftSet> {
+  return unwrap(await client.GET("/api/review/prs/{owner}/{repo}/{number}/drafts", { params: prParams(repo, number) }));
+}
+
+/** Replace the latest round's summary and drafts (deleted ones stay deleted). */
+export async function putDrafts(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  update: DraftsUpdate,
+): Promise<DraftSet> {
+  return unwrap(
+    await client.PUT("/api/review/prs/{owner}/{repo}/{number}/drafts", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: update,
+    }),
+  );
+}
+
+/** Exactly what posting `event` would send, its warnings, and the digest to post it with. */
+export async function previewPost(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  event: ReviewEvent,
+): Promise<PostPreview> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/post/preview", {
+      params: prParams(repo, number),
+      body: { event },
+    }),
+  );
+}
+
+/** Post the confirmed preview to GitHub; resolves to the review's URL. */
+export async function postReview(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  post: { event: ReviewEvent; confirm: PostWarning[]; digest: string },
+): Promise<string> {
+  const posted = unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/post", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: post,
+    }),
+  );
+  return posted.review_url;
+}
+
+/** Finish the latest round without posting. */
+export async function markDone(client: JesiniaClient, repo: string, number: number, key: string): Promise<Round> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/done", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
     }),
   );
 }

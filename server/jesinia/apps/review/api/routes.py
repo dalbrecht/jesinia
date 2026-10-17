@@ -23,6 +23,7 @@ from jesinia.apps.review.api.schemas import (
     DraftsIn,
     DraftsOut,
     LoadIn,
+    OpenIn,
     OpenOut,
     PostedOut,
     PostIn,
@@ -276,10 +277,20 @@ def build_router(host: ReviewHost) -> APIRouter:
 
     @r.post(f"{pr_path}/open", response_model=OpenOut, responses=open_responses)
     async def open_pr(
-        owner: Owner, repo: Name, number: Number, idem: IdempotentCall = keyed
+        owner: Owner,
+        repo: Name,
+        number: Number,
+        body: OpenIn | None = None,
+        idem: IdempotentCall = keyed,
     ) -> Response:
-        """Open the PR: start what its round lacks (202), or say why not (gates)."""
-        return await _open(idem, lambda ref: host.pipeline.open(ref), owner, repo, number)
+        """Open the PR: start what its round lacks (202), or say why not (gates). The body
+        may choose the depth, or ask to walk everything."""
+        asked = body or OpenIn()
+
+        def start(ref: PrRef) -> Awaitable[OpenResult]:
+            return host.pipeline.open(ref, depth=asked.depth, walk_everything=asked.walk_everything)
+
+        return await _open(idem, start, owner, repo, number)
 
     @r.post(f"{pr_path}/retry", response_model=OpenOut, responses=open_responses)
     async def retry(

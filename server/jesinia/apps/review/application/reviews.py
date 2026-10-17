@@ -28,6 +28,7 @@ from jesinia.apps.review.domain.queue import (
     nothing_to_walk_from_json,
     queue_row,
 )
+from jesinia.services.github.domain.pr import PrFile
 
 # A runner name names an agent CLI the agents service knows; nothing path-like.
 _RUNNER = re.compile(r"[a-z][a-z0-9_-]{0,63}")
@@ -49,6 +50,8 @@ class ReviewReadStore(Protocol):
 
     def artifacts(self, round_id: int) -> dict[str, object]: ...
 
+    def pr_files(self, ref: PrRef, head_sha: str) -> list[PrFile] | None: ...
+
     def drafts(self, round_id: int) -> list[Draft]: ...
 
     def mark_round_done(self, round_id: int) -> None: ...
@@ -69,12 +72,15 @@ class ReviewReadStore(Protocol):
 @dataclass(frozen=True)
 class PrView:
     """An opened PR as cached: its queue row, its latest round (``None`` before any) with
-    every artifact, and the queue's sync state."""
+    every artifact, the queue's sync state, and GitHub's cached files (with their patches)
+    for the round's head: ``None`` before any round or while that head's list isn't cached,
+    never another head's."""
 
     row: QueueRow
     round: RoundRecord | None
     artifacts: Mapping[str, object]
     sync: SyncStatus
+    files: Sequence[PrFile] | None = None
 
     @property
     def stale(self) -> bool:
@@ -134,7 +140,8 @@ class ReviewReads:
         row = queue_row(stored, latest, self._store.viewer(), suggested)
         found = self._store.latest_round(ref)
         artifacts = {} if found is None else self._store.artifacts(found.id)
-        return PrView(row, found, artifacts, self._status())
+        files = None if found is None else self._store.pr_files(ref, found.head_sha)
+        return PrView(row, found, artifacts, self._status(), files)
 
     def findings(self, ref: PrRef) -> FindingsView:
         """The latest round's findings and drafts (both empty before any round).

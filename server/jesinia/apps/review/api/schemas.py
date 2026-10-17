@@ -33,7 +33,7 @@ from jesinia.apps.review.domain.queue import (
     RoundRecord,
     SyncStatus,
 )
-from jesinia.services.github.domain.pr import DraftComment, ReviewEvent, ReviewSide
+from jesinia.services.github.domain.pr import DraftComment, PrFile, ReviewEvent, ReviewSide
 
 REF_MAX = 500
 REPO_MAX = 140
@@ -191,6 +191,29 @@ class RoundOut(BaseModel):
         )
 
 
+class PrFileOut(BaseModel):
+    """A changed file as GitHub lists it; ``patch`` (the file's unified diff hunks, PR
+    content) is null when GitHub doesn't show it (binary, or too large)."""
+
+    path: str
+    status: str
+    additions: int
+    deletions: int
+    patch: str | None
+    previous_path: str | None
+
+    @classmethod
+    def of(cls, file: PrFile) -> PrFileOut:
+        return cls(
+            path=file.filename,
+            status=file.status,
+            additions=file.additions,
+            deletions=file.deletions,
+            patch=file.patch,
+            previous_path=file.previous_filename,
+        )
+
+
 class PrOut(BaseModel):
     """An opened PR from the cache: its row, its latest round and every artifact of it."""
 
@@ -202,6 +225,10 @@ class PrOut(BaseModel):
     stale: bool = Field(description="The PR has moved past the head this review covers")
     nothing_to_walk: bool
     sync: SyncOut
+    files: list[PrFileOut] | None = Field(
+        description="GitHub's cached files of the round's head, for the walkthrough's diff; "
+        "null before any round or while that head's list isn't cached"
+    )
 
     @classmethod
     def of(cls, view: PrView) -> PrOut:
@@ -212,12 +239,21 @@ class PrOut(BaseModel):
             stale=view.stale,
             nothing_to_walk=view.nothing_to_walk,
             sync=SyncOut.of(view.sync),
+            files=None if view.files is None else [PrFileOut.of(f) for f in view.files],
         )
 
 
 def _json(artifacts: Mapping[str, object]) -> dict[str, JsonValue]:
     # Artifacts are stored as JSON and decoded with json.loads: JSON values already.
     return cast(dict[str, JsonValue], dict(artifacts))
+
+
+class OpenIn(BaseModel):
+    """What the author asks of opening (both optional): their ``depth`` in place of
+    Jesinia's proposal, or ``walk_everything`` to walk the rest of the change too."""
+
+    depth: Depth | None = None
+    walk_everything: bool = False
 
 
 class OpenOut(BaseModel):

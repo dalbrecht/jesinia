@@ -10,6 +10,7 @@ import {
   confirmRepo,
   dismissPr,
   errorCause,
+  getPr,
   getQueue,
   isAuthMissing,
   loadPr,
@@ -17,6 +18,7 @@ import {
   prRefFromText,
   retryPr,
   reviewAnyway,
+  ReviewRequestError,
   routeOf,
   splitCode,
   syncedAgo,
@@ -24,7 +26,7 @@ import {
   type Queue as QueueData,
   type QueueRow,
 } from "./api";
-import { OpenedPr } from "./OpenedPr";
+import { PrView } from "./pr/PrView";
 import { actionId, Queue, refOf, VERDICT } from "./Queue";
 import s from "./review.module.css";
 import { loadTabs, sameTab, saveTabs, type OpenTab } from "./tabs";
@@ -278,18 +280,26 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
     [client, keyed, tabFor, go, readQueue],
   );
 
-  // Opening /review/<owner>/<repo>/<n> directly loads that PR (spec §2, "Load a PR").
+  // Opening /review/<owner>/<repo>/<n> directly loads that PR (spec §2, "Load a PR"), unless it
+  // is cached already: reloading a review's link opens it again and never re-runs Load (M4).
   const linked = useRef(routeOf(window.location.pathname));
   useEffect(() => {
     const to = linked.current;
     if (!to) return;
     const path = prPath(to.repo, to.number);
-    keyed(`load:${path}`, (key) => loadPr(client, path, key)).then(
-      (row) => {
-        tabFor(row);
-        void readQueue();
+    const load = () =>
+      keyed(`load:${path}`, (key) => loadPr(client, path, key)).then(
+        (row) => {
+          tabFor(row);
+          void readQueue();
+        },
+        (e: unknown) => fail(`load ${to.repo}#${to.number}`, e),
+      );
+    getPr(client, to.repo, to.number).then(
+      (view) => tabFor(view.pr),
+      (e: unknown) => {
+        if (e instanceof ReviewRequestError && e.code === "PrNotInQueueError") void load();
       },
-      (e: unknown) => fail(`load ${to.repo}#${to.number}`, e),
     );
   }, [client, keyed, tabFor, readQueue, fail]);
 
@@ -441,7 +451,12 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
       </div>
       {activeTab ? (
         <div className={s.body}>
-          <OpenedPr repo={activeTab.repo} number={activeTab.number} refresh={reads} />
+          <PrView
+            key={`${activeTab.repo}#${activeTab.number}`}
+            repo={activeTab.repo}
+            number={activeTab.number}
+            refresh={reads}
+          />
         </div>
       ) : null}
     </div>

@@ -1,0 +1,414 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// The PR view's pure rules: reading a round's artifacts (agent output, schema-checked by the
+// server, so read here only for shape), the book's outline, a patch's hunks, and the words
+// for coverage and the verdict. Every string read here is the PR's or an agent's text: it is
+// only ever rendered as text or through the safe Markdown renderer.
+import type { PrFile, PrView } from "../api";
+
+export type Depth = "quick" | "deep";
+export type Rule = { id: string; layer: string };
+export type Finding = {
+  group: "correctness" | "design" | "style";
+  severity: "critical" | "important" | "minor";
+  path: string;
+  start_line: number;
+  end_line: number;
+  explanation: string;
+  rule: Rule | null;
+};
+export type HunkRef = { path: string; hunk: number };
+export type Step = { title: string; body: string; hunks: HunkRef[] };
+export type Skip = { path: string; hunk: number | null; reason: string };
+export type WalkCoverage = {
+  pct: number | null;
+  files_covered: number;
+  files_total: number;
+  not_walked: Skip[];
+  not_walked_total: number;
+  nothing_to_walk: boolean;
+};
+export type Overview = { summary: string; purpose: string; sources: string[] };
+export type BackgroundSection = { title: string; body: string; code: { path: string }[]; kb: string[] };
+export type Score = { criterion: string; rule: Rule; score: number; note: string };
+export type Question = { question: string; choices: string[]; answer: number; explanation: string };
+export type Evidence = {
+  ci: string;
+  checks: { name: string; status: string }[];
+  tests: string | null;
+  findings: Record<string, number>;
+  correctness: string | null;
+  correctness_coverage: { pct: number | null } | null;
+};
+export type JobState = { state: string; error: string | null };
+
+/** A round's artifacts, by what the PR view shows; null where a job hasn't stored one. */
+export type Artifacts = {
+  overview: Overview | null;
+  background: BackgroundSection[] | null;
+  steps: Step[] | null;
+  walk: WalkCoverage | null;
+  /** The correctness pass's own coverage (what it verifiably read), when there is no walk. */
+  read: WalkCoverage | null;
+  findings: Finding[] | null;
+  metrics: Score[] | null;
+  quiz: Question[] | null;
+  suggestion: { verdict: string; reasoning: string } | null;
+  verdict: { verdict: string; reasons: string[] } | null;
+  evidence: Evidence | null;
+  jobs: Record<string, JobState>;
+  nothingToWalk: boolean;
+};
+
+type Json = Record<string, unknown>;
+const record = (x: unknown): Json | null =>
+  x !== null && typeof x === "object" && !Array.isArray(x) ? (x as Json) : null;
+const list = <T>(x: unknown): T[] | null => (Array.isArray(x) ? (x as T[]) : null);
+
+function coverageOf(x: unknown): WalkCoverage | null {
+  const c = record(x);
+  if (!c) return null;
+  return {
+    pct: typeof c.pct === "number" ? c.pct : null,
+    files_covered: Number(c.files_covered ?? 0),
+    files_total: Number(c.files_total ?? 0),
+    not_walked: list<Skip>(c.not_walked) ?? [],
+    not_walked_total: Number(c.not_walked_total ?? 0),
+    nothing_to_walk: c.nothing_to_walk === true,
+  };
+}
+
+/** Reads what the PR view shows out of `GET /prs/…`'s artifacts (shapes per `schemas/*.json`). */
+export function readArtifacts(view: PrView): Artifacts {
+  const a = view.artifacts as Json;
+  const coverage = record(a.coverage);
+  const found = [
+    ...(list<Finding>(record(a.correctness)?.findings) ?? []),
+    ...(list<Finding>(record(a.findings)?.findings) ?? []),
+  ];
+  const haveFindings = record(a.correctness) !== null || record(a.findings) !== null;
+  const suggestion = record(a.recommendation);
+  const verdict = record(a.verdict);
+  const jobs: Record<string, JobState> = {};
+  for (const [kind, entry] of Object.entries(record(a.jobs) ?? {})) {
+    const e = record(entry);
+    if (e) jobs[kind] = { state: String(e.state), error: typeof e.error === "string" ? e.error : null };
+  }
+  return {
+    overview: (record(a.overview) as Overview | null) ?? null,
+    background: list<BackgroundSection>(record(a.background)?.sections),
+    steps: list<Step>(record(a.walkthrough)?.steps),
+    walk: coverageOf(coverage?.walkthrough),
+    read: coverageOf(coverage?.correctness),
+    findings: haveFindings ? dedupe(found) : null,
+    metrics: list<Score>(record(a.metrics)?.scores),
+    quiz: list<Question>(record(a.quiz)?.questions),
+    suggestion: suggestion ? { verdict: String(suggestion.verdict), reasoning: String(suggestion.reasoning) } : null,
+    verdict: verdict ? { verdict: String(verdict.verdict), reasons: list<string>(verdict.reasons) ?? [] } : null,
+    evidence: (record(a.evidence) as Evidence | null) ?? null,
+    jobs,
+    nothingToWalk: view.nothing_to_walk || coverage?.nothing_to_walk === true,
+  };
+}
+
+/** The two passes may report the same finding: it is shown once (never merged across groups). */
+function dedupe(findings: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  return findings.filter((f) => {
+    const key = [f.group, f.severity, f.path, f.start_line, f.end_line, f.explanation].join("\u0000");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// --- diffs ----------------------------------------------------------------------------------
+
+export type DiffLine = { kind: "+" | "-" | " " | "\\"; text: string; old: number | null; new: number | null };
+export type Hunk = { header: string; oldStart: number; newStart: number; newEnd: number; lines: DiffLine[] };
+
+/** A hunk header's numbers ("@@ -10,3 +13,4 @@ …"), read without a backtracking regex. */
+function readHeader(raw: string): { oldStart: number; newStart: number; newCount: number } | null {
+  if (!raw.startsWith("@@ -")) return null;
+  const end = raw.indexOf(" @@", 4);
+  const [before, after] = (end < 0 ? "" : raw.slice(4, end)).split(" +");
+  if (before === undefined || after === undefined) return null;
+  const [oldStart, newStart, newCount] = [before.split(",")[0], ...after.split(",")].map(Number);
+  if (!Number.isInteger(oldStart) || !Number.isInteger(newStart)) return null;
+  return {
+    oldStart: oldStart as number,
+    newStart: newStart as number,
+    newCount: Number.isInteger(newCount) ? (newCount as number) : 1,
+  };
+}
+
+/** A GitHub patch's hunks, numbered as Jesinia cites them (0-based, in order), with line numbers. */
+export function parsePatch(patch: string): Hunk[] {
+  const hunks: Hunk[] = [];
+  let current: Hunk | null = null;
+  let oldLine = 0;
+  let newLine = 0;
+  for (const raw of patch.split("\n")) {
+    const h = readHeader(raw);
+    if (h) {
+      oldLine = h.oldStart;
+      newLine = h.newStart;
+      const count = h.newCount;
+      current = {
+        header: raw,
+        oldStart: oldLine,
+        newStart: newLine,
+        newEnd: newLine + Math.max(count, 1) - 1,
+        lines: [],
+      };
+      hunks.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const kind = raw[0];
+    const text = raw.slice(1);
+    if (kind === "+") current.lines.push({ kind: "+", text, old: null, new: newLine++ });
+    else if (kind === "-") current.lines.push({ kind: "-", text, old: oldLine++, new: null });
+    else if (kind === "\\") current.lines.push({ kind: "\\", text, old: null, new: null });
+    else current.lines.push({ kind: " ", text, old: oldLine++, new: newLine++ });
+  }
+  return hunks;
+}
+
+export function fileOf(files: PrFile[] | null | undefined, path: string): PrFile | null {
+  return files?.find((f) => f.path === path) ?? null;
+}
+
+/** The findings that fall in a step: on one of its files, within one of its hunks' new lines. */
+export function findingsInStep(step: Step, findings: Finding[], files: PrFile[] | null | undefined): Finding[] {
+  return findings.filter((f) =>
+    step.hunks.some((ref) => {
+      if (ref.path !== f.path) return false;
+      const patch = fileOf(files, ref.path)?.patch;
+      const hunk = patch ? parsePatch(patch)[ref.hunk] : undefined;
+      return hunk ? f.start_line <= hunk.newEnd && f.end_line >= hunk.newStart : false;
+    }),
+  );
+}
+
+// --- words ----------------------------------------------------------------------------------
+
+/** Why a file or hunk wasn't walked through (spec §3.1), in words. */
+export const REASONS: Record<string, string> = {
+  generated: "generated",
+  lockfile: "lockfile",
+  vendored: "vendored",
+  binary: "binary",
+  rename_only: "rename only",
+  format_only: "whitespace or format only",
+  judged_mechanical: "judged mechanical by the agent",
+  metadata_only: "metadata only",
+  omitted: "left out without a reason",
+};
+
+export const SEVERITY: Record<string, string> = { critical: "Critical", important: "Important", minor: "Minor" };
+export const GROUPS = ["correctness", "design", "style"] as const;
+export const GROUP_LABEL: Record<string, string> = { correctness: "Correctness", design: "Design", style: "Style" };
+
+export const lines = (f: { start_line: number; end_line: number }) =>
+  f.start_line === f.end_line ? `${f.start_line}` : `${f.start_line}–${f.end_line}`;
+
+/** The coverage line (spec §3.1): computed by Jesinia, never the agent's; never 100% for nothing. */
+export function coverageLine(cov: WalkCoverage | null, nothingToWalk: boolean, long = false): string | null {
+  if (nothingToWalk) return "Nothing to walk";
+  if (!cov || cov.pct === null) return null;
+  const what = long ? `${Math.round(cov.pct)}% of changed lines` : `${Math.round(cov.pct)}%`;
+  return `Walkthrough covers ${what} · ${cov.files_covered} of ${cov.files_total} files`;
+}
+
+/** "2 files · 18%": what was left out, and its share of the change. */
+export function notWalkedNote(cov: WalkCoverage | null): string {
+  if (!cov) return "";
+  const files = new Set(cov.not_walked.map((s) => s.path)).size;
+  // The list keeps at most 500 entries beside its full count: a cut list says so.
+  const more = cov.not_walked_total > cov.not_walked.length ? "+" : "";
+  const share = cov.pct === null ? "" : ` · ${Math.round(100 - cov.pct)}%`;
+  return `${files}${more} ${files === 1 && !more ? "file" : "files"}${share}`;
+}
+
+/** "1 important", "2 minor": a step's findings by their worst severity. */
+export function findingNote(findings: Finding[]): { text: string; bad: boolean } | null {
+  if (findings.length === 0) return null;
+  for (const sev of ["critical", "important"] as const) {
+    const n = findings.filter((f) => f.severity === sev).length;
+    if (n) return { text: `${n} ${sev}`, bad: true };
+  }
+  return { text: `${findings.length} minor`, bad: false };
+}
+
+// --- the outline ----------------------------------------------------------------------------
+
+export type EntryKind =
+  | "explanation"
+  | "overview"
+  | "background"
+  | "step"
+  | "notwalked"
+  | "findings"
+  | "metrics"
+  | "quiz"
+  | "comments"
+  | "recommendation";
+
+export type Entry = {
+  id: string;
+  kind: EntryKind;
+  part: string;
+  label: string;
+  /** For a step: its index in the walkthrough. */
+  step?: number;
+  note?: string;
+  bad?: boolean;
+};
+
+/** The job whose output an entry shows (for "running…" and "failed"). */
+export const JOB_OF: Partial<Record<EntryKind, string>> = {
+  explanation: "overview",
+  overview: "overview",
+  background: "background",
+  notwalked: "walkthrough",
+  findings: "findings",
+  metrics: "metrics",
+  quiz: "quiz",
+  recommendation: "recommendation",
+};
+
+const has = (a: Artifacts, kind: EntryKind): boolean => {
+  switch (kind) {
+    case "explanation":
+    case "overview":
+      return a.overview !== null;
+    case "background":
+      return a.background !== null;
+    case "metrics":
+      return a.metrics !== null;
+    case "quiz":
+      return a.quiz !== null;
+    case "findings":
+      return a.findings !== null;
+    case "recommendation":
+      return a.verdict !== null || a.suggestion !== null;
+    default:
+      return true;
+  }
+};
+
+/** Where a missing page's job is: running, failed (with its cause), or not generated yet. */
+export function pending(
+  a: Artifacts,
+  kind: EntryKind,
+): { state: "running" | "failed" | "missing"; error: string | null } | null {
+  if (has(a, kind)) return null;
+  const job = a.jobs[JOB_OF[kind] ?? ""];
+  if (job?.state === "running") return { state: "running", error: null };
+  if (job?.state === "failed") return { state: "failed", error: job.error };
+  return { state: "missing", error: null };
+}
+
+const VERDICT_SHORT: Record<string, string> = {
+  approve: "approve",
+  request_changes: "request changes",
+  needs_closer_look: "closer look",
+};
+
+/**
+ * The book's outline (design pass pattern 3). Deep: before you read, the walkthrough as
+ * chapters with their findings, what wasn't walked, and after you read. Quick: the
+ * explanation, the walk, findings and the recommendation (spec §3.1).
+ */
+export function outlineOf(
+  depth: Depth,
+  a: Artifacts,
+  files: PrFile[] | null | undefined,
+  draftCount: number | null,
+): Entry[] {
+  const out: Entry[] = [];
+  const add = (e: Entry) => {
+    const p = pending(a, e.kind);
+    const note = p
+      ? p.state === "running"
+        ? "running…"
+        : p.state === "failed"
+          ? "failed"
+          : "not generated yet"
+      : e.note;
+    out.push({ ...e, ...(note !== undefined ? { note } : {}), bad: p?.state === "failed" || e.bad === true });
+  };
+  const walkPart = a.nothingToWalk
+    ? "Walkthrough · nothing to walk"
+    : a.walk?.pct != null
+      ? `Walkthrough · ${Math.round(a.walk.pct)}% of the change`
+      : "Walkthrough";
+  if (depth === "deep") {
+    add({ id: "overview", kind: "overview", part: "Before you read", label: "Overview" });
+    add({ id: "background", kind: "background", part: "Before you read", label: "Background" });
+  } else {
+    add({ id: "explanation", kind: "explanation", part: "Before you read", label: "Explanation" });
+  }
+  (a.steps ?? []).forEach((step, i) => {
+    const note = findingNote(findingsInStep(step, a.findings ?? [], files));
+    out.push({
+      id: `step-${i}`,
+      kind: "step",
+      part: walkPart,
+      label: `${i + 1}. ${step.title}`,
+      step: i,
+      ...(note ? { note: note.text, bad: note.bad } : {}),
+    });
+  });
+  if (a.steps === null) {
+    const job = a.jobs.walkthrough;
+    out.push({
+      id: "walk-pending",
+      kind: "notwalked",
+      part: walkPart,
+      label: "Walkthrough",
+      note: job?.state === "running" ? "running…" : job?.state === "failed" ? "failed" : "not generated yet",
+      bad: job?.state === "failed",
+    });
+  } else if (!a.nothingToWalk) {
+    out.push({
+      id: "notwalked",
+      kind: "notwalked",
+      part: walkPart,
+      label: "Not walked through",
+      note: notWalkedNote(a.walk),
+    });
+  }
+  const after = "After you read";
+  const counts = (a.findings ?? []).reduce(
+    (acc, f) => (f.severity === "minor" ? { ...acc, minor: acc.minor + 1 } : { ...acc, serious: acc.serious + 1 }),
+    { serious: 0, minor: 0 },
+  );
+  add({
+    id: "findings",
+    kind: "findings",
+    part: after,
+    label: "Findings",
+    note: `${counts.serious} · ${counts.minor}`,
+    bad: counts.serious > 0,
+  });
+  if (depth === "deep") {
+    add({ id: "metrics", kind: "metrics", part: after, label: "Metrics" });
+    const n = a.quiz?.length ?? 0;
+    add({ id: "quiz", kind: "quiz", part: after, label: "Quiz", note: `${n} questions` });
+    const drafts = draftCount === null ? undefined : `${draftCount} ${draftCount === 1 ? "draft" : "drafts"}`;
+    add({ id: "comments", kind: "comments", part: after, label: "Your comments", ...(drafts ? { note: drafts } : {}) });
+  }
+  const verdict = a.verdict?.verdict;
+  add({
+    id: "recommendation",
+    kind: "recommendation",
+    part: after,
+    label: "Recommendation",
+    ...(verdict ? { note: VERDICT_SHORT[verdict] ?? verdict, bad: verdict === "request_changes" } : {}),
+  });
+  return out;
+}
+
+/** The short commit SHA the posting dialog names. */
+export const short = (sha: string) => sha.slice(0, 7);

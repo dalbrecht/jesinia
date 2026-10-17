@@ -738,3 +738,38 @@ def test_drafts_out_says_when_findings_are_pending() -> None:
 
     out = DraftsOut.of(DraftSet(3, "", (), None, findings_pending=True))
     assert out.findings_pending is True and out.files_pending is True
+
+
+# --- the PR view's diff, depth and "Walk everything" (plan Task 9) -------------------------------
+
+
+async def test_pr_view_carries_the_cached_files_of_the_reviewed_head(env: Env) -> None:
+    assert (await env.client.get(PR)).json()["files"] is None  # no round yet
+    env.round()
+    env.prs.error = GitHubUnavailable("no token")  # never asked
+    body = (await env.client.get(PR)).json()
+    assert body["files"] == [
+        {
+            "path": "src/app.py",
+            "status": "modified",
+            "additions": 3,
+            "deletions": 2,
+            "patch": PATCH,
+            "previous_path": None,
+        }
+    ]
+    # A newer round's head has no cached file list yet: null, never another head's diff.
+    env.store.start_round(env.ref, "c" * 40, "b" * 40, "quick", env.clock())
+    assert (await env.client.get(PR)).json()["files"] is None
+
+
+async def test_open_takes_the_authors_depth_and_walk_everything(env: Env) -> None:
+    deep = await env.client.post(f"{PR}/open", json={"depth": "deep"}, headers=keyed())
+    assert deep.status_code == 202
+    assert {"background", "metrics", "quiz"} <= set(deep.json()["jobs"])
+    await env.host.pipeline.drain()
+    walk = await env.client.post(f"{PR}/open", json={"walk_everything": True}, headers=keyed())
+    assert walk.status_code == 202 and walk.json()["jobs"] == ["walkthrough"]
+    await env.host.pipeline.drain()
+    bad = await env.client.post(f"{PR}/open", json={"depth": "huge"}, headers=keyed())
+    assert bad.status_code == 422

@@ -1296,3 +1296,55 @@ async def test_an_honest_pass_still_approves(env: Env) -> None:
     assert isinstance(evidence, dict) and isinstance(evidence["correctness_coverage"], dict)
     claimed = evidence["correctness_coverage"]
     assert claimed["claimed_reviewable_pct"] == claimed["reviewable_pct"] == 100.0
+
+
+# --- the author's depth and "Walk everything" (plan Task 9) --------------------------------------
+
+
+async def test_open_at_a_chosen_depth_runs_that_depths_jobs_and_keeps_it(env: Env) -> None:
+    ref = env.add()
+    await prereview(env)  # triage, at the proposed (quick) depth
+    env.jobs.ran.clear()
+    result = await env.pipeline.open(ref, depth="deep")
+    assert result.state == "started" and result.jobs == ON_OPEN_JOBS["deep"]
+    await env.pipeline.drain()
+    assert tuple(env.jobs.ran) == ON_OPEN_JOBS["deep"]
+    # The jobs run at the author's depth, and the queue row keeps it (not the proposal).
+    assert {r.depth for r in env.jobs.rounds[-len(ON_OPEN_JOBS["deep"]) :]} == {"deep"}
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.pr.depth == "deep"
+    assert (await env.pipeline.open(ref)).state == "up_to_date"
+    # Back to quick: nothing is missing, and the row says quick again.
+    quick = await env.pipeline.open(ref, depth="quick")
+    assert quick.state == "up_to_date"
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.pr.depth == "quick"
+
+
+async def test_walk_everything_runs_the_walkthrough_again_for_every_hunk(env: Env) -> None:
+    ref = env.add()
+    first = await env.pipeline.open(ref)
+    await env.pipeline.drain()
+    round_id = first.round_id or 0
+    coverage = env.artifacts(round_id)["coverage"]
+    assert isinstance(coverage, dict) and coverage["pct"] == pytest.approx(42.9)
+    env.jobs.outputs[JobKind.WALKTHROUGH] = {
+        "steps": [
+            {"title": "t", "body": "b", "hunks": [{"path": "src/app.py", "hunk": 0}]},
+            {"title": "rest", "body": "b", "hunks": [{"path": "src/app.py", "hunk": 1}]},
+        ],
+        "skipped": [],
+    }
+    env.jobs.ran.clear()
+    again = await env.pipeline.open(ref, walk_everything=True)
+    assert again.state == "started" and again.jobs == (JobKind.WALKTHROUGH,)
+    assert again.round_id == round_id
+    await env.pipeline.drain()
+    assert env.jobs.ran == [JobKind.WALKTHROUGH]
+    assert env.jobs.rounds[-1].walk_everything is True
+    walked = env.artifacts(round_id)["coverage"]
+    assert isinstance(walked, dict) and walked["pct"] == pytest.approx(
+        71.4
+    )  # the lockfile stays out
+    # A plain open afterwards has nothing to run, and never walks everything again.
+    assert (await env.pipeline.open(ref)).state == "up_to_date"

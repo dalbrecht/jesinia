@@ -1139,7 +1139,8 @@ export interface paths {
         put?: never;
         /**
          * Open Pr
-         * @description Open the PR: start what its round lacks (202), or say why not (gates).
+         * @description Open the PR: start what its round lacks (202), or say why not (gates). The body
+         *     may choose the depth, or ask to walk everything.
          */
         post: operations["open_pr_api_review_prs__owner___repo___number__open_post"];
         delete?: never;
@@ -1613,6 +1614,20 @@ export interface components {
             skipped: string[];
         };
         /**
+         * OpenIn
+         * @description What the author asks of opening (both optional): their ``depth`` in place of
+         *     Jesinia's proposal, or ``walk_everything`` to walk the rest of the change too.
+         */
+        OpenIn: {
+            /** Depth */
+            depth?: ("quick" | "deep") | null;
+            /**
+             * Walk Everything
+             * @default false
+             */
+            walk_everything: boolean;
+        };
+        /**
          * OpenOut
          * @description What opening did: ``started`` jobs (202), or the round's state, or the gate holding
          *     it (``ci_failing``…, with **Review anyway** offered).
@@ -1781,6 +1796,25 @@ export interface components {
             review_url: string;
         };
         /**
+         * PrFileOut
+         * @description A changed file as GitHub lists it; ``patch`` (the file's unified diff hunks, PR
+         *     content) is null when GitHub doesn't show it (binary, or too large).
+         */
+        PrFileOut: {
+            /** Path */
+            path: string;
+            /** Status */
+            status: string;
+            /** Additions */
+            additions: number;
+            /** Deletions */
+            deletions: number;
+            /** Patch */
+            patch: string | null;
+            /** Previous Path */
+            previous_path: string | null;
+        };
+        /**
          * PrOut
          * @description An opened PR from the cache: its row, its latest round and every artifact of it.
          */
@@ -1802,6 +1836,11 @@ export interface components {
             /** Nothing To Walk */
             nothing_to_walk: boolean;
             sync: components["schemas"]["SyncOut"];
+            /**
+             * Files
+             * @description GitHub's cached files of the round's head, for the walkthrough's diff; null before any round or while that head's list isn't cached
+             */
+            files: components["schemas"]["PrFileOut"][] | null;
         };
         /** PreviewIn */
         PreviewIn: {
@@ -6132,7 +6171,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["OpenIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

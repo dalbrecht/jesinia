@@ -14,6 +14,8 @@ function setup(over: Routes = {}) {
     routes(queue([row(1)]), {
       "POST /api/review/load": () => Response.json(LOADED),
       "GET /api/review/prs/acme/web/7": () => Response.json(prView(LOADED)),
+      "POST /api/review/prs/acme/web/7/open": () =>
+        Response.json({ state: "up_to_date", reason: "complete", round_id: null, jobs: [] }),
       ...over,
     }),
   );
@@ -100,11 +102,34 @@ describe("Load PR", () => {
 });
 
 describe("opening /review/<owner>/<repo>/<n>", () => {
-  it("loads the PR and opens its tab", async () => {
+  it("a cached PR opens without being loaded again (M4: a reload never re-runs Load)", async () => {
     window.history.replaceState(null, "", "/review/acme/web/7");
     const { calls } = setup();
     expect(await screen.findByRole("heading", { name: "billing: prorate" })).toBeInTheDocument();
+    expect(within(workspace()).getByRole("link", { name: /Acme\/web#7/ })).toHaveAttribute("aria-current", "page");
+    const opens = () => calls.filter((c) => c.method === "POST" && new URL(c.url).pathname.endsWith("/7/open"));
+    await waitFor(() => expect(opens()).toHaveLength(1));
+    expect(loads(calls)).toHaveLength(0);
+  });
+
+  it("a PR that isn't cached is loaded, then opened", async () => {
+    window.history.replaceState(null, "", "/review/acme/web/7");
+    let cached = false;
+    const { calls } = setup({
+      "POST /api/review/load": () => {
+        cached = true;
+        return Response.json(LOADED);
+      },
+      "GET /api/review/prs/acme/web/7": () =>
+        cached
+          ? Response.json(prView(LOADED))
+          : Response.json({ error: "PrNotInQueueError", detail: "not in the review queue" }, { status: 404 }),
+      "POST /api/review/prs/acme/web/7/open": () =>
+        Response.json({ state: "up_to_date", reason: "complete", round_id: null, jobs: [] }),
+    });
+    expect(await screen.findByRole("heading", { name: "billing: prorate" })).toBeInTheDocument();
     expect(await loads(calls)[0]?.clone().json()).toEqual({ ref: "/review/acme/web/7" });
+    expect(loads(calls)).toHaveLength(1);
     expect(within(workspace()).getByRole("link", { name: /Acme\/web#7/ })).toHaveAttribute("aria-current", "page");
   });
 

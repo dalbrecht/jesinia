@@ -55,9 +55,12 @@ export function prView(r: QueueRow, over: Partial<PrView> = {}): PrView {
     stale: false,
     nothing_to_walk: r.nothing_to_walk,
     sync: { synced_at: ago(20), syncing: false, sync_error: null },
+    files: null,
     ...over,
   };
 }
+
+export const UP_TO_DATE = { state: "up_to_date", reason: "this head's review is complete", round_id: 3, jobs: [] };
 
 export const AUTH_MISSING = "no GitHub token: run `gh auth login`, or store a PAT in the Keychain as `jesinia-github`";
 
@@ -67,7 +70,10 @@ export function routes(q: Queue | (() => Queue), over: Routes = {}): Routes {
   return baseRoutes({
     "GET /api/review/queue": () => Response.json(current()),
     ...Object.fromEntries(
-      current().rows.map((r) => [`GET /api/review/prs/${r.repo}/${r.number}`, () => Response.json(prView(r))]),
+      current().rows.flatMap((r) => [
+        [`GET /api/review/prs/${r.repo}/${r.number}`, () => Response.json(prView(r))],
+        [`POST /api/review/prs/${r.repo}/${r.number}/open`, () => Response.json(UP_TO_DATE)],
+      ]),
     ),
     ...over,
   });

@@ -70,7 +70,11 @@ describe("workspace tabs", () => {
     render(<App client={again.client} />);
     expect(await within(workspace()).findByRole("link", { name: /Acme\/web#2 auth: rotate keys/ })).toBeInTheDocument();
     await waitFor(() => expect(again.calls.some((c) => new URL(c.url).pathname === "/api/review/queue")).toBe(true));
-    expect([...calls, ...again.calls].filter((c) => c.method !== "GET")).toHaveLength(0);
+    // Opening the tab asked the server to start its review (POST /open); nothing was loaded,
+    // and the restored (not yet shown) tab wrote nothing at all.
+    const writes = (list: Request[]) => list.filter((c) => c.method !== "GET").map((c) => new URL(c.url).pathname);
+    expect(writes(calls)).toEqual(["/api/review/prs/acme/web/2/open"]);
+    expect(writes(again.calls)).toHaveLength(0);
   });
 
   it("restores saved tabs on start and ignores a corrupt or unreadable store", async () => {

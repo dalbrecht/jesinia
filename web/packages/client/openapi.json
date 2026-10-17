@@ -5108,7 +5108,7 @@
           "review"
         ],
         "summary": "Open Pr",
-        "description": "Open the PR: start what its round lacks (202), or say why not (gates).",
+        "description": "Open the PR: start what its round lacks (202), or say why not (gates). The body\nmay choose the depth, or ask to walk everything.",
         "operationId": "open_pr_api_review_prs__owner___repo___number__open_post",
         "parameters": [
           {
@@ -5163,6 +5163,23 @@
             "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OpenIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -7355,6 +7372,33 @@
         ],
         "title": "MoveOut"
       },
+      "OpenIn": {
+        "properties": {
+          "depth": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "quick",
+                  "deep"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
+          },
+          "walk_everything": {
+            "type": "boolean",
+            "title": "Walk Everything",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "OpenIn",
+        "description": "What the author asks of opening (both optional): their ``depth`` in place of\nJesinia's proposal, or ``walk_everything`` to walk the rest of the change too."
+      },
       "OpenOut": {
         "properties": {
           "state": {
@@ -7805,6 +7849,59 @@
         ],
         "title": "PostedOut"
       },
+      "PrFileOut": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "additions": {
+            "type": "integer",
+            "title": "Additions"
+          },
+          "deletions": {
+            "type": "integer",
+            "title": "Deletions"
+          },
+          "patch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patch"
+          },
+          "previous_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "patch",
+          "previous_path"
+        ],
+        "title": "PrFileOut",
+        "description": "A changed file as GitHub lists it; ``patch`` (the file's unified diff hunks, PR\ncontent) is null when GitHub doesn't show it (binary, or too large)."
+      },
       "PrOut": {
         "properties": {
           "pr": {
@@ -7839,6 +7936,21 @@
           },
           "sync": {
             "$ref": "#/components/schemas/SyncOut"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PrFileOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files",
+            "description": "GitHub's cached files of the round's head, for the walkthrough's diff; null before any round or while that head's list isn't cached"
           }
         },
         "type": "object",
@@ -7848,7 +7960,8 @@
           "artifacts",
           "stale",
           "nothing_to_walk",
-          "sync"
+          "sync",
+          "files"
         ],
         "title": "PrOut",
         "description": "An opened PR from the cache: its row, its latest round and every artifact of it."
