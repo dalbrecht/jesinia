@@ -338,6 +338,7 @@ FIXTURE_URLS = {
     "article.html": ARTICLE_URL,
     "jvns-anchor-headings.html": JVNS_URL,
     "willison-recent-articles.html": WILLISON_URL,
+    "willison-highlighted-pre.html": "https://simonwillison.net/2026/Oct/12/python-3-15/",
 }
 
 
@@ -482,3 +483,45 @@ def test_extract_keeps_markdown_shown_inside_a_code_block() -> None:
     assert article is not None
     tokens = MarkdownIt("commonmark").parse(article.markdown)
     assert [t.content for t in tokens if t.type == "fence"] == [sample + "\n"], article.markdown
+
+
+def test_extract_keeps_highlighted_pre_blocks_without_code_as_fenced_code() -> None:
+    markdown = _extract_fixture("willison-highlighted-pre.html").markdown
+    tokens = MarkdownIt("commonmark").parse(markdown)
+    fences = [t.content for t in tokens if t.type == "fence"]
+    assert fences == [
+        "lists = [[1, 2], [3, 4]]\n"
+        "[*L for L in lists]\n"
+        "# [1, 2, 3, 4]\n"
+        "\n"
+        "# equivalent to [x for L in lists for x in L]\n"
+        "    indented =  True\n",
+        "# install it\nuv python install 3.15\n\n# then run it\nuv run --python 3.15 python\n",
+    ], markdown
+    headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == "heading_open"]
+    assert headings == ["Hello Python 3.15", "Unpacking in comprehensions"], markdown
+    assert "Both examples run unchanged on the release candidate" in markdown
+
+
+def _fences_of(body: str) -> tuple[list[str], str]:
+    page = f"<html><body><article><h1>Code</h1>{_FILLER}{body}{_FILLER}</article></body></html>"
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    tokens = MarkdownIt("commonmark").parse(article.markdown)
+    return [t.content for t in tokens if t.type == "fence"], article.markdown
+
+
+def test_extract_keeps_line_breaks_and_blank_lines_in_code() -> None:
+    fences, markdown = _fences_of("<pre>one<br>two<br><br># three</pre>")
+    assert fences == ["one\ntwo\n\n# three\n"], markdown
+    highlighted = (
+        '<pre><code><span class="k">a</span> = 1\n\n<span class="c"># b</span></code></pre>'
+    )
+    fences, markdown = _fences_of(highlighted)
+    assert fences == ["a = 1\n\n# b\n"], markdown
+
+
+def test_extract_leaves_a_page_that_already_uses_the_blank_line_symbol_alone() -> None:
+    fences, markdown = _fences_of("<p>The ␀ symbol stands for NUL.</p><pre>a\n\nb</pre>")
+    assert "The ␀ symbol stands for NUL." in markdown
+    assert fences == ["a\nb\n"], markdown  # trafilatura's own handling of the blank line

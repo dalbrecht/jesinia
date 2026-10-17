@@ -35,6 +35,10 @@ _WORD_SEPARATOR = re.compile(r"[-_\s]+")
 # class says (``<article class="post recent">``), and is never dropped as clutter.
 ARTICLE_TEXT_SHARE = 0.5
 _WHITESPACE = re.compile(r"\s+")
+# Stands in for an empty line inside a code block during extraction: trafilatura drops empty
+# lines from code, and this visible symbol (U+2400) is one it keeps. Used only on pages that
+# do not already contain it.
+BLANK_CODE_LINE = "\u2400"
 
 
 def _text_length(element: lxml.html.HtmlElement) -> int:
@@ -90,6 +94,46 @@ def _flatten_headings(tree: lxml.html.HtmlElement) -> None:
             heading.text = heading.text.rstrip()
 
 
+def _wrap_bare_preformatted_text(tree: lxml.html.HtmlElement) -> None:
+    """A ``<pre>`` with no ``<code>`` inside (syntax highlighting as bare ``<span>``s) holds
+    its text in a single ``<code>``: the extractor only fences ``pre > code``, and otherwise
+    renders the lines as prose, where a ``# comment`` becomes a heading. The spans are
+    dropped; their text, whitespace and line breaks (``<br>`` included) are kept exactly."""
+    for block in list(tree.iter("pre")):
+        if block.find(".//code") is not None:
+            continue
+        for line_break in block.iter("br"):
+            line_break.tail = "\n" + (line_break.tail or "")
+        text = str(block.text_content())
+        for child in list(block):
+            block.remove(child)
+        block.text = None
+        code = lxml.html.Element("code")
+        code.text = text
+        block.append(code)
+
+
+def _mark_blank_code_lines(tree: lxml.html.HtmlElement) -> bool:
+    """Put ``BLANK_CODE_LINE`` on every empty line inside a ``<pre>``; False (and nothing
+    changed) when the page already contains the symbol."""
+    if BLANK_CODE_LINE in str(tree.text_content()):
+        return False
+    blank = "\n\n"
+    for block in tree.iter("pre"):
+        for node in block.iter():
+            for name in ("text", "tail") if node is not block else ("text",):
+                value = getattr(node, name)
+                while value and blank in value:
+                    value = value.replace(blank, f"\n{BLANK_CODE_LINE}\n")
+                setattr(node, name, value)
+    return True
+
+
+def _restore_blank_code_lines(markdown: str) -> str:
+    lines = markdown.split("\n")
+    return "\n".join("" if line.strip() == BLANK_CODE_LINE else line for line in lines)
+
+
 def _trim_block_tails(tree: lxml.html.HtmlElement) -> None:
     """Source indentation after a ``<pre>`` is dropped: the extractor copies a code block's
     whitespace-only tail verbatim, which indents the next paragraph into a code block."""
@@ -111,6 +155,7 @@ def _clean_tree(raw: lxml.html.HtmlElement, url: str) -> lxml.html.HtmlElement:
             image.drop_tree()
     _drop_clutter(tree)
     _flatten_headings(tree)
+    _wrap_bare_preformatted_text(tree)
     _trim_block_tails(tree)
     return tree
 
@@ -123,6 +168,7 @@ class TrafilaturaExtractor:
         # The title comes from the raw page's metadata (the sanitiser drops <head>).
         title = trafilatura.extract_metadata(raw, default_url=url).title
         tree = _clean_tree(raw, url)
+        has_marked_blank_lines = _mark_blank_code_lines(tree)
         # Collected before extraction, which prunes the tree it is given.
         sources = [str(image.get("src")) for image in tree.iter("img")]
         markdown = trafilatura.extract(
@@ -136,6 +182,8 @@ class TrafilaturaExtractor:
         )
         if not markdown:
             return None
+        if has_marked_blank_lines:
+            markdown = _restore_blank_code_lines(markdown)
         markdown = normalize_markdown(markdown)
         images = list(dict.fromkeys(s for s in sources if s in markdown))
         return Article(title or None, markdown, images)
