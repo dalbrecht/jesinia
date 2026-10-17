@@ -253,6 +253,38 @@ describe("workspace tab links", () => {
   });
 });
 
+describe("polling", () => {
+  const gets = (calls: Request[]) =>
+    calls.filter((c) => c.method === "GET" && new URL(c.url).pathname === "/api/review/queue").length;
+
+  it("relaxes to the idle pace while GitHub auth is missing, even with nothing cached", async () => {
+    const { calls } = setup(queue([], { synced_at: null, sync_error: "no GitHub token: run `gh auth login`" }));
+    await screen.findByText(/Nothing is cached yet/);
+    await new Promise((r) => setTimeout(r, 2600));
+    expect(gets(calls)).toBe(1);
+  });
+
+  it("backs off when the queue can't be read again and again", async () => {
+    const { calls } = setup(queue([]), {
+      "GET /api/review/queue": () => Response.json({ error: "ReviewError", detail: "locked" }, { status: 500 }),
+    });
+    await screen.findByRole("alert");
+    // Retries at 2 s, then 4 s later: by 5 s only the first retry has run (a steady 2 s would be 2).
+    await new Promise((r) => setTimeout(r, 5000));
+    expect(gets(calls)).toBe(2);
+  }, 10_000);
+
+  it("stops polling once the app is gone", async () => {
+    const env = fakeClient(routes(queue([], { synced_at: null, syncing: true })));
+    const view = render(<App client={env.client} />);
+    await screen.findByText(/first time/);
+    view.unmount();
+    const before = gets(env.calls);
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(gets(env.calls)).toBe(before);
+  });
+});
+
 describe("freshness", () => {
   it("reads Not updated yet, minutes ago, or the time", () => {
     const now = new Date("2026-10-17T12:00:00Z");
@@ -260,6 +292,24 @@ describe("freshness", () => {
     expect(freshness(queue([], { synced_at: "2026-10-17T11:59:50Z", syncing: true }), now)).toBe(
       "Updated just now · refreshing…",
     );
-    expect(freshness(queue([], { synced_at: "2026-10-17T09:00:00Z" }), now)).toMatch(/^Updated at \d/);
+    expect(freshness(queue([], { synced_at: "2026-10-17T11:15:00Z" }), now)).toBe("Updated 45 min ago");
+    expect(freshness(queue([], { synced_at: "2026-10-17T09:00:00Z" }), now)).toBe("Updated 3 h ago");
+    expect(freshness(queue([], { synced_at: "2026-10-16T11:00:00Z" }), now)).toBe("Updated 1 day ago");
+    expect(freshness(queue([], { synced_at: "2026-10-14T12:00:00Z" }), now)).toBe("Updated 3 days ago");
+    // Older than a week: the date, never a bare clock time that reads as today.
+    expect(freshness(queue([], { synced_at: "2026-10-01T12:00:00Z" }), now)).toMatch(/^Updated on .*2026/);
+    expect(freshness(queue([], { synced_at: "not a date" }), now)).toBe("Not updated yet");
+  });
+
+  it("a failed sync after a good one keeps the last good time beside the banner (R56 is backend)", async () => {
+    setup(
+      queue([row(1)], {
+        synced_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+        sync_error: "github.com unreachable",
+      }),
+    );
+    expect(await screen.findByText("Updated 3 days ago")).toBeInTheDocument();
+    expect(screen.getByText(/Couldn't refresh from GitHub/)).toBeInTheDocument();
+    expect(screen.queryByText("Not updated yet")).toBeNull();
   });
 });

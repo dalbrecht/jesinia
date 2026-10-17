@@ -144,3 +144,24 @@ async def test_the_e2e_app_never_reads_a_real_github_token() -> None:
     module = fake_runner_app.signed_out_github_module()
     assert module.name == "github"
     assert await fake_runner_app.no_github_token() is None
+
+
+def test_build_app_wires_the_signed_out_github_module(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import jesinia.core.app as core_app
+    from jesinia.services.github.module import GitHubModule
+
+    captured: list[object] = []
+
+    def capture(cfg: Config, mods: list[object], **_: object) -> object:
+        captured.extend(mods)
+        return object()
+
+    monkeypatch.setenv("JESINIA_FAKE_RUNNER", "1")
+    monkeypatch.setenv("JESINIA_HOME", str(tmp_path))
+    monkeypatch.setattr(core_app, "create_app", capture)
+    fake_runner_app.build_app()
+    github = [m for m in captured if getattr(m, "name", None) == "github"]
+    assert len(github) == 1 and isinstance(github[0], GitHubModule)
+    assert github[0]._token is fake_runner_app.no_github_token

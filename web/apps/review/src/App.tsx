@@ -2,7 +2,7 @@
 // The Review app (spec §2): workspace tabs (the queue, then one tab per opened review) over the
 // queue or the opened PR. Routes: /review/ and /review/<owner>/<repo>/<n>.
 import { subscribe, type JesiniaClient } from "@jesinia/client";
-import { Banner, relativeTime, useToast, type PaletteItem } from "@jesinia/design";
+import { Banner, useToast, type PaletteItem } from "@jesinia/design";
 import { AppShell, useClient } from "@jesinia/shell";
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type MutableRefObject } from "react";
 import {
@@ -19,6 +19,7 @@ import {
   reviewAnyway,
   routeOf,
   splitCode,
+  syncedAgo,
   type OpenResult,
   type Queue as QueueData,
   type QueueRow,
@@ -33,6 +34,18 @@ export const NARROW_QUERY = "(max-width: 767px)";
 export const SYNCING_POLL_MS = 2000;
 /** Otherwise the background sync (every 2 minutes) is picked up at this pace. */
 export const IDLE_POLL_MS = 60_000;
+
+/**
+ * When to read the queue again. Often only while a sync is running or the very first one is
+ * due; at the idle pace while GitHub is failing (auth missing, unreachable); and backing off
+ * (2 s, 4 s, 8 s… up to the idle pace) while the queue itself can't be read.
+ */
+export function nextPollMs(queue: QueueData | null, failedReads: number): number {
+  if (failedReads > 0) return Math.min(IDLE_POLL_MS, SYNCING_POLL_MS * 2 ** (failedReads - 1));
+  if (queue === null) return SYNCING_POLL_MS;
+  const firstRun = queue.rows.length === 0 && queue.synced_at === null && queue.sync_error === null;
+  return queue.syncing || firstRun ? SYNCING_POLL_MS : IDLE_POLL_MS;
+}
 
 type Pr = { repo: string; number: number };
 
@@ -50,12 +63,13 @@ function useNarrow(): boolean {
 }
 
 /** "Updated 20 min ago · refreshing…" (spec §2, "Always cached"). */
+/**
+ * "Updated 20 min ago · refreshing…" (spec §2, "Always cached"). `synced_at` is the last
+ * successful sync (a failed one keeps it), so "Not updated yet" means there never was one.
+ */
 export function freshness(queue: QueueData, now: Date = new Date()): string {
-  let text = "Not updated yet";
-  if (queue.synced_at !== null) {
-    const rel = relativeTime(queue.synced_at, now);
-    text = /ago|now/.test(rel) ? `Updated ${rel}` : `Updated at ${rel}`;
-  }
+  const ago = queue.synced_at === null ? null : syncedAgo(queue.synced_at, now);
+  const text = ago === null ? "Not updated yet" : `Updated ${ago}`;
   return queue.syncing ? `${text} · refreshing…` : text;
 }
 
@@ -98,6 +112,7 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
   const [active, setActive] = useState<Pr | null>(() => routeOf(window.location.pathname));
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const failing = useRef(false);
+  const [failedReads, setFailedReads] = useState(0);
 
   const fail = useCallback(
     (what: string, e: unknown) => toast.show({ tone: "danger", message: `Couldn't ${what}: ${errorCause(e)}` }),
@@ -108,12 +123,14 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
     try {
       const q = await getQueue(client);
       failing.current = false;
+      setFailedReads(0);
       setQueue(q);
       setQueueError(null);
       setReads((n) => n + 1);
     } catch (e) {
       // Whatever was shown stays (spec §2: never replaced by an error page); say why once.
       setQueueError(errorCause(e));
+      setFailedReads((n) => n + 1);
       if (!failing.current) fail("read the queue", e);
       failing.current = true;
     } finally {
@@ -138,12 +155,12 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
     [],
   );
 
-  // The sync itself sends no event: the cache is read again on a timer, often while it runs.
-  const syncing = queue === null || queue.syncing || (queue.rows.length === 0 && queue.synced_at === null);
+  // The sync itself sends no event: the cache is read again on a timer (see `nextPollMs`).
+  const pollMs = nextPollMs(queue, failedReads);
   useEffect(() => {
-    const t = setTimeout(() => void readQueue(), syncing ? SYNCING_POLL_MS : IDLE_POLL_MS);
+    const t = setTimeout(() => void readQueue(), pollMs);
     return () => clearTimeout(t);
-  }, [readQueue, syncing, attempts]);
+  }, [readQueue, pollMs, attempts]);
 
   useEffect(() => onFreshness(queue), [queue, onFreshness]);
 
@@ -181,19 +198,45 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
     );
   }, []);
 
+  // Keyboard and screen-reader users keep their place: the opened review's tab takes focus,
+  // and closing a tab moves focus to its neighbour, or to the Queue tab.
+  const nav = useRef<HTMLElement>(null);
+  const focusTab = useRef<string | null>(null);
+  const tabKey = (t: Pr | null) => (t ? `${t.repo}#${t.number}` : "queue");
+  useEffect(() => {
+    const key = focusTab.current;
+    if (key === null) return;
+    const link = nav.current?.querySelector<HTMLElement>(`[data-tab="${CSS.escape(key)}"]`);
+    if (!link) return;
+    focusTab.current = null;
+    link.focus();
+  });
+
+  const go = useCallback(
+    (to: Pr | null) => {
+      focusTab.current = tabKey(to);
+      navigate(to);
+    },
+    [navigate],
+  );
+
   const openRow = (row: QueueRow) => {
     openTab({ repo: row.repo, number: row.number, label: labelOf(row), verdict: row.recommendation });
-    navigate({ repo: row.repo, number: row.number });
+    go({ repo: row.repo, number: row.number });
   };
 
   const openMany = (rows: QueueRow[]) => {
     for (const r of rows) openTab({ repo: r.repo, number: r.number, label: labelOf(r), verdict: r.recommendation });
-    if (rows[0]) navigate({ repo: rows[0].repo, number: rows[0].number });
+    if (rows[0]) go({ repo: rows[0].repo, number: rows[0].number });
   };
 
   const closeTab = (tab: OpenTab) => {
+    const at = tabs.findIndex((t) => sameTab(t, tab));
+    const neighbour = tabs[at + 1] ?? tabs[at - 1] ?? null;
     setTabs((prev) => prev.filter((t) => !sameTab(t, tab)));
-    if (active && sameTab(active, tab)) navigate(null);
+    focusTab.current = tabKey(neighbour);
+    // Closing the open review shows its neighbour, like a browser tab.
+    if (active && sameTab(active, tab)) navigate(neighbour);
   };
 
   useEffect(() => {
@@ -229,10 +272,10 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
     async (ref: string) => {
       const row = await keyed(`load:${ref}`, (key) => loadPr(client, ref, key));
       tabFor(row);
-      navigate({ repo: row.repo, number: row.number });
+      go({ repo: row.repo, number: row.number });
       void readQueue();
     },
-    [client, keyed, tabFor, navigate, readQueue],
+    [client, keyed, tabFor, go, readQueue],
   );
 
   // Opening /review/<owner>/<repo>/<n> directly loads that PR (spec §2, "Load a PR").
@@ -323,14 +366,15 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
 
   return (
     <div className={s.workspace}>
-      <nav className={s.wtabs} aria-label="Open reviews">
+      <nav ref={nav} className={s.wtabs} aria-label="Open reviews">
         <a
           className={s.wtab}
+          data-tab="queue"
           href="/review/"
           aria-current={active === null ? "page" : undefined}
           onClick={(e) => follow(e, null)}
         >
-          ☰ Queue
+          <span aria-hidden="true">☰</span> Queue
         </a>
         {tabs.map((t) => {
           const verdict = t.verdict ? VERDICT[t.verdict] : undefined;
@@ -339,6 +383,7 @@ function Workspace({ onFreshness, searchRef }: WorkspaceProps) {
             <span key={`${t.repo}#${t.number}`} className={s.wtabItem}>
               <a
                 className={s.wtab}
+                data-tab={tabKey(t)}
                 href={prPath(t.repo, t.number)}
                 aria-current={active && sameTab(active, t) ? "page" : undefined}
                 onClick={(e) => follow(e, t)}

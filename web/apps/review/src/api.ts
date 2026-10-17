@@ -116,6 +116,27 @@ export function ageOf(createdAt: string, now: Date = new Date()): string {
   return `${days} ${days === 1 ? "day" : "days"} old`;
 }
 
+const WEEK = 7 * DAY;
+
+/**
+ * How long ago a sync happened, for every range: "just now", "N min ago", "N h ago",
+ * "N days ago", then "on <date>" past a week. Never a bare clock time, which reads as today
+ * however old it is. Null for a time that can't be read.
+ */
+export function syncedAgo(at: string, now: Date = new Date()): string | null {
+  const then = new Date(at);
+  const secs = Math.round((now.getTime() - then.getTime()) / 1000);
+  if (Number.isNaN(secs)) return null;
+  if (secs < 60) return "just now";
+  if (secs < 3600) return `${Math.floor(secs / 60)} min ago`;
+  if (secs < DAY) return `${Math.floor(secs / 3600)} h ago`;
+  if (secs < WEEK) {
+    const days = Math.floor(secs / DAY);
+    return `${days} ${days === 1 ? "day" : "days"} ago`;
+  }
+  return `on ${then.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" })}`;
+}
+
 /** A failed review request, carrying the server's cause (`detail`) as its message. */
 export class ReviewRequestError extends Error {
   constructor(
