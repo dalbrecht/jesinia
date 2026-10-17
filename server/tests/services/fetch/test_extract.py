@@ -619,3 +619,15 @@ def test_extract_drops_a_heading_that_is_only_whitespace() -> None:
     tokens = MarkdownIt("commonmark").parse(article.markdown)
     headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == "heading_open"]
     assert headings == ["Spaces"], article.markdown
+
+
+def test_extract_joins_line_breaks_in_headings() -> None:
+    page = (
+        f"<html><body><article><h1>Breaks</h1>{_FILLER}<h2>First<br>Second</h2>"
+        f"<h3>One<br/>\n  <em>Two</em><br>Three<br></h3>{_OTHER_FILLER}</article></body></html>"
+    )
+    article = TrafilaturaExtractor().extract(page.encode(), ARTICLE_URL)
+    assert article is not None
+    lines = article.markdown.splitlines()
+    assert "## First Second" in lines, article.markdown
+    assert "### One *Two* Three" in lines, article.markdown

@@ -115,13 +115,16 @@ def _trim_ends(slots: list[tuple[lxml.html.HtmlElement, str]], *, from_start: bo
 
 
 def _flatten_headings(tree: lxml.html.HtmlElement, page_url: str) -> None:
-    """Headings as one line of text: self-anchor links unwrapped (other links kept) and
-    whitespace collapsed and trimmed (a line break inside a heading splits it into an empty
-    heading and stray text)."""
+    """Headings as one line of text: self-anchor links unwrapped (other links kept), and
+    whitespace and ``<br>`` collapsed to single spaces and trimmed (a line break inside a
+    heading splits it into an empty heading and stray text)."""
     for heading in list(tree.iter(*HEADING_TAGS)):
         for anchor in list(heading.iter("a")):
             if _is_self_anchor(str(anchor.get("href")), page_url):
                 anchor.drop_tag()
+        for line_break in list(heading.iter("br")):
+            line_break.tail = " " + (line_break.tail or "")
+            line_break.drop_tag()
         slots = _text_slots(heading)
         for node, name in slots:
             setattr(node, name, _collapse(getattr(node, name)))
