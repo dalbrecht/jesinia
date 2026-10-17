@@ -10,9 +10,11 @@ from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 from typing import cast
 
 from jesinia.apps.review.domain.gates import CiState, Depth
+from jesinia.apps.review.domain.jobs import DEFAULT_RUNNER
 from jesinia.apps.review.domain.queue import (
     DEFAULT_PREREVIEW,
     AutoReviewState,
@@ -29,10 +31,14 @@ from jesinia.apps.review.domain.queue import (
     evidence_from_json,
     parse_prereview_mode,
 )
+from jesinia.apps.review.domain.standards import Override
 from jesinia.core.db import transaction
 from jesinia.services.github.domain.pr import PrFile
 
 _PREREVIEW_KEY = "prereview"
+_STANDARDS_DIR_KEY = "standards.dir"
+_STANDARDS_USER_DIR_KEY = "standards.user_dir"
+_JOB_RUNNER_KEY = "jobs.runner"
 _VIEWER_KEY = "viewer"
 _SYNC_KEY = "queue.sync"
 
@@ -226,6 +232,53 @@ class SqliteReviewStore:
 
     def set_viewer(self, login: str) -> None:
         self._put_setting(_VIEWER_KEY, login)
+
+    def _path_setting(self, key: str) -> Path | None:
+        value = self._setting(key)
+        return Path(value) if isinstance(value, str) and value else None
+
+    def standards_dir(self) -> Path | None:
+        """The author's coding-standards checkout (the base layer), if set."""
+        return self._path_setting(_STANDARDS_DIR_KEY)
+
+    def set_standards_dir(self, path: Path | None) -> None:
+        self._put_setting(_STANDARDS_DIR_KEY, None if path is None else str(path))
+
+    def standards_user_dir(self) -> Path | None:
+        """The folder of the author's own standards documents (the user layer), if set."""
+        return self._path_setting(_STANDARDS_USER_DIR_KEY)
+
+    def set_standards_user_dir(self, path: Path | None) -> None:
+        self._put_setting(_STANDARDS_USER_DIR_KEY, None if path is None else str(path))
+
+    def job_runner(self) -> str:
+        """The agent runner review jobs use (``codex`` unless set)."""
+        value = self._setting(_JOB_RUNNER_KEY)
+        return value if isinstance(value, str) and value else DEFAULT_RUNNER
+
+    def set_job_runner(self, runner: str) -> None:
+        self._put_setting(_JOB_RUNNER_KEY, runner)
+
+    def standards_overrides(self, repo: str) -> list[Override]:
+        """The author's own overrides, then ``repo``'s, each in the order they were added."""
+        rows = self._conn.execute(
+            "SELECT doc, heading_path, text FROM standards_overrides "
+            "WHERE repo IS NULL OR repo = ? ORDER BY repo IS NOT NULL, id",
+            (RepoConfig(repo).repo,),
+        )
+        return [Override(doc, tuple(json.loads(path)), text) for doc, path, text in rows]
+
+    def add_standards_override(self, repo: str | None, override: Override) -> None:
+        """Store an override for ``repo``, or for every repo when ``repo`` is ``None``."""
+        self._conn.execute(
+            "INSERT INTO standards_overrides (repo, doc, heading_path, text) VALUES (?, ?, ?, ?)",
+            (
+                None if repo is None else RepoConfig(repo).repo,
+                override.doc,
+                json.dumps(list(override.heading_path)),
+                override.text,
+            ),
+        )
 
     def sync_status(self) -> tuple[datetime | None, str | None]:
         value = self._setting(_SYNC_KEY)

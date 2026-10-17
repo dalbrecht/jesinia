@@ -198,14 +198,25 @@ class SessionService:
         *,
         preauthorized_tools: frozenset[str] | set[str] = frozenset(),
         read_only: bool = False,
+        allowed_tools: frozenset[str] | set[str] | None = None,
     ) -> Session:
         """A new idle session. A ``one-shot`` subject gets no MCP endpoint or token. A
         ``read_only`` session is offered only the tools that do not write, and the write gate
-        refuses any write it attempts (so none can be pre-authorized)."""
+        refuses any write it attempts (so none can be pre-authorized). With
+        ``allowed_tools``, the session is offered only those tools and the gate refuses any
+        other, reads included.
+
+        Raises:
+            ValueError: an unknown runner, or pre-authorized tools the session may not use.
+        """
         if runner not in self.runners:
             raise ValueError(f"unknown runner {runner!r}")
         if read_only and preauthorized_tools:
             raise ValueError("a read-only session cannot be pre-authorized to write")
+        allowed = None if allowed_tools is None else frozenset(allowed_tools)
+        if allowed is not None and not set(preauthorized_tools) <= allowed:
+            outside = ", ".join(sorted(set(preauthorized_tools) - allowed))
+            raise ValueError(f"pre-authorized tools not allowed in this session: {outside}")
         id = uuid.uuid4().hex
         write_pack(pack, self.dir_for(id))
         if subject.kind == ONE_SHOT_SUBJECT:
@@ -224,6 +235,7 @@ class SessionService:
             None,
             frozenset(preauthorized_tools),
             read_only,
+            allowed,
         )
         self.store.add_session(session)
         return session
@@ -331,7 +343,12 @@ class SessionService:
         if is_one_shot(session):
             return []
         tools = self._tools()
-        return sorted(n for n, tool in tools.items() if not (session.read_only and tool.writes))
+        return sorted(
+            name
+            for name, tool in tools.items()
+            if not (session.read_only and tool.writes)
+            and (session.allowed_tools is None or name in session.allowed_tools)
+        )
 
     async def _turn(self, id: str, text: str) -> None:
         session = self.get(id)

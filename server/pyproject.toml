@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.118",
     "feedparser>=6.0",
     "httpx>=0.28",
+    "jsonschema>=4.23",
     "lxml>=6.0",
     "mcp>=1.15",
     "nh3>=0.2",
@@ -35,6 +36,7 @@ dev = [
     "types-pyyaml>=6.0",
     "respx>=0.22",
     "markdown-it-py>=4.0",
+    "types-jsonschema>=4.23",
 ]
 
 [build-system]

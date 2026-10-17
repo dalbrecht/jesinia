@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The Review app module: owns ``review.sqlite``, the queue and its pre-review scheduler,
-the repo workspace and the repo tools. Starts last (after ``github``)."""
+the repo workspace, the repo tools and the agent jobs. Starts last (after ``agents`` and
+``github``)."""
 
 from __future__ import annotations
 
@@ -13,14 +14,17 @@ from importlib.resources import files
 from fastapi import APIRouter, HTTPException, status
 
 from jesinia.apps.review.api.tools import build_tools
+from jesinia.apps.review.application.jobs import JobRunner
 from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
 from jesinia.apps.review.application.repo_tools import RepoTools
 from jesinia.apps.review.application.scheduler import PRUNE_INTERVAL, Scheduler, WorkspacePruner
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
+from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace, github_remote_url
 from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
+from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
 
@@ -51,6 +55,7 @@ class ReviewModule:
         self._queue: QueueService | None = None
         self._scheduler: Scheduler | None = None
         self._pruner: WorkspacePruner | None = None
+        self._jobs: JobRunner | None = None
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -76,6 +81,18 @@ class ReviewModule:
                 )
             raise _not_started()
         return self._queue
+
+    @property
+    def jobs(self) -> JobRunner:
+        """Runs review agent jobs (needs the agents service)."""
+        if self._jobs is None:
+            if self._workspace is not None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "review jobs require the agents service",
+                )
+            raise _not_started()
+        return self._jobs
 
     @property
     def scheduler(self) -> Scheduler:
@@ -107,6 +124,7 @@ class ReviewModule:
             self._workspace,
             self.sessions.allowance,
             git_slots=self.sessions.git_slot,
+            tree_key=self._workspace.tree_key,
         )
         self.sessions.use_tree_locks(self._workspace.tree_lock)
         store = SqliteReviewStore(self._conn)
@@ -117,6 +135,15 @@ class ReviewModule:
             log.info("re-queued %d review rounds left running by a stop", interrupted)
         self._pruner = WorkspacePruner(store, self._workspace, self.sessions.bound_trees)
         ctx.scheduler.every(PRUNE_JOB, PRUNE_INTERVAL, self.prune_workspace, at_start=True)
+        agents = ctx.services.get("agents")
+        if isinstance(agents, SessionService):
+            self._jobs = JobRunner(
+                agents,
+                self._workspace,
+                StandardsLoader(self._workspace, store.standards_dir),
+                registry=self.sessions,
+                store=store,
+            )
         github = ctx.services.get("github")
         if isinstance(github, GitHubService):
             self._queue = QueueService(
@@ -128,6 +155,7 @@ class ReviewModule:
         if self._scheduler is not None:
             await self._scheduler.stop()
         self._scheduler = None
+        self._jobs = None
         self._queue = None
         self._pruner = None
         if self._conn is not None:

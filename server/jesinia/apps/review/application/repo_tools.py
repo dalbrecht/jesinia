@@ -257,6 +257,8 @@ class RepoTools:
         sessions_to_worktree: the worktree bound to a review session, or ``None``.
         git: read-only git inside a worktree.
         allowance: per-session, per-file line allowance shared by every tool.
+        tree_key: the canonical ``(repo, sha)`` of a worktree path (the workspace's), so
+            results can name what they were read from.
     """
 
     def __init__(
@@ -266,10 +268,12 @@ class RepoTools:
         allowance: FileLineAllowance,
         *,
         git_slots: Callable[[str], asyncio.Semaphore] | None = None,
+        tree_key: Callable[[Path], tuple[str, str] | None] | None = None,
     ) -> None:
         self._sessions_to_worktree = sessions_to_worktree
         self._git = git
         self._allowance = allowance
+        self._tree_key = tree_key
         own_slots: dict[str, asyncio.Semaphore] = {}
         self._git_slots = git_slots or (
             lambda session: own_slots.setdefault(session, asyncio.Semaphore(1))
@@ -512,6 +516,17 @@ class RepoTools:
                 f"allowance ({self._allowance.remaining(session, key)} lines remain)"
             )
         return {"cmd": cmd, "output": "".join(lines), "truncated": truncated, "cap": cap}
+
+    def origin(self, session_id: str | None) -> str:
+        """``<repo>@<sha>`` of the worktree ``session_id`` reads (``unknown@<tree name>``
+        when the workspace can't name it), for labelling results as untrusted data.
+
+        Raises:
+            NoReviewSessionError: the session isn't bound to a worktree.
+        """
+        _, root = self._session(session_id)
+        key = None if self._tree_key is None else self._tree_key(root)
+        return f"unknown@{root.name}" if key is None else f"{key[0]}@{key[1]}"
 
     def _session(self, session_id: str | None) -> tuple[str, Path]:
         if session_id is None:

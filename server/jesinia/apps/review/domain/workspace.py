@@ -39,6 +39,15 @@ class WorkspacePathError(WorkspaceError):
     """A workspace path resolved outside the workspace root (e.g. through a symlink)."""
 
 
+class InvalidTreePathError(WorkspaceError):
+    """A path inside a commit that is absolute, climbs out with ``..``, or looks like an
+    option."""
+
+
+class MirrorFileTooLargeError(WorkspaceError):
+    """A file at a commit is larger than the caller allows; it was not read."""
+
+
 class GitCommandError(WorkspaceError):
     """A git command exited non-zero; ``stderr`` keeps git's own explanation."""
 
@@ -109,3 +118,16 @@ def check_ref(ref: str) -> str:
     if _SHA.fullmatch(ref) or (_REF.fullmatch(ref) and ".." not in ref):
         return ref
     raise InvalidRefError(f"not a full ref or commit SHA: {ref!r}")
+
+
+def check_tree_path(path: str) -> str:
+    """Return ``path`` if it names a file inside a commit's tree: relative, no empty, ``.``
+    or ``..`` parts, and not starting with ``-``.
+
+    Raises:
+        InvalidTreePathError: anything else.
+    """
+    parts = path.split("/")
+    if not path or path.startswith("-") or any(part in {"", ".", ".."} for part in parts):
+        raise InvalidTreePathError(f"not a path inside a commit: {path!r}")
+    return path

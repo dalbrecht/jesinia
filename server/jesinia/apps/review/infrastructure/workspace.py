@@ -41,11 +41,13 @@ from jesinia.apps.review.domain.workspace import (
     GitOutputError,
     GitTimeoutError,
     GitUnavailableError,
+    MirrorFileTooLargeError,
     WorkspaceError,
     WorkspacePathError,
     canonical_repo,
     check_ref,
     check_sha,
+    check_tree_path,
     parse_repo,
 )
 
@@ -249,6 +251,55 @@ class GitWorkspace:
         if missing:
             raise GitOutputError(f"git patch-id gave no patch id for {', '.join(missing)}")
         return {path: by_index[index] for index, path in enumerate(paths, start=1)}
+
+    async def show_file(self, repo: str, sha: str, path: str, *, limit: int) -> bytes | None:
+        """``MirrorFiles``: the content of the regular file at ``path`` in commit ``sha``,
+        read from git's objects in the mirror (never a checkout), or ``None`` when there is
+        no such file. A symlink or a submodule there is ``None`` too: its target is never
+        followed, so a commit can't point the read anywhere else.
+
+        Raises:
+            InvalidShaError, InvalidTreePathError: before git runs.
+            MirrorFileTooLargeError: the file is over ``limit`` bytes (it is not read).
+            GitCommandError: e.g. ``sha`` isn't in the mirror.
+        """
+        mirror = _bare(self._mirror(repo))
+        commit, rel = check_sha(sha), check_tree_path(path)
+        # -l adds the blob size; -z keeps the name unquoted. With GIT_LITERAL_PATHSPECS the
+        # path matches only itself, and ls-tree never descends through a symlinked folder.
+        listing = await self._run(mirror, "ls-tree", "-l", "-z", "--full-tree", commit, "--", rel)
+        entry, _, name = listing.rstrip(b"\0").partition(b"\t")
+        if not entry or os.fsdecode(name) != rel:
+            return None
+        mode, kind, object_id, size = entry.split()
+        if kind != b"blob" or mode not in (b"100644", b"100755"):
+            return None
+        if int(size) > limit:
+            raise MirrorFileTooLargeError(
+                f"{rel} at {commit} is {int(size)} bytes, over the {limit}-byte limit"
+            )
+        return await self._run(mirror, "cat-file", "blob", object_id.decode())
+
+    async def commit_messages(
+        self, repo: str, base_sha: str, head_sha: str, *, limit: int
+    ) -> CappedOutput:
+        """The full messages of the commits in ``base_sha..head_sha``, newest first, each
+        followed by a NUL, from the mirror; cut (and flagged) past ``limit`` bytes.
+
+        Raises:
+            InvalidShaError, GitCommandError, GitTimeoutError.
+        """
+        mirror = _bare(self._mirror(repo))
+        base, head = check_sha(base_sha), check_sha(head_sha)
+        argv, out, err, code, truncated = await self._execute(
+            (*mirror, *_TREE_READ_OPTIONS),
+            ("log", "--no-color", "--format=%B%x00", "--end-of-options", f"{base}..{head}"),
+            extra_env={"GIT_CONFIG_NOSYSTEM": "1"},  # local reads need no credential helper
+            output_limit=limit,
+        )
+        if not truncated and code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return CappedOutput(out, truncated, 0 if truncated else code)
 
     async def read_in_tree(
         self,

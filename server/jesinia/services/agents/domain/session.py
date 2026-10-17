@@ -31,6 +31,8 @@ class Session:
     preauthorized: frozenset[str] = field(default_factory=frozenset)
     # No write tools at all: none offered to the agent, and the gate denies any it calls.
     read_only: bool = False
+    # Only these tools (``None``: any): none other offered, and the gate denies any other.
+    allowed_tools: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)

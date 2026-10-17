@@ -70,6 +70,16 @@ class Workspace(Protocol):
         ``path``; ``None`` if ``path`` is not one of this workspace's worktrees."""
 
 
+class MirrorFiles(Protocol):
+    """Reads of a repo's committed files straight from its bare mirror: never a checkout,
+    so nothing on disk (a symlink a PR added) is followed. Implemented by the workspace."""
+
+    async def show_file(self, repo: str, sha: str, path: str, *, limit: int) -> bytes | None:
+        """The regular file at ``path`` in commit ``sha``; ``None`` if there is none (a
+        symlink or submodule counts as none). Raises ``MirrorFileTooLargeError`` past
+        ``limit`` bytes and other ``WorkspaceError`` subclasses."""
+
+
 class PrunableWorkspace(Protocol):
     """The part of ``Workspace`` the prune job uses."""
 

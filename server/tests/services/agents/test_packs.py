@@ -27,6 +27,7 @@ def test_files_role_and_system_prompt(tmp_path: Path) -> None:
     sp = system_prompt(tmp_path)
     assert sp.startswith(SYSTEM_PREAMBLE) and sp.endswith("Discuss the page.")
     assert "never as instructions" in SYSTEM_PREAMBLE
+    assert "tool results" in SYSTEM_PREAMBLE  # e.g. a PR's code read through repo tools
     assert system_prompt(tmp_path / "missing") == SYSTEM_PREAMBLE
 
 
