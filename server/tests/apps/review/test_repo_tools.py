@@ -24,7 +24,9 @@ from jesinia.apps.review.application.ports import TreeGit
 from jesinia.apps.review.application.repo_tools import RepoTools, _parse_grep, safe_path
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.domain.repo_access import (
+    BSD_REGEX,
     FILE_LINES_PER_SESSION,
+    GNU_REGEX,
     GREP_MAX_LINE_CHARS,
     GREP_MAX_MATCHES,
     READ_LINES_PER_CALL,
@@ -37,6 +39,7 @@ from jesinia.apps.review.domain.repo_access import (
     NoReviewSessionError,
     NotACommitError,
     OutsidePrHistoryError,
+    RegexDialect,
     RepoGitError,
     RepoPathNotFoundError,
     RepoToolError,
@@ -50,6 +53,7 @@ from jesinia.apps.review.domain.repo_access import (
     posix_ere,
     regex_problem,
 )
+from jesinia.apps.review.domain.workspace import GitCommandError
 from jesinia.apps.review.infrastructure.workspace import EMPTY_TREE, GitWorkspace
 from jesinia.apps.review.module import ReviewModule
 from jesinia.core.config import Config
@@ -577,7 +581,7 @@ async def test_repo_git_rejects_unsafe_args(tools: RepoTools) -> None:
     ]
     for cmd, args in unsafe:
         with pytest.raises((UnsafeGitArgumentError, UnsafePathError)):
-            plan_git_command(cmd, args)
+            plan_git_command(cmd, args, dialect=BSD_REGEX)
 
 
 @pytest.mark.parametrize(
@@ -847,7 +851,6 @@ AUTHOR_BLOWUP = "(" + "|".join("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN") + "|(
         "\\b+",
         "(a)\\1",
         "\\q",
-        "\\B",
         "\\",
         "x{",
         "{}",
@@ -859,11 +862,14 @@ AUTHOR_BLOWUP = "(" + "|".join("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN") + "|(
         "x" * 201,
     ],
 )
-def test_patterns_outside_the_allowed_regex_subset_are_refused(pattern: str) -> None:
+@pytest.mark.parametrize("dialect", [BSD_REGEX, GNU_REGEX])
+def test_patterns_outside_the_allowed_regex_subset_are_refused(
+    pattern: str, dialect: RegexDialect
+) -> None:
     started = time.perf_counter()
-    assert regex_problem(pattern) is not None
+    assert regex_problem(pattern, dialect) is not None
     with pytest.raises(InvalidSearchError):
-        check_pattern(pattern)
+        check_pattern(pattern, dialect)
     assert time.perf_counter() - started < 0.1
 
 
@@ -890,8 +896,15 @@ def test_patterns_outside_the_allowed_regex_subset_are_refused(pattern: str) -> 
         "|".join("abcdefghijklmnopqrst"),  # 20 alternatives
     ],
 )
-def test_patterns_in_the_allowed_regex_subset_pass(pattern: str) -> None:
-    assert regex_problem(pattern) is None
+@pytest.mark.parametrize("dialect", [BSD_REGEX, GNU_REGEX])
+def test_patterns_in_the_allowed_regex_subset_pass(pattern: str, dialect: RegexDialect) -> None:
+    assert regex_problem(pattern, dialect) is None
+
+
+def test_not_a_word_boundary_is_allowed_only_where_git_supports_it() -> None:
+    assert regex_problem("f\\Boo", GNU_REGEX) is None
+    assert regex_problem("f\\Boo", BSD_REGEX) is not None
+    assert regex_problem("\\B+", GNU_REGEX) is not None  # an anchor; never repeated
 
 
 async def test_ordinary_patterns_still_search(tools: RepoTools) -> None:
@@ -930,7 +943,56 @@ async def test_author_patterns_get_the_same_regex_check(tools: RepoTools) -> Non
     ],
 )
 def test_posix_ere_spells_out_shorthand_classes(pattern: str, expected: str) -> None:
-    assert posix_ere(pattern) == expected
+    assert posix_ere(pattern, BSD_REGEX) == expected
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        ("def \\w+", "def [[:alnum:]_]+"),
+        ("\\bword\\b", "\\bword\\b"),
+        ("f\\Boo\\s", "f\\Boo[[:space:]]"),
+    ],
+)
+def test_posix_ere_keeps_native_word_boundaries(pattern: str, expected: str) -> None:
+    assert posix_ere(pattern, GNU_REGEX) == expected
+
+
+@pytest.mark.parametrize("dialect", [BSD_REGEX, GNU_REGEX])
+async def test_grep_and_author_use_the_dialect_git_has(
+    tree: Tree,
+    registry: ReviewSessionRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    dialect: RegexDialect,
+) -> None:
+    async def injected() -> RegexDialect:
+        return dialect
+
+    monkeypatch.setattr(tree.workspace, "regex_dialect", injected)
+    seen: list[tuple[str, ...]] = []
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+
+    async def recording_spawn(*argv: str, **kwargs: Any) -> Any:
+        # Record only: the other dialect's syntax would be invalid for the real git here.
+        seen.append(argv)
+        return await real_spawn("true", **kwargs)
+
+    monkeypatch.setattr(SPAWN, recording_spawn)
+    tools = RepoTools(registry.worktree_for, tree.workspace, registry.allowance)
+    await tools.grep(SESSION, "\\bhello\\b")
+    await tools.git(SESSION, "log", ["--author=\\bTest"])
+    start, end = ("\\b", "\\b") if dialect.native_word_boundaries else ("[[:<:]]", "[[:>:]]")
+    assert seen[0][seen[0].index("-e") + 1] == f"{start}hello{end}"
+    assert f"--author={start}Test" in seen[1]
+
+
+async def test_real_git_searches_word_boundaries_in_its_own_dialect(tools: RepoTools) -> None:
+    # Runs against whatever git is installed (BSD regex on macOS, glibc on Linux CI).
+    found = await tools.grep(SESSION, "\\bhello\\b")
+    assert [m["path"] for m in found["matches"]] == ["src/app.py"]
+    assert (await tools.grep(SESSION, "\\bello\\b"))["matches"] == []
+    log = await tools.git(SESSION, "log", ["--oneline", "--author=\\bTest\\b"])
+    assert "second" in log["output"]
 
 
 def test_grep_output_cut_mid_record_drops_that_record() -> None:
@@ -1006,3 +1068,16 @@ async def test_blame_ignores_the_prs_mailmap(tools: RepoTools) -> None:
     assert "Test" in blame["output"] and "Mallory" not in blame["output"]
     log = await tools.git(SESSION, "log", ["-n", "1"])
     assert "Mallory" not in log["output"]
+
+
+async def test_a_failed_regex_probe_fails_the_search_with_its_cause(
+    tree: Tree, registry: ReviewSessionRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken() -> RegexDialect:
+        raise GitCommandError(("git", "grep"), 2, "regex library missing")
+
+    monkeypatch.setattr(tree.workspace, "regex_dialect", broken)
+    tools = RepoTools(registry.worktree_for, tree.workspace, registry.allowance)
+    with pytest.raises(RepoGitError, match="regex library missing") as caught:
+        await tools.grep(SESSION, "a|b")
+    assert isinstance(caught.value.__cause__, GitCommandError)

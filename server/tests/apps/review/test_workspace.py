@@ -676,3 +676,45 @@ async def test_stderr_is_read_with_a_cap() -> None:
     kept = await workspace_module._read_capped(reader, 1000)
     assert kept == b"e" * 1000
     assert reader.at_eof()  # the rest was drained, so git never blocks on a full pipe
+
+
+async def test_regex_dialect_is_probed_from_the_real_git_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe = tmp_path / "probe.txt"
+    probe.write_text("foo\n")
+
+    def matches(pattern: str) -> bool:
+        return (
+            subprocess.run(
+                ["git", "grep", "--no-index", "-E", "-q", "-e", pattern, "--", "probe.txt"],
+                cwd=tmp_path,
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    ws = GitWorkspace(tmp_path / "repos", str)
+    dialect = await ws.regex_dialect()
+    assert dialect.native_word_boundaries == matches("\\bfoo")
+    assert dialect.not_word_boundary == (dialect.native_word_boundaries and matches("f\\Boo"))
+
+    async def refuse(*argv: str, **kwargs: Any) -> Any:
+        raise AssertionError(f"probed again: {argv}")
+
+    monkeypatch.setattr(SPAWN, refuse)
+    assert await ws.regex_dialect() is dialect
+
+
+async def test_a_failed_regex_probe_is_a_typed_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_spawn: Callable[..., Any] = asyncio.create_subprocess_exec
+
+    async def broken_git(*argv: str, **kwargs: Any) -> Any:
+        return await real_spawn("sh", "-c", "echo 'regex library missing' >&2; exit 2", **kwargs)
+
+    monkeypatch.setattr(SPAWN, broken_git)
+    ws = GitWorkspace(tmp_path / "repos", str)
+    with pytest.raises(GitCommandError, match="regex library missing"):
+        await ws.regex_dialect()

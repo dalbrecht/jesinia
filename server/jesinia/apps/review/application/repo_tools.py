@@ -36,6 +36,7 @@ from jesinia.apps.review.domain.repo_access import (
     NoReviewSessionError,
     NotACommitError,
     OutsidePrHistoryError,
+    RegexDialect,
     RepoGitError,
     RepoPathNotFoundError,
     UnsafePathError,
@@ -295,9 +296,10 @@ class RepoTools:
         # --cached: search the checked-out commit's blobs, never files (or symlink targets)
         # on disk; --no-column: a user's grep.column=true would change the record format.
         args = ["grep", "--cached", "-I", "-n", "-z", "--no-column", "--no-color"]
-        plain = is_plain_text(check_pattern(pattern))
+        dialect = await self._dialect()
+        plain = is_plain_text(check_pattern(pattern, dialect))
         args += ["--no-textconv", "-F" if plain else "-E"]
-        args += ["-e", pattern if plain else posix_ere(pattern)]
+        args += ["-e", pattern if plain else posix_ere(pattern, dialect)]
         if glob is not None:
             args += ["--", check_glob(glob)]
         output = await self._run_git(
@@ -406,7 +408,7 @@ class RepoTools:
             AutoSkippedFileError, AllowanceExhaustedError, RepoGitError.
         """
         session, root = self._session(session_id)
-        plan = plan_git_command(cmd, args)
+        plan = plan_git_command(cmd, args, dialect=await self._dialect())
         for path in (*plan.paths, *(blob_path for _, blob_path in plan.blobs)):
             safe_path(root, path)
         revisions = [await self._commit(root, revision) for revision in plan.revisions]
@@ -467,6 +469,12 @@ class RepoTools:
         if not tree.is_dir():
             raise NoReviewSessionError("the worktree for this review session no longer exists")
         return session_id, tree.resolve()
+
+    async def _dialect(self) -> RegexDialect:
+        try:
+            return await self._git.regex_dialect()
+        except WorkspaceError as exc:
+            raise RepoGitError(f"could not probe git's regex support: {exc}") from exc
 
     def _reserve(self, session: str, key: str, rel: str, lines: int) -> int:
         """Reserve up to ``lines`` of a file's allowance before reading anything.

@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import signal
+import tempfile
 import uuid
 
 # argv-only process spawning, never a shell. Aliased because the standards linter's
@@ -33,7 +34,7 @@ from asyncio import create_subprocess_exec as spawn
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from jesinia.apps.review.domain.repo_access import CappedOutput
+from jesinia.apps.review.domain.repo_access import CappedOutput, RegexDialect
 from jesinia.apps.review.domain.workspace import (
     GitCommandError,
     GitOutputError,
@@ -146,6 +147,7 @@ class GitWorkspace:
         self._command_timeout = command_timeout
         self._fetch_timeout = fetch_timeout
         self._locks: dict[str, asyncio.Lock] = {}
+        self._regex_dialect: RegexDialect | None = None
 
     async def ensure_mirror(self, repo: str) -> None:
         mirror = self._mirror(repo)
@@ -274,6 +276,31 @@ class GitWorkspace:
             raise GitCommandError(argv, code, err.decode(errors="replace"))
         return CappedOutput(out, truncated, 0 if truncated else code)
 
+    async def regex_dialect(self) -> RegexDialect:
+        """``TreeGit``: probe the installed git's ERE library once, then cache the answer.
+
+        CI runs Linux (glibc: ``\\b`` and ``\\B`` work) and installs run macOS (BSD regex:
+        neither does), so the repo tools ask the git that will run the search.
+        """
+        if self._regex_dialect is None:
+            with tempfile.TemporaryDirectory() as probe_dir:
+                (Path(probe_dir) / "probe.txt").write_text("foo\n")
+                word = await self._probe_regex(probe_dir, "\\bfoo")
+                inner = word and await self._probe_regex(probe_dir, "f\\Boo")
+            self._regex_dialect = RegexDialect(word, inner)
+        return self._regex_dialect
+
+    async def _probe_regex(self, probe_dir: str, pattern: str) -> bool:
+        # No repository here, so no --attr-source (git refuses it outside a repo).
+        argv, _, err, code, _ = await self._execute(
+            ("-C", probe_dir),
+            ("grep", "--no-index", "-E", "-q", "-e", pattern, "--", "probe.txt"),
+            attribute_source=False,
+        )
+        if code not in (0, 1):  # 1: no match, i.e. the extension isn't supported
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return code == 0
+
     async def prune(self, keep: set[tuple[str, str]]) -> int:
         kept = {(canonical_repo(repo), check_sha(sha)) for repo, sha in keep}
         removed = 0
@@ -351,10 +378,11 @@ class GitWorkspace:
         timeout: float | None = None,
         extra_env: Mapping[str, str] | None = None,
         output_limit: int | None = None,
+        attribute_source: bool = True,
     ) -> tuple[tuple[str, ...], bytes, bytes, int, bool]:
         """Run git; return its argv, stdout, stderr, exit code and whether stdout was cut."""
         # Only `init` runs outside a repository, and it reads no attributes.
-        attributes = (f"--attr-source={EMPTY_TREE}",) if location else ()
+        attributes = (f"--attr-source={EMPTY_TREE}",) if location and attribute_source else ()
         argv = ("git", *_GIT_OPTIONS, *attributes, *location, *args)
         env = {k: v for k, v in os.environ.items() if k not in _INHERITED_REPO_VARIABLES}
         env |= _GIT_ENV | {"GIT_CEILING_DIRECTORIES": str(self.root.resolve())}

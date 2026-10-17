@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from jesinia.apps.review.domain.repo_access import CappedOutput
+from jesinia.apps.review.domain.repo_access import CappedOutput, RegexDialect
 
 
 class Workspace(Protocol):
@@ -64,3 +64,6 @@ class TreeGit(Protocol):
         are otherwise literal. An exit code outside ``accept_exit_codes`` raises.
         ``without_worktree`` runs against the tree's repository only, so no file in the
         checkout (``.mailmap``) is read; revisions must then be full commit ids."""
+
+    async def regex_dialect(self) -> RegexDialect:
+        """Which ERE extensions the installed git's regex library supports (probed once)."""

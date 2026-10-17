@@ -130,6 +130,22 @@ class CappedOutput:
 
 
 @dataclass(frozen=True)
+class RegexDialect:
+    """What the regex library behind the installed git understands beyond POSIX ERE.
+
+    glibc (Linux) and git's bundled regex know ``\\b`` and ``\\B``; the BSD library on macOS
+    knows neither, but has ``[[:<:]]`` and ``[[:>:]]`` word anchors. Found by probing git.
+    """
+
+    native_word_boundaries: bool  # \b works as written
+    not_word_boundary: bool  # \B works as written
+
+
+BSD_REGEX = RegexDialect(native_word_boundaries=False, not_word_boundary=False)
+GNU_REGEX = RegexDialect(native_word_boundaries=True, not_word_boundary=True)
+
+
+@dataclass(frozen=True)
 class GitPlan:
     """A checked ``repo_git`` request, ready to become argv.
 
@@ -244,7 +260,7 @@ _REGEX_SUBSET = (
 _REPEAT = re.compile(r"\{([0-9]{1,3})(?:,([0-9]{1,3}))?\}")
 
 
-def regex_problem(pattern: str) -> str | None:
+def regex_problem(pattern: str, dialect: RegexDialect) -> str | None:
     """Why an extended regex (``git grep -E``, ``log --author=``) is outside the allowed
     subset, or ``None`` if it is inside it.
 
@@ -255,9 +271,9 @@ def regex_problem(pattern: str) -> str | None:
     and at most ``GREP_MAX_PATTERN_CHARS`` characters.
 
     Examples:
-        >>> regex_problem("(foo|bar)baz") is None
+        >>> regex_problem("(foo|bar)baz", BSD_REGEX) is None
         True
-        >>> regex_problem("(ab)+").startswith("groups can't be repeated")
+        >>> regex_problem("(ab)+", BSD_REGEX).startswith("groups can't be repeated")
         True
     """
     if len(pattern) > GREP_MAX_PATTERN_CHARS:
@@ -271,7 +287,7 @@ def regex_problem(pattern: str) -> str | None:
         step = 1
         if char == "\\":
             escaped = pattern[index + 1 : index + 2]
-            if escaped == "b":
+            if escaped == "b" or (escaped == "B" and dialect.not_word_boundary):
                 previous = "anchor"
             elif escaped in tuple("wsdWSD") or (escaped and _is_punctuation(escaped)):
                 previous = "atom"
@@ -338,14 +354,17 @@ _SHORTHAND_CLASSES = {
 }
 
 
-def posix_ere(pattern: str) -> str:
+def posix_ere(pattern: str, dialect: RegexDialect) -> str:
     """``pattern`` with ``\\w``, ``\\s``, ``\\d`` (and their negations) spelled as POSIX
     classes: agents write them, and the macOS regex library git uses doesn't know them.
+    Where git's ``dialect`` has no ``\\b`` either, it becomes ``[[:<:]]`` or ``[[:>:]]``;
+    otherwise ``\\b`` (and ``\\B``) pass through unchanged.
 
     Example:
-        >>> posix_ere("def \\w+")
+        >>> posix_ere("def \\w+", BSD_REGEX)
         'def [[:alnum:]_]+'
     """
+    native = dialect.native_word_boundaries
     out: list[str] = []
     index = 0
     while index < len(pattern):
@@ -354,7 +373,7 @@ def posix_ere(pattern: str) -> str:
             end = _bracket_end(pattern, index) + 1
             out.append(pattern[index:end])
             index = end
-        elif char == "\\" and pattern[index + 1 : index + 2] == "b":
+        elif char == "\\" and pattern[index + 1 : index + 2] == "b" and not native:
             # macOS regex has no \b; its word-start and word-end anchors need picking. After
             # a word character (or a repeat of one) it ends a word, otherwise it starts one.
             ends_word = index > 0 and (
@@ -377,7 +396,7 @@ def is_plain_text(pattern: str) -> bool:
     return not _REGEX_METACHARACTERS.intersection(pattern)
 
 
-def check_pattern(pattern: str) -> str:
+def check_pattern(pattern: str, dialect: RegexDialect) -> str:
     """Return a ``repo_grep`` pattern if it is one line and passes ``regex_problem``.
 
     Raises:
@@ -386,7 +405,7 @@ def check_pattern(pattern: str) -> str:
     """
     if not pattern or _has_control_characters(pattern):
         raise InvalidSearchError("the pattern must be one non-empty line")
-    problem = regex_problem(pattern)
+    problem = regex_problem(pattern, dialect)
     if problem is not None:
         raise InvalidSearchError(problem)
     return pattern
@@ -413,7 +432,9 @@ def _refuse(cmd: str, token: str) -> UnsafeGitArgumentError:
     )
 
 
-def _option(cmd: str, token: str, following: str | None) -> tuple[tuple[str, ...], int]:
+def _option(
+    cmd: str, token: str, following: str | None, dialect: RegexDialect
+) -> tuple[tuple[str, ...], int]:
     """Check one option; return its normalized argv and how many tokens it used."""
     if token in _FLAGS[cmd]:
         return (token,), 1
@@ -421,10 +442,10 @@ def _option(cmd: str, token: str, following: str | None) -> tuple[tuple[str, ...
     if equals and name in _VALUED_OPTIONS[cmd]:
         if not value or len(value) > _MAX_OPTION_VALUE_CHARS:
             raise UnsafeGitArgumentError(f"{name} needs a value of 1-100 characters")
-        problem = regex_problem(value) if name == "--author" else None
+        problem = regex_problem(value, dialect) if name == "--author" else None
         if problem is not None:
             raise UnsafeGitArgumentError(f"--author: {problem}")
-        return (f"{name}={posix_ere(value)}" if name == "--author" else token,), 1
+        return (f"{name}={posix_ere(value, dialect)}" if name == "--author" else token,), 1
     joined = token[2:]
     if cmd == "log" and token.startswith("-n"):
         count, used = (joined, 1) if joined else (following, 2)
@@ -440,7 +461,7 @@ def _option(cmd: str, token: str, following: str | None) -> tuple[tuple[str, ...
     raise _refuse(cmd, token)
 
 
-def plan_git_command(cmd: str, args: Sequence[str]) -> GitPlan:
+def plan_git_command(cmd: str, args: Sequence[str], *, dialect: RegexDialect) -> GitPlan:
     """Check a ``repo_git`` request against the allowlist.
 
     Revisions come before ``--`` and worktree paths after it. ``show`` also takes one
@@ -451,7 +472,7 @@ def plan_git_command(cmd: str, args: Sequence[str]) -> GitPlan:
         UnsafePathError: a path that is not a clean relative path.
 
     Example:
-        >>> plan_git_command("log", ["--oneline", "-n", "5", "--", "src/app.py"]).paths
+        >>> plan_git_command("log", ["-n", "5", "--", "src/app.py"], dialect=BSD_REGEX).paths
         ('src/app.py',)
     """
     if cmd not in _FLAGS:
@@ -476,7 +497,7 @@ def plan_git_command(cmd: str, args: Sequence[str]) -> GitPlan:
             index += 1
             continue
         following = tokens[index + 1] if index + 1 < len(tokens) else None
-        normalized, used = _option(cmd, token, following)
+        normalized, used = _option(cmd, token, following, dialect)
         options.extend(normalized)
         index += used
     if cmd == "blame" and not has_separator and positionals:
