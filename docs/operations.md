@@ -169,8 +169,9 @@ picks it up (no restart). `/healthz` reports the `github` module as "no token: r
   fetched or pre-reviewed there before that. After a rate limit, Jesinia asks nothing until
   GitHub says the limit resets. A failed sync keeps the cached queue and says why.
 - **Pre-reviews:** once CI passes and pushes have settled (10 minutes), Jesinia
-  runs the correctness pass, findings and recommendation in the background (Settings →
-  Review: *triage*, *everything* or *on open*). Your agent (default Codex, or Claude Code)
+  runs the correctness pass, findings and recommendation in the background (the default,
+  *triage*; *everything* and *on open* are set through `PUT /api/review/settings` until
+  Review's settings page ships in a later release). Your agent (default Codex, or Claude Code)
   reads the PR's checkout only through read-only repo tools. A PR you **Load** or open skips
   the wait. **Review anyway** goes ahead past a failing CI.
 - **Checkouts:** each watched repo gets a bare mirror under `review/repos/` and one checkout

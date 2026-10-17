@@ -102,7 +102,9 @@ test("a deep review shows its coverage; approving with a BLOCKING comment warns,
   await expect(approve).toBeDisabled();
   await expect(dialog.getByRole("group", { name: /Jesinia's verdict isn't Approve/ })).toBeVisible();
   for (const box of await dialog.getByRole("checkbox", { name: "Approve anyway" }).all()) await box.check();
-  expect((await githubRequests(page)).filter((r) => r.method === "POST" && r.path === REVIEWS)).toHaveLength(0);
+  // Counted from here, so another spec's (or a retried run's) reviews can't skew it (final M5).
+  const reviewPosts = async () => (await githubRequests(page)).filter((r) => r.method === "POST" && r.path === REVIEWS);
+  const before = (await reviewPosts()).length;
   await expect(approve).toBeEnabled();
   await approve.click();
   await expect(
@@ -111,9 +113,9 @@ test("a deep review shows its coverage; approving with a BLOCKING comment warns,
 
   // Exactly one review reached GitHub, atomically: the event, the head it covers, the
   // inline BLOCKING comment and the exactly-once marker.
-  const posts = (await githubRequests(page)).filter((r) => r.method === "POST" && r.path === REVIEWS);
-  expect(posts).toHaveLength(1);
-  const review = posts[0]?.body as {
+  const posts = await reviewPosts();
+  expect(posts).toHaveLength(before + 1);
+  const review = posts[posts.length - 1]?.body as {
     event: string;
     commit_id: string;
     body: string;

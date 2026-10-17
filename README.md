@@ -16,7 +16,8 @@ The apps:
 - **Review:** a queue of the pull requests that need you, a guided walkthrough of each
   with AI findings ready before you look, and one confirmed review posted to GitHub.
   It needs the GitHub CLI signed in (`gh auth login`); Jesinia stores no credentials.
-- **Settings:** the KB folder, git sync, agents, the tag catalog, RSS and Review.
+- **Settings:** the KB folder, git sync, agents, the tag catalog and RSS. (Review's settings
+  page comes in a later release.)
 
 Issues comes next.
 
