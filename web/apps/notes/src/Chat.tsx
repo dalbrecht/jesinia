@@ -5,8 +5,14 @@
 import { errorText } from "@jesinia/client";
 import { Button, useToast } from "@jesinia/design";
 import { ChatRail, TagPicker, useClient, type ChatState, type Runners } from "@jesinia/shell";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type Ref } from "react";
 import s from "./notes.module.css";
+
+/** What the workspace may ask of the chat, whose conversation state lives in the rail. */
+export type ChatHandle = {
+  /** A draft, a running reply, or a conversation with messages: the author is using the chat. */
+  isInUse: () => boolean;
+};
 
 export type ChatProps = {
   page: { id: string; title: string };
@@ -17,9 +23,10 @@ export type ChatProps = {
   /** Whether the sheet shows. Closed, it is hidden, not unmounted: a draft or a running reply lives in the rail. */
   open: boolean;
   onClose: () => void;
+  handle?: Ref<ChatHandle>;
 };
 
-export function Chat({ page, runners, onSaved, sheet, open, onClose }: ChatProps) {
+export function Chat({ page, runners, onSaved, sheet, open, onClose, handle }: ChatProps) {
   const client = useClient();
   const toast = useToast();
   const [session, setSession] = useState<string | null>(null);
@@ -27,6 +34,19 @@ export function Chat({ page, runners, onSaved, sheet, open, onClose }: ChatProps
   const [tags, setTags] = useState<string[]>([]);
   const currentPage = useRef<string | null>(page.id);
   const slot = useRef<HTMLDivElement>(null);
+  // The rail's latest state, as handed to its footer on every render.
+  const latest = useRef<ChatState | null>(null);
+  useImperativeHandle(
+    handle,
+    () => ({
+      isInUse: () => {
+        const draft = slot.current?.querySelector("textarea")?.value ?? "";
+        const state = latest.current;
+        return draft.trim() !== "" || (state !== null && (state.busy || state.messages.length > 0));
+      },
+    }),
+    [],
+  );
 
   // The sheet covers the page: opening it takes focus to its message box.
   useEffect(() => {
@@ -84,29 +104,32 @@ export function Chat({ page, runners, onSaved, sheet, open, onClose }: ChatProps
     onSaved(saved.path);
   };
 
-  const footer = (chat: ChatState) => (
-    <>
-      {chat.lastReply ? (
-        <TagPicker
-          text={`${chat.lastUserText}\n\n${chat.lastReply.text}`}
-          context={page.id}
-          value={tags}
-          onChange={setTags}
-        />
-      ) : null}
-      <span className={s.saveRow}>
-        <Button
-          size="sm"
-          variant="primary"
-          disabled={!chat.lastReply || chat.busy}
-          loading={saving}
-          onClick={() => void saveNote(chat)}
-        >
-          Save note
-        </Button>
-      </span>
-    </>
-  );
+  const footer = (chat: ChatState) => {
+    latest.current = chat;
+    return (
+      <>
+        {chat.lastReply ? (
+          <TagPicker
+            text={`${chat.lastUserText}\n\n${chat.lastReply.text}`}
+            context={page.id}
+            value={tags}
+            onChange={setTags}
+          />
+        ) : null}
+        <span className={s.saveRow}>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={!chat.lastReply || chat.busy}
+            loading={saving}
+            onClick={() => void saveNote(chat)}
+          >
+            Save note
+          </Button>
+        </span>
+      </>
+    );
+  };
 
   // One tree for both layouts, so crossing the breakpoint keeps the transcript and the draft.
   return (

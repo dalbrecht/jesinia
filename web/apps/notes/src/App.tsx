@@ -4,7 +4,7 @@ import { Banner, Button } from "@jesinia/design";
 import { AppShell, lineDiff, useClient, type ServerStatus } from "@jesinia/shell";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pageFromPath, search, type Page } from "./api";
-import { Chat } from "./Chat";
+import { Chat, type ChatHandle } from "./Chat";
 import { Editor } from "./Editor";
 import s from "./notes.module.css";
 import { isViewShortcut, loadView, pageKind, ReadView, saveView, viewShortcutLabel, type ViewMode } from "./read";
@@ -86,6 +86,13 @@ function Workspace({ status }: { status: ServerStatus }) {
   // Per-session UI state: the sheet starts closed on every load.
   const [chatOpen, setChatOpen] = useState(false);
   const asker = useRef<HTMLButtonElement | HTMLAnchorElement>(null);
+  const chat = useRef<ChatHandle>(null);
+  // On the wide layout the rail shows whatever chatOpen says; narrowing must not hide a chat in use.
+  const wasSheet = useRef(sheet);
+  useEffect(() => {
+    if (sheet && !wasSheet.current) setChatOpen(chat.current?.isInUse() ?? false);
+    wasSheet.current = sheet;
+  }, [sheet]);
   const closeChat = useCallback(() => {
     setChatOpen(false);
     asker.current?.focus();
@@ -128,9 +135,11 @@ function Workspace({ status }: { status: ServerStatus }) {
                     variant="secondary"
                     aria-expanded={chatOpen}
                     aria-controls="notes-chat"
+                    aria-label="Open the chat about this page"
+                    icon="?"
                     onClick={() => setChatOpen(true)}
                   >
-                    Ask about this page
+                    <span className={s.askLabel}>Ask about this page</span>
                   </Button>
                 ) : null}
               </div>
@@ -196,6 +205,7 @@ function Workspace({ status }: { status: ServerStatus }) {
           sheet={sheet}
           open={chatOpen}
           onClose={closeChat}
+          handle={chat}
         />
       ) : null}
     </div>

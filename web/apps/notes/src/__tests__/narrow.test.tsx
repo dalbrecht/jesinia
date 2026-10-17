@@ -54,7 +54,7 @@ function setup() {
 }
 
 const chat = () => screen.queryByRole("complementary", { name: "Chat" });
-const asker = () => screen.getByRole("button", { name: "Ask about this page" });
+const asker = () => screen.getByRole("button", { name: "Open the chat about this page" });
 
 beforeEach(() => {
   localStorage.clear();
@@ -139,9 +139,39 @@ describe("under 1024 px", () => {
     await userEvent.click(asker());
     await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "kept");
     win.resize(1400);
-    expect(screen.queryByRole("button", { name: "Ask about this page" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open the chat about this page" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("kept");
+  });
+});
+
+describe("crossing from wide to narrow", () => {
+  it("keeps a chat with a draft open, as a sheet", async () => {
+    const win = windowOf(1400);
+    setup();
+    await screen.findByRole("heading", { name: "Topic", level: 1 });
+    await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "mid-thought");
+    win.resize(800);
+    expect(screen.getByRole("dialog", { name: "Chat about this page" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("mid-thought");
+    expect(asker()).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("closes an unused chat, so the page gets the screen", async () => {
+    const win = windowOf(1400);
+    setup();
+    await screen.findByRole("heading", { name: "Topic", level: 1 });
+    win.resize(800);
+    expect(chat()).toBeNull();
+    expect(asker()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("shows the rail again on widening, even after the sheet was closed", async () => {
+    const win = windowOf(800);
+    setup();
+    await screen.findByRole("heading", { name: "Topic", level: 1 });
+    win.resize(1400);
+    expect(chat()).toBeInTheDocument();
   });
 });
 
@@ -151,7 +181,7 @@ describe("at 1024 px and wider", () => {
     setup();
     await screen.findByRole("heading", { name: "Topic", level: 1 });
     expect(chat()).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Ask about this page" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open the chat about this page" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -160,6 +190,6 @@ describe("at 1024 px and wider", () => {
     setup();
     await screen.findByRole("heading", { name: "Topic", level: 1 });
     expect(chat()).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Ask about this page" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open the chat about this page" })).toBeNull();
   });
 });
