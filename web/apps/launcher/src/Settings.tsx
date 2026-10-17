@@ -2,7 +2,7 @@
 import { errorText } from "@jesinia/client";
 import { Badge, Button, Input, Panel, useToast } from "@jesinia/design";
 import { RUNNER_NAMES, useClient, type KbPathInfo, type ServerStatus, type SyncStatus } from "@jesinia/shell";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { clock, MODE_LABEL } from "./format";
 import { RssSection } from "./settings/Rss";
 import { TagsSection } from "./settings/Tags";
@@ -18,16 +18,22 @@ const SECTIONS = [
   ["conflicts", "Conflicts"],
   ["security", "Security"],
 ] as const;
+type SectionId = (typeof SECTIONS)[number][0];
 
-/** The section the address names (`#rss`), so the outline marks where you are. */
-function useHash(): string {
-  const [hash, setHash] = useState(() => window.location.hash);
+function sectionOf(hash: string): SectionId {
+  const wanted = hash.replace(/^#/, "");
+  return SECTIONS.find(([id]) => id === wanted)?.[0] ?? "kb";
+}
+
+/** The section the address names (`/settings/#rss`), so deep links open it; else the first. */
+function useSection(): SectionId {
+  const [section, setSection] = useState(() => sectionOf(window.location.hash));
   useEffect(() => {
-    const onChange = () => setHash(window.location.hash);
+    const onChange = () => setSection(sectionOf(window.location.hash));
     window.addEventListener("hashchange", onChange);
     return () => window.removeEventListener("hashchange", onChange);
   }, []);
-  return hash;
+  return section;
 }
 
 function KbSection({ status }: { status: ServerStatus }) {
@@ -290,16 +296,36 @@ function SecuritySection() {
 }
 
 /**
- * The book layout (design pass): an outline of sections on the left, and a view pane on the
- * right with a toolbar on top; each section keeps its actions along its bottom.
+ * The book layout (design pass, R27): an outline of sections on the left selects the one the
+ * view pane shows, with the pane's toolbar on top and the section's actions at its bottom.
  */
 export function Settings({ status }: { status: ServerStatus }) {
-  const hash = useHash();
+  const section = useSection();
+  const page = useRef<HTMLDivElement>(null);
+  const opened = useRef(section);
+  // Choosing another section moves focus to its title, so keyboard and screen-reader users land
+  // on what they chose (not on the first open: focus then stays where the browser put it).
+  useEffect(() => {
+    if (opened.current === section) return;
+    opened.current = section;
+    const title = page.current?.querySelector<HTMLElement>("h2");
+    title?.setAttribute("tabindex", "-1");
+    title?.focus();
+  }, [section]);
+  const pages: Record<SectionId, ReactNode> = {
+    kb: <KbSection status={status} />,
+    sync: <SyncSection status={status} />,
+    agents: <AgentsSection status={status} />,
+    tags: <TagsSection />,
+    rss: <RssSection />,
+    conflicts: <ConflictsSection status={status} />,
+    security: <SecuritySection />,
+  };
   return (
     <div className={s.layout}>
       <nav className={s.nav} aria-label="Settings sections">
         {SECTIONS.map(([id, label]) => (
-          <a key={id} href={`#${id}`} aria-current={hash === `#${id}` ? "location" : undefined}>
+          <a key={id} href={`#${id}`} aria-current={section === id ? "location" : undefined}>
             {label}
           </a>
         ))}
@@ -309,14 +335,8 @@ export function Settings({ status }: { status: ServerStatus }) {
           <h1 id="settings-title">Settings</h1>
           <p>Changes apply to every Jesinia app.</p>
         </header>
-        <div className={s.column}>
-          <KbSection status={status} />
-          <SyncSection status={status} />
-          <AgentsSection status={status} />
-          <TagsSection />
-          <RssSection />
-          <ConflictsSection status={status} />
-          <SecuritySection />
+        <div ref={page} className={s.column}>
+          {pages[section]}
         </div>
       </section>
     </div>

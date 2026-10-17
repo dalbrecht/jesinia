@@ -11,8 +11,14 @@
   .layout {
     grid-template-columns: 1fr;
   }
-  .nav {
-    display: none;
+  /* One section per view: on a narrow screen the outline becomes a strip above the pane. */
+  .nav.nav {
+    position: static;
+    display: flex;
+    overflow-x: auto;
+  }
+  .nav a {
+    white-space: nowrap;
   }
 }
 .nav {

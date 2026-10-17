@@ -90,6 +90,7 @@ test("rename #fixture to #fixtures in Settings → Tags: the kept page follows",
   await rename.getByLabel("New name").fill("fixtures");
   await rename.getByRole("button", { name: "Preview" }).click();
   await expect(rename.getByText("Fixture post two")).toBeVisible();
+  await expect(rename.locator("h4:has-text('Pages to update') + ul > li")).toHaveCount(1);
   await rename.getByRole("button", { name: "Apply" }).click();
   await expect(page.getByText("Renamed #fixture to #fixtures in 1 page.").first()).toBeVisible();
   await expect.poll(() => readFileSync(KEPT, "utf8")).toContain("#fixtures");

@@ -25,6 +25,8 @@ test("log in, set the KB path, see push mode, and sync", async ({ page, request 
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText(/KB folder saved/).first()).toBeVisible();
 
+  // One section per view (R27): Git sync is its own page in the outline.
+  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name: "Git sync" }).click();
   await expect(page.getByTestId("sync-mode")).toHaveText("Commit and push");
   await page.getByRole("button", { name: "Sync now" }).click();
   await expect(page.getByTestId("sync-last")).toContainText(/pushed|nothing to sync/, { timeout: 60_000 });

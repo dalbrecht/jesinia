@@ -3,7 +3,7 @@
 // in the book layout (an outline on the left, the view pane on the right).
 import type { components } from "@jesinia/client";
 import { baseRoutes, fakeClient } from "@jesinia/shell";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { App } from "../App";
@@ -17,7 +17,9 @@ const FEEDS: Feed[] = [
 ];
 const SETTINGS = { retention: 30, source_folder: "Sources" };
 
-function renderRss(over = {}) {
+/** Settings opened at `hash` (R27: one section per view; RSS by default here). */
+function renderRss(over = {}, hash = "#rss") {
+  window.history.replaceState(null, "", `/settings/${hash}`);
   const { client, calls } = fakeClient(
     baseRoutes({ "GET /api/rss/feeds": FEEDS, "GET /api/rss/settings": SETTINGS, ...over }),
   );
@@ -34,9 +36,9 @@ const opmlFile = (text: string) => new File([text], "feeds.opml", { type: "text/
 
 afterEach(() => window.history.replaceState(null, "", "/settings/"));
 
-describe("Settings layout", () => {
-  it("has an outline of sections beside a view pane, and marks the section you went to", async () => {
-    renderRss();
+describe("Settings layout (R27: one section per view)", () => {
+  it("has an outline of sections; the view pane shows only the chosen one", async () => {
+    renderRss({}, "");
     const outline = screen.getByRole("navigation", { name: "Settings sections" });
     const links = within(outline)
       .getAllByRole("link")
@@ -52,19 +54,32 @@ describe("Settings layout", () => {
     ]);
     const pane = screen.getByRole("region", { name: "Settings" });
     expect(within(pane).getByRole("heading", { name: "Settings", level: 1 })).toBeInTheDocument();
-    expect(within(pane).getByRole("region", { name: "RSS" })).toBeInTheDocument();
+    // With no section in the address, the first one shows, alone.
+    const kb = within(outline).getByRole("link", { name: "Knowledge base" });
+    expect(kb).toHaveAttribute("aria-current", "location");
+    expect(within(pane).getByRole("region", { name: "Knowledge base" })).toBeInTheDocument();
+    expect(within(pane).queryByRole("region", { name: "RSS" })).toBeNull();
+    expect(within(pane).queryByRole("region", { name: "Git sync" })).toBeNull();
+
     const rss = within(outline).getByRole("link", { name: "RSS" });
-    expect(rss).not.toHaveAttribute("aria-current");
     await userEvent.click(rss);
     await waitFor(() => expect(rss).toHaveAttribute("aria-current", "location"));
-    expect(within(outline).getByRole("link", { name: "Tags" })).not.toHaveAttribute("aria-current");
+    expect(kb).not.toHaveAttribute("aria-current");
+    expect(within(pane).getByRole("region", { name: "RSS" })).toBeInTheDocument();
+    expect(within(pane).queryByRole("region", { name: "Knowledge base" })).toBeNull();
+    // The section's title takes focus, so a keyboard or screen-reader user lands on it.
+    expect(within(pane).getByRole("heading", { name: "RSS", level: 2 })).toHaveFocus();
   });
 
-  it("marks the section named in the address when it opens", () => {
-    window.history.replaceState(null, "", "/settings/#tags");
-    renderRss();
+  it("opens the section named in the address, and falls back to the first for an unknown one", () => {
+    renderRss({}, "#tags");
     const outline = screen.getByRole("navigation", { name: "Settings sections" });
     expect(within(outline).getByRole("link", { name: "Tags" })).toHaveAttribute("aria-current", "location");
+    expect(screen.getByRole("region", { name: "Tags" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Knowledge base" })).toBeNull();
+    cleanup();
+    renderRss({}, "#nope");
+    expect(screen.getByRole("region", { name: "Knowledge base" })).toBeInTheDocument();
   });
 });
 
