@@ -930,3 +930,46 @@ async def test_archives_run_a_few_at_a_time_and_are_forgotten_when_done(
     await asyncio.wait_for(keeper.drain(), timeout=5)
     assert peak == ARCHIVE_CONCURRENCY
     assert keeper.pending() == [] and keeper._archives == {}  # nothing kept per page
+
+
+async def test_deleting_a_feed_keeps_its_kept_posts_and_their_archive(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    release = asyncio.Event()
+
+    async def gated(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(503)
+
+    mock.get("https://fly.io/blog/sqlite-wal").mock(side_effect=gated)
+    post_id = keep_env.post()
+    other = keep_env.post(url="https://fly.io/blog/other")  # not kept: goes with the feed
+    feed_id = keep_env.conn.execute(
+        "SELECT feed_id FROM posts WHERE id = ?", (post_id,)
+    ).fetchone()[0]
+    kept = await keep_env.keep(post_id, "Mine.")
+    assert keep_env.state(post_id)[1] == "archiving"
+    assert (await keep_env.client.delete(f"{KEEP_API}/feeds/{feed_id}")).status_code == 204
+    release.set()
+    await keep_env.rss.keeper.drain()
+    # The archive still records its outcome on the post, and Retry is still offered.
+    page_id, state, error = keep_env.state(post_id)
+    assert (page_id, state) == (kept.json()["page_id"], "failed") and error
+    listed = (await keep_env.client.get(f"{KEEP_API}/posts", params={"view": "kept"})).json()
+    assert [(p["id"], p["feed_title"]) for p in listed["items"]] == [
+        (post_id, "Feed https://fly.io/blog/feed.xml")
+    ]
+    unread = (await keep_env.client.get(f"{KEEP_API}/posts", params={"view": "unread"})).json()
+    assert unread["items"] == []
+    assert keep_env.conn.execute(
+        "SELECT COUNT(*) FROM posts WHERE id = ?", (other,)
+    ).fetchone() == (0,)
+    mock.get("https://fly.io/blog/sqlite-wal").mock(
+        return_value=httpx.Response(
+            200, content=_html("<p>Back at last.</p>"), headers={"content-type": "text/html"}
+        )
+    )
+    retry = await keep_env.client.post(f"{KEEP_API}/posts/{post_id}/archive")
+    assert retry.status_code == 202, retry.text
+    await keep_env.rss.keeper.drain()
+    assert keep_env.state(post_id)[1] == "done"

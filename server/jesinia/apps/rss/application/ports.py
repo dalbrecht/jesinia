@@ -94,7 +94,7 @@ class FeedStore(Protocol):
     def feed_by_url(self, url: str) -> Feed | None: ...
 
     def feeds(self) -> list[Feed]:
-        """Every subscribed feed with its polling state."""
+        """Every subscribed (not deleted) feed with its polling state."""
         ...
 
     def set_poll_state(self, feed_id: int, state: PollState) -> None:
@@ -102,11 +102,13 @@ class FeedStore(Protocol):
         ...
 
     def insert_feed(self, feed: NewFeed) -> Feed:
-        """Insert a feed whose URL is not subscribed yet (callers check ``feed_by_url``)."""
+        """Insert a feed whose URL is not subscribed yet (callers check ``feed_by_url``), or
+        restore the deleted feed with that URL."""
         ...
 
-    def delete_feed(self, feed_id: int) -> bool:
-        """Delete the feed and its posts; False if there was no such feed."""
+    def delete_feed(self, feed_id: int, now: datetime) -> bool:
+        """Unsubscribe: hide the feed and delete its posts except kept ones (and ones being
+        kept), which stay, read; False if there was no such subscribed feed."""
         ...
 
     def set_feed_folder(self, feed_id: int, folder_id: int | None) -> bool:
@@ -161,6 +163,12 @@ class PostStore(Protocol):
 
     def set_read(self, ids: Sequence[int], read: bool) -> int:
         """Set the read state of the posts that exist; how many there were."""
+        ...
+
+    def in_scope(
+        self, post_id: int, view: View, feed_id: int | None, folder_id: int | None
+    ) -> bool:
+        """Whether the post is in the view's list (within the feed and folder, if given)."""
         ...
 
     def mark_read_from(

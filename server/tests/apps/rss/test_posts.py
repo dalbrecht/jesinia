@@ -22,6 +22,8 @@ from jesinia.apps.rss.domain.post import (
     InvalidPageSize,
     InvalidTimestamp,
     PostNotFound,
+    PostOutOfScope,
+    View,
     format_cursor,
     parse_cursor,
     parse_timestamp,
@@ -233,6 +235,28 @@ def test_mark_read_above_respects_the_current_view(world: World) -> None:
 
     with pytest.raises(PostNotFound):
         world.service.mark_read_above(9999, "all", None, None, NOW)
+
+
+def test_mark_read_above_refuses_a_post_outside_the_list(world: World) -> None:
+    tech = world.feed("https://a.example/feed", folder="Tech")
+    other = world.feed("https://b.example/feed", folder="Other")
+    world.add(tech, _item("a1", _day(5)), _item("a2", _day(3)))
+    world.add(other, _item("b1", _day(2)))
+    tech_folder = world.feeds.folder_by_name("Tech")
+    assert tech_folder is not None
+    cases: list[tuple[View, int | None, int | None]] = [
+        ("all", tech, None),  # a post from another feed
+        ("all", None, tech_folder.id),  # from another folder
+        ("kept", None, None),  # not kept, so not in the kept view
+    ]
+    for view, feed_id, folder_id in cases:
+        with pytest.raises(PostOutOfScope):
+            world.service.mark_read_above(world.id_of("b1"), view, feed_id, folder_id, NOW)
+    assert world.guids("read = 1") == set()  # nothing was marked
+    # The unread view is the exception: selecting a post marks it read, yet it stays listed.
+    world.read("a1")
+    assert world.service.mark_read_above(world.id_of("a1"), "unread", tech, None, NOW) == 1
+    assert world.guids("read = 1") == {"a1", "a2"}
 
 
 def test_mark_read_above_leaves_posts_that_arrived_after_the_list_loaded(world: World) -> None:
@@ -534,6 +558,11 @@ async def test_read_above_route_marks_within_the_view(env: Env) -> None:
     assert counts["views"] == {"unread": 1, "kept": 0, "all": 3}
     assert counts["feeds"] == [{"id": ids["feed"], "unread": 1}]
     assert counts["folders"] == [{"id": ids["folder"], "unread": 1}]
+    stale = await env.client.post(
+        f"{API}/posts/read-above",
+        json={"post_id": ids["a1"], "view": "kept", "as_of": NOW.isoformat()},
+    )
+    assert stale.status_code == 409 and stale.json()["error"] == "PostOutOfScope"
     missing = await env.client.post(
         f"{API}/posts/read-above", json={"post_id": 9999, "view": "all", "as_of": NOW.isoformat()}
     )
@@ -568,6 +597,17 @@ async def test_article_route_extracts_once_and_reports_failure(
     failed = await env.client.get(f"{API}/posts/{ids['a2']}/article")
     assert failed.status_code == 502
     assert failed.json()["error"] == "ArticleUnavailable" and "503" in failed.json()["detail"]
+
+    mock.get("https://example.com/a1").mock(
+        return_value=httpx.Response(
+            200, stream=httpx.ByteStream(b"junk"), headers={"content-encoding": "gzip"}
+        )
+    )
+    env.conn.execute("UPDATE posts SET full_md = NULL WHERE id = ?", (ids["a1"],))
+    corrupt = await env.client.get(f"{API}/posts/{ids['a1']}/article")
+    # Bytes labelled gzip that are not: a typed 502 with the cause, never a bare 500.
+    assert corrupt.status_code == 502 and corrupt.json()["error"] == "ArticleUnavailable"
+    assert "decompressing data" in corrupt.json()["detail"]
 
     mock.get("https://example.com/a3").mock(side_effect=httpx.ConnectTimeout("timed out"))
     timeout = await env.client.get(f"{API}/posts/{ids['a3']}/article")

@@ -17,6 +17,7 @@ from jesinia.apps.rss.domain.post import (
     Cursor,
     Page,
     PostNotFound,
+    PostOutOfScope,
     PostView,
     View,
     check_page_size,
@@ -76,8 +77,14 @@ class PostService:
         """Mark the post and everything above it in the current list as read (``Shift+A``):
         only posts of that view, feed and folder, and only those first seen by ``as_of``
         (when the client loaded the list), so posts the reader never saw stay unread.
-        Raises ``PostNotFound``."""
+        Raises ``PostNotFound``, or ``PostOutOfScope`` (nothing marked) when the post is not
+        in that list."""
         start = self.get(post_id).cursor
+        # The unread view is checked by feed and folder only: selecting a post marks it read
+        # while it stays on screen, so the selection is usually read by now.
+        scope_view: View = "all" if view == "unread" else view
+        if not self._store.in_scope(post_id, scope_view, feed_id, folder_id):
+            raise PostOutOfScope(f"post {post_id} is not in the {view} list asked for")
         return self._store.mark_read_from(view, feed_id, folder_id, start, as_of)
 
     def cached_article(self, post_id: int) -> str | None:

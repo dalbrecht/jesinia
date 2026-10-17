@@ -576,3 +576,19 @@ async def test_a_stored_feed_error_keeps_only_the_hosts_of_urls(store: SqliteFee
     assert error is not None and "feeds.example" in error and "cdn.example" in error
     for secret in ("s3cret", "pw", "tok", "feed.xml"):
         assert secret not in error, error
+
+
+async def test_the_poller_ignores_deleted_feeds(
+    store: SqliteFeedStore, conn: sqlite3.Connection
+) -> None:
+    url = "https://example.com/feed.xml"
+    feed = _subscribe(store, url)
+    assert store.delete_feed(feed.id, START)
+    fetcher = FakeFetcher({url: _ok(url, _rss("1"))})
+    summary = await _poller(store, fetcher, Clock()).poll_all()
+    assert summary.polled == 0 and fetcher.calls == []
+    # A poll already running when the feed was deleted adds nothing to it.
+    assert (
+        store.add_posts(feed.id, list(FeedparserReader().parse(_rss("2"), url).items), START) == 0
+    )
+    assert _guids(conn, feed.id) == []

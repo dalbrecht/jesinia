@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import asyncio
 import time
+import zlib
 from collections.abc import Iterator
 from importlib.resources import files
 from pathlib import Path
@@ -342,3 +343,28 @@ async def test_a_transport_failure_without_a_message_still_names_its_kind(
         respx.get("https://pub.example/feed").mock(side_effect=httpx.ReadTimeout(""))
         with pytest.raises(FetchError, match="^ReadTimeout$"):
             await fetch.get("https://pub.example/feed")
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+async def test_a_body_that_does_not_decompress_is_a_fetch_error(
+    tmp_path: Path, encoding: str
+) -> None:
+    def serve(request: httpx.Request) -> Response:
+        # The raw bytes reach fetch's own bounded inflater undecoded.
+        return Response(
+            200,
+            stream=httpx.ByteStream(b"this is not compressed"),
+            headers={"Content-Encoding": encoding},
+        )
+
+    conn = open_db(tmp_path, DB)
+    fetch = FetchService(
+        SqliteFetchCache(conn),
+        resolve=resolver({}),
+        min_interval=0,
+        transport=httpx.MockTransport(serve),
+    )
+    with pytest.raises(FetchError, match=f"could not decode the {encoding} body") as caught:
+        await fetch.get("https://pub.example/feed")
+    assert isinstance(caught.value.__cause__, zlib.error)
+    conn.close()

@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -492,8 +493,10 @@ def test_store_adds_posts_all_or_nothing(cfg: Config) -> None:
     now = datetime.now(UTC)
     feed = store.insert_feed(NewFeed(FEED_URL, "F", None, None, 1800, now, None, None))
     item = ParsedItem("g1", "https://e.example/1", "One", None, now, "", None, None, True)
-    with pytest.raises(sqlite3.IntegrityError):  # no feed 999: the batch rolls back
-        store.add_posts(999, [item, replace(item, guid="g2")], now)
+    assert store.add_posts(999, [item], now) == 0  # no such (subscribed) feed: nothing added
+    broken = replace(item, guid="g2", snippet=cast(str, None))  # violates NOT NULL
+    with pytest.raises(sqlite3.IntegrityError):  # the batch rolls back
+        store.add_posts(feed.id, [item, broken], now)
     assert conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 0
     assert not conn.in_transaction
     assert store.add_posts(feed.id, [item, item], now) == 1
@@ -626,3 +629,43 @@ async def test_adding_an_unreachable_feed_is_a_502_with_the_cause(
     refused = await _add(env)
     assert _error(refused, 502, "FeedUnavailable") == f"could not fetch {FEED_URL}: {cause}"
     assert (await env.client.get(f"{API}/feeds")).json() == []
+
+
+async def test_adding_a_feed_with_a_corrupt_gzip_body_is_a_502(
+    env: Env, mock: respx.MockRouter
+) -> None:
+    mock.get(FEED_URL).mock(
+        return_value=httpx.Response(
+            200, stream=httpx.ByteStream(b"not gzip at all"), headers={"content-encoding": "gzip"}
+        )
+    )
+    detail = _error(await _add(env), 502, "FeedUnavailable")
+    assert "decompressing data" in detail  # the cause, whichever layer found it
+
+
+async def test_delete_then_add_restores_the_feed(env: Env, mock: respx.MockRouter) -> None:
+    _serve(mock, FEED_URL, _fixture("rss2.xml"), "application/rss+xml")
+    feed_id = (await _add(env, folder="Tech")).json()["id"]
+    assert (await env.client.delete(f"{API}/feeds/{feed_id}")).status_code == 204
+    # Hidden everywhere: the feed list, folders, counts and the OPML export.
+    assert (await env.client.get(f"{API}/feeds")).json() == []
+    counts = (await env.client.get(f"{API}/counts")).json()
+    assert counts["feeds"] == [] and counts["folders"] == []
+    assert parse_opml((await env.client.get(f"{API}/opml")).text) == []
+    _error(
+        await env.client.patch(f"{API}/feeds/{feed_id}", json={"folder": "X"}),
+        404,
+        "FeedNotFound",
+    )
+    again = await _add(env, folder="Reading")
+    assert again.status_code == 201, again.text
+    assert again.json()["id"] == feed_id and again.json()["folder"] == "Reading"
+    assert [f["id"] for f in (await env.client.get(f"{API}/feeds")).json()] == [feed_id]
+    with env.db() as db:
+        assert db.execute("SELECT deleted_at FROM feeds").fetchall() == [(None,)]
+    # Imported again after a delete: restored too, not counted as existing.
+    assert (await env.client.delete(f"{API}/feeds/{feed_id}")).status_code == 204
+    opml = render_opml([OpmlFeed(FEED_URL, "Back", None)])
+    imported = (await env.client.post(f"{API}/opml", json={"opml": opml})).json()
+    assert imported["added"] == 1 and imported["existing"] == 0
+    assert [f["id"] for f in (await env.client.get(f"{API}/feeds")).json()] == [feed_id]

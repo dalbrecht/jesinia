@@ -185,6 +185,8 @@ class Feed:
     fail_count: int
     last_error: str | None
     last_ok_at: datetime | None
+    # Unsubscribed: hidden and never polled, kept only for its kept posts.
+    deleted: bool = False
 
 
 @dataclass(frozen=True)

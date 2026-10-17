@@ -22,16 +22,19 @@ from jesinia.apps.rss.domain.post import TOMBSTONE_TTL, Counts, Cursor, PostView
 
 _FEED_COLUMNS = (
     "id, url, title, site_url, folder_id, interval_s, next_poll_at, fail_count, last_error, "
-    "last_ok_at"
+    "last_ok_at, deleted_at IS NOT NULL"
 )
 
 
 # The row shape ``_FEED_COLUMNS`` selects.
-_FeedRow = tuple[int, str, str, str | None, int | None, int, str, int, str | None, str | None]
+_FeedRow = tuple[
+    int, str, str, str | None, int | None, int, str, int, str | None, str | None, int
+]  # fmt: skip
 
 
 def _feed(row: _FeedRow) -> Feed:
-    (id_, url, title, site_url, folder_id, interval_s, next_poll_at, fails, error, ok_at) = row
+    (id_, url, title, site_url, folder_id, interval_s, next_poll_at, fails, error, ok_at,
+     deleted) = row  # fmt: skip
     return Feed(
         id=id_,
         url=url,
@@ -43,6 +46,7 @@ def _feed(row: _FeedRow) -> Feed:
         fail_count=fails,
         last_error=error,
         last_ok_at=datetime.fromisoformat(ok_at) if ok_at is not None else None,
+        deleted=bool(deleted),
     )
 
 
@@ -80,7 +84,9 @@ class SqliteFeedStore:
         return self._one_feed("url", url)
 
     def feeds(self) -> list[Feed]:
-        rows = self._conn.execute(f"SELECT {_FEED_COLUMNS} FROM feeds ORDER BY id").fetchall()
+        rows = self._conn.execute(
+            f"SELECT {_FEED_COLUMNS} FROM feeds WHERE deleted_at IS NULL ORDER BY id"
+        ).fetchall()
         return [_feed(row) for row in rows]
 
     def set_poll_state(self, feed_id: int, state: PollState) -> None:
@@ -100,8 +106,15 @@ class SqliteFeedStore:
 
     def insert_feed(self, feed: NewFeed) -> Feed:
         cursor = self._conn.execute(
+            # An unsubscribed feed with this URL is restored (same id, so its kept posts
+            # are its own again) with the new subscription's details.
             "INSERT INTO feeds (url, title, site_url, folder_id, interval_s, next_poll_at, "
-            "last_ok_at, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "last_ok_at, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (url) DO UPDATE SET title = excluded.title, "
+            "site_url = excluded.site_url, folder_id = excluded.folder_id, "
+            "interval_s = excluded.interval_s, next_poll_at = excluded.next_poll_at, "
+            "last_ok_at = excluded.last_ok_at, last_error = excluded.last_error, "
+            "fail_count = 0, deleted_at = NULL WHERE feeds.deleted_at IS NOT NULL",
             (
                 feed.url,
                 feed.title,
@@ -113,17 +126,34 @@ class SqliteFeedStore:
                 redact_urls(feed.last_error) if feed.last_error is not None else None,
             ),
         )
-        inserted = self.feed(int(cursor.lastrowid or 0))
-        assert inserted is not None  # just inserted on this connection
+        del cursor  # an upsert's lastrowid is not the row's id: look it up by URL
+        inserted = self.feed_by_url(feed.url)
+        assert inserted is not None  # just written on this connection
         return inserted
 
-    def delete_feed(self, feed_id: int) -> bool:
-        # Posts go with the feed (ON DELETE CASCADE; open_db turns foreign keys on).
-        return self._conn.execute("DELETE FROM feeds WHERE id = ?", (feed_id,)).rowcount == 1
+    def delete_feed(self, feed_id: int, now: datetime) -> bool:
+        with self._transaction():
+            hidden = self._conn.execute(
+                "UPDATE feeds SET deleted_at = ?, folder_id = NULL "
+                "WHERE id = ? AND deleted_at IS NULL",
+                (utc_text(now), feed_id),
+            )
+            if hidden.rowcount != 1:
+                return False
+            # Kept posts (and ones being kept: their archive state is already set) stay, read,
+            # in the Kept view; the rest go now.
+            self._conn.execute(
+                "DELETE FROM posts WHERE feed_id = ? AND kept_page_id IS NULL "
+                "AND archive_state IS NULL",
+                (feed_id,),
+            )
+            self._conn.execute("UPDATE posts SET read = 1 WHERE feed_id = ?", (feed_id,))
+        return True
 
     def set_feed_folder(self, feed_id: int, folder_id: int | None) -> bool:
         moved = self._conn.execute(
-            "UPDATE feeds SET folder_id = ? WHERE id = ?", (folder_id, feed_id)
+            "UPDATE feeds SET folder_id = ? WHERE id = ? AND deleted_at IS NULL",
+            (folder_id, feed_id),
         )
         return moved.rowcount == 1
 
@@ -144,6 +174,7 @@ class SqliteFeedStore:
                 utc_text(now),
                 feed_id,
                 item.guid,
+                feed_id,
             )
             for item in items
         ]
@@ -161,6 +192,8 @@ class SqliteFeedStore:
                 "content_html, discussion_url, is_summary, first_seen_at) "
                 "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS "
                 "(SELECT 1 FROM pruned_posts WHERE feed_id = ? AND guid = ?) "
+                # A poll that was running when the feed was deleted adds nothing to it.
+                "AND EXISTS (SELECT 1 FROM feeds WHERE id = ? AND deleted_at IS NULL) "
                 "ON CONFLICT (feed_id, guid) DO NOTHING",
                 rows,
             )
@@ -207,7 +240,7 @@ class SqliteFeedStore:
             "SELECT f.id, f.title, f.url, d.name, f.folder_id, "
             "(SELECT COUNT(*) FROM posts p WHERE p.feed_id = f.id AND p.read = 0), "
             "f.fail_count, f.last_error "
-            "FROM feeds f LEFT JOIN folders d ON d.id = f.folder_id "
+            "FROM feeds f LEFT JOIN folders d ON d.id = f.folder_id WHERE f.deleted_at IS NULL "
             "ORDER BY d.position IS NULL, d.position, f.title COLLATE NOCASE, f.id"
         ).fetchall()
         return [
@@ -335,6 +368,15 @@ class SqlitePostStore:
         )
         return updated.rowcount
 
+    def in_scope(
+        self, post_id: int, view: View, feed_id: int | None, folder_id: int | None
+    ) -> bool:
+        where, params = _scope(view, feed_id, folder_id)
+        found = self._conn.execute(
+            f"SELECT 1 {_FROM} WHERE p.id = ? AND {' AND '.join(where)}", (post_id, *params)
+        ).fetchone()
+        return found is not None
+
     def mark_read_from(
         self,
         view: View,
@@ -386,7 +428,7 @@ class SqlitePostStore:
     def counts(self) -> Counts:
         feeds = self._conn.execute(
             "SELECT f.id, (SELECT COUNT(*) FROM posts p WHERE p.feed_id = f.id AND p.read = 0) "
-            "FROM feeds f ORDER BY f.id"
+            "FROM feeds f WHERE f.deleted_at IS NULL ORDER BY f.id"
         ).fetchall()
         folders = self._conn.execute(
             "SELECT d.id, (SELECT COUNT(*) FROM posts p JOIN feeds f ON f.id = p.feed_id "

@@ -63,8 +63,12 @@ class FeedService:
         self._reader = reader
         self._now = now
 
+    def _subscribed(self, url: str) -> bool:
+        found = self._store.feed_by_url(url)
+        return found is not None and not found.deleted
+
     def _refuse_existing(self, url: str) -> None:
-        if self._store.feed_by_url(url) is not None:
+        if self._subscribed(url):
             raise FeedExists(f"already subscribed to {url}")
 
     async def _fetch(self, url: str) -> FetchResult:
@@ -146,15 +150,17 @@ class FeedService:
         raise FeedNotFound(f"no feed {feed_id}")
 
     def remove(self, feed_id: int) -> None:
-        """Unsubscribe and drop the feed's posts (kept pages stay in the KB)."""
-        if not self._store.delete_feed(feed_id):
+        """Unsubscribe: the feed and its posts go, except kept posts, which stay in the Kept
+        view (their pages are in the KB). Subscribing again restores the feed."""
+        if not self._store.delete_feed(feed_id, self._now()):
             raise FeedNotFound(f"no feed {feed_id}")
         self._store.drop_empty_folders()
 
     def move(self, feed_id: int, folder: str | None) -> None:
         """Put the feed in ``folder`` (created if new), or in no folder when None."""
         name = validate_folder_name(folder) if folder is not None else None
-        if self._store.feed(feed_id) is None:
+        found = self._store.feed(feed_id)
+        if found is None or found.deleted:
             raise FeedNotFound(f"no feed {feed_id}")
         folder_id = self._store.ensure_folder(name).id if name else None
         self._store.set_feed_folder(feed_id, folder_id)
@@ -191,7 +197,7 @@ class FeedService:
             except InvalidFeedUrl as exc:
                 failed.append(ImportFailure(entry.url, str(exc)))
                 continue
-            if self._store.feed_by_url(url) is not None:
+            if self._subscribed(url):
                 existing += 1
                 continue
             folder_id = None

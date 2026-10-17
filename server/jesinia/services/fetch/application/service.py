@@ -225,14 +225,17 @@ async def _read_capped(resp: httpx.Response, max_bytes: int) -> bytes:
         if len(out) > max_bytes:
             raise FetchTooLarge(f"response exceeds {max_bytes} bytes")
 
-    async for chunk in resp.aiter_raw():
-        if inflate is None:
-            add(chunk)
-            continue
-        data = chunk
-        while data:
-            add(inflate.decompress(data, max_bytes + 1 - len(out)))
-            data = inflate.unconsumed_tail
-    if inflate is not None:
-        add(inflate.flush())
+    try:
+        async for chunk in resp.aiter_raw():
+            if inflate is None:
+                add(chunk)
+                continue
+            data = chunk
+            while data:
+                add(inflate.decompress(data, max_bytes + 1 - len(out)))
+                data = inflate.unconsumed_tail
+        if inflate is not None:
+            add(inflate.flush())
+    except zlib.error as exc:  # a server called bytes gzip/deflate that are not
+        raise FetchError(f"could not decode the {encoding} body: {exc}") from exc
     return bytes(out)

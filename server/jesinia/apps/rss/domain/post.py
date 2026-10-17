@@ -28,6 +28,11 @@ class PostNotFound(RssError):  # noqa: N818 - the error code clients see
     """No post has this id (it may have been pruned)."""
 
 
+class PostOutOfScope(RssError):  # noqa: N818 - the error code clients see
+    """The selected post is not in the list (view, feed, folder) the request names, e.g. a
+    stale client: nothing is marked."""
+
+
 class ArticleUnavailable(RssError):  # noqa: N818 - the error code clients see
     """The full article could not be fetched or extracted; the message carries the cause."""
 
