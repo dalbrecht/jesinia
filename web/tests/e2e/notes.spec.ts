@@ -109,3 +109,25 @@ test("a kept page opens in the Read view: rendered headings, its local image, an
   await read.getByRole("link", { name: "a sibling page" }).click();
   await expect(page.getByRole("heading", { name: "Round Trip", level: 1 })).toBeVisible();
 });
+
+test("on an 800 px window the page gets the screen and the chat is a sheet", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 900 });
+  await login(page);
+  await page.goto("/notes/page/0199e000-0000-7000-8000-000000000002");
+  const read = page.getByRole("article", { name: "Read view" });
+  await expect(read.getByRole("heading", { name: "Article", level: 2 })).toBeInViewport({ timeout: 10_000 });
+  await expect(page.getByRole("complementary", { name: "Chat" })).toBeHidden();
+
+  const asker = page.getByRole("button", { name: "Ask about this page" });
+  await asker.click();
+  const sheet = page.getByRole("dialog", { name: "Chat about this page" });
+  await expect(sheet).toBeVisible();
+  const box = await sheet.boundingBox();
+  expect(box?.height ?? 0).toBeLessThanOrEqual(900 * 0.7 + 1);
+  await page.getByRole("textbox", { name: "Message" }).fill("a draft");
+  await page.keyboard.press("Escape");
+  await expect(sheet).toBeHidden();
+  await expect(asker).toBeFocused();
+  await asker.click();
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("a draft");
+});
