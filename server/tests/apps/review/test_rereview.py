@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -23,7 +24,7 @@ from jesinia.apps.review.application.followup import FollowUps
 from jesinia.apps.review.application.jobs import parse_job_output, schema_for
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.queue import QueueService
-from jesinia.apps.review.application.rereview import Rereviews
+from jesinia.apps.review.application.rereview import Rereviews, RereviewWorkspace
 from jesinia.apps.review.application.scheduler import Scheduler
 from jesinia.apps.review.domain.coverage import (
     HunkRef,
@@ -34,6 +35,7 @@ from jesinia.apps.review.domain.coverage import (
     parse_unified_diff,
 )
 from jesinia.apps.review.domain.followup import FollowUp
+from jesinia.apps.review.domain.gates import CiState
 from jesinia.apps.review.domain.jobs import JobKind
 from jesinia.apps.review.domain.posting import Draft
 from jesinia.apps.review.domain.queue import (
@@ -47,6 +49,7 @@ from jesinia.apps.review.domain.rereview import (
     InvalidPreviousCommentError,
     PreviousComment,
     PreviousReview,
+    RereviewInput,
     RereviewInputError,
     changed_hunks,
     comments_from_posting,
@@ -54,16 +57,18 @@ from jesinia.apps.review.domain.rereview import (
     comments_listing,
     new_changes_text,
     only_hunks,
+    place,
+    previous_findings,
     rereview_artifact,
 )
-from jesinia.apps.review.domain.workspace import DiffTooLargeError, GitCommandError
+from jesinia.apps.review.domain.workspace import DiffTooLargeError, GitCommandError, WorkspaceError
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace
 from jesinia.apps.review.module import REVIEW_DB
 from jesinia.core.db import open_db
 from jesinia.core.events import EventBus
 from jesinia.services.github.application.service import GitHubRequestError
-from jesinia.services.github.domain.pr import ReviewEvent, ReviewSummary, ReviewThread
+from jesinia.services.github.domain.pr import ReviewEvent, ReviewSide, ReviewSummary, ReviewThread
 from tests.apps.review.fakes import START, FakeClock, FakePullRequests, pull
 from tests.apps.review.test_followup import commit, git, text
 from tests.apps.review.test_pipeline import FakeFiles, FakeGitHub, FakeJobs, FakeWorkspace
@@ -99,6 +104,9 @@ class Repo:
     pushed: str
     rebased_base: str
     rebased: str
+    # On ``head``: two lines inserted after line 15 (line 30 is now 32, its hunk unchanged)
+    # and lib.py renamed to pkg_lib.py, unchanged.
+    shifted: str
 
 
 def _app(five: str, thirty: str) -> str:
@@ -128,9 +136,15 @@ def repo(tmp_path: Path) -> Repo:
     rebased = commit(
         work, {"app.py": _app("line five", "line thirty, rebased"), "lib.py": text(lib)}, "pr"
     )
-    for branch in ("main", "feature", "main2", "rebased"):
+    git(work, "checkout", "-q", "-b", "shifted", head)
+    moved = [*LINES]
+    moved[4], moved[29] = "line five", "line thirty"
+    moved[15:15] = ["inserted 1", "inserted 2"]
+    (work / "lib.py").rename(work / "pkg_lib.py")
+    shifted = commit(work, {"app.py": text(moved)}, "shift")
+    for branch in ("main", "feature", "main2", "rebased", "shifted"):
         git(work, "push", "-q", "origin", branch)
-    return Repo(remote, base, head, pushed, rebased_base, rebased)
+    return Repo(remote, base, head, pushed, rebased_base, rebased, shifted)
 
 
 @pytest.fixture
@@ -175,13 +189,13 @@ class Env:
     repo: Repo
     ref: PrRef
 
-    def sync(self, head: str, base: str, *, ci: str = "passing") -> None:
+    def sync(self, head: str, base: str, *, ci: CiState = "passing") -> None:
         pr = pull(1, REPO, head=head, base=base)
         self.github.inbox = [pr]
         self.pipeline_github.pr = replace(pr, commit_count=1)
         snapshot = snapshot_of(
             pr,
-            ci_state=ci,  # type: ignore[arg-type]
+            ci_state=ci,
             reviews=[],
             automated_reviewer=None,
             viewer="me",
@@ -264,10 +278,20 @@ async def stored_diff(env: Env, base: str, head: str) -> str:
     return await env.workspace.diff(REPO, base, head)
 
 
-def _rereview_round(env: Env) -> object:
-    return next(
+def _given(env: Env) -> RereviewInput:
+    """What the re-review job was given in the env's latest re-review round."""
+    rounds = [
         r for k, r in zip(env.jobs.ran, env.jobs.rounds, strict=True) if k is JobKind.REREVIEW
-    )
+    ]
+    given = rounds[-1].rereview
+    assert given is not None
+    return given
+
+
+def _list(value: object) -> list[dict[str, object]]:
+    """An artifact's list of objects, checked."""
+    assert isinstance(value, list) and all(isinstance(item, dict) for item in value)
+    return value
 
 
 # --- the brief's tests --------------------------------------------------------------------------
@@ -318,11 +342,12 @@ def test_rereview_maps_each_request_to_status() -> None:
         ("c1", "not_addressed"),
     ]
     # Hunks are kept only where the diff has them (Jesinia's numbering, never renumbered).
-    assert artifact["requests"][0]["hunks"] == [{"path": "app.py", "hunk": 1}]  # type: ignore[index]
+    assert _list(artifact["requests"])[0]["hunks"] == [{"path": "app.py", "hunk": 1}]
     assert artifact["unanswered"] == []
     assert artifact["dropped_requests"] == 2  # an unknown ref and a repeat
     walk = artifact["new_changes_walkthrough"]
-    assert [s["title"] for s in walk["steps"]] == ["New"]  # type: ignore[index]
+    assert isinstance(walk, dict)
+    assert [s["title"] for s in _list(walk["steps"])] == ["New"]
     assert artifact["new_hunks"] == [{"path": "app.py", "hunk": 1}]
     cov = artifact["coverage"]
     assert isinstance(cov, dict) and cov["pct"] == 100.0 and cov["lines_total"] == 2
@@ -330,7 +355,7 @@ def test_rereview_maps_each_request_to_status() -> None:
     assert artifact["previous_round_id"] == 4
 
     # A comment the agent gave no status is listed as unanswered, never guessed.
-    some = {**output, "requests": output["requests"][:1]}  # type: ignore[index]
+    some = {**output, "requests": _list(output["requests"])[:1]}
     assert rereview_artifact(some, previous, diff, (HunkRef("app.py", 1),))["unanswered"] == [
         "c1",
         "c3",
@@ -354,7 +379,7 @@ async def test_commented_only_prs_get_incremental_rereview(env: Env) -> None:
     await env.pipeline.drain()
 
     assert JobKind.REREVIEW in result.jobs and result.round_id is not None
-    given = _rereview_round(env).rereview  # type: ignore[attr-defined]
+    given = _given(env)
     assert given.previous.source == "round" and given.previous.round_id == commented
     assert [(c.ref, c.path, c.line, c.body) for c in given.previous.comments] == [
         ("c1", None, None, "A few notes."),
@@ -370,6 +395,8 @@ async def test_commented_only_prs_get_incremental_rereview(env: Env) -> None:
     assert previous["comments"][1] == {
         "ref": "c2", "body": "Off by one here.", "path": "app.py", "line": 30,
         "side": "RIGHT", "start_line": None, "resolved": False,
+        # Line 30's text changed in the new commits: outdated in place, never misplaced (I2).
+        "now_path": "app.py", "now_line": None, "now_start_line": None, "outdated": True,
     }  # fmt: skip
     rereview = artifacts["rereview"]
     assert isinstance(rereview, dict)
@@ -418,7 +445,7 @@ async def test_rereview_without_stored_walkthrough_uses_github_comments(env: Env
     result = await env.pipeline.open(env.ref)
     await env.pipeline.drain()
     assert result.round_id is not None
-    assert _rereview_round(env).rereview.previous.source == "github"  # type: ignore[attr-defined]
+    assert _given(env).previous.source == "github"
     stored_previous = env.store.artifact(result.round_id, "previous_review")
     assert isinstance(stored_previous, dict) and stored_previous["source"] == "github"
 
@@ -471,7 +498,7 @@ async def test_unknown_changes_count_every_hunk_as_new(env: Env) -> None:
     unknown = FollowUp("rereview", [], "n", repo.head, "round")  # no merge base recorded
     assert await env.rereviews.changed_hunks(env.ref, unknown, repo.pushed, diff) == every
     gone = FollowUp("rereview", [], "n", "d" * 40, "github", prev_merge_base="e" * 40)
-    with pytest.raises(Exception):  # noqa: B017 - the workspace's own error, whatever it is
+    with pytest.raises(WorkspaceError):  # typed, as Rereviews.changed_hunks promises (M3)
         await env.rereviews.changed_hunks(env.ref, gone, repo.pushed, diff)
 
 
@@ -542,7 +569,9 @@ async def test_refresh_fetches_and_classifies_the_new_head_without_carrying_revi
         await queue.refresh(env.ref)
 
 
-async def test_a_failed_check_on_refresh_is_recorded_unchecked(env: Env) -> None:
+async def test_a_failed_check_on_refresh_is_recorded_unchecked(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = env.repo
     env.sync(repo.head, repo.base)
     env.github.inbox = [pull(1, REPO, head=repo.pushed, base=repo.base)]
@@ -555,7 +584,7 @@ async def test_a_failed_check_on_refresh_is_recorded_unchecked(env: Env) -> None
             raise GitHubRequestError(502, "Bad Gateway")
         return []
 
-    env.github.reviews = flaky  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(env.github, "reviews", flaky)
     row = await queue.refresh(env.ref)
     assert row.head_sha == repo.pushed and row.kind == "new" and row.followup_kind is None
     assert "Couldn't check this head" in row.followup_note
@@ -566,7 +595,9 @@ async def test_a_failed_check_on_refresh_is_recorded_unchecked(env: Env) -> None
 # --- failures stay with the re-review job -------------------------------------------------------
 
 
-async def test_unreadable_previous_comments_fail_only_the_rereview_job(env: Env) -> None:
+async def test_unreadable_previous_comments_fail_only_the_rereview_job(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = env.repo
     env.github.reviews_of[(REPO, 1)] = [
         ReviewSummary("me", False, "CHANGES_REQUESTED", repo.head, START, 1, "Fix it."),
@@ -579,7 +610,7 @@ async def test_unreadable_previous_comments_fail_only_the_rereview_job(env: Env)
     async def down(repo_name: str, number: int) -> list[ReviewThread]:
         raise GitHubRequestError(502, "Bad Gateway")
 
-    env.github.threads = down  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(env.github, "threads", down)
     result = await env.pipeline.open(env.ref)
     await env.pipeline.drain()
     assert result.round_id is not None
@@ -631,9 +662,11 @@ def test_previous_comments_are_read_from_postings_and_threads() -> None:
             ReviewThread("a.py", 2, "Not mine.", "bob", False, None),
         ],
         "ME",
-        "",
+        "  <!-- jesinia-posting:7 -->",  # only Jesinia's marker: no comment
     )
     assert [(c.ref, c.path, c.line, c.side) for c in threads] == [("c1", "a.py", None, None)]
+    marked = comments_from_threads([], "me", "Please fix.\n\n<!-- jesinia-posting:7 -->")
+    assert [c.body for c in marked] == ["Please fix."]
     assert PreviousComment("c1", "x", path="a.py", line=2, side="LEFT").label() == "a.py:2 (old)"
     assert PreviousComment("c1", "x", path="a.py", line=2, start_line=1).label() == "a.py:1–2"
     assert PreviousComment("c1", "x", path="a.py").label() == "a.py"
@@ -727,7 +760,9 @@ def test_the_rereview_schema_takes_only_the_three_statuses() -> None:
         parse_job_output(json.dumps({"requests": []}), schema)
 
 
-async def test_degraded_inputs_count_every_hunk_as_new_and_say_why(env: Env) -> None:
+async def test_degraded_inputs_count_every_hunk_as_new_and_say_why(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = env.repo
     env.sync(repo.head, repo.base)
     inline = {"path": "app.py", "line": 30, "side": "RIGHT", "body": "Off by one.",
@@ -751,10 +786,10 @@ async def test_degraded_inputs_count_every_hunk_as_new_and_say_why(env: Env) -> 
             raise DiffTooLargeError("over the cap", 1)
         return await real_diff(name, base, head)
 
-    env.workspace.diff = too_large  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(env.workspace, "diff", too_large)
     every = {HunkRef(f.path, h) for f in diff.files for h in range(len(f.hunks))}
     assert await env.rereviews.changed_hunks(env.ref, followup, repo.pushed, diff) == every
-    env.workspace.diff = real_diff  # type: ignore[method-assign]
+    monkeypatch.setattr(env.workspace, "diff", real_diff)
 
     # The new changes can't be read again: the re-review's input fails typed, with its cause.
     with pytest.raises(RereviewInputError, match="new changes couldn't be read"):
@@ -764,13 +799,13 @@ async def test_degraded_inputs_count_every_hunk_as_new_and_say_why(env: Env) -> 
     async def broken(*args: object) -> frozenset[HunkRef]:
         raise GitCommandError(("git", "diff"), 128, "bad object")
 
-    env.rereviews.changed_hunks = broken  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(env.rereviews, "changed_hunks", broken)
     result = await env.pipeline.open(env.ref)
     await env.pipeline.drain()
     assert result.round_id is not None
     warnings = env.store.artifact(result.round_id, "warnings")
     assert isinstance(warnings, list) and any("every hunk counts as new" in w for w in warnings)
-    given = _rereview_round(env).rereview  # type: ignore[attr-defined]
+    given = _given(env)
     assert set(given.new_hunks) == every
     await env.followups.check(PrRef(REPO, 99))  # an unknown PR: nothing to check
 
@@ -805,7 +840,12 @@ async def test_a_rereview_planned_on_open_fails_when_its_follow_up_is_gone(
         bus=EventBus(),
         clock=clock,
         followups=Vanishing(),
-        rereviews=Rereviews(github=FakePullRequests(), workspace=FakeWorkspace(), store=store),  # type: ignore[arg-type]
+        rereviews=Rereviews(
+            github=FakePullRequests(),
+            # Never reached: the follow-up is gone before anything reads the mirror.
+            workspace=cast(RereviewWorkspace, FakeWorkspace()),
+            store=store,
+        ),
     )
     snapshot = snapshot_of(
         github.pr, ci_state="passing", reviews=[], automated_reviewer=None, viewer="me"
@@ -833,3 +873,185 @@ def test_a_hunk_without_a_final_newline_keeps_its_marker_in_digest_and_text() ->
     assert hunk.text is not None and hunk.text.endswith("\\ No newline at end of file")
     assert hunk.digest != without.files[0].hunks[0].digest
     assert without.files[0].hunks[0].text is None  # kept only when asked
+
+
+# --- fix round 1: the previous round, in this head's coordinates -----------------------------
+
+PREVIOUS_WALK: dict[str, object] = {
+    "steps": [
+        {"title": "Line thirty", "body": "b", "hunks": [{"path": "app.py", "hunk": 1}]},
+        {"title": "The lib", "body": "b", "hunks": [{"path": "lib.py", "hunk": 0}]},
+        {"title": "Both", "body": "b",
+         "hunks": [{"path": "app.py", "hunk": 0}, {"path": "ghost.py", "hunk": 3}]},
+    ],
+    "skipped": [],
+}  # fmt: skip
+PREVIOUS_FINDINGS: dict[str, object] = {
+    "findings": [
+        {"group": "correctness", "severity": "important", "path": "app.py", "start_line": 29,
+         "end_line": 30, "explanation": "Off by one.", "rule": None},
+        {"group": "style", "severity": "minor", "path": "lib.py", "start_line": 3,
+         "end_line": 3, "explanation": "Name.", "rule": None},
+    ]
+}  # fmt: skip
+
+
+def _comments_json(*items: tuple[str, int, str]) -> list[dict[str, object]]:
+    return [
+        {"path": path, "line": line, "side": "RIGHT", "body": body, "start_line": None,
+         "start_side": None}
+        for path, line, body in items
+    ]  # fmt: skip
+
+
+async def test_the_previous_round_is_mapped_onto_this_head_across_shifts_and_renames(
+    env: Env,
+) -> None:
+    """I1 and I2: the previous round's comments, walkthrough and findings, placed by this head's
+    paths, lines and hunks."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    comments = _comments_json(
+        ("app.py", 30, "Off by one here."), ("lib.py", 3, "Rename it."), ("app.py", 5, "Five.")
+    )
+    previous_round = env.posted_round(repo.head, repo.base, "COMMENT", "Notes.", comments)
+    env.store.put_artifact(previous_round, "walkthrough", PREVIOUS_WALK)
+    env.store.put_artifact(previous_round, "findings", PREVIOUS_FINDINGS)
+    env.sync(repo.shifted, repo.base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    followup = await env.followups.classify(stored)
+    diff = parse_unified_diff(await stored_diff(env, repo.base, repo.shifted))
+
+    previous = await env.rereviews.previous_review(env.ref, followup, repo.shifted, repo.base, diff)
+
+    placed = [(c.ref, c.now_path, c.now_line, c.outdated) for c in previous.comments]
+    assert placed == [
+        ("c1", None, None, False),  # the review's body
+        ("c2", "app.py", 32, False),  # moved down by the two inserted lines
+        ("c3", "pkg_lib.py", 3, False),  # followed the rename
+        ("c4", "app.py", 5, False),
+    ]
+    steps = [(s.title, s.now_hunks, s.changed) for s in previous.steps]
+    assert steps == [
+        ("Line thirty", (HunkRef("app.py", 2),), 0),  # hunk 1 then, hunk 2 now
+        ("The lib", (HunkRef("pkg_lib.py", 0),), 0),
+        ("Both", (HunkRef("app.py", 0),), 1),  # ghost.py#3 isn't on this head
+    ]
+    findings = [(f.explanation, f.now_path, f.now_start_line, f.now_end_line, f.outdated)
+                for f in previous.findings]  # fmt: skip
+    assert findings == [
+        ("Off by one.", "app.py", 31, 32, False),
+        ("Name.", "pkg_lib.py", 3, 3, False),
+    ]
+    stored_json = previous.as_json()
+    assert _list(stored_json["steps"])[0]["now_hunks"] == [{"path": "app.py", "hunk": 2}]
+    assert _list(stored_json["findings"])[0]["now_start_line"] == 31
+
+
+async def test_what_the_new_head_changed_shows_as_outdated_never_misplaced(env: Env) -> None:
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    comments = _comments_json(("app.py", 30, "Off by one here."))
+    previous_round = env.posted_round(repo.head, repo.base, "COMMENT", "", comments)
+    env.store.put_artifact(previous_round, "walkthrough", PREVIOUS_WALK)
+    env.store.put_artifact(previous_round, "correctness", {**PREVIOUS_FINDINGS, "summary": "s"})
+    env.sync(repo.pushed, repo.base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    followup = await env.followups.classify(stored)
+    diff = parse_unified_diff(await stored_diff(env, repo.base, repo.pushed))
+
+    previous = await env.rereviews.previous_review(env.ref, followup, repo.pushed, repo.base, diff)
+
+    (comment,) = previous.comments
+    assert (comment.now_path, comment.now_line, comment.outdated) == ("app.py", None, True)
+    assert [(s.title, s.now_hunks, s.changed) for s in previous.steps][0] == ("Line thirty", (), 1)
+    off_by_one = previous.findings[0]
+    assert off_by_one.outdated and off_by_one.now_start_line is None
+    # A GitHub review has no stored walkthrough or findings: comments only, still placed.
+    github = replace(followup, prev_source="github", prev_round_id=None)
+    env.github.threads_of[(REPO, 1)] = [
+        ReviewThread("lib.py", 3, "Rename it.", "me", False, repo.head)
+    ]
+    from_github = await env.rereviews.previous_review(env.ref, github, repo.pushed, repo.base, diff)
+    assert from_github.steps == () and from_github.findings == ()
+    assert [(c.now_path, c.now_line) for c in from_github.comments] == [("pkg_lib.py", 3)]
+    # Unreadable mapping inputs leave everything outdated in place, never guessed.
+    unknown = replace(followup, prev_merge_base=None)
+    broken = await env.rereviews.previous_review(env.ref, unknown, repo.pushed, repo.base, diff)
+    assert all(s.now_hunks == () for s in broken.steps)
+
+
+async def test_refresh_says_when_the_pr_left_the_queue(env: Env) -> None:
+    """M2: the PR can leave the queue while its head is being checked."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+
+    async def drop(ref: PrRef) -> None:
+        env.store.apply_sync([], [], [ref], env.clock())
+
+    queue = QueueService(env.github, env.store, env.clock, on_refresh=drop)
+    with pytest.raises(PrNotInQueueError, match="left the review queue"):
+        await queue.refresh(env.ref)
+
+
+def test_placing_follows_carried_draft_rules_and_never_guesses() -> None:
+    maps: dict[tuple[str, ReviewSide], dict[int, int] | None] = {
+        ("a.py", "RIGHT"): {1: 3, 2: 4, 3: 5, 9: 9}
+    }
+    renamed: dict[tuple[str, ReviewSide], str] = {("a.py", "RIGHT"): "b.py"}
+    whole_file = place(PreviousComment("c1", "x", path="a.py"), maps, renamed)
+    assert (whole_file.now_path, whole_file.now_line, whole_file.outdated) == ("b.py", None, False)
+    ranged = place(PreviousComment("c2", "x", path="a.py", line=3, start_line=1), maps, renamed)
+    assert (ranged.now_path, ranged.now_start_line, ranged.now_line) == ("b.py", 3, 5)
+    lone = place(PreviousComment("c3", "x", path="a.py", line=9), maps, renamed)
+    assert lone.outdated and lone.now_line is None  # no neighbour moved with it
+    backwards = place(PreviousComment("c4", "x", path="a.py", line=2, start_line=3), maps, renamed)
+    assert backwards.outdated  # a range GitHub would never take: not placed
+    found = previous_findings(
+        [
+            {"findings": [
+                {"group": "style", "severity": "minor", "path": "a.py", "start_line": 1,
+                 "end_line": 3, "explanation": "e"},
+                {"group": "style", "severity": "minor", "path": "a.py", "start_line": 1,
+                 "end_line": 3, "explanation": "e"},
+                {"group": "style", "severity": "minor", "path": "a.py", "start_line": 3,
+                 "end_line": 1, "explanation": "backwards"},
+                {"path": 4},
+                "x",
+            ]},
+            None,
+        ],
+        maps,
+        renamed,
+    )  # fmt: skip
+    assert [(f.now_path, f.now_start_line, f.now_end_line) for f in found] == [("b.py", 3, 5)]
+
+
+async def test_a_previous_review_git_cant_place_stays_outdated(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    comments: list[dict[str, object]] = [
+        {"path": "app.py", "line": 5, "side": "LEFT", "body": "Old side.", "start_line": None,
+         "start_side": None},
+        *_comments_json(("app.py", 5, "Five.")),
+    ]  # fmt: skip
+    env.posted_round(repo.head, repo.base, "COMMENT", "", comments)
+    env.sync(repo.shifted, repo.base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    followup = replace(await env.followups.classify(stored), prev_merge_base=None)
+    diff = parse_unified_diff(await stored_diff(env, repo.base, repo.shifted))
+    # No previous merge base: the old side can't be mapped, the new side still can.
+    previous = await env.rereviews.previous_review(env.ref, followup, repo.shifted, repo.base, diff)
+    assert [(c.now_line, c.outdated) for c in previous.comments] == [(None, True), (5, False)]
+
+    async def broken(*args: object) -> dict[str, str]:
+        raise GitCommandError(("git", "diff"), 128, "bad object")
+
+    monkeypatch.setattr(env.workspace, "renames", broken)
+    previous = await env.rereviews.previous_review(env.ref, followup, repo.shifted, repo.base, diff)
+    assert all(c.outdated for c in previous.comments)

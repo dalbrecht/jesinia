@@ -50,12 +50,29 @@ export type PreviousComment = {
   side: "LEFT" | "RIGHT" | null;
   start_line: number | null;
   resolved: boolean;
+  /** Where it sits on this head (I2): the path after any rename, the line its text is on now. */
+  now_path: string | null;
+  now_line: number | null;
+  now_start_line: number | null;
+  /** Its text changed since: shown as outdated, never placed by its old line. */
+  outdated: boolean;
+};
+/** A step of the previous round's walkthrough, on this head's unchanged hunks. */
+export type PreviousStep = { title: string; body: string; now_hunks: HunkRef[]; changed: number };
+/** A finding of the previous round, placed on this head's lines (or outdated). */
+export type PreviousFinding = Finding & {
+  now_path: string | null;
+  now_start_line: number | null;
+  now_end_line: number | null;
+  outdated: boolean;
 };
 export type PreviousReview = {
   source: "round" | "github";
   head_sha: string;
   round_id: number | null;
   comments: PreviousComment[];
+  steps: PreviousStep[];
+  findings: PreviousFinding[];
 };
 export type RequestStatus = "addressed" | "partly" | "not_addressed";
 export type Request = { comment_ref: string; status: RequestStatus; explanation: string; hunks: HunkRef[] };
@@ -155,6 +172,8 @@ function previousOf(x: unknown): PreviousReview | null {
     head_sha: String(p.head_sha ?? ""),
     round_id: typeof p.round_id === "number" ? p.round_id : null,
     comments: list<PreviousComment>(p.comments) ?? [],
+    steps: list<PreviousStep>(p.steps) ?? [],
+    findings: list<PreviousFinding>(p.findings) ?? [],
   };
 }
 
@@ -547,7 +566,10 @@ export function outlineOf(
   if (a.isRereview) {
     // Spec §4.2: what happened to your requests, then what is new, before the full walk.
     const since = "Since your last review";
-    const open = a.rereview ? a.rereview.requests.filter((r) => r.status !== "addressed").length : 0;
+    // Open: not addressed, or given no status (unknown is never counted as done, M1).
+    const open = a.rereview
+      ? a.rereview.requests.filter((r) => r.status !== "addressed").length + a.rereview.unanswered.length
+      : 0;
     add({
       id: "requests",
       kind: "requests",

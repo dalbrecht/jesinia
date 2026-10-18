@@ -17,22 +17,67 @@ const RLO = String.fromCharCode(0x202e);
 const PRORATION = "src/billing/proration.py";
 const ODD = `src/a${RLO}b.py`;
 
+const AT = { side: "RIGHT", start_line: null, resolved: false, now_start_line: null, outdated: false } as const;
 const PREVIOUS = {
   source: "round",
   head_sha: "1".repeat(40),
   round_id: 2,
   comments: [
-    { ref: "c1", body: "A few notes.", path: null, line: null, side: null, start_line: null, resolved: false },
+    { ...AT, ref: "c1", body: "A few notes.", path: null, line: null, side: null, now_path: null, now_line: null },
+    { ...AT, ref: "c2", body: "Off by one here.", path: PRORATION, line: 15, now_path: PRORATION, now_line: 15 },
+    { ...AT, ref: "c3", body: `Rename it. ${XSS}`, path: ODD, line: 3, resolved: true, now_path: ODD, now_line: 3 },
+    // Written on a file since renamed, two lines further up: placed by where its text is now (I2).
     {
-      ref: "c2",
-      body: "Off by one here.",
-      path: PRORATION,
-      line: 15,
-      side: "RIGHT",
-      start_line: null,
-      resolved: false,
+      ...AT,
+      ref: "c4",
+      body: "Moved and renamed.",
+      path: "src/billing/old.py",
+      line: 12,
+      now_path: PRORATION,
+      now_line: 14,
     },
-    { ref: "c3", body: `Rename it. ${XSS}`, path: ODD, line: 3, side: "RIGHT", start_line: null, resolved: true },
+    // Its line's text changed: outdated, shown as such, never on hunk 1 where line 2 now is.
+    {
+      ...AT,
+      ref: "c5",
+      body: "Its line changed.",
+      path: PRORATION,
+      line: 2,
+      now_path: PRORATION,
+      now_line: null,
+      outdated: true,
+    },
+  ],
+  // The previous round's walkthrough and findings, placed on this head (I1).
+  steps: [
+    { title: "Posting, last time", body: "It posted twice.", now_hunks: [{ path: PRORATION, hunk: 1 }], changed: 0 },
+    { title: "A step on code since rewritten", body: "Gone.", now_hunks: [], changed: 2 },
+  ],
+  findings: [
+    {
+      group: "correctness",
+      severity: "important",
+      path: "src/billing/old.py",
+      start_line: 11,
+      end_line: 12,
+      explanation: "Posts **twice**.",
+      now_path: PRORATION,
+      now_start_line: 13,
+      now_end_line: 14,
+      outdated: false,
+    },
+    {
+      group: "style",
+      severity: "minor",
+      path: PRORATION,
+      start_line: 2,
+      end_line: 2,
+      explanation: "A name since rewritten.",
+      now_path: PRORATION,
+      now_start_line: null,
+      now_end_line: null,
+      outdated: true,
+    },
   ],
 };
 
@@ -46,7 +91,7 @@ const REREVIEW = {
     },
     { comment_ref: "c3", status: "not_addressed", explanation: "Still the old name.", hunks: [] },
   ],
-  unanswered: ["c1"],
+  unanswered: ["c1", "c4", "c5"],
   dropped_requests: 0,
   previous_round_id: 2,
   new_hunks: [{ path: PRORATION, hunk: 1 }],
@@ -121,13 +166,20 @@ describe("a re-review", () => {
     expect(walk).toBeGreaterThan(fresh);
   });
 
+  it("counts comments without a status as open in the outline (M1)", async () => {
+    openPr(rereviewed());
+    await ready();
+    // c3 isn't addressed, and c1, c4 and c5 have no status: none of them is known to be done.
+    expect(within(outline()).getByRole("link", { name: /Your requests.*4 open/ })).toBeInTheDocument();
+  });
+
   it("gives each of your requests its status, explanation and new hunks", async () => {
     openPr(rereviewed());
     await ready();
     await go(/Your requests/);
     const list = screen.getByRole("list", { name: "Your requests" });
     const items = within(list).getAllByRole("listitem");
-    expect(items).toHaveLength(3);
+    expect(items).toHaveLength(5);
     const [general, offByOne, rename] = items as [HTMLElement, HTMLElement, HTMLElement];
     expect(within(general).getByText("No status given")).toBeInTheDocument();
     expect(within(general).getByText("A few notes.")).toBeInTheDocument();
@@ -153,6 +205,19 @@ describe("a re-review", () => {
     expect(within(now).getByText("New since your last look")).toBeInTheDocument();
     // The first hunk is as reviewed: nothing new, nothing commented, no row.
     expect(within(file).queryByRole("row", { name: /hunk 1\b/ })).toBeNull();
+    // A comment written on a renamed file, lines ago, sits where its text is now (I2).
+    expect(within(hunk1).getByText("Moved and renamed.")).toBeInTheDocument();
+    // The previous round's walkthrough step and finding sit on the same hunk (I1).
+    expect(within(before).getByText("Posting, last time")).toBeInTheDocument();
+    expect(within(before).getByText("twice").tagName).toBe("STRONG");
+    // What changed since is outdated in its file, never placed on the hunk its old line falls in.
+    const changed = within(file).getByRole("row", { name: /changed since your last review/ });
+    expect(within(changed).getByText("Its line changed.")).toBeInTheDocument();
+    expect(within(changed).getByText("A name since rewritten.")).toBeInTheDocument();
+    // A step whose every hunk changed is listed apart, with how many.
+    const rewritten = within(aligned).getByRole("group", { name: "Steps on code that changed since" });
+    expect(within(rewritten).getByText("A step on code since rewritten")).toBeInTheDocument();
+    expect(within(rewritten).getByText("2 of its hunks changed")).toBeInTheDocument();
     // A comment on a file this head no longer changes still has its row.
     const odd = within(aligned).getByRole("group", { name: `src/a⟪U+202E⟫b.py` });
     expect(within(odd).getByText(/Rename it\./)).toBeInTheDocument();
@@ -241,17 +306,45 @@ describe("Review the new head", () => {
 });
 
 describe("the re-review's own rules", () => {
-  const base = { side: "RIGHT" as const, start_line: null, resolved: false };
+  const base = { side: "RIGHT" as const, start_line: null, resolved: false, now_start_line: null, outdated: false };
   const previous: PreviousReview = {
     source: "github",
     head_sha: "2".repeat(40),
     round_id: null,
     comments: [
-      { ...base, ref: "c1", body: "On the old side.", path: PRORATION, line: 11, side: "LEFT" },
-      { ...base, ref: "c2", body: "A range.", path: PRORATION, line: 3, start_line: 1 },
-      { ...base, ref: "c3", body: "Whole file.", path: PRORATION, line: null },
-      { ...base, ref: "c4", body: "Cites a hunk the patch lacks.", path: PRORATION, line: 400 },
+      {
+        ...base,
+        ref: "c1",
+        body: "On the old side.",
+        path: PRORATION,
+        line: 11,
+        side: "LEFT",
+        now_path: PRORATION,
+        now_line: 11,
+      },
+      {
+        ...base,
+        ref: "c2",
+        body: "A range.",
+        path: PRORATION,
+        line: 3,
+        start_line: 1,
+        now_path: PRORATION,
+        now_line: 3,
+      },
+      { ...base, ref: "c3", body: "Whole file.", path: PRORATION, line: null, now_path: PRORATION, now_line: null },
+      {
+        ...base,
+        ref: "c4",
+        body: "Cites a hunk the patch lacks.",
+        path: PRORATION,
+        line: 400,
+        now_path: PRORATION,
+        now_line: 400,
+      },
     ],
+    steps: [],
+    findings: [],
   };
   const result: RereviewData = {
     requests: [

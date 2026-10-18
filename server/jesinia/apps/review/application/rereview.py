@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
+from dataclasses import replace
 from typing import Protocol
 
+from jesinia.apps.review.application.followup import line_maps
 from jesinia.apps.review.domain.coverage import (
     DiffParseError,
     HunkRef,
@@ -36,12 +38,16 @@ from jesinia.apps.review.domain.rereview import (
     changed_hunks,
     comments_from_posting,
     comments_from_threads,
+    match_hunks,
     new_changes_text,
+    place,
+    previous_findings,
+    previous_steps,
 )
 from jesinia.apps.review.domain.workspace import DiffTooLargeError, WorkspaceError
 from jesinia.services.github.application.prs import GitHubPayloadError
 from jesinia.services.github.application.service import GitHubError
-from jesinia.services.github.domain.pr import ReviewSummary, ReviewThread
+from jesinia.services.github.domain.pr import ReviewSide, ReviewSummary, ReviewThread
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +75,8 @@ class RereviewWorkspace(Protocol):
 
     async def renames(self, repo: str, old_sha: str, new_sha: str) -> dict[str, str]: ...
 
+    async def show_file(self, repo: str, sha: str, path: str, *, limit: int) -> bytes | None: ...
+
 
 class RereviewStore(Protocol):
     """``review.sqlite``."""
@@ -78,6 +86,8 @@ class RereviewStore(Protocol):
     def posted_rounds(self, ref: PrRef) -> list[tuple[RoundRecord, Posting]]: ...
 
     def posting_comments(self, posting_id: int) -> list[object]: ...
+
+    def artifact(self, round_id: int, kind: str) -> object: ...
 
 
 def _every_hunk(diff: ParsedDiff) -> frozenset[HunkRef]:
@@ -111,20 +121,84 @@ class Rereviews:
             WorkspaceError: the mirror couldn't diff the previous review or list renames;
                 the caller counts every hunk as new and says why.
         """
-        prev_head, prev_base = followup.prev_head, followup.prev_merge_base
-        if prev_head is None or prev_base is None or not diff.complete:
+        if followup.prev_head is None or followup.prev_merge_base is None or not diff.complete:
             return _every_hunk(diff)
-        repo = ref.repo
-        await self._workspace.ensure_mirror(repo)
-        await self._fetch(repo, [prev_base, prev_head, head_sha])
+        await self._workspace.ensure_mirror(ref.repo)
+        await self._fetch(ref.repo, [head_sha])
+        previous = await self._previous_diff(ref.repo, followup)
+        if previous is None:
+            return _every_hunk(diff)
+        renames = await self._workspace.renames(ref.repo, followup.prev_head, head_sha)
+        return changed_hunks(previous, diff, renames)
+
+    async def _previous_diff(self, repo: str, followup: FollowUp) -> ParsedDiff | None:
+        """The previous review's diff (its merge base to its head), or ``None`` when it can't
+        be rebuilt (no merge base known, too large, unparsable).
+
+        Raises:
+            WorkspaceError: git failed otherwise.
+        """
+        prev_head, prev_base = followup.prev_head, followup.prev_merge_base
+        if prev_head is None or prev_base is None:
+            return None
+        await self._fetch(repo, [prev_base, prev_head])
         try:
             text = await self._workspace.diff(repo, prev_base, prev_head)
-            previous = await asyncio.to_thread(parse_unified_diff, text)
+            return await asyncio.to_thread(parse_unified_diff, text)
         except (DiffTooLargeError, DiffParseError) as exc:
-            log.info("review.rereview %s: previous diff unread, every hunk is new: %s", ref, exc)
-            return _every_hunk(diff)
-        renames = await self._workspace.renames(repo, prev_head, head_sha)
-        return changed_hunks(previous, diff, renames)
+            log.info("review.rereview %s: previous diff unread: %s", repo, exc)
+            return None
+
+    async def previous_review(
+        self, ref: PrRef, followup: FollowUp, head_sha: str, merge_base: str, diff: ParsedDiff
+    ) -> PreviousReview:
+        """The previous review on the head under review (spec §4.2 "Previous review in
+        context"): its comments, and for a stored round its walkthrough steps and findings,
+        each placed by this head's paths, lines and hunks (renames followed, I2). What can't
+        be placed (its text changed, or git can't say) is outdated, never misplaced.
+
+        Raises:
+            RereviewInputError: the comments couldn't be read from GitHub.
+        """
+        previous = await self.previous_comments(ref, followup)
+        walkthrough: object = None
+        findings: list[object] = []
+        if previous.round_id is not None:
+            walkthrough = self._store.artifact(previous.round_id, "walkthrough")
+            kinds = ("correctness", "findings")
+            findings = [self._store.artifact(previous.round_id, kind) for kind in kinds]
+        keys = {(c.path, c.side or "RIGHT") for c in previous.comments if c.path is not None}
+        keys |= {
+            (str(item["path"]), "RIGHT")
+            for artifact in findings
+            if isinstance(artifact, Mapping) and isinstance(artifact.get("findings"), list)
+            for item in artifact["findings"]
+            if isinstance(item, Mapping) and isinstance(item.get("path"), str)
+        }
+        right = None if followup.prev_head is None else (followup.prev_head, head_sha)
+        left = None if followup.prev_merge_base is None else (followup.prev_merge_base, merge_base)
+        moved: dict[tuple[str, ReviewSide], str] = {}
+        matches: dict[HunkRef, HunkRef] = {}
+        try:
+            await self._workspace.ensure_mirror(ref.repo)
+            await self._fetch(ref.repo, [sha for pair in (right, left) if pair for sha in pair])
+            maps = await line_maps(
+                self._workspace, ref.repo, {"RIGHT": right, "LEFT": left}, keys, moved
+            )
+            old_diff = await self._previous_diff(ref.repo, followup) if walkthrough else None
+            if old_diff is not None and right is not None:
+                renames = await self._workspace.renames(ref.repo, right[0], head_sha)
+                matched = match_hunks(old_diff, diff, renames)
+                matches = {old: new for new, old in matched.items()}
+        except WorkspaceError as exc:  # secondary: everything stays outdated, with the cause
+            log.warning("review.rereview %s: previous review not placed: %s", ref, exc)
+            maps, moved = {}, {}
+        return replace(
+            previous,
+            comments=tuple(place(c, maps, moved) for c in previous.comments),
+            steps=previous_steps(walkthrough, matches),
+            findings=previous_findings(findings, maps, moved),
+        )
 
     async def _fetch(self, repo: str, shas: list[str]) -> None:
         """Fetch commits that may already be in the mirror; a failure is left to the reads

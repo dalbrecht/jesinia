@@ -237,7 +237,9 @@ class RoundRereviews(Protocol):
         self, ref: PrRef, followup: FollowUp, head_sha: str, diff: ParsedDiff
     ) -> frozenset[HunkRef]: ...
 
-    async def previous_comments(self, ref: PrRef, followup: FollowUp) -> PreviousReview: ...
+    async def previous_review(
+        self, ref: PrRef, followup: FollowUp, head_sha: str, merge_base: str, diff: ParsedDiff
+    ) -> PreviousReview: ...
 
     async def new_changes(
         self, ref: PrRef, merge_base: str, head_sha: str, refs: frozenset[HunkRef]
@@ -941,9 +943,11 @@ class Pipeline:
         try:
             if followup is None or rereviews is None:
                 raise RereviewError("this head has no previous review to build on")
-            previous = await rereviews.previous_comments(prepared.ref, followup)
-            self._store.put_artifact(prepared.round.id, "previous_review", previous.as_json())
             round = prepared.round
+            previous = await rereviews.previous_review(
+                prepared.ref, followup, round.pr.head_sha, round.merge_base, prepared.diff
+            )
+            self._store.put_artifact(round.id, "previous_review", previous.as_json())
             text, cut = await rereviews.new_changes(
                 prepared.ref, round.merge_base, round.pr.head_sha, prepared.new_hunks
             )

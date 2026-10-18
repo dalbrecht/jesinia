@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from typing import Final, Protocol
 
 from jesinia.apps.review.domain.followup import (
@@ -98,6 +98,61 @@ class FollowUpStore(Protocol):
     def carried_drafts(self, round_id: int) -> list[tuple[Draft, str, str]]: ...
 
     def reanchor_drafts(self, round_id: int, drafts: list[Draft]) -> int: ...
+
+
+class LineMapWorkspace(Protocol):
+    """What mapping lines between two commits reads (``GitWorkspace``)."""
+
+    async def show_file(self, repo: str, sha: str, path: str, *, limit: int) -> bytes | None: ...
+
+    async def renames(self, repo: str, old_sha: str, new_sha: str) -> dict[str, str]: ...
+
+
+async def line_maps(
+    workspace: LineMapWorkspace,
+    repo: str,
+    commits: Mapping[ReviewSide, tuple[str, str] | None],
+    keys: Collection[tuple[str, ReviewSide]],
+    moved: dict[tuple[str, ReviewSide], str],
+) -> LineMaps:
+    """Old line to new line for each ``(path, side)`` in ``keys``, between the side's two
+    commits (``commits``: the heads for the right side, the merge bases for the left),
+    following renames git's ``-M`` finds between them (Task 11 M3); ``moved`` gets the new
+    path of each renamed one. A side without commits, or a file that isn't at both or is too
+    large, maps to ``None`` (whatever sits on it is outdated, never guessed).
+
+    Raises:
+        WorkspaceError: git couldn't list renames or read a file.
+    """
+    renamed: dict[ReviewSide, dict[str, str]] = {}
+    maps: dict[tuple[str, ReviewSide], Mapping[int, int] | None] = {}
+    for path, side in sorted(keys):
+        pair = commits.get(side)
+        if pair is None:
+            maps[(path, side)] = None
+            continue
+        old, new = pair
+        if side not in renamed:
+            renamed[side] = await workspace.renames(repo, old, new)
+        new_path = renamed[side].get(path, path)
+        if new_path != path:
+            moved[(path, side)] = new_path
+        maps[(path, side)] = await _line_map(workspace, repo, old, new, path, new_path)
+    return maps
+
+
+async def _line_map(
+    workspace: LineMapWorkspace, repo: str, old: str, new: str, path: str, new_path: str
+) -> dict[int, int] | None:
+    try:
+        before = await workspace.show_file(repo, old, path, limit=REANCHOR_FILE_LIMIT)
+        after = await workspace.show_file(repo, new, new_path, limit=REANCHOR_FILE_LIMIT)
+    except MirrorFileTooLargeError:
+        return None
+    if before is None or after is None:
+        return None
+    old_text, new_text = before.decode(errors="replace"), after.decode(errors="replace")
+    return await asyncio.to_thread(line_map, old_text, new_text)
 
 
 class FollowUps:
@@ -332,33 +387,9 @@ class FollowUps:
         """Each draft file's line map per side, following renames between the two commits
         (git's ``-M``, Task 11 M3); ``moved`` gets the new path of each renamed one."""
         old_merge_base = await self._workspace.merge_base(repo, old_base, old_head)
-        commits: dict[ReviewSide, tuple[str, str]] = {
+        commits: dict[ReviewSide, tuple[str, str] | None] = {
             "RIGHT": (old_head, head_sha),
             "LEFT": (old_merge_base, merge_base),
         }
-        renamed: dict[ReviewSide, dict[str, str]] = {}
-        maps: dict[tuple[str, ReviewSide], Mapping[int, int] | None] = {}
-        for path, side in sorted({(d.path, d.side or "RIGHT") for d in drafts}):
-            old, new = commits[side]
-            if side not in renamed:
-                renamed[side] = await self._workspace.renames(repo, old, new)
-            new_path = renamed[side].get(path, path)
-            if new_path != path:
-                moved[(path, side)] = new_path
-            maps[(path, side)] = await self._line_map(repo, old, new, path, new_path)
-        return maps
-
-    async def _line_map(
-        self, repo: str, old: str, new: str, path: str, new_path: str
-    ) -> dict[int, int] | None:
-        """Old line to new line for ``path`` (``new_path`` at ``new``) between two commits;
-        ``None`` when the file isn't at both, or is too large to compare."""
-        try:
-            before = await self._workspace.show_file(repo, old, path, limit=REANCHOR_FILE_LIMIT)
-            after = await self._workspace.show_file(repo, new, new_path, limit=REANCHOR_FILE_LIMIT)
-        except MirrorFileTooLargeError:
-            return None
-        if before is None or after is None:
-            return None
-        old_text, new_text = before.decode(errors="replace"), after.decode(errors="replace")
-        return await asyncio.to_thread(line_map, old_text, new_text)
+        keys = {(d.path, d.side or "RIGHT") for d in drafts}
+        return await line_maps(self._workspace, repo, commits, keys, moved)
