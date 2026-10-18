@@ -1069,6 +1069,33 @@ class SqliteReviewStore:
             ),
         )
 
+    def postings_fingerprint(self, ref: PrRef) -> str:
+        """The PR's postings in one value (the newest attempt and the count per state, over
+        all its rounds): any posting started or settled since changes it (R75)."""
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(p.id), 0), "
+            "SUM(p.state = 'started'), SUM(p.state = 'uncertain'), SUM(p.state = 'posted'), "
+            "SUM(p.state = 'not_posted'), SUM(p.state = 'failed') "
+            "FROM postings p JOIN rounds r ON r.id = p.round_id "
+            "WHERE r.repo = ? AND r.number = ?",
+            (ref.repo, ref.number),
+        ).fetchone()
+        return "|".join(str(value or 0) for value in row)
+
+    def put_followup_if(
+        self, ref: PrRef, head_sha: str, followup: FollowUp, fingerprint: str, instead: FollowUp
+    ) -> bool:
+        """Store ``followup`` only if the PR's postings are as ``fingerprint`` says and none
+        is unsettled, in one transaction; otherwise store ``instead`` (unchecked). Returns
+        whether ``followup`` was stored (R75: check, then act)."""
+        with transaction(self._conn):
+            moved = self.postings_fingerprint(ref) != fingerprint
+            if moved or self.unsettled_rounds_of(ref):
+                self.put_followup(ref, head_sha, instead)
+                return False
+            self.put_followup(ref, head_sha, followup)
+        return True
+
     def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
         row = self._conn.execute(
             f"SELECT {_FOLLOWUP_COLUMNS} FROM followups "

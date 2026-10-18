@@ -7,6 +7,7 @@ real ``GitWorkspace``; ``review.sqlite`` is real; GitHub is a double (no network
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -69,7 +70,13 @@ from jesinia.core.events import EventBus
 from jesinia.services.github.application.service import GitHubRequestError
 from jesinia.services.github.domain.pr import PrFile, ReviewSummary
 from tests.apps.review.fakes import START, FakeClock, FakePullRequests, pull
-from tests.apps.review.test_pipeline import FakeFiles, FakeGitHub, FakeJobs, FakeWorkspace
+from tests.apps.review.test_pipeline import (
+    FakeFiles,
+    FakeGitHub,
+    FakeJobs,
+    FakeWorkspace,
+    wait_until,
+)
 from tests.apps.review.test_posting import FakeGitHub as PostingGitHub
 from tests.apps.review.test_posting import FileSource
 
@@ -213,11 +220,12 @@ class Env:
             round_id, "APPROVE", "k", "d", "Looks good.", [], self.clock()
         )
         self.store.finish_posting(posting.id, "https://github.com/acme/web/pull/1#r1")
-        self.github.reviews_of[(REPO, 1)] = [
+        # GitHub lists every review posted: a later one is added, never replacing it.
+        self.github.reviews_of.setdefault((REPO, 1), []).append(
             ReviewSummary(
                 "me", False, "APPROVED", head, START, 0, MARKER_REVIEW.format(posting.id), "u"
             )
-        ]
+        )
         return round_id
 
 
@@ -1312,3 +1320,86 @@ def test_latest_review_key_names_the_authors_latest_submitted_review() -> None:
     assert latest_review_key([mine, later], "ME") == f"COMMENTED|{SHA_B}||"
     assert latest_review_key([other, pending], "me") == ""
     assert latest_review_key([mine], None) == ""
+
+
+async def test_probe_post_during_classification(env: Env) -> None:
+    """R75 window (a): the author posts while the head is being classified (after GitHub's
+    reviews were read, before the result is written). The result is never still approved."""
+    repo = env.repo
+    env.github.reviews_of[(REPO, 1)] = [
+        ReviewSummary("me", False, "APPROVED", repo.head, START, 0, "LGTM", "u-approve")
+    ]
+    env.sync(repo.head, repo.base)
+    r1 = env.store.start_round(env.ref, repo.head, repo.base, "quick", env.clock())
+    env.sync(repo.rebased, repo.rebased_base)
+    real = env.github.reviews
+
+    async def reviews_then_post(name: str, number: int) -> list[ReviewSummary]:
+        listed = await real(name, number)  # still only the approval
+        attempt = env.store.start_posting(r1, "REQUEST_CHANGES", "k", "d", "No", [], env.clock())
+        assert env.store.unsettled_rounds_of(env.ref) == [r1]
+        env.store.finish_posting(attempt.id, "https://github.com/acme/web/pull/1#r9")
+        return listed
+
+    env.github.reviews = reviews_then_post  # type: ignore[method-assign,assignment]
+    await env.followups.refresh()
+    found = env.followups.followup(env.ref, repo.rebased)
+    assert found is not None and found.kind != "still_approved"
+    assert found.error is not None  # unchecked: checked again on the next refresh
+
+
+async def test_probe_posted_but_list_lags(env: Env) -> None:
+    """R75 window (b): a review Jesinia posted isn't in GitHub's list yet (R49). The head is
+    never classified from the older approval, before or after a sync during the lag."""
+    repo = env.repo
+    env.github.reviews_of[(REPO, 1)] = [
+        ReviewSummary("me", False, "APPROVED", repo.head, START, 0, "LGTM", "u-approve")
+    ]
+    env.sync(repo.head, repo.base)
+    r1 = env.store.start_round(env.ref, repo.head, repo.base, "quick", env.clock())
+    env.sync(repo.rebased, repo.rebased_base)
+    attempt = env.store.start_posting(r1, "REQUEST_CHANGES", "k", "d", "No", [], env.clock())
+    env.store.finish_posting(attempt.id, "https://github.com/acme/web/pull/1#r9")
+    await env.followups.refresh()
+    found = env.followups.followup(env.ref, repo.rebased)
+    assert found is not None and found.kind != "still_approved"
+    env.sync(repo.rebased, repo.rebased_base)  # GitHub still lags
+    await env.followups.refresh()
+    found = env.followups.followup(env.ref, repo.rebased)
+    assert found is not None and found.kind != "still_approved"
+    # Once GitHub lists it, the head is classified from it: a re-review.
+    env.github.reviews_of[(REPO, 1)].append(
+        ReviewSummary(
+            "me", False, "CHANGES_REQUESTED", repo.head, START, 0,
+            "No" + MARKER_REVIEW.format(attempt.id)[len("Looks good."):], "u-no",
+        )
+    )  # fmt: skip
+    env.sync(repo.rebased, repo.rebased_base)
+    assert await env.followups.refresh() == 1
+    found = env.followups.followup(env.ref, repo.rebased)
+    assert found is not None and found.kind == "rereview"
+
+
+async def test_a_refresh_asked_for_mid_run_runs_once_more(env: Env) -> None:
+    """Re-review N1: a head that arrives while a refresh runs is checked by one more pass,
+    not left (a held loaded PR) until the next sync."""
+    repo = env.repo
+    env.sync(repo.rebased, repo.rebased_base)
+    gate = asyncio.Event()
+    real = env.github.reviews
+    calls: list[int] = []
+
+    async def held(name: str, number: int) -> list[ReviewSummary]:
+        calls.append(number)
+        if len(calls) == 1:
+            await gate.wait()
+        return await real(name, number)
+
+    env.github.reviews = held  # type: ignore[method-assign,assignment]
+    env.followups.start_refresh()
+    await wait_until(lambda: bool(calls))
+    env.sync(repo.conflict, repo.conflict_base)  # a new head while the pass runs
+    env.followups.start_refresh()  # asked again mid-run
+    gate.set()
+    await env.followups.drain()
+    assert env.followups.followup(env.ref, repo.conflict) is not None

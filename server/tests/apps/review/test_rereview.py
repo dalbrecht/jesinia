@@ -240,11 +240,12 @@ class Env:
         )
         self.store.finish_posting(posting.id, "https://github.com/acme/web/pull/1#r1")
         state = {"COMMENT": "COMMENTED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}[event]
-        self.github.reviews_of[(REPO, 1)] = [
+        # GitHub lists every review posted: a later one is added, never replacing it.
+        self.github.reviews_of.setdefault((REPO, 1), []).append(
             ReviewSummary(
                 "me", False, state, head, START, len(comments), body + MARKER.format(posting.id)
             )
-        ]
+        )
         return round_id
 
 

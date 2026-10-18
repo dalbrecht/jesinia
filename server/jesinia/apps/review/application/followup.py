@@ -108,6 +108,12 @@ class FollowUpStore(Protocol):
 
     def unsettled_rounds_of(self, ref: PrRef) -> list[int]: ...
 
+    def postings_fingerprint(self, ref: PrRef) -> str: ...
+
+    def put_followup_if(
+        self, ref: PrRef, head_sha: str, followup: FollowUp, fingerprint: str, instead: FollowUp
+    ) -> bool: ...
+
 
 class LineMapWorkspace(Protocol):
     """What mapping lines between two commits reads (``GitWorkspace``)."""
@@ -190,6 +196,8 @@ class FollowUps:
         self._task: asyncio.Task[None] | None = None
         # Follow-up rows written (classified or unchecked): a held loaded PR waits for one.
         self._written = 0
+        # Asked for again while a pass ran: one more pass follows (a head that arrived since).
+        self._again = False
 
     def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
         """What ``head_sha`` needs, once checked, under the PR's CI as cached now (C2)."""
@@ -214,15 +222,22 @@ class FollowUps:
         """
         return (await self._latest(stored))[0]
 
-    async def _latest(self, stored: StoredPr) -> tuple[PrevReview | None, str]:
+    async def _latest(self, stored: StoredPr) -> tuple[PrevReview | None, str, bool]:
         """``previous_review``, with the identity of the author's latest review as GitHub
-        lists it (``latest_review_key``): what the classification is recorded against."""
+        lists it (``latest_review_key``: what the classification is recorded against), and
+        whether GitHub's list lags: a review Jesinia posted on the PR isn't in it yet (R49),
+        so the list's latest review may not be the author's latest (R75 window b)."""
         ref, pr = stored.pr.ref, stored.pr
         posted = self._store.posted_rounds(ref)
         viewer = (self._store.viewer() or await self._github.viewer()).lower()
         reviews = await self._github.reviews(ref.repo, ref.number)
         key = latest_review_key(reviews, viewer)
-        return await self._prev_of(pr, reviews, viewer, posted), key
+        bodies = [r.body.rstrip() for r in reviews if r.author.lower() == viewer]
+        lagging = any(
+            not any(body.endswith(posting_marker(posting.id)) for body in bodies)
+            for _, posting in posted
+        )
+        return await self._prev_of(pr, reviews, viewer, posted), key, lagging
 
     async def _prev_of(
         self,
@@ -281,13 +296,19 @@ class FollowUps:
                 in the mirror: a failure here is transient, so nothing is stored).
         """
         pr = stored.pr
+        unsettled = FollowUp("new", error=UNSETTLED)
+        # Taken before GitHub is read: a posting started or finished meanwhile changes it,
+        # and the result is then not written (R75 window a: check, then act).
+        fingerprint = self._store.postings_fingerprint(pr.ref)
         if self._store.unsettled_rounds_of(pr.ref):
             # GitHub's list may not show a review Jesinia posted yet (R49): classifying now
             # could read an older approval as the author's latest (R75).
-            unsettled = FollowUp("new", error=UNSETTLED)
             self._store.put_followup(pr.ref, pr.head_sha, unsettled)
             return unsettled
-        prev, key = await self._latest(stored)
+        prev, key, lagging = await self._latest(stored)
+        if lagging:
+            self._store.put_followup(pr.ref, pr.head_sha, unsettled)
+            return unsettled
         old_ids = new_ids = None
         if prev is not None and prev.head_sha != pr.head_sha:
             await self._workspace.ensure_mirror(pr.ref.repo)
@@ -297,7 +318,9 @@ class FollowUps:
             if prev.merge_base is not None:
                 old_ids = await self._patch_ids(pr.ref.repo, prev.merge_base, prev.head_sha)
         followup = replace(compare(prev, pr, old_ids, new_ids), review_key=key)
-        self._store.put_followup(pr.ref, pr.head_sha, followup)
+        if not self._store.put_followup_if(pr.ref, pr.head_sha, followup, fingerprint, unsettled):
+            log.info("review.followup %s: a posting moved during the check", pr.ref)
+            return unsettled
         log.info("review.followup %s@%s: %s", pr.ref, pr.head_sha[:12], followup.kind)
         return effective_followup(followup, pr.ci_state)
 
@@ -350,6 +373,7 @@ class FollowUps:
         """Run ``refresh`` in the background (one at a time), then ``after`` if it classified
         or recorded anything."""
         if self._task is not None and not self._task.done():
+            self._again = True  # the running pass read the PRs before this was asked
             return
         self._task = asyncio.create_task(self._refresh_then_tick(), name="review-followups")
 
@@ -358,6 +382,9 @@ class FollowUps:
         pre-reviewed; a held loaded PR goes once its head is checked)."""
         before = self._written
         await self.refresh()
+        while self._again:
+            self._again = False
+            await self.refresh()
         if self._written != before and self._after is not None:
             await self._after()
 

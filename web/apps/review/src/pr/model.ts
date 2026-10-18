@@ -605,6 +605,7 @@ export function outlineOf(
   const perStep = findingsByStep(a.steps ?? [], a.findings ?? [], files);
   const ids = new Set<string>();
   (a.steps ?? []).forEach((step, i) => {
+    parseStats.lookups += 1; // the outline's own per-step work is counted too (re-review N2)
     let id = stepId(step);
     if (ids.has(id)) id = `${id}-${i}`; // two identical steps still get their own entries
     ids.add(id);
