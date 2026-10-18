@@ -107,13 +107,15 @@ from jesinia.apps.issues.domain.changes import (
     BatchNotFoundError,
     BatchRunningError,
     ChangeDomainError,
+    EarlierBatchError,
     NothingPendingError,
+    PendingHeldError,
     PendingNotFoundError,
 )
 from jesinia.apps.issues.domain.epics import (
+    BriefEditedOnGitHubError,
     BriefRecoveryIncompleteError,
     ConversionOutdatedError,
-    ConversionRunningError,
     EpicDomainError,
     ItemKind,
     NotAnEpicError,
@@ -154,7 +156,6 @@ from jesinia.apps.issues.domain.themes import (
     NothingToPublishError,
     ThemeCatalogError,
     ThemeDomainError,
-    ThemeEpicRunningError,
     ThemeNearDuplicateError,
     ThemeNotFoundError,
     ThemesUnavailableError,
@@ -236,11 +237,13 @@ _STATUS: dict[type[Exception], int] = {
     PendingNotFoundError: status.HTTP_404_NOT_FOUND,
     NothingPendingError: status.HTTP_409_CONFLICT,
     BatchRunningError: status.HTTP_409_CONFLICT,
+    EarlierBatchError: status.HTTP_409_CONFLICT,
+    PendingHeldError: status.HTTP_409_CONFLICT,
     BatchNotFoundError: status.HTTP_404_NOT_FOUND,
     NotAnEpicError: status.HTTP_404_NOT_FOUND,
     ConversionOutdatedError: status.HTTP_409_CONFLICT,
     NothingToConvertError: status.HTTP_409_CONFLICT,
-    ConversionRunningError: status.HTTP_409_CONFLICT,
+    BriefEditedOnGitHubError: status.HTTP_409_CONFLICT,
     BriefRecoveryIncompleteError: status.HTTP_409_CONFLICT,
     QueueNotFoundError: status.HTTP_404_NOT_FOUND,
     QueueItemNotFoundError: status.HTTP_404_NOT_FOUND,
@@ -250,7 +253,6 @@ _STATUS: dict[type[Exception], int] = {
     ThemeNotFoundError: status.HTTP_404_NOT_FOUND,
     ThemeNearDuplicateError: status.HTTP_409_CONFLICT,
     NothingToPublishError: status.HTTP_409_CONFLICT,
-    ThemeEpicRunningError: status.HTTP_409_CONFLICT,
     # The KB tag catalog, not the request, is away or failed: the cause is in ``detail``.
     ThemesUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
     ThemeCatalogError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -800,10 +802,13 @@ def build_router(host: IssuesHost) -> APIRouter:
     ) -> Response:
         """Approve the brief: it is posted on the epic as the ``<!-- jesinia:brief -->``
         comment, or the comment already stored is edited in place (a deleted one is posted
-        anew). A post cut off by a stop is found again, never posted twice."""
+        anew). A comment edited on GitHub since is a 409 unless ``overwrite``. A post cut off
+        by a stop is found again, never posted twice."""
 
         async def run() -> EpicBriefOut:
-            posted = await host.briefs.approve(_repo(owner, repo), n, body.text, body.suggestion_id)
+            posted = await host.briefs.approve(
+                _repo(owner, repo), n, body.text, body.suggestion_id, overwrite=body.overwrite
+            )
             return EpicBriefOut.of(posted)
 
         return await idem.run(lambda: _respond(run, host.clock))
@@ -1223,7 +1228,8 @@ def build_router(host: IssuesHost) -> APIRouter:
         """Approve the epic previewed with ``digest``: one batch (create the epic, then link the
         children) applied in the background, a 202 with the batch and ``Location`` to poll. A
         409 when the plan changed since (preview again) or has no children, or while an earlier
-        epic for the theme runs or didn't finish (retry that batch)."""
+        epic batch for the theme runs or didn't finish (retry that batch: it may have made the
+        epic). Once a batch made the epic, issues added to the theme later link under it."""
 
         async def run() -> Response:
             started = await host.themes.start_epic(

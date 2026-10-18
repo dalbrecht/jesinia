@@ -52,13 +52,13 @@ from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.domain.changes import ChangeBatch, Existing, New
 from jesinia.apps.issues.domain.epics import (
     CROSS_REPO_WARNING,
+    BriefEditedOnGitHubError,
     BriefLine,
     BriefRecoveryIncompleteError,
     BriefReply,
     ContainmentRefusedError,
     ConversionOutdatedError,
     ConversionPlan,
-    ConversionRunningError,
     Converted,
     Facts,
     GroupingReply,
@@ -91,6 +91,7 @@ from jesinia.apps.issues.domain.epics import (
     rolled_up_readiness,
     split_draft,
     split_scope,
+    strip_marker,
 )
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, LabelSchema
 from jesinia.apps.issues.domain.suggestions import (
@@ -166,7 +167,11 @@ class BatchStarter(Protocol):
     """Starts a batch in the background (``ApplyService`` has it)."""
 
     def start_batch(
-        self, make: Callable[[], ChangeBatch], origin: ApplyOrigin, key: str | None
+        self,
+        make: Callable[[], ChangeBatch],
+        origin: ApplyOrigin,
+        key: str | None,
+        origin_key: str | None = None,
     ) -> AppliedBatch: ...
 
 
@@ -569,10 +574,15 @@ class EpicService:
                 found[row.item_hash] = Converted((row.created_repo, row.created_n))
                 continue
             batch = self._batches.batch(row.batch_id)
-            made = None if batch is None else batch.result.created.get(row.temp_id)
+            if batch is None:
+                ledger = self._batches.created_by(row.batch_id).get(row.temp_id)
+                made: tuple[str, int] | None = ledger
+            else:
+                hit = batch.result.created.get(row.temp_id)
+                made = None if hit is None else (hit.repo, hit.n)
             if made is not None:
-                found[row.item_hash] = Converted((made.repo, made.n))
-                self._remember(repo, n, row.item_hash, made.repo, made.n)
+                found[row.item_hash] = Converted(made)
+                self._remember(repo, n, row.item_hash, *made)
             elif batch is None:
                 reason = "an earlier conversion may have created it, but its record is gone; "
                 found[row.item_hash] = Converted(None, f"{reason}check GitHub")
@@ -603,29 +613,26 @@ class EpicService:
         Raises:
             InvalidRepoError, IssueNotCachedError, ConversionOutdatedError,
             NothingToConvertError: see ``conversion``.
-            ConversionRunningError: a conversion of this epic is still running.
+            EarlierBatchError: an earlier conversion of this epic is running or didn't finish
+                (retry it instead, IR56).
         """
         home = self._cached(repo, n).issue.repo
         planned: list[ConversionPlan] = []
 
         def make() -> ChangeBatch:
-            running = self._conversions.running_conversion(home, n)
-            if running is not None:
-                raise ConversionRunningError(
-                    f"a conversion of {home}#{n} is still running (batch {running}); wait for it"
-                )
             plan = self.conversion(home, n, digest)
             planned.append(plan)
             return plan.changes
 
-        started = starter.start_batch(make, "epic", key)
+        origin = f"conversion:{home.casefold()}#{n}"
+        started = starter.start_batch(make, "epic", key, origin)
         if planned:  # a new batch, not a replay: nothing awaited since it was stored
             items = [
                 (c.item_hash, c.target.temp_id)
                 for c in planned[0].children
                 if c.item_hash is not None and isinstance(c.target, New)
             ]
-            self._conversions.record(started.id, home, n, items, self._clock())
+            self._conversions.record(started.id, home, n, items)
         return started
 
     # Agent asks (IR37) ------------------------------------------------------------------
@@ -966,7 +973,13 @@ class BriefService:
         return found
 
     async def approve(
-        self, repo: str, n: int, text: str, suggestion_id: str | None = None
+        self,
+        repo: str,
+        n: int,
+        text: str,
+        suggestion_id: str | None = None,
+        *,
+        overwrite: bool = False,
     ) -> StoredBrief:
         """Post ``text`` as the epic's brief, or edit the brief comment in place once one is
         stored; a ``brief`` draft named by ``suggestion_id`` is marked approved.
@@ -979,6 +992,8 @@ class BriefService:
             GitHubError: GitHub refused the write (the cause is kept).
             BriefRecoveryIncompleteError: a cut-off post couldn't be looked for among all the
                 epic's comments; nothing was posted.
+            BriefEditedOnGitHubError: the comment was edited on GitHub since it was posted
+                (without ``overwrite``); nothing was changed.
         """
         found = self._cache.cached_issue(validate_repo(repo), n)
         if found is None:
@@ -995,7 +1010,7 @@ class BriefService:
             raise GitHubRateLimitedError(429, "the brief wasn't sent", until)
         async with self._lock:
             try:
-                ref = await self._publish(issue.repo, n, body, nonce)
+                ref = await self._publish(issue.repo, n, body, nonce, overwrite)
             except GitHubRateLimitedError as exc:
                 if self._on_rate_limit is not None:
                     self._on_rate_limit(exc.reset_at)
@@ -1005,12 +1020,24 @@ class BriefService:
             self._settle(draft)
         return posted
 
-    async def _publish(self, repo: str, n: int, body: str, nonce: str) -> CommentRef:
+    async def _publish(
+        self, repo: str, n: int, body: str, nonce: str, overwrite: bool
+    ) -> CommentRef:
         stored = self._briefs.brief(repo, n)
         comment_id = None if stored is None else stored.comment_id
         if comment_id is None and stored is not None and stored.state == "in_flight":
             # A post was cut off: it may have reached GitHub. Find it by its attempt's nonce.
             comment_id = await self._recover(repo, n, stored)
+        if comment_id is not None and stored is not None and stored.state == "posted":
+            # Edited against a fresh read: someone's edits on GitHub are never overwritten.
+            remote = await self._github.get_comment(repo, comment_id)
+            if remote is None:
+                comment_id = None
+            elif not overwrite and strip_marker(remote.body) != strip_marker(stored.body):
+                raise BriefEditedOnGitHubError(
+                    f"{repo}#{n}'s brief was edited on GitHub since it was posted; refresh the "
+                    "draft from it, or overwrite it"
+                )
         if comment_id is not None:
             try:
                 return await self._github.edit_comment(repo, comment_id, body)

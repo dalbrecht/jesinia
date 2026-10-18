@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""``ConversionStore`` over the module's ``issues.sqlite`` connection: each approved checklist
-conversion and the unlinked items it created issues for (``epic_conversions`` and
-``converted_items``), so converting the same checklist again never creates an issue twice.
-Every query is parameterised."""
+"""``ConversionStore`` over the module's ``issues.sqlite`` connection: the unlinked checklist
+items each conversion created issues for (``converted_items``), so converting the same checklist
+again never creates an issue twice. Every query is parameterised."""
 
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from typing import cast
 
 from jesinia.apps.issues.application.ports import ConvertedRow
@@ -27,14 +25,8 @@ class SqliteConversionStore:
         repo: str,
         n: int,
         items: Sequence[tuple[str, str]],
-        now: datetime,
     ) -> None:
         with transaction(self._conn):
-            self._conn.execute(
-                "INSERT OR IGNORE INTO epic_conversions (batch_id, repo, n, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (batch_id, repo, n, now.astimezone(UTC).isoformat(timespec="microseconds")),
-            )
             self._conn.executemany(
                 "INSERT OR IGNORE INTO converted_items (repo, n, item_hash, batch_id, temp_id) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -66,13 +58,3 @@ class SqliteConversionStore:
             "WHERE repo = ? AND n = ? AND item_hash = ?",
             (created_repo, created_n, repo, n, item_hash),
         )
-
-    def running_conversion(self, repo: str, n: int) -> str | None:
-        row = self._conn.execute(
-            "SELECT epic_conversions.batch_id FROM epic_conversions "
-            "JOIN apply_batches ON apply_batches.id = epic_conversions.batch_id "
-            "WHERE epic_conversions.repo = ? AND epic_conversions.n = ? "
-            "AND apply_batches.status = 'running' LIMIT 1",
-            (repo, n),
-        ).fetchone()
-        return None if row is None else str(row[0])

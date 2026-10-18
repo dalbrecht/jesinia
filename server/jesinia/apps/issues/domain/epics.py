@@ -112,9 +112,9 @@ class InvalidBriefError(EpicDomainError):
     """A brief that can't be posted (blank, or over GitHub's comment limit)."""
 
 
-class ConversionRunningError(EpicDomainError):
-    """A conversion of this epic's checklist is still running: wait for it (poll its batch)
-    before approving another, or the same items could be created twice."""
+class BriefEditedOnGitHubError(EpicDomainError):
+    """The brief comment was edited on GitHub since Jesinia posted it: approving would overwrite
+    those edits, so nothing is changed unless the author chooses to overwrite."""
 
 
 class BriefRecoveryIncompleteError(EpicDomainError):
@@ -1076,12 +1076,6 @@ def brief_comment(text: str, nonce: str | None = None) -> str:
     if len(comment) > COMMENT_BODY_LIMIT:
         raise InvalidBriefError(f"a brief is at most {COMMENT_BODY_LIMIT} characters")
     return comment
-
-
-def is_brief_comment(body: str) -> bool:
-    """Whether a comment is a Jesinia brief (it starts with a marker, with or without a
-    nonce)."""
-    return _ANY_MARKER.match(body.lstrip()) is not None
 
 
 def carries_marker(body: str, nonce: str) -> bool:

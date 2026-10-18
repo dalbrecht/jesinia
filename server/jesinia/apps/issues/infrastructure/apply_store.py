@@ -6,11 +6,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import cast
 
-from jesinia.apps.issues.application.ports import AppliedBatch, ApplyOrigin
+from jesinia.apps.issues.application.ports import (
+    AppliedBatch,
+    ApplyOrigin,
+    CreationState,
+    OriginBatch,
+    creation_state,
+)
 from jesinia.apps.issues.domain.changes import (
     EnsureLabel,
     Existing,
@@ -34,6 +40,18 @@ _BATCH_COLUMNS = (
     "request_key"
 )
 _ORIGINS: tuple[ApplyOrigin, ...] = ("pending", "suggestion", "epic")
+
+
+_STATES: tuple[CreationState, ...] = ("running", "complete", "incomplete")
+
+
+def _state(value: object) -> CreationState:
+    return next(s for s in _STATES if s == value)
+
+
+def _created(text: str) -> dict[str, tuple[str, int]]:
+    data = json.loads(text)
+    return {temp: (str(ref[0]), int(ref[1])) for temp, ref in data.items()}
 
 
 def _time(value: datetime) -> str:
@@ -117,13 +135,29 @@ class SqliteApplyStore:
 
     def start_batch(self, applied: AppliedBatch, taken: Sequence[str]) -> None:
         with transaction(self._conn):
-            self.save_batch(applied)
+            self._save(applied)
             self._delete(taken)
 
-    def clear_pending(self) -> None:
-        self._conn.execute("DELETE FROM pending")
-
     def save_batch(self, applied: AppliedBatch) -> None:
+        with transaction(self._conn):
+            self._save(applied)
+            # The ledger of an origin that may create issues follows its batch (IR56).
+            self._conn.execute(
+                "UPDATE batch_origins SET state = ?, created_json = ?, updated_at = ? "
+                "WHERE batch_id = ?",
+                (
+                    creation_state(applied),
+                    json.dumps(
+                        {t: [c.repo, c.n] for t, c in applied.result.created.items()},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    _time(applied.updated_at),
+                    applied.id,
+                ),
+            )
+
+    def _save(self, applied: AppliedBatch) -> None:
         self._conn.execute(
             f"INSERT INTO apply_batches ({_BATCH_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET result_json = excluded.result_json, "
@@ -154,9 +188,40 @@ class SqliteApplyStore:
         return None if row is None else _batch(row)
 
     def interrupt_running(self) -> int:
-        return self._conn.execute(
-            "UPDATE apply_batches SET status = 'interrupted' WHERE status = 'running'"
-        ).rowcount
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE batch_origins SET state = 'incomplete' WHERE batch_id IN "
+                "(SELECT id FROM apply_batches WHERE status = 'running')"
+            )
+            return self._conn.execute(
+                "UPDATE apply_batches SET status = 'interrupted' WHERE status = 'running'"
+            ).rowcount
+
+    def add_origin(self, origin_key: str, batch_id: str, now: datetime) -> None:
+        found = self.batch(batch_id)
+        state = "running" if found is None else creation_state(found)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO batch_origins "
+            "(origin_key, batch_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (origin_key, batch_id, state, _time(now), _time(now)),
+        )
+
+    def origin_batches(self, origin_key: str) -> list[OriginBatch]:
+        rows = self._conn.execute(
+            "SELECT batch_id, state, created_json FROM batch_origins WHERE origin_key = ? "
+            "ORDER BY created_at, rowid",
+            (origin_key,),
+        )
+        return [
+            OriginBatch(str(batch_id), _state(state), _created(str(created)))
+            for batch_id, state, created in rows
+        ]
+
+    def created_by(self, batch_id: str) -> Mapping[str, tuple[str, int]]:
+        row = self._conn.execute(
+            "SELECT created_json FROM batch_origins WHERE batch_id = ? LIMIT 1", (batch_id,)
+        ).fetchone()
+        return {} if row is None else _created(str(row[0]))
 
     def prune_batches(self, before: datetime) -> int:
         return self._conn.execute(

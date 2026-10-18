@@ -1564,7 +1564,8 @@ export interface paths {
          * Approve Brief
          * @description Approve the brief: it is posted on the epic as the ``<!-- jesinia:brief -->``
          *     comment, or the comment already stored is edited in place (a deleted one is posted
-         *     anew). A post cut off by a stop is found again, never posted twice.
+         *     anew). A comment edited on GitHub since is a 409 unless ``overwrite``. A post cut off
+         *     by a stop is found again, never posted twice.
          */
         post: operations["approve_brief_api_issues_epics__owner___repo___n__brief_post"];
         delete?: never;
@@ -2080,7 +2081,8 @@ export interface paths {
          * @description Approve the epic previewed with ``digest``: one batch (create the epic, then link the
          *     children) applied in the background, a 202 with the batch and ``Location`` to poll. A
          *     409 when the plan changed since (preview again) or has no children, or while an earlier
-         *     epic for the theme runs or didn't finish (retry that batch).
+         *     epic batch for the theme runs or didn't finish (retry that batch: it may have made the
+         *     epic). Once a batch made the epic, issues added to the theme later link under it.
          */
         post: operations["make_theme_epic_api_issues_themes__tag__epic_post"];
         delete?: never;
@@ -2916,13 +2918,19 @@ export interface components {
         /**
          * EpicBriefIn
          * @description The brief the author approves (edited or as drafted); ``suggestion_id`` is the
-         *     ``brief`` draft it came from, marked approved once posted.
+         *     ``brief`` draft it came from, marked approved once posted. ``overwrite`` replaces a comment
+         *     edited on GitHub since it was posted (refused otherwise).
          */
         EpicBriefIn: {
             /** Text */
             text: string;
             /** Suggestion Id */
             suggestion_id?: string | null;
+            /**
+             * Overwrite
+             * @default false
+             */
+            overwrite: boolean;
         };
         /**
          * EpicBriefOut

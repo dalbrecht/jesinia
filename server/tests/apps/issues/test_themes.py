@@ -14,6 +14,7 @@ import asyncio
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from jesinia.apps.issues.domain.changes import (
     AddLabel,
     BatchResult,
     CreateIssue,
+    EarlierBatchError,
     EnsureLabel,
     Existing,
     InvalidChangeError,
@@ -41,7 +43,6 @@ from jesinia.apps.issues.domain.themes import (
     InvalidThemeError,
     NothingToPublishError,
     ThemeCatalogError,
-    ThemeEpicRunningError,
     ThemeNearDuplicateError,
     ThemeNotFoundError,
     ThemesUnavailableError,
@@ -237,7 +238,7 @@ async def test_theme_to_epic(env: Themes) -> None:
     )
     assert started.origin == "epic" and started.status == "running"
     # A second approval while the first runs is refused: one theme, one epic at a time.
-    with pytest.raises(ThemeEpicRunningError):
+    with pytest.raises(EarlierBatchError):
         await env.themes.start_epic("sync", REPO, plan.digest, "theme-epic:k2", env.world.service)
     await env.world.service.drain()
     replay = await env.themes.start_epic(
@@ -360,7 +361,7 @@ async def test_an_approval_needs_the_plan_the_author_saw(env: Themes) -> None:
     assert env.github.writes == []
 
 
-async def test_an_unfinished_theme_epic_is_reused_not_repeated(env: Themes) -> None:
+async def test_an_unfinished_theme_epic_is_resumed_only_by_retry(env: Themes) -> None:
     await env.synced(issue(1), issue(2))
     await env.themes.add([(REPO, 1), (REPO, 2)], "sync")
     plan = await env.themes.to_epic("sync", REPO)
@@ -371,17 +372,65 @@ async def test_an_unfinished_theme_epic_is_reused_not_repeated(env: Themes) -> N
     assert stored.status == "finished" and not stored.result.complete
     epic_n = stored.result.created["epic"].n
     del env.github.fail["get:2"]
+    # An unfinished epic is resumed by retrying its batch, never by approving again (IR56).
+    with pytest.raises(EarlierBatchError, match=f"retry batch {started.id}"):
+        await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    resumed = await env.world.service.retry(started.id)
+    assert resumed.result.complete
+    assert len([w for w in env.github.writes if w[0] == "create_issue"]) == 1
+    assert env.github.parents == {(REPO, 1): (REPO, epic_n), (REPO, 2): (REPO, epic_n)}
 
-    # An unfinished epic never blocks (IR53): the next plan reuses the epic it created and
-    # links only the missing children.
+
+async def test_a_refused_epic_then_a_new_approval_and_a_retry_never_make_two(env: Themes) -> None:
+    await env.synced(issue(1))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    assert isinstance(plan.epic, CreateIssue)
+    env.github.fail[f"create_issue:{plan.epic.title}"] = GitHubRequestError(403, "Forbidden")
+    refused = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    del env.github.fail[f"create_issue:{plan.epic.title}"]
+    with pytest.raises(EarlierBatchError, match=f"retry batch {refused.id}"):
+        await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.retry(refused.id)
+    # Complete now: the next plan reuses that epic (cached or not), so the old one is outdated.
+    reuse = await env.themes.to_epic("sync", REPO)
+    assert not isinstance(reuse.epic, CreateIssue)
+    with pytest.raises(ConversionOutdatedError):
+        await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    titled = [i for i in env.github.issues.values() if i.title == plan.epic.title]
+    assert len(titled) == 1
+
+
+async def test_an_issue_added_after_a_complete_epic_links_under_it(
+    env: Themes, conn: sqlite3.Connection
+) -> None:
+    await env.synced(issue(1), issue(2))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    started = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    epic_n = env.world.pending.batch(started.id).result.created["epic"].n
+    made, first = env.github.issues[(REPO, epic_n)], env.github.issues[(REPO, 1)]
+    env.github.put(
+        replace(made, updated_at=made.updated_at + timedelta(days=60)),
+        replace(
+            first, parent=IssueRef(REPO, epic_n), updated_at=first.updated_at + timedelta(days=60)
+        ),
+    )
+    env.world.clock.now += timedelta(minutes=1)
+    await env.world.sync.sync(REPO)  # the epic is cached (and open)
+    await env.themes.add([(REPO, 2)], "sync")
     again = await env.themes.to_epic("sync", REPO)
     assert again.epic == IssueRef(REPO, epic_n)
     assert [c.target for c in again.children] == [Existing(REPO, 2)]
-    finished = await env.themes.start_epic("sync", REPO, again.digest, None, env.world.service)
+    conn.execute("DELETE FROM apply_batches")  # pruned: the theme still knows its epic
+    assert (await env.themes.to_epic("sync", REPO)).epic == IssueRef(REPO, epic_n)
+    linked = await env.themes.start_epic("sync", REPO, again.digest, None, env.world.service)
     await env.world.service.drain()
-    assert env.world.pending.batch(finished.id).result.complete
+    assert env.world.pending.batch(linked.id).result.complete
     assert len([w for w in env.github.writes if w[0] == "create_issue"]) == 1
-    assert env.github.parents == {(REPO, 1): (REPO, epic_n), (REPO, 2): (REPO, epic_n)}
+    assert env.github.parents[(REPO, 2)] == (REPO, epic_n)
 
 
 async def test_an_epic_whose_creation_may_have_gone_out_must_be_checked(env: Themes) -> None:
@@ -404,11 +453,12 @@ async def test_an_epic_whose_creation_may_have_gone_out_must_be_checked(env: The
         status="interrupted",
     )
     env.world.applied.save_batch(stored)
+    env.world.applied.add_origin("theme:sync", "cut-off", now)
     env.store.record_epic("sync", "cut-off", now)
     # It created no epic it knows of: the preview plans a new one, but approving waits.
     preview = await env.themes.to_epic("sync", REPO)
     assert isinstance(preview.epic, CreateIssue)
-    with pytest.raises(ThemeEpicRunningError, match="retry batch cut-off"):
+    with pytest.raises(EarlierBatchError, match="retry batch cut-off"):
         await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
     assert env.github.writes == []
 
@@ -421,7 +471,7 @@ async def test_a_replay_records_an_epic_its_first_request_couldnt(
     plan = await env.themes.to_epic("sync", REPO)
     real = env.store.record_epic
 
-    def broken(tag: str, batch_id: str, now: object) -> None:
+    def broken(tag: str, batch_id: str, now: object, epic: object = None) -> None:
         raise sqlite3.OperationalError("disk I/O error")
 
     monkeypatch.setattr(env.store, "record_epic", broken)
@@ -429,7 +479,7 @@ async def test_a_replay_records_an_epic_its_first_request_couldnt(
         await env.themes.start_epic("sync", REPO, plan.digest, "k", env.world.service)
     monkeypatch.setattr(env.store, "record_epic", real)
     replay = await env.themes.start_epic("sync", REPO, plan.digest, "k", env.world.service)
-    assert env.store.epic_batches("sync") == [replay.id]
+    assert [b.batch_id for b in env.world.applied.origin_batches("theme:sync")] == [replay.id]
     await env.world.service.drain()
 
 
@@ -599,4 +649,19 @@ async def test_an_epic_skips_uncached_issues_and_forgets_pruned_batches(env: The
     started = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
     await env.world.service.drain()
     assert env.world.pending.batch(started.id).result.complete
-    assert env.store.epic_batches("sync") == ["pruned-batch", started.id]
+    assert [b.batch_id for b in env.world.applied.origin_batches("theme:sync")] == [started.id]
+
+
+async def test_a_closed_theme_epic_is_done_with_and_a_new_one_is_planned(env: Themes) -> None:
+    await env.synced(issue(1), issue(2))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    started = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    epic_n = env.world.pending.batch(started.id).result.created["epic"].n
+    made = env.github.issues[(REPO, epic_n)]
+    env.github.put(replace(made, state="closed", updated_at=made.updated_at + timedelta(days=60)))
+    env.world.clock.now += timedelta(minutes=1)
+    await env.world.sync.sync(REPO)
+    await env.themes.add([(REPO, 2)], "sync")
+    assert isinstance((await env.themes.to_epic("sync", REPO)).epic, CreateIssue)

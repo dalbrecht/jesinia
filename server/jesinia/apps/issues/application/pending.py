@@ -39,7 +39,9 @@ from jesinia.apps.issues.application.ports import (
     ApplyOrigin,
     ApplyStore,
     CachedIssue,
+    OriginBatch,
     RepoState,
+    creation_state,
 )
 from jesinia.apps.issues.domain.changes import (
     CLOSED_SKIP,
@@ -48,12 +50,15 @@ from jesinia.apps.issues.domain.changes import (
     BatchRunningError,
     BatchStatus,
     ChangeBatch,
+    CreateIssue,
+    EarlierBatchError,
     EnsureLabel,
     Existing,
     InvalidChangeError,
     IssueChange,
     NothingPendingError,
     PendingChange,
+    PendingHeldError,
     PendingNotFoundError,
     SetParent,
     approval_batch,
@@ -84,6 +89,12 @@ log = logging.getLogger(__name__)
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+class PendingHolders(Protocol):
+    """Who holds a staged change: queue items whose Done staged it (``SqliteQueueStore``)."""
+
+    def items_with_pending(self, pending_id: str) -> Sequence[object]: ...
 
 
 class PendingCache(Protocol):
@@ -142,6 +153,11 @@ def _outcomes(result: BatchResult) -> dict[tuple[str, int], tuple[ItemState, str
     }
 
 
+def _origin(suggestion_id: str) -> str:
+    """The ledger origin of a proposal that creates issues (IR56)."""
+    return f"suggestion:{suggestion_id}"
+
+
 def _approval_key(suggestion_id: str, key: str | None) -> str | None:
     return None if key is None else f"{suggestion_id}:{key}"
 
@@ -171,11 +187,13 @@ class PendingService:
         clock: Clock,
         *,
         new_id: Callable[[], str] = _new_id,
+        holders: PendingHolders | None = None,
     ) -> None:
         self._store = store
         self._cache = cache
         self._clock = clock
         self._new_id = new_id
+        self._holders = holders
 
     def stage(self, repo: str, n: int, change: IssueChange, source: str) -> PendingChange:
         """Stage ``change`` for the cached issue ``repo#n``; nothing reaches GitHub.
@@ -231,13 +249,25 @@ class PendingService:
         """Undo one staged change.
 
         Raises:
+            PendingHeldError: a queue item's Done holds it (undo that Done instead, so the
+                queue never shows Done for a close that will never happen).
             PendingNotFoundError: no such staged change.
         """
+        if self._held(pending_id):
+            raise PendingHeldError(
+                f"pending change {pending_id} is a queue item's Done; undo it from its queue"
+            )
         if not self._store.delete_pending([pending_id]):
             raise PendingNotFoundError(f"no pending change {pending_id}")
 
     def clear(self) -> None:
-        self._store.clear_pending()
+        """Undo every staged change no queue item's Done holds (those stay: undo them from
+        their queue)."""
+        loose = [p.id for p in self._store.pending() if not self._held(p.id)]
+        self._store.delete_pending(loose)
+
+    def _held(self, pending_id: str) -> bool:
+        return self._holders is not None and bool(self._holders.items_with_pending(pending_id))
 
     def batch(self, batch_id: str) -> AppliedBatch:
         """An applied batch and its result (read from the cache; no GitHub).
@@ -377,21 +407,61 @@ class ApplyService:
         return await self._run(self.begin_pending(ids, None), None)
 
     def start_batch(
-        self, make: Callable[[], ChangeBatch], origin: ApplyOrigin, key: str | None
+        self,
+        make: Callable[[], ChangeBatch],
+        origin: ApplyOrigin,
+        key: str | None,
+        origin_key: str | None = None,
     ) -> AppliedBatch:
         """Store the batch ``make`` builds (an approved checklist conversion, say) ``running``
         and apply it in the background (IR45). A replay of ``key`` answers its batch as it
-        stands, without calling ``make`` and never running it again (IR46).
+        stands, without calling ``make`` and never running it again (IR46). With
+        ``origin_key`` (an origin that may create issues: a conversion, a theme's epic) an
+        earlier batch for it that is running or unfinished refuses this one, and the batch is
+        recorded for it (IR56).
 
         Raises:
+            EarlierBatchError: see ``guard_origin``.
             Whatever ``make`` raises; nothing is stored then.
         """
         if (found := self._by_key(key)) is not None:
             self._resume_lost(found, None)
             return found
+        if origin_key is not None:
+            self.guard_origin(origin_key)
         applied = self._begin(make(), origin, None, key)
+        if origin_key is not None:
+            self._store.add_origin(origin_key, applied.id, self._clock())
         self._spawn(applied, None)
         return applied
+
+    def guard_origin(self, origin_key: str) -> list[OriginBatch]:
+        """The complete batches recorded for ``origin_key``, oldest first, unless an earlier
+        one is running or didn't finish: then approving again could create its issues a second
+        time, so it is resumed only by Retry (ruling IR56). A pruned batch answers from the
+        ledger.
+
+        Raises:
+            EarlierBatchError: an earlier batch is running, or finished or was cut off with a
+                step not done.
+        """
+        complete: list[OriginBatch] = []
+        for row in self._store.origin_batches(origin_key):
+            live = self._store.batch(row.batch_id)
+            state = row.state if live is None else creation_state(live)
+            if state == "running" or row.batch_id in self._tasks:
+                raise EarlierBatchError(
+                    row.batch_id,
+                    f"an earlier batch for this ({row.batch_id}) is still running; wait for it",
+                )
+            if state == "incomplete":
+                raise EarlierBatchError(
+                    row.batch_id,
+                    f"an earlier batch for this ({row.batch_id}) didn't finish, and it may have "
+                    f"created issues; retry batch {row.batch_id} instead of approving again",
+                )
+            complete.append(row)
+        return complete
 
     async def apply(self, batch: ChangeBatch, *, origin: ApplyOrigin) -> AppliedBatch:
         """Store ``batch``, apply it and wait for the result."""
@@ -445,17 +515,29 @@ class ApplyService:
             raise SuggestionNotFoundError(f"no suggestion {suggestion_id}")
         if found.state not in OPEN_STATES:
             raise SuggestionStateError(f"suggestion {found.id} is {found.state} already")
+        creates = False
+        if found.kind in ("group", "split"):
+            # Resumed only by Retry once a batch for it may have created issues (IR56).
+            done = self.guard_origin(_origin(found.id))
+            if done:
+                self._suggestions.save(approved(found, self._clock()))
+                raise SuggestionStateError(
+                    f"suggestion {found.id} was applied by batch {done[-1].batch_id} already"
+                )
         if found.kind == "priority":
             # About a batch of issues: each change is guarded by the label the draft saw.
             batch = approval_batch(found)
         elif found.kind in ("group", "split"):
             batch = self._proposal_batch(found)
+            creates = any(isinstance(c, CreateIssue) for c in batch.repo)
         else:
             batch = self._issue_batch(found)
         if not self._suggestions.claim(found.id, self._clock()):
             raise SuggestionStateError(f"suggestion {found.id} is being approved already")
         try:
             applied = self._begin(batch, "suggestion", found.id, _approval_key(found.id, key))
+            if creates:
+                self._store.add_origin(_origin(found.id), applied.id, self._clock())
         except BaseException:
             self._release(found.id)
             raise

@@ -463,7 +463,7 @@ class SuggestService:
 
     async def start_priority(self, refs: Sequence[Ref]) -> PriorityRun:
         """Start the priority ask for ``refs`` in the background (ruling IR43) and return its
-        run at once; ``priority_run`` tells how it goes. An ask for the batch already running
+        run at once; ``ask_run`` tells how it goes. An ask for the batch already running
         is returned as it is, so concurrent asks for the same issues call the agent once.
 
         Raises:
@@ -494,10 +494,6 @@ class SuggestService:
         self._priority_tasks.add(task)
         task.add_done_callback(self._priority_tasks.discard)
         return run
-
-    def priority_run(self, scope: str) -> PriorityRun | None:
-        """The latest priority ask for ``scope`` since the server started."""
-        return self._priority_runs.get(scope)
 
     def ask_run(self, scope: str) -> PriorityRun | None:
         """The latest background ask about ``scope`` (priority, groups, split or brief) since

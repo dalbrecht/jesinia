@@ -135,6 +135,21 @@ class BatchRunningError(ChangeDomainError):
     """The batch is still running: poll it; Retry is for one that finished or was cut off."""
 
 
+class EarlierBatchError(ChangeDomainError):
+    """An earlier batch for the same origin (a proposal, a theme's epic, an epic's checklist
+    conversion) is still running or didn't finish: approving again could create its issues a
+    second time, so it is resumed only by retrying ``batch_id`` (ruling IR56)."""
+
+    def __init__(self, batch_id: str, message: str) -> None:
+        self.batch_id = batch_id
+        super().__init__(message)
+
+
+class PendingHeldError(ChangeDomainError):
+    """A queue item's Done holds this staged change: undo it from its queue, so the item and the
+    tray never disagree."""
+
+
 @contextmanager
 def _checked() -> Iterator[None]:
     """GitHub-value checks, reported as an invalid change."""

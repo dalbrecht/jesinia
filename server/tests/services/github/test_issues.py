@@ -719,3 +719,31 @@ async def test_label_reads_one_label_live_with_its_name_encoded(issues: IssueCli
     )
     with pytest.raises(GitHubRequestError):
         await issues.label("acme/api", "locked")
+
+
+@respx.mock
+async def test_get_comment_reads_one_or_answers_none(issues: IssueClient) -> None:
+    respx.get(f"{API}/repos/acme/api/issues/comments/777").mock(
+        return_value=Response(
+            200,
+            json={
+                "id": 777,
+                "user": {"login": "dana", "type": "User"},
+                "body": "Hello",
+                "created_at": "2026-10-01T12:00:00Z",
+                "html_url": "https://github.com/acme/api/issues/12#issuecomment-777",
+            },
+        )
+    )
+    respx.get(f"{API}/repos/acme/api/issues/comments/778").mock(
+        return_value=Response(404, json={"message": "Not Found"})
+    )
+    respx.get(f"{API}/repos/acme/api/issues/comments/779").mock(
+        return_value=Response(500, json={"message": "boom"})
+    )
+    found = await issues.get_comment("acme/api", 777)
+    assert found is not None and found.id == 777 and found.author == "dana"
+    assert found.body == "Hello"
+    assert await issues.get_comment("acme/api", 778) is None
+    with pytest.raises(GitHubRequestError):
+        await issues.get_comment("acme/api", 779)

@@ -1240,10 +1240,12 @@ class ConversionIn(BaseModel):
 
 class EpicBriefIn(BaseModel):
     """The brief the author approves (edited or as drafted); ``suggestion_id`` is the
-    ``brief`` draft it came from, marked approved once posted."""
+    ``brief`` draft it came from, marked approved once posted. ``overwrite`` replaces a comment
+    edited on GitHub since it was posted (refused otherwise)."""
 
     text: str = Field(min_length=1, max_length=COMMENT_BODY_LIMIT)
     suggestion_id: str | None = Field(default=None, min_length=1, max_length=64)
+    overwrite: bool = False
 
 
 class GroupAskIn(BaseModel):

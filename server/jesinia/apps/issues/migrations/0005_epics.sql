@@ -21,15 +21,22 @@ CREATE TABLE epic_briefs (
     PRIMARY KEY (repo, n)
 );
 
--- Each approved checklist conversion: its batch and epic. A conversion batch still `running`
--- refuses another for the same epic.
-CREATE TABLE epic_conversions (
-    batch_id TEXT PRIMARY KEY,
-    repo TEXT NOT NULL COLLATE NOCASE,
-    n INTEGER NOT NULL,
-    created_at TEXT NOT NULL
+-- Every batch that may create issues, by its origin (`suggestion:<id>` for a group or split,
+-- `conversion:<repo>#<n>`, `theme:<tag>`), with its state (`running`, `complete` or
+-- `incomplete`) and the issues it created by temp id, kept current with every save of the
+-- batch. Never pruned: an earlier batch that is running or incomplete refuses a new approval
+-- for the same origin (resume it with Retry), and a complete one's issues are reused, even
+-- after the batch itself is pruned (ruling IR56).
+CREATE TABLE batch_origins (
+    origin_key TEXT NOT NULL,
+    batch_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'running' CHECK (state IN ('running', 'complete', 'incomplete')),
+    created_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (origin_key, batch_id)
 );
-CREATE INDEX epic_conversions_by_epic ON epic_conversions (repo, n);
+CREATE INDEX batch_origins_by_batch ON batch_origins (batch_id);
 
 -- Each unlinked checklist item a conversion created an issue for, keyed by a hash of its
 -- normalised text (and its occurrence), with the batch's temp id and, once known, the issue it

@@ -20,8 +20,15 @@ from pathlib import Path
 
 import pytest
 
+from jesinia.apps.issues.application.pending import PendingService
 from jesinia.apps.issues.application.queues import QueueService
-from jesinia.apps.issues.domain.changes import Close, InvalidChangeError, SetDimension
+from jesinia.apps.issues.domain.changes import (
+    Close,
+    Comment,
+    InvalidChangeError,
+    PendingHeldError,
+    SetDimension,
+)
 from jesinia.apps.issues.domain.epics import NotAnEpicError
 from jesinia.apps.issues.domain.queues import (
     QUEUES_MAX,
@@ -61,6 +68,10 @@ class Queues(Epics):
     def __init__(self, conn: sqlite3.Connection) -> None:
         super().__init__(conn)
         self.store = SqliteQueueStore(conn)
+        # The tray knows which changes queue items hold (the module wires the same).
+        self.world.pending = PendingService(
+            self.world.applied, self.world.store, self.world.clock, holders=self.store
+        )
         self.queues = QueueService(
             self.store,
             self.world.store,
@@ -832,7 +843,8 @@ async def test_removing_a_done_item_or_its_queue_unstages_its_change(env: Queues
     env.queues.done(b, "issue", REPO, 2, "close")
     env.queues.remove(a, "issue", REPO, 1)
     assert len(env.world.pending.pending()) == 2  # queue b still marks #1 done with it
-    env.world.pending.unstage(env.world.pending.pending()[1].id)  # #2's left the tray already
+    # #2's left the tray already (applied): the store drops it, as an apply does.
+    env.world.applied.delete_pending([env.world.pending.pending()[1].id])
     env.queues.delete(b)
     assert env.world.pending.pending() == []
 
@@ -967,3 +979,17 @@ async def test_queues_never_share_or_unstage_a_close_staged_from_the_tray(env: Q
     sources = sorted((p.key, p.source) for p in env.world.pending.pending())
     assert sources == [((REPO, 1), "menu"), ((REPO, 2), "picker")]
     assert mine.id in {p.id for p in env.world.pending.pending()}
+
+
+async def test_a_queue_done_change_is_undone_from_its_queue_not_the_tray(env: Queues) -> None:
+    await env.synced(issue(1), issue(2))
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+    done = env.queues.done(q, "issue", REPO, 1, "close")
+    assert done.staged is not None
+    with pytest.raises(PendingHeldError, match="undo it from its queue"):
+        env.world.pending.unstage(done.staged.id)
+    other = env.world.pending.stage(REPO, 2, Comment("hi"), "menu")
+    env.world.pending.clear()  # clears only what no queue item holds
+    assert [p.id for p in env.world.pending.pending()] == [done.staged.id]
+    assert other.id not in [p.id for p in env.world.pending.pending()]

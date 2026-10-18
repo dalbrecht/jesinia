@@ -7518,7 +7518,7 @@
           "issues"
         ],
         "summary": "Approve Brief",
-        "description": "Approve the brief: it is posted on the epic as the ``<!-- jesinia:brief -->``\ncomment, or the comment already stored is edited in place (a deleted one is posted\nanew). A post cut off by a stop is found again, never posted twice.",
+        "description": "Approve the brief: it is posted on the epic as the ``<!-- jesinia:brief -->``\ncomment, or the comment already stored is edited in place (a deleted one is posted\nanew). A comment edited on GitHub since is a 409 unless ``overwrite``. A post cut off\nby a stop is found again, never posted twice.",
         "operationId": "approve_brief_api_issues_epics__owner___repo___n__brief_post",
         "parameters": [
           {
@@ -10850,7 +10850,7 @@
           "issues"
         ],
         "summary": "Make Theme Epic",
-        "description": "Approve the epic previewed with ``digest``: one batch (create the epic, then link the\nchildren) applied in the background, a 202 with the batch and ``Location`` to poll. A\n409 when the plan changed since (preview again) or has no children, or while an earlier\nepic for the theme runs or didn't finish (retry that batch).",
+        "description": "Approve the epic previewed with ``digest``: one batch (create the epic, then link the\nchildren) applied in the background, a 202 with the batch and ``Location`` to poll. A\n409 when the plan changed since (preview again) or has no children, or while an earlier\nepic batch for the theme runs or didn't finish (retry that batch: it may have made the\nepic). Once a batch made the epic, issues added to the theme later link under it.",
         "operationId": "make_theme_epic_api_issues_themes__tag__epic_post",
         "parameters": [
           {
@@ -14904,6 +14904,11 @@
               }
             ],
             "title": "Suggestion Id"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "title": "Overwrite",
+            "default": false
           }
         },
         "type": "object",
@@ -14911,7 +14916,7 @@
           "text"
         ],
         "title": "EpicBriefIn",
-        "description": "The brief the author approves (edited or as drafted); ``suggestion_id`` is the\n``brief`` draft it came from, marked approved once posted."
+        "description": "The brief the author approves (edited or as drafted); ``suggestion_id`` is the\n``brief`` draft it came from, marked approved once posted. ``overwrite`` replaces a comment\nedited on GitHub since it was posted (refused otherwise)."
       },
       "EpicBriefOut": {
         "properties": {

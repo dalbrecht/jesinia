@@ -49,7 +49,6 @@ from jesinia.apps.issues.domain.epics import (
     group_drafts,
     groups_scope,
     inline_code,
-    is_brief_comment,
     is_cross_repo,
     is_epic,
     is_initiative,
@@ -552,7 +551,6 @@ def test_a_default_scope_and_criteria_come_from_the_issues_text() -> None:
 def test_a_brief_comment_carries_the_marker_once() -> None:
     comment = brief_comment(f"{BRIEF_MARKER}\nHello {BRIEF_MARKER} world")
     assert comment.startswith(f"{BRIEF_MARKER}\n") and comment.count(BRIEF_MARKER) == 1
-    assert is_brief_comment(f"  {comment}") and not is_brief_comment("Hello")
     assert strip_marker(comment) == "Hello  world"
     with pytest.raises(InvalidBriefError):
         brief_comment(f"  {BRIEF_MARKER}  ")
@@ -676,7 +674,7 @@ def test_a_brief_comment_carries_its_attempt_nonce() -> None:
     assert comment == f"{brief_marker('abc-123')}\nHello" and comment.startswith(
         "<!-- jesinia:brief:abc-123 -->"
     )
-    assert is_brief_comment(comment) and carries_marker(f" {comment}", "abc-123")
+    assert carries_marker(f" {comment}", "abc-123")
     assert not carries_marker(comment, "other") and not carries_marker(f"x{comment}", "abc-123")
     assert strip_marker(f"{comment}\n{brief_marker('zz')}") == "Hello"
     assert brief_comment(f"{brief_marker('old')}\nHi") == f"{BRIEF_MARKER}\nHi"

@@ -71,11 +71,6 @@ class NothingToPublishError(ThemeDomainError):
     """No issue in that repo still needs the theme's label."""
 
 
-class ThemeEpicRunningError(ThemeDomainError):
-    """An earlier epic for this theme is still running, or didn't finish (retry that batch):
-    approving again could create a second epic."""
-
-
 class ThemesUnavailableError(ThemeDomainError):
     """The KB tag catalog isn't available (the kb service isn't running): new themes wait."""
 

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``ThemeStore`` over the module's ``issues.sqlite`` connection: each issue's themes
-(``issue_themes``) and the batches that turned a theme into an epic (``theme_epics``). Every
+(``issue_themes``) and the batches that turned a theme into an epic, with its epic
+(``theme_epics``). Every
 query is parameterised."""
 
 from __future__ import annotations
@@ -75,15 +76,31 @@ class SqliteThemeStore:
             self._conn.execute("DELETE FROM issue_themes WHERE tag = ?", (old,))
             self._conn.execute("UPDATE OR IGNORE theme_epics SET tag = ? WHERE tag = ?", (new, old))
             self._conn.execute("DELETE FROM theme_epics WHERE tag = ?", (old,))
+            # The ledger of the theme's epic batches follows it too (IR56).
+            self._conn.execute(
+                "UPDATE OR IGNORE batch_origins SET origin_key = ? WHERE origin_key = ?",
+                (f"theme:{new}", f"theme:{old}"),
+            )
 
-    def record_epic(self, tag: str, batch_id: str, now: datetime) -> None:
+    def record_epic(
+        self, tag: str, batch_id: str, now: datetime, epic: tuple[str, int] | None = None
+    ) -> None:
         self._conn.execute(
-            "INSERT OR IGNORE INTO theme_epics (tag, batch_id, created_at) VALUES (?, ?, ?)",
-            (tag, batch_id, _time(now)),
+            "INSERT OR IGNORE INTO theme_epics (tag, batch_id, created_at, epic_repo, epic_n) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (tag, batch_id, _time(now), *(epic or (None, None))),
         )
 
-    def epic_batches(self, tag: str) -> list[str]:
-        rows = self._conn.execute(
-            "SELECT batch_id FROM theme_epics WHERE tag = ? ORDER BY created_at, rowid", (tag,)
+    def set_epic(self, tag: str, batch_id: str, repo: str, n: int) -> None:
+        self._conn.execute(
+            "UPDATE theme_epics SET epic_repo = ?, epic_n = ? WHERE tag = ? AND batch_id = ?",
+            (repo, n, tag, batch_id),
         )
-        return [str(batch_id) for (batch_id,) in rows]
+
+    def theme_epic(self, tag: str) -> tuple[str, int] | None:
+        row = self._conn.execute(
+            "SELECT epic_repo, epic_n FROM theme_epics WHERE tag = ? AND epic_n IS NOT NULL "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (tag,),
+        ).fetchone()
+        return None if row is None else (str(row[0]), int(row[1]))

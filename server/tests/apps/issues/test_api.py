@@ -1453,7 +1453,7 @@ async def test_a_second_conversion_while_one_runs_is_a_409(env: Env) -> None:
     second = await env.client.post(f"{EPIC3}/conversion", json={"digest": digest}, headers=keyed())
     held.set()
     assert first.status_code == 202
-    assert second.status_code == 409 and second.json()["error"] == "ConversionRunningError"
+    assert second.status_code == 409 and second.json()["error"] == "EarlierBatchError"
     await _polled(env, first)
     after = await env.client.post(f"{EPIC3}/conversion", json={"digest": digest}, headers=keyed())
     assert after.status_code == 409  # the plan changed: the item is converted

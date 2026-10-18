@@ -21,14 +21,19 @@ import pytest
 
 from jesinia.apps.issues.application.epics import BriefService, EpicService, ancestors_of
 from jesinia.apps.issues.application.suggest import SuggestService
-from jesinia.apps.issues.domain.changes import Existing, InvalidChangeError, SetParent
+from jesinia.apps.issues.domain.changes import (
+    EarlierBatchError,
+    Existing,
+    InvalidChangeError,
+    SetParent,
+)
 from jesinia.apps.issues.domain.epics import (
     BRIEF_MARKER,
     CROSS_REPO_WARNING,
+    BriefEditedOnGitHubError,
     BriefRecoveryIncompleteError,
     ContainmentRefusedError,
     ConversionOutdatedError,
-    ConversionRunningError,
     InvalidBriefError,
     NotAnEpicError,
     NothingToConvertError,
@@ -44,6 +49,7 @@ from jesinia.apps.issues.domain.suggestions import (
     SuggestionNotFoundError,
     SuggestionRunnerUnavailableError,
     SuggestionStaleError,
+    SuggestionStateError,
 )
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
@@ -78,7 +84,8 @@ class BriefGitHub(FakeWrites):
         super().__init__()
         self.next_comment = 500
         self.clock: Callable[[], datetime] = lambda: datetime(2026, 10, 1, 12, 0).astimezone()
-        self.deleted: set[int] = set()
+        self.deleted: set[int] = set()  # an edit answers 404 (deleted right after a read)
+        self.vanished: set[int] = set()  # a read finds nothing
         # Set to hold ``comment`` after it reached GitHub (a cut-off mid-write).
         self.crash_after_comment: BaseException | None = None
 
@@ -107,6 +114,13 @@ class BriefGitHub(FakeWrites):
 
     def now(self) -> datetime:
         return self.clock()
+
+    async def get_comment(self, repo: str, comment_id: int) -> IssueComment | None:
+        self.calls.append(("get_comment", (repo, comment_id)))
+        if comment_id in self.vanished:
+            return None
+        found = (c for cs in self.issue_comments.values() for c in cs if c.id == comment_id)
+        return next(found, None)
 
 
 class Nonces:
@@ -769,7 +783,7 @@ async def test_two_concurrent_conversions_start_one_batch_and_refuse_the_other(e
     assert next(x for x in held if x.item == "Write the docs").reason == (
         f"being converted now (batch {first.id})"
     )
-    with pytest.raises(ConversionRunningError):
+    with pytest.raises(EarlierBatchError):
         env.epics.start_conversion(REPO, 1, digest, "convert:b", env.world.service)
     await env.world.service.drain()
     assert env.world.applied.batch(first.id).status == "finished"  # type: ignore[union-attr]
@@ -939,3 +953,111 @@ async def test_an_initiative_is_ready_by_its_epics_children(env: Epics) -> None:
     env.world.clock.now += timedelta(minutes=1)
     await env.world.sync.sync(REPO)
     assert env.epics.readiness("epic", REPO, 1).ready
+
+
+# --- PR 3 final fix wave -------------------------------------------------------------------------
+
+
+def creates(env: Epics) -> list[object]:
+    return [w for w in env.github.writes if w[0] == "create_issue"]
+
+
+TWO_PARTS = grouping(
+    splits=[{"issue": {"repo": REPO, "number": 2}, "parts": [
+        {"title": "One", "body": ""}, {"title": "Two", "body": ""}], "reason": "too big"}]
+)  # fmt: skip
+
+
+async def test_a_split_whose_link_failed_is_resumed_only_by_retry(env: Epics) -> None:
+    await env.synced(issue(2))
+    env.agent.replies = [TWO_PARTS]
+    draft = await env.epics.propose_split(REPO, 2)
+    env.github.fail["add_sub_issue:2"] = GitHubRequestError(422, "Unprocessable")
+    first = await env.world.service.approve(draft.id)
+    assert not first.batch.result.complete and first.suggestion.state == "draft"
+    with pytest.raises(EarlierBatchError, match=f"retry batch {first.batch.id}"):
+        await env.world.service.approve(draft.id)
+    assert len(creates(env)) == 2  # one create_issue per part, never again
+    del env.github.fail["add_sub_issue:2"]
+    resumed = await env.world.service.retry(first.batch.id)
+    assert resumed.result.complete and len(creates(env)) == 2
+    assert env.world.drafts.suggestion(draft.id).state == "approved"  # type: ignore[union-attr]
+
+
+async def test_a_group_stopped_after_its_create_is_resumed_only_by_retry(env: Epics) -> None:
+    await env.synced(issue(2), issue(3))
+    env.agent.replies = [
+        grouping(groups=[{"title": "Sync", "scope": "s", "issues": [
+            {"repo": REPO, "number": 2}, {"repo": REPO, "number": 3}], "reason": "related"}])
+    ]  # fmt: skip
+    (draft,) = await env.epics.propose_groups(REPO)
+    epic_n = max(n for (_, n) in env.github.issues) + 1
+    env.github.fail[f"add_sub_issue:{epic_n}"] = GitHubRateLimitedError(429, "slow down", None)
+    first = await env.world.service.approve(draft.id)
+    assert first.batch.result.stopped and first.batch.result.created["epic"].n == epic_n
+    with pytest.raises(EarlierBatchError, match=f"retry batch {first.batch.id}"):
+        await env.world.service.approve(draft.id)
+    assert len(creates(env)) == 1
+
+
+async def test_a_completed_proposal_is_never_applied_again_even_after_pruning(
+    env: Epics, conn: sqlite3.Connection
+) -> None:
+    await env.synced(issue(2))
+    env.agent.replies = [TWO_PARTS]
+    draft = await env.epics.propose_split(REPO, 2)
+    done = await env.world.service.approve(draft.id)
+    assert done.batch.result.complete
+    # Its settling was lost, and its batch was pruned since.
+    env.world.drafts.save(replace(done.suggestion, state="draft"))
+    conn.execute("DELETE FROM apply_batches")
+    with pytest.raises(SuggestionStateError, match=f"applied by batch {done.batch.id}"):
+        await env.world.service.approve(draft.id)
+    assert env.world.drafts.suggestion(draft.id).state == "approved"  # type: ignore[union-attr]
+    assert len(creates(env)) == 2
+
+
+async def test_a_new_conversion_waits_for_an_incomplete_one_to_be_retried(env: Epics) -> None:
+    await env.synced(epic(1, body="- [ ] Write the docs\n- [ ] Fix #2"), issue(2))
+    env.github.fail["get:2"] = GitHubRequestError(500, "boom")  # #2's link fails
+    digest = env.epics.conversion(REPO, 1).digest
+    first = env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    await env.world.service.drain()
+    assert not env.world.applied.batch(first.id).result.complete  # type: ignore[union-attr]
+    again = env.epics.conversion(REPO, 1)
+    with pytest.raises(EarlierBatchError, match=f"retry batch {first.id}"):
+        env.epics.start_conversion(REPO, 1, again.digest, "convert:b", env.world.service)
+    assert len(creates(env)) == 1
+
+
+async def test_a_pruned_conversion_still_knows_what_it_created(
+    env: Epics, conn: sqlite3.Connection
+) -> None:
+    await env.synced(epic(1, body="- [ ] Write the docs"))
+    digest = env.epics.conversion(REPO, 1).digest
+    started = env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    await env.world.service.drain()
+    made = env.world.applied.batch(started.id).result.created["item-1"]  # type: ignore[union-attr]
+    conn.execute("DELETE FROM apply_batches")  # pruned before any preview
+    assert env.epics.conversion(REPO, 1).skipped[0].reason == f"already converted ({REPO}#{made.n})"
+
+
+async def test_a_brief_edited_on_github_is_not_overwritten(env: Epics) -> None:
+    await env.synced(epic(1))
+    await env.publisher.approve(REPO, 1, "First")
+    (comment,) = env.github.issue_comments[(REPO, 1)]
+    edited = replace(comment, body=f"{brief_marker('nonce-1')}\nEdited on GitHub")
+    env.github.issue_comments[(REPO, 1)] = [edited]
+    with pytest.raises(BriefEditedOnGitHubError, match="edited on GitHub"):
+        await env.publisher.approve(REPO, 1, "Second")
+    assert not any(w[0] == "edit_comment" for w in env.github.writes)
+    forced = await env.publisher.approve(REPO, 1, "Second", overwrite=True)
+    assert forced.comment_id == 501 and env.github.writes[-1][0] == "edit_comment"
+
+
+async def test_a_brief_comment_gone_on_github_is_posted_anew(env: Epics) -> None:
+    await env.synced(epic(1))
+    await env.publisher.approve(REPO, 1, "First")
+    env.github.vanished.add(501)
+    again = await env.publisher.approve(REPO, 1, "Again")
+    assert again.comment_id == 502 and not any(w[0] == "edit_comment" for w in env.github.writes)

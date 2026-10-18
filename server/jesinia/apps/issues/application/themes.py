@@ -51,8 +51,6 @@ from jesinia.apps.issues.application.ports import (
     ThemeTags,
 )
 from jesinia.apps.issues.domain.changes import (
-    IN_FLIGHT,
-    UNSURE,
     AddLabel,
     ChangeBatch,
     EnsureLabel,
@@ -71,7 +69,6 @@ from jesinia.apps.issues.domain.themes import (
     InvalidThemeError,
     NothingToPublishError,
     ThemeCatalogError,
-    ThemeEpicRunningError,
     ThemeNearDuplicateError,
     ThemeNotFoundError,
     ThemesUnavailableError,
@@ -83,6 +80,7 @@ from jesinia.apps.issues.domain.themes import (
     theme_tag,
 )
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
+from jesinia.services.github.domain.issue import IssueRef
 from jesinia.services.github.domain.repo import validate_repo
 from jesinia.services.kb.application.errors import KbError, NearDuplicate
 
@@ -137,6 +135,11 @@ class ThemePublish:
     ensure: PendingChange
     added: tuple[PendingChange, ...]
     already: tuple[Ref, ...]
+
+
+def _origin(tag: str) -> str:
+    """The ledger origin of a theme's epic batches (IR56)."""
+    return f"theme:{tag}"
 
 
 class ThemeService:
@@ -463,61 +466,50 @@ class ThemeService:
         return plan
 
     def _reusable_epic(self, tag: str) -> tuple[Node | None, tuple[Key, ...]]:
-        """The epic the latest unfinished (finished incomplete, or interrupted) batch for the
-        theme created, with its ancestors, or ``None``: the next plan links under it rather
-        than creating a second epic (IR53)."""
-        for batch_id in reversed(self._store.epic_batches(tag)):
-            earlier = self._batches.batch(batch_id)
-            if earlier is None or earlier.status == "running" or earlier.result.complete:
-                continue
-            made = earlier.result.created.get("epic")
-            if made is None:
-                continue
-            found = facts_of(self._cache, made.repo, made.n)
-            node = Node(made.repo, made.n) if found is None else found.node
-            return node, ancestors_of(self._cache, made.repo, made.n)
-        return None, ()
+        """The theme's epic, with its ancestors, or ``None``: the epic a complete batch for the
+        theme made (or linked under), recorded in ``theme_epics`` and kept in the ledger after
+        the batch is pruned. Issues added later link under it rather than under a second epic
+        (IR56). A closed one is done with: the next plan makes a new epic."""
+        epic = self._store.theme_epic(tag)
+        if epic is None:
+            for row in reversed(self._batches.origin_batches(_origin(tag))):
+                made = row.created.get("epic")
+                if row.state == "complete" and made is not None:
+                    epic = made
+                    self._store.set_epic(tag, row.batch_id, *made)
+                    break
+        if epic is None:
+            return None, ()
+        found = facts_of(self._cache, *epic)
+        if found is not None and not found.is_open:
+            return None, ()
+        node = Node(*epic) if found is None else found.node
+        return node, ancestors_of(self._cache, *epic)
 
     async def start_epic(
         self, raw: str, repo: str, digest: str, key: str | None, starter: BatchStarter
     ) -> AppliedBatch:
         """Approve the epic previewed with ``digest``: one batch through the apply engine, in
-        the background (IR45); a replay of ``key`` answers its batch (IR46). Refused only while
-        an earlier epic for the theme is still running, or was cut off while creating the epic
-        (it may exist: check GitHub, then retry that batch). The batch is recorded for the
+        the background (IR45); a replay of ``key`` answers its batch (IR46). Refused while an
+        earlier epic batch for the theme is running or didn't finish: it may have made the
+        epic, so it is resumed only by retrying it (IR56). The batch is recorded for the
         theme on a replay too, so a record the first request couldn't write is never lost.
 
         Raises:
-            ThemeEpicRunningError: see above.
+            EarlierBatchError: see above.
             Others: as ``to_epic``.
         """
         home = validate_repo(repo)
         tag = await self._tag(raw)
+        planned: list[ConversionPlan] = []
 
         def make() -> ChangeBatch:
-            self._check_running(tag)
-            return self._plan(tag, home, digest).changes
+            plan = self._plan(tag, home, digest)
+            planned.append(plan)
+            return plan.changes
 
-        started = starter.start_batch(make, "epic", key)
-        self._store.record_epic(tag, started.id, self._clock())
+        started = starter.start_batch(make, "epic", key, _origin(tag))
+        reused = planned[0].epic if planned else None
+        known = None if not isinstance(reused, IssueRef) else (reused.repo, reused.number)
+        self._store.record_epic(tag, started.id, self._clock(), known)
         return started
-
-    def _check_running(self, tag: str) -> None:
-        for batch_id in self._store.epic_batches(tag):
-            earlier = self._batches.batch(batch_id)
-            if earlier is None:  # pruned with the batches it outlived
-                continue
-            if earlier.status == "running":
-                raise ThemeEpicRunningError(
-                    f"an epic for the theme #{tag} is still being made (batch {batch_id}); "
-                    "wait for it"
-                )
-            unsure = any(
-                r.step.kind == "create_issue" and r.cause in (IN_FLIGHT, UNSURE)
-                for r in earlier.result.results
-            )
-            if unsure:
-                raise ThemeEpicRunningError(
-                    f"batch {batch_id} was cut off while creating the theme #{tag}'s epic, so "
-                    f"it may exist; check GitHub, then retry batch {batch_id}"
-                )

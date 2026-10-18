@@ -255,7 +255,9 @@ class IssuesModule:
         # or without the github service.
         if interrupted := applied.interrupt_running():
             log.info("marked %d issues apply batches interrupted after a stop", interrupted)
-        self._pending = PendingService(applied, store, _utc_now)
+        queue_store = SqliteQueueStore(self._conn)
+        # A queue item's Done holds its staged change: the tray never undoes it alone (M2).
+        self._pending = PendingService(applied, store, _utc_now, holders=queue_store)
         briefs = SqliteBriefStore(self._conn)
         self._epics = EpicService(
             store,
@@ -267,7 +269,7 @@ class IssuesModule:
             batches=applied,
         )
         self._queues = QueueService(
-            SqliteQueueStore(self._conn),
+            queue_store,
             store,
             self._epics,
             self._pending,
