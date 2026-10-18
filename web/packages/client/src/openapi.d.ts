@@ -1467,6 +1467,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/stacks/{owner}/{repo}/{number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Stack
+         * @description The stack holding the PR (spec §4.3), from the cache only: each PR's view, the
+         *     stack review of their heads, and the cross-PR findings.
+         */
+        get: operations["get_stack_api_review_stacks__owner___repo___number__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/stacks/{owner}/{repo}/{number}/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Stack
+         * @description Open the stack: open each PR (under its own gates), then start the stack's
+         *     Overview, Background and stack walkthrough it lacks (202) once no PR is held.
+         */
+        post: operations["open_stack_api_review_stacks__owner___repo___number__open_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/stacks/{owner}/{repo}/{number}/post-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post All
+         * @description Post every PR's confirmed review, bottom-up, stopping at the first that can't be
+         *     posted (its error, with ``stack_outcomes``). Owner only; each PR's attempt is keyed
+         *     from this request's key, so a replay never posts a PR twice.
+         */
+        post: operations["post_all_api_review_stacks__owner___repo___number__post_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/settings": {
         parameters: {
             query?: never;
@@ -1557,6 +1621,35 @@ export interface components {
             /** Folders */
             folders: components["schemas"]["UnreadOut"][];
             views: components["schemas"]["ViewCountsOut"];
+        };
+        /**
+         * CrossFindingOut
+         * @description A finding concerning more than one PR of a stack (agent text: render as text).
+         */
+        CrossFindingOut: {
+            /** Prs */
+            prs: number[];
+            /** Group */
+            group: string;
+            /** Severity */
+            severity: string;
+            /** Explanation */
+            explanation: string;
+            /**
+             * Source
+             * @description shared_file: a PR's finding on a file another PR also changes; agent: reported across PRs by the stack walkthrough
+             */
+            source: string;
+            /** Found In */
+            found_in: number | null;
+            /** Path */
+            path: string | null;
+            /** Start Line */
+            start_line: number | null;
+            /** End Line */
+            end_line: number | null;
+            /** Note */
+            note: string;
         };
         /**
          * DoneIn
@@ -2211,6 +2304,12 @@ export interface components {
              * @default false
              */
             walk_everything: boolean;
+            /**
+             * Quiz
+             * @description Generate the quiz, which is off on your own PR (spec §3.3)
+             * @default false
+             */
+            quiz: boolean;
         };
         /**
          * OpenOut
@@ -2302,6 +2401,38 @@ export interface components {
             /** Failed */
             failed: number;
         };
+        /**
+         * PostAllIn
+         * @description Post all (spec §4.3): every PR's confirmed review, posted bottom-up.
+         */
+        PostAllIn: {
+            /** Items */
+            items: components["schemas"]["PostAllItemIn"][];
+        };
+        /**
+         * PostAllItemIn
+         * @description One PR's confirmed review: its round, event, preview digest and confirmed warnings.
+         */
+        PostAllItemIn: {
+            /** Number */
+            number: number;
+            /** Round Id */
+            round_id: number;
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+            /** Digest */
+            digest: string;
+            /** Confirm */
+            confirm?: ("blocking_comment" | "approve_against_evidence" | "newer_head" | "own_pr_comment_only")[];
+        };
+        /** PostAllOut */
+        PostAllOut: {
+            /** Outcomes */
+            outcomes: components["schemas"]["PostOutcomeOut"][];
+        };
         /** PostIn */
         PostIn: {
             /**
@@ -2364,6 +2495,29 @@ export interface components {
             archive_error: string | null;
             /** Has Full Article */
             has_full_article: boolean;
+        };
+        /** PostOutcomeOut */
+        PostOutcomeOut: {
+            /** Number */
+            number: number;
+            /** Round Id */
+            round_id: number;
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "posted" | "already_posted" | "failed" | "not_attempted";
+            /** Review Url */
+            review_url: string | null;
+            /** Error */
+            error: string | null;
+            /** Error Code */
+            error_code: string | null;
         };
         /** PostPageOut */
         PostPageOut: {
@@ -2596,6 +2750,16 @@ export interface components {
              * @description Files whose changes differ from the previous review's (PR text)
              */
             differing_paths?: string[];
+            /**
+             * Stack
+             * @description The PR's stack (spec §4.3) as PR numbers, bottom-up; empty if none
+             */
+            stack?: number[];
+            /**
+             * Recommendation Label
+             * @description The recommendation in words; on your own PR, 'ready to request review' or 'not ready to request review' (spec §3.3)
+             */
+            recommendation_label?: string | null;
         };
         /** ReadAboveIn */
         ReadAboveIn: {
@@ -2695,6 +2859,11 @@ export interface components {
              * @description For PostingStillUncertain and PostingInProgress: seconds before retrying (also the Retry-After header)
              */
             retry_after?: number | null;
+            /**
+             * Stack Outcomes
+             * @description For a Post all that stopped: what was and wasn't posted, per PR (the error is the PR's that stopped it)
+             */
+            stack_outcomes?: components["schemas"]["PostOutcomeOut"][] | null;
         };
         /** ReviewRepoSettingBody */
         ReviewRepoSettingBody: {
@@ -2848,6 +3017,68 @@ export interface components {
              * @description The KB folder kept posts are written to
              */
             source_folder: string;
+        };
+        /** StackMemberOpenOut */
+        StackMemberOpenOut: {
+            /** Number */
+            number: number;
+            /** State */
+            state: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * StackOpenIn
+         * @description ``retry``: run again the stack's jobs that failed.
+         */
+        StackOpenIn: {
+            /**
+             * Retry
+             * @default false
+             */
+            retry: boolean;
+        };
+        /**
+         * StackOpenOut
+         * @description What opening the stack did: each PR's open, and the stack's jobs (``held`` while a PR
+         *     is held by a gate).
+         */
+        StackOpenOut: {
+            /** State */
+            state: string;
+            /** Reason */
+            reason: string;
+            /** Stack Id */
+            stack_id: number;
+            /** Jobs */
+            jobs: string[];
+            /** Members */
+            members: components["schemas"]["StackMemberOpenOut"][];
+        };
+        /**
+         * StackOut
+         * @description A stack from the cache (spec §4.3): each PR's own view bottom-up, the stack review of
+         *     their current heads and its artifacts (overview, background, stack_walkthrough, jobs),
+         *     and the cross-PR findings.
+         */
+        StackOut: {
+            /** Repo */
+            repo: string;
+            /** Signature */
+            signature: string;
+            /** Members */
+            members: components["schemas"]["PrOut"][];
+            /** Stack Id */
+            stack_id: number | null;
+            /**
+             * Artifacts
+             * @description The stack review's artifacts by kind (agent output: render as text)
+             */
+            artifacts: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Cross Findings */
+            cross_findings: components["schemas"]["CrossFindingOut"][];
         };
         /** StartIn */
         StartIn: {
@@ -8212,6 +8443,290 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RoundOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    get_stack_api_review_stacks__owner___repo___number__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StackOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    open_stack_api_review_stacks__owner___repo___number__open_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["StackOpenIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StackOpenOut"];
+                };
+            };
+            /** @description Stack jobs started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StackOpenOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    post_all_api_review_stacks__owner___repo___number__post_all_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostAllIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostAllOut"];
                 };
             };
             /** @description Bad Request */

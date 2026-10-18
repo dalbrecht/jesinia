@@ -27,6 +27,7 @@ from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.reviews import ReviewReads
+from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.posting import Draft
 from jesinia.apps.review.domain.queue import PrNotInQueueError, PrRef, RepoConfig, snapshot_of
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
@@ -70,6 +71,7 @@ class Host:
     posting: PostingService
     reviews: ReviewReads
     idempotency: SqliteIdempotencyStore
+    stacks: StackReviews
 
 
 class HostModule:
@@ -118,6 +120,13 @@ class Env:
         return round_id
 
 
+class StackJobsUnused:
+    """No stack here (one PR): the stack's jobs are never run."""
+
+    async def run_stack(self, job: object, stack: object) -> dict[str, object]:
+        raise AssertionError("no stack job runs for a single PR")
+
+
 def keyed() -> dict[str, str]:
     return {IDEMPOTENCY_HEADER: str(uuid.uuid4())}
 
@@ -154,9 +163,19 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
     )
     poster = PostingGitHub(pr, clock=clock)
     posting = PostingService(github=poster, writer=poster, files=queue, store=store, clock=clock)
-    host = Host(
-        queue, pipeline, posting, ReviewReads(store, queue.status), SqliteIdempotencyStore(conn)
+    reads = ReviewReads(store, queue.status)
+    stacks = StackReviews(
+        store=store,
+        reads=reads,
+        opener=pipeline,
+        poster=posting,
+        jobs=StackJobsUnused(),
+        github=PipelineGitHub(pr),
+        workspace=FakeWorkspace(),
+        clock=clock,
+        bus=EventBus(),
     )
+    host = Host(queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks)
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
         transport = httpx.ASGITransport(app=app)
@@ -182,6 +201,12 @@ WRITES = [
     ("POST", f"{PR}/post", {"event": "COMMENT", "confirm": [], "digest": "x"}),
     ("POST", f"{PR}/done", None),
     ("PUT", f"{API}/settings", {"prereview": "triage", "runner": "codex", "repos": []}),
+    ("POST", f"{API}/stacks/acme/web/1/open", None),
+    (
+        "POST",
+        f"{API}/stacks/acme/web/1/post-all",
+        {"items": [{"number": 1, "round_id": 1, "event": "COMMENT", "digest": "x"}]},
+    ),
 ]
 
 
@@ -686,17 +711,19 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
         for route in build_router(env.host).routes
         if "GET" in getattr(route, "methods", set())
     ]
-    assert len(gets) == 4  # queue, the PR, its drafts, settings
+    assert len(gets) == 5  # queue, the PR, its drafts, its stack, settings
+    # PR 1 is alone: its stack answers "not a stack", from the cache too.
+    expected = {f"{API}/stacks/acme/web/1": 404}
     # M4: walked with the head's files cached (the PR view's diff) and without (drafts
     # would need GitHub's file list).
     for path in gets:
         response = await env.client.get(path)
-        assert response.status_code == 200, path
+        assert response.status_code == expected.get(path, 200), path
     assert (await env.client.get(PR)).json()["files"] is not None
     env.store._conn.execute("DELETE FROM pr_files")
     for path in gets:
         response = await env.client.get(path)
-        assert response.status_code == 200, path
+        assert response.status_code == expected.get(path, 200), path
     # The MCP reads are cache-only too.
     tools = _tools(env)
     await _call(tools["review_queue"])

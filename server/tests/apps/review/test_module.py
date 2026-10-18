@@ -86,6 +86,7 @@ async def test_the_pipeline_needs_agents_and_github_and_runs_the_pre_reviews(
 ) -> None:
     from jesinia.apps.review.application.pipeline import Pipeline
     from jesinia.apps.review.application.posting import PostingService
+    from jesinia.apps.review.application.stacks import StackReviews
     from jesinia.services.github.application.service import GitHubService
 
     async def no_token() -> str | None:
@@ -104,9 +105,13 @@ async def test_the_pipeline_needs_agents_and_github_and_runs_the_pre_reviews(
     module = ReviewModule()
     with pytest.raises(HTTPException, match="not started"):
         _ = module.pipeline
+    with pytest.raises(HTTPException, match="not started"):
+        _ = module.stacks
     await module.start(AppContext(cfg, EventBus(), Scheduler()))
     with pytest.raises(HTTPException, match="agents service and the github service"):
         _ = module.pipeline
+    with pytest.raises(HTTPException, match="agents service and the github service"):
+        _ = module.stacks
     await module.stop()
 
     conn = open_db(tmp_path / "agents", SESSIONS_DB)
@@ -117,6 +122,7 @@ async def test_the_pipeline_needs_agents_and_github_and_runs_the_pre_reviews(
     await module.start(ctx)
     assert isinstance(module.pipeline, Pipeline)
     assert isinstance(module.posting, PostingService)
+    assert isinstance(module.stacks, StackReviews)
     assert module.scheduler.runs_pre_reviews
     await module.stop()
     conn.close()

@@ -3,13 +3,14 @@
   "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
   "$id": "https://jesinia.local/review/schemas/stack_walkthrough.json",
   "title": "stack_walkthrough",
-  "description": "A walkthrough of a stack of PRs reviewed as one unit, in reading order.",
+  "description": "A walkthrough of a stack of PRs reviewed as one unit, in reading order, with the problems that arise between its PRs.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "prs",
     "steps",
-    "skipped"
+    "skipped",
+    "cross_findings"
   ],
   "properties": {
     "prs": {
@@ -49,6 +50,13 @@
         "$ref": "#/$defs/skip"
       },
       "maxItems": 5000
+    },
+    "cross_findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/cross_finding"
+      },
+      "maxItems": 50
     }
   },
   "$defs": {
@@ -144,6 +152,54 @@
             "format_only",
             "judged_mechanical"
           ]
+        }
+      }
+    },
+    "cross_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prs",
+        "group",
+        "severity",
+        "explanation",
+        "hunks"
+      ],
+      "properties": {
+        "prs": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 2,
+          "maxItems": 50
+        },
+        "group": {
+          "enum": [
+            "correctness",
+            "design",
+            "style"
+          ]
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "important",
+            "minor"
+          ]
+        },
+        "explanation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "hunks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hunk"
+          },
+          "maxItems": 50
         }
       }
     }

@@ -1093,6 +1093,44 @@ class SqliteReviewStore:
             (round_id, kind, json.dumps(data)),
         )
 
+    # Stack reviews ----------------------------------------------------------------------
+
+    def stack_review(self, repo: str, signature: str) -> int | None:
+        """The stack review of ``repo``'s PRs at the heads ``signature`` names, if any."""
+        row = self._conn.execute(
+            "SELECT id FROM stack_reviews WHERE repo = ? AND signature = ?", (repo, signature)
+        ).fetchone()
+        return None if row is None else int(row[0])
+
+    def start_stack_review(self, repo: str, signature: str, started_at: datetime) -> int:
+        """The stack review for ``signature``, created if it doesn't exist yet."""
+        # The no-op update makes RETURNING answer for an existing row too.
+        row = self._conn.execute(
+            "INSERT INTO stack_reviews (repo, signature, started_at) VALUES (?, ?, ?) "
+            "ON CONFLICT (repo, signature) DO UPDATE SET repo = excluded.repo RETURNING id",
+            (repo, signature, _time(started_at)),
+        ).fetchone()
+        return int(row[0])
+
+    def stack_artifacts(self, stack_id: int) -> dict[str, object]:
+        rows = self._conn.execute(
+            "SELECT kind, json FROM stack_artifacts WHERE stack_id = ?", (stack_id,)
+        )
+        return {kind: json.loads(data) for kind, data in rows}
+
+    def stack_artifact(self, stack_id: int, kind: str) -> object:
+        row = self._conn.execute(
+            "SELECT json FROM stack_artifacts WHERE stack_id = ? AND kind = ?", (stack_id, kind)
+        ).fetchone()
+        return None if row is None else json.loads(row[0])
+
+    def put_stack_artifact(self, stack_id: int, kind: str, data: object) -> None:
+        self._conn.execute(
+            "INSERT INTO stack_artifacts (stack_id, kind, json) VALUES (?, ?, ?) "
+            "ON CONFLICT (stack_id, kind) DO UPDATE SET json = excluded.json",
+            (stack_id, kind, json.dumps(data)),
+        )
+
     # Files and the prune ----------------------------------------------------------------
 
     def pr_files(self, ref: PrRef, head_sha: str) -> list[PrFile] | None:

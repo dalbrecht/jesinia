@@ -36,6 +36,7 @@ from jesinia.apps.review.domain.queue import (
     queue_row,
     snapshot_of,
 )
+from jesinia.apps.review.domain.stacks import stack_numbers
 from jesinia.apps.review.domain.workspace import check_sha
 from jesinia.services.github.application.prs import GitHubPayloadError
 from jesinia.services.github.application.service import (
@@ -127,6 +128,8 @@ class QueueService:
             if queue_filter.repo is None or pr.pr.ref.repo == queue_filter.repo
         ]
         stored.sort(key=queue_order)
+        everyone = [s.pr for s in self._store.prs(include_dismissed=True)]
+        stacked = stack_numbers(everyone)
         synced_at, sync_error = self._store.sync_status()
         suggested = self._store.suggested_repos()
         return QueueView(
@@ -137,6 +140,7 @@ class QueueService:
                     viewer,
                     pr.pr.ref.repo in suggested,
                     followups.get(pr.pr.ref),
+                    stacked.get(pr.pr.ref, ()),
                 )
                 for pr in stored
             ],
@@ -335,7 +339,9 @@ class QueueService:
         latest = self._store.latest_rounds().get(pr_ref)
         suggested = pr_ref.repo in self._store.suggested_repos()
         followup = self._store.current_followups().get(pr_ref)
-        return queue_row(stored, latest, self._store.viewer(), suggested, followup)
+        return queue_row(
+            stored, latest, self._store.viewer(), suggested, followup, self._stack_of(pr_ref)
+        )
 
     async def refresh(self, ref: PrRef) -> QueueRow:
         """Fetch a queued PR from GitHub now, as a sync would (its new head, CI and reviews),
@@ -370,7 +376,14 @@ class QueueService:
         latest = self._store.latest_rounds().get(ref)
         suggested = ref.repo in self._store.suggested_repos()
         followup = self._store.current_followups().get(ref)
-        return queue_row(stored, latest, self._store.viewer(), suggested, followup)
+        return queue_row(
+            stored, latest, self._store.viewer(), suggested, followup, self._stack_of(ref)
+        )
+
+    def _stack_of(self, ref: PrRef) -> tuple[int, ...]:
+        """The PR's stack (spec §4.3) among every cached PR, bottom-up; empty if none."""
+        everyone = [s.pr for s in self._store.prs(include_dismissed=True)]
+        return stack_numbers(everyone).get(ref, ())
 
     async def dismiss(self, repo: str, number: int) -> None:
         """Hide a PR from the queue until it is loaded again.

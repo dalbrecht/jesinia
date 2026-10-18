@@ -625,16 +625,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **Own PRs:** background is minimised, the quiz is off by default, and the verdict reads
   "ready / not ready to request review".
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_stack_detection_orders_bottom_up`;
   - `test_post_all_stops_at_first_failure_and_reports`;
   - `test_own_pr_review_shape`;
   - the web test for the stack tabs.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): stacks and own PRs`. **Open PR 4**, then the Codex
-  loop and merge.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): stacks and own PRs`.
+  - [ ] **Open PR 4**, then the Codex loop and merge.
 
 ## PR 5: Knowledge, metrics trend, kept pages (Tasks 14–16)
 

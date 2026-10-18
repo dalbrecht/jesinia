@@ -17,7 +17,12 @@ It uses the `github` service (`services/github/`) for pull request data and for 
   - `POST /load`, `POST /queue/…/dismiss`, and `POST /prs/…/open`, `/retry` and `/review-anyway`.
   - `POST /prs/…/refresh` fetches a queued PR from GitHub now and checks its new head against your previous review ("Review the new head" opens it afterwards, under that head's own gates).
   - `GET|PUT /prs/…/drafts`, `POST /prs/…/post/preview`, `POST /prs/…/post` and `POST /prs/…/done`.
+  - `GET /stacks/…`, `POST /stacks/…/open` and `POST /stacks/…/post-all` (below).
   - `GET|PUT /settings`.
+- **Stacks** (`domain/stacks.py`, `application/stacks.py`, spec §4.3): PRs whose base branch is another open PR's head branch, in the same repo (the head branch must live there), ordered bottom-up. A group that isn't one chain (a fork, two PRs on one branch, a cycle, more than 20 PRs) is never a stack: each PR is shown alone, with the reason.
+  - A stack review is one Overview, one Background and one stack walkthrough (with cross-PR findings) for the PRs at their current heads. Each PR keeps its own round, walkthrough, findings, drafts and recommendation. Opening the stack opens every PR under its own gates; the stack's jobs start once no PR is held.
+  - **Post all** posts each PR's confirmed review bottom-up through the normal posting path, and stops at the first that can't be posted: the answer is that PR's error with `stack_outcomes` (posted, already posted, failed, not attempted). Each PR's attempt is keyed from the request's `Idempotency-Key`, so a replay never posts a PR twice. A frozen or stale round anywhere refuses its PR before anything is posted.
+- **Your own PRs** (spec §3.3): Background is minimised, the quiz is off unless asked for (`POST /prs/…/open` with `quiz: true`), and the recommendation reads "ready / not ready to request review" (`recommendation_label`). Only a comment can be posted.
 - **Posting** (`application/posting.py`) is the only GitHub write.
   - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `approve_against_evidence`, `newer_head`, `own_pr_comment_only`) and a digest. Approving an unfinished round, or one whose verdict isn't approve, needs `approve_against_evidence` confirmed: Jesinia recommends, the author decides.
   - A post must carry that digest and confirm every warning. It goes out as one atomic review on the round's head. Drafts GitHub can't anchor go in the body.

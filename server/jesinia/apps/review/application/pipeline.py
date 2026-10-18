@@ -63,7 +63,7 @@ from jesinia.apps.review.domain.coverage import (
 )
 from jesinia.apps.review.domain.followup import FollowUp, restrict_diff
 from jesinia.apps.review.domain.gates import Depth, GateState, propose_depth
-from jesinia.apps.review.domain.jobs import JobKind, Round, recommend
+from jesinia.apps.review.domain.jobs import JobKind, Round, on_open_jobs, recommend
 from jesinia.apps.review.domain.queue import (
     PreReviewMode,
     PrHeadMovedError,
@@ -72,6 +72,7 @@ from jesinia.apps.review.domain.queue import (
     QueueDomainError,
     ReviewNotAllowedError,
     StoredPr,
+    author_kind,
 )
 from jesinia.apps.review.domain.rereview import (
     REREVIEW_KINDS,
@@ -118,7 +119,8 @@ TRIAGE_JOBS: Final[tuple[JobKind, ...]] = (
 )
 # What opening adds, per depth (spec §3.1): a quick review is an explanation and a guided
 # walk; a deep one has every tab. A re-review adds its own job (spec §4.2, ``REREVIEW_JOBS``);
-# stack walkthroughs come with plan Task 13.
+# on the author's own PR the quiz is off unless asked for (spec §3.3, ``on_open_jobs``). A
+# stack's walkthrough runs once for the stack (``application.stacks``).
 ON_OPEN_JOBS: Final[Mapping[Depth, tuple[JobKind, ...]]] = {
     "quick": (JobKind.OVERVIEW, JobKind.WALKTHROUGH),
     "deep": (
@@ -395,12 +397,13 @@ class Pipeline:
         self._runners[round_id] = self._runners.get(round_id, 0) + 1
         # Planned at once, so an open meanwhile knows these are coming (the deep ones
         # once the depth is known).
-        planned = background_jobs(request.mode, request.depth, loaded=request.loaded)
+        own = self._is_own(ref)
+        planned = self._background(request, request.depth, own)
         self._plan(round_id, planned, +1)
         try:
             await self._progress(ref, round_id, head, "started")
             prepared = await self._prepare_or_report(ref, head, round_id)
-            kinds = background_jobs(request.mode, prepared.round.depth, loaded=request.loaded)
+            kinds = self._background(request, prepared.round.depth, own)
             self._plan(round_id, kinds, +1)
             self._plan(round_id, planned, -1)
             planned = kinds
@@ -409,16 +412,35 @@ class Pipeline:
             self._plan(round_id, planned, -1)
             self._leave(round_id)
 
+    @staticmethod
+    def _background(request: PreReviewRequest, depth: Depth, own: bool) -> tuple[JobKind, ...]:
+        kinds = background_jobs(request.mode, depth, loaded=request.loaded)
+        return on_open_jobs(kinds, own=own, quiz=False)
+
+    def _is_own(self, ref: PrRef) -> bool:
+        """Whether the signed-in ``gh`` user wrote the PR, decided as the queue does."""
+        stored = self._store.pr(ref)
+        if stored is None:
+            return False
+        pr = stored.pr
+        return author_kind(pr.author, pr.author_is_bot, self._store.viewer()) == "you"
+
     # --- opening a PR --------------------------------------------------------------------
 
     async def open(
-        self, ref: PrRef, *, depth: Depth | None = None, walk_everything: bool = False
+        self,
+        ref: PrRef,
+        *,
+        depth: Depth | None = None,
+        walk_everything: bool = False,
+        quiz: bool = False,
     ) -> OpenResult:
         """The author opens ``ref``: gate it, then start what its round is missing.
 
         ``depth``: the author's choice (spec §3.1, switch either way), kept on the round and
         the queue row in place of Jesinia's proposal; its jobs are what opening runs.
         ``walk_everything``: run the walkthrough again, leaving nothing out (spec §3.1).
+        ``quiz``: the author asks for the quiz, which is off on their own PR (spec §3.3).
 
         Raises:
             PrNotInQueueError: the PR isn't cached (load it first).
@@ -433,7 +455,7 @@ class Pipeline:
         result = gate_for(stored, config, self._clock(), immediate=True)
         if result.state != "ready" and not self._gate_passed(stored):
             return OpenResult(result.state, result.reason)
-        return self._start_open(stored, depth=depth, walk_everything=walk_everything)
+        return self._start_open(stored, depth=depth, walk_everything=walk_everything, quiz=quiz)
 
     async def retry(self, ref: PrRef) -> OpenResult:
         """The author's **Retry**: ``open``, but a failed round on the head is replaced by a
@@ -501,6 +523,7 @@ class Pipeline:
         depth: Depth | None = None,
         walk_everything: bool = False,
         rerun_failed: bool = False,
+        quiz: bool = False,
     ) -> OpenResult:
         pr = stored.pr
         ref, head = pr.ref, pr.head_sha
@@ -524,7 +547,8 @@ class Pipeline:
 
         done = self._store.artifact_kinds(round_id)
         rereview = REREVIEW_JOBS if self._is_rereview(ref, head) else ()
-        wanted = (*TRIAGE_JOBS, *ON_OPEN_JOBS[depth or pr.depth], *rereview)
+        on_open = on_open_jobs(ON_OPEN_JOBS[depth or pr.depth], own=self._is_own(ref), quiz=quiz)
+        wanted = (*TRIAGE_JOBS, *on_open, *rereview)
         missing = tuple(kind for kind in wanted if kind.value not in done)
         if not rerun_failed:
             # A failed job reruns only through Retry, like a failed round (R60, final M1).
@@ -704,6 +728,7 @@ class Pipeline:
             knowledge=self._knowledge(repo),
             merge_base=base,
             hunk_index=index,
+            own_pr=self._is_own(ref),
         )
         correctness_depth = await self._jobs.correctness_depth(round)
         self._store.set_depth(ref, head, round_id, depth)

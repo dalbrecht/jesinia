@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 from jesinia.apps.review.application.pipeline import OpenResult
 from jesinia.apps.review.application.posting import DraftSet, PostPreview
 from jesinia.apps.review.application.reviews import PrView, ReviewSettings
+from jesinia.apps.review.application.stacks import StackOpenResult, StackView
 from jesinia.apps.review.domain.followup import FollowUpKind
 from jesinia.apps.review.domain.gates import CiState, Depth
 from jesinia.apps.review.domain.posting import (
@@ -33,6 +34,13 @@ from jesinia.apps.review.domain.queue import (
     RepoConfig,
     RoundRecord,
     SyncStatus,
+)
+from jesinia.apps.review.domain.stacks import (
+    STACK_MAX,
+    CrossFinding,
+    PostAllItem,
+    PostOutcome,
+    PostState,
 )
 from jesinia.services.github.domain.pr import DraftComment, PrFile, ReviewEvent, ReviewSide
 
@@ -98,6 +106,15 @@ class QueueRowOut(BaseModel):
         default_factory=list,
         description="Files whose changes differ from the previous review's (PR text)",
     )
+    stack: list[int] = Field(
+        default_factory=list,
+        description="The PR's stack (spec §4.3) as PR numbers, bottom-up; empty if none",
+    )
+    recommendation_label: str | None = Field(
+        default=None,
+        description="The recommendation in words; on your own PR, 'ready to request review' "
+        "or 'not ready to request review' (spec §3.3)",
+    )
 
     @classmethod
     def of(cls, row: QueueRow) -> QueueRowOut:
@@ -136,6 +153,8 @@ class QueueRowOut(BaseModel):
             followup_kind=row.followup_kind,
             followup_note=row.followup_note,
             differing_paths=list(row.differing_paths),
+            stack=list(row.stack),
+            recommendation_label=row.recommendation_label,
         )
 
 
@@ -285,6 +304,9 @@ class OpenIn(BaseModel):
 
     depth: Depth | None = None
     walk_everything: StrictBool = False
+    quiz: StrictBool = Field(
+        default=False, description="Generate the quiz, which is off on your own PR (spec §3.3)"
+    )
 
 
 class OpenOut(BaseModel):
@@ -522,6 +544,152 @@ class ReviewSettingsBody(BaseModel):
         )
 
 
+class CrossFindingOut(BaseModel):
+    """A finding concerning more than one PR of a stack (agent text: render as text)."""
+
+    prs: list[int]
+    group: str
+    severity: str
+    explanation: str
+    source: str = Field(
+        description="shared_file: a PR's finding on a file another PR also changes; agent: "
+        "reported across PRs by the stack walkthrough"
+    )
+    found_in: int | None
+    path: str | None
+    start_line: int | None
+    end_line: int | None
+    note: str
+
+    @classmethod
+    def of(cls, finding: CrossFinding) -> CrossFindingOut:
+        return cls(
+            prs=list(finding.prs),
+            group=finding.group,
+            severity=finding.severity,
+            explanation=finding.explanation,
+            source=finding.source,
+            found_in=finding.found_in,
+            path=finding.path,
+            start_line=finding.start_line,
+            end_line=finding.end_line,
+            note=finding.note,
+        )
+
+
+class StackOut(BaseModel):
+    """A stack from the cache (spec §4.3): each PR's own view bottom-up, the stack review of
+    their current heads and its artifacts (overview, background, stack_walkthrough, jobs),
+    and the cross-PR findings."""
+
+    repo: str
+    signature: str
+    members: list[PrOut]
+    stack_id: int | None
+    artifacts: dict[str, JsonValue] = Field(
+        description="The stack review's artifacts by kind (agent output: render as text)"
+    )
+    cross_findings: list[CrossFindingOut]
+
+    @classmethod
+    def of(cls, view: StackView) -> StackOut:
+        return cls(
+            repo=view.repo,
+            signature=view.signature,
+            members=[PrOut.of(member) for member in view.members],
+            stack_id=view.stack_id,
+            artifacts=_json(view.artifacts),
+            cross_findings=[CrossFindingOut.of(f) for f in view.cross_findings],
+        )
+
+
+class StackOpenIn(BaseModel):
+    """``retry``: run again the stack's jobs that failed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    retry: StrictBool = False
+
+
+class StackMemberOpenOut(BaseModel):
+    number: int
+    state: str
+    reason: str
+
+
+class StackOpenOut(BaseModel):
+    """What opening the stack did: each PR's open, and the stack's jobs (``held`` while a PR
+    is held by a gate)."""
+
+    state: str
+    reason: str
+    stack_id: int
+    jobs: list[str]
+    members: list[StackMemberOpenOut]
+
+    @classmethod
+    def of(cls, result: StackOpenResult) -> StackOpenOut:
+        return cls(
+            state=result.state,
+            reason=result.reason,
+            stack_id=result.stack_id,
+            jobs=[job.value for job in result.jobs],
+            members=[
+                StackMemberOpenOut(number=number, state=opened.state, reason=opened.reason)
+                for number, opened in result.members
+            ],
+        )
+
+
+class PostAllItemIn(BaseModel):
+    """One PR's confirmed review: its round, event, preview digest and confirmed warnings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    number: int = Field(ge=1, le=999_999_999)
+    round_id: int = Field(ge=1)
+    event: ReviewEvent
+    digest: str = Field(min_length=1, max_length=128)
+    confirm: list[PostWarning] = Field(default_factory=list, max_length=4)
+
+    def item(self) -> PostAllItem:
+        return PostAllItem(self.number, self.round_id, self.event, self.digest, tuple(self.confirm))
+
+
+class PostAllIn(BaseModel):
+    """Post all (spec §4.3): every PR's confirmed review, posted bottom-up."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[PostAllItemIn] = Field(min_length=1, max_length=STACK_MAX)
+
+
+class PostOutcomeOut(BaseModel):
+    number: int
+    round_id: int
+    event: ReviewEvent
+    state: PostState
+    review_url: str | None
+    error: str | None
+    error_code: str | None
+
+    @classmethod
+    def of(cls, outcome: PostOutcome) -> PostOutcomeOut:
+        return cls(
+            number=outcome.number,
+            round_id=outcome.round_id,
+            event=outcome.event,
+            state=outcome.state,
+            review_url=outcome.review_url,
+            error=outcome.error,
+            error_code=outcome.error_code,
+        )
+
+
+class PostAllOut(BaseModel):
+    outcomes: list[PostOutcomeOut]
+
+
 class ReviewErrorOut(BaseModel):
     error: str
     detail: str
@@ -547,4 +715,9 @@ class ReviewErrorOut(BaseModel):
         default=None,
         description="For PostingStillUncertain and PostingInProgress: seconds before "
         "retrying (also the Retry-After header)",
+    )
+    stack_outcomes: list[PostOutcomeOut] | None = Field(
+        default=None,
+        description="For a Post all that stopped: what was and wasn't posted, per PR (the "
+        "error is the PR's that stopped it)",
     )

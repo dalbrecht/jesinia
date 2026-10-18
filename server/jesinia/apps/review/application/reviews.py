@@ -29,6 +29,7 @@ from jesinia.apps.review.domain.queue import (
     nothing_to_walk_from_json,
     queue_row,
 )
+from jesinia.apps.review.domain.stacks import stack_numbers
 from jesinia.services.github.domain.pr import PrFile
 
 # A runner name names an agent CLI the agents service knows; nothing path-like.
@@ -40,6 +41,8 @@ class ReviewReadStore(Protocol):
     """The ``review.sqlite`` reads (and the few setting writes) this needs."""
 
     def pr(self, ref: PrRef) -> StoredPr | None: ...
+
+    def prs(self, include_dismissed: bool = False) -> list[StoredPr]: ...
 
     def viewer(self) -> str | None: ...
 
@@ -141,7 +144,9 @@ class ReviewReads:
         latest = self._store.latest_rounds().get(ref)
         suggested = ref.repo in self._store.suggested_repos()
         followup = self._store.current_followups().get(ref)
-        row = queue_row(stored, latest, self._store.viewer(), suggested, followup)
+        everyone = [s.pr for s in self._store.prs(include_dismissed=True)]
+        stack = stack_numbers(everyone).get(ref, ())
+        row = queue_row(stored, latest, self._store.viewer(), suggested, followup, stack)
         found = self._store.latest_round(ref)
         artifacts = {} if found is None else self._store.artifacts(found.id)
         files = None if found is None else self._store.pr_files(ref, found.head_sha)

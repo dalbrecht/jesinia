@@ -30,6 +30,7 @@ from jesinia.apps.review.application.scheduler import (
     WorkspacePruner,
 )
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
+from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.queue import SyncStatus
 from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
@@ -81,6 +82,7 @@ class ReviewModule:
         self._reviews: ReviewReads | None = None
         self._idempotency: SqliteIdempotencyStore | None = None
         self._followups: FollowUps | None = None
+        self._stacks: StackReviews | None = None
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -142,6 +144,18 @@ class ReviewModule:
                 )
             raise _not_started()
         return self._posting
+
+    @property
+    def stacks(self) -> StackReviews:
+        """Stack reviews and Post all (needs the agents and github services)."""
+        if self._stacks is None:
+            if self._workspace is not None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "stack reviews require the agents service and the github service",
+                )
+            raise _not_started()
+        return self._stacks
 
     @property
     def reviews(self) -> ReviewReads:
@@ -279,10 +293,24 @@ class ReviewModule:
                     followups=followups,
                     rereviews=Rereviews(github=prs, workspace=self._workspace, store=store),
                 )
+                self._stacks = StackReviews(
+                    store=store,
+                    reads=self._reviews,
+                    opener=self._pipeline,
+                    poster=self._posting,
+                    jobs=self._jobs,
+                    github=prs,
+                    workspace=self._workspace,
+                    clock=_utc_now,
+                    slots=self._scheduler,
+                    bus=ctx.bus,
+                )
 
     async def stop(self) -> None:
         if self._scheduler is not None:
             self._scheduler.pause()  # cancelling an open frees a slot: nothing may take it
+        if self._stacks is not None:
+            await self._stacks.stop()
         if self._pipeline is not None:
             await self._pipeline.stop()
         if self._scheduler is not None:
@@ -291,6 +319,7 @@ class ReviewModule:
             await self._followups.stop()
             self._followups = None
         self._pipeline = None
+        self._stacks = None
         self._posting = None
         self._reviews = None
         self._idempotency = None

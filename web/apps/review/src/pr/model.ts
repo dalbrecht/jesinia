@@ -551,6 +551,7 @@ export function outlineOf(
   a: Artifacts,
   files: PrFile[] | null | undefined,
   draftCount: number | null,
+  own = false,
 ): Entry[] {
   const out: Entry[] = [];
   const add = (e: Entry) => {
@@ -571,7 +572,9 @@ export function outlineOf(
       : "Walkthrough";
   if (depth === "deep") {
     add({ id: "overview", kind: "overview", part: "Before you read", label: "Overview" });
-    add({ id: "background", kind: "background", part: "Before you read", label: "Background" });
+    // Your own PR (spec §3.3): you wrote it, so its background is minimised.
+    const label = own ? "Background · minimised" : "Background";
+    add({ id: "background", kind: "background", part: "Before you read", label });
   } else {
     add({ id: "explanation", kind: "explanation", part: "Before you read", label: "Explanation" });
   }
@@ -642,7 +645,10 @@ export function outlineOf(
   if (depth === "deep") {
     add({ id: "metrics", kind: "metrics", part: after, label: "Metrics" });
     const n = a.quiz?.length ?? 0;
-    add({ id: "quiz", kind: "quiz", part: after, label: "Quiz", note: `${n} questions` });
+    if (own && a.quiz === null && !a.jobs.quiz) {
+      // Off by default on your own PR (spec §3.3, Task 9 M10): never "not generated yet".
+      out.push({ id: "quiz", kind: "quiz", part: after, label: "Quiz", note: "off for your own PR" });
+    } else add({ id: "quiz", kind: "quiz", part: after, label: "Quiz", note: `${n} questions` });
     const drafts = draftCount === null ? undefined : `${draftCount} ${draftCount === 1 ? "draft" : "drafts"}`;
     add({ id: "comments", kind: "comments", part: after, label: "Your comments", ...(drafts ? { note: drafts } : {}) });
   }

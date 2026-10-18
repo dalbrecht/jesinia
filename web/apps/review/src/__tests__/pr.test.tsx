@@ -151,7 +151,7 @@ describe("coverage (spec §3.1)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Walk everything" }));
     await waitFor(() => expect(sent(calls, "POST", `${API}/open`)).toHaveLength(2));
     const walk = sent(calls, "POST", `${API}/open`)[1];
-    expect(await walk?.clone().json()).toEqual({ walk_everything: true });
+    expect(await walk?.clone().json()).toEqual({ walk_everything: true, quiz: false });
     expect(walk?.headers.get("Idempotency-Key")).toBeTruthy();
     expect(walk?.headers.get("Idempotency-Key")).not.toBe(
       sent(calls, "POST", `${API}/open`)[0]?.headers.get("Idempotency-Key"),
@@ -201,6 +201,7 @@ describe("quick and deep", () => {
     expect(await sent(calls, "POST", `${API}/open`)[1]?.clone().json()).toEqual({
       depth: "deep",
       walk_everything: false,
+      quiz: false,
     });
     expect(within(outline()).getByRole("link", { name: /Background.*not generated yet/ })).toBeInTheDocument();
     await userEvent.click(within(toolbar()).getByRole("button", { name: "Switch to quick" }));
@@ -208,6 +209,7 @@ describe("quick and deep", () => {
     expect(await sent(calls, "POST", `${API}/open`)[2]?.clone().json()).toEqual({
       depth: "quick",
       walk_everything: false,
+      quiz: false,
     });
     expect(within(outline()).queryByRole("link", { name: /Background/ })).toBeNull();
   });

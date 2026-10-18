@@ -50,6 +50,7 @@ import { Recommendation, verdictWords } from "./Recommendation";
 import { NewSinceLastLook, YourRequests } from "./Rereview";
 import { Outline } from "./Outline";
 import { Visible } from "./Visible";
+import { StackView } from "./StackView";
 import { NotWalked, StepPage, type DiffLayout } from "./Walkthrough";
 
 export type PrViewProps = {
@@ -165,6 +166,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   const [session, setSession] = useState<string | null>(null);
   const [runners, setRunners] = useState<Runners | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [stackMode, setStackMode] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const focusPage = useRef(false);
@@ -252,7 +254,10 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   const chosen: Depth | null = shown ? (depth ?? shown.round?.depth ?? shown.pr.depth) : null;
   // The outline is built once per view and depth (I4), not on every keystroke or render.
   const entries = useMemo(
-    () => (shown && artifacts && chosen ? outlineOf(chosen, artifacts, shown.files, draftCount) : []),
+    () =>
+      shown && artifacts && chosen
+        ? outlineOf(chosen, artifacts, shown.files, draftCount, shown.pr.author_kind === "you")
+        : [],
     [shown, artifacts, chosen, draftCount],
   );
   const perStep = useMemo(
@@ -310,6 +315,12 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
 
   const { pr, round } = shown;
   const own = pr.author_kind === "you";
+  const stack = pr.stack ?? [];
+  if (stackMode && stack.length > 1) {
+    return (
+      <StackView repo={repo} number={number} refresh={refresh} active={active} onClose={() => setStackMode(false)} />
+    );
+  }
   const at = Math.max(
     0,
     entries.findIndex((e) => e.id === entryId),
@@ -354,6 +365,17 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         reread();
       },
       (e: unknown) => fail(`switch to a ${to} review`, e),
+    );
+  };
+
+  /** Your own PR's quiz is off until you ask for it (spec §3.3). */
+  const askQuiz = () => {
+    open("quiz", { quiz: true }).then(
+      (r) => {
+        setNotice(noticeOf(r));
+        reread();
+      },
+      (e: unknown) => fail("generate the quiz", e),
     );
   };
 
@@ -555,7 +577,20 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       case "metrics":
         return artifacts.metrics ? <Metrics scores={artifacts.metrics} /> : pendingPage("Metrics");
       case "quiz":
-        return artifacts.quiz ? <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} /> : pendingPage("Quiz");
+        if (artifacts.quiz) return <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} />;
+        if (own && !artifacts.jobs.quiz)
+          return (
+            <article className={s.page} aria-label="Quiz">
+              <h2>Quiz</h2>
+              <p className={s.muted}>The quiz is off for your own PR: you wrote the code.</p>
+              <span>
+                <Button size="sm" variant="secondary" onClick={askQuiz}>
+                  Generate a quiz anyway
+                </Button>
+              </span>
+            </article>
+          );
+        return pendingPage("Quiz");
       case "comments":
         return (
           <article className={s.page} aria-label="Your comments">
@@ -627,6 +662,14 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
           ) : (
             <span className={s.muted}>No verdict yet</span>
           )}
+          {stack.length > 1 ? (
+            <>
+              <span className={s.sep} />
+              <Button size="sm" variant="ghost" onClick={() => setStackMode(true)}>
+                {`Review the stack of ${stack.length}`}
+              </Button>
+            </>
+          ) : null}
           <span className={s.sep} />
           <span className={s.pill}>{chosen === "deep" ? "Deep" : "Quick"}</span>
           <Button size="sm" variant="ghost" onClick={() => switchDepth(chosen === "deep" ? "quick" : "deep")}>

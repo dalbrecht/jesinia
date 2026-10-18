@@ -26,8 +26,11 @@ from jesinia.apps.review.api.schemas import (
     LoadIn,
     OpenIn,
     OpenOut,
+    PostAllIn,
+    PostAllOut,
     PostedOut,
     PostIn,
+    PostOutcomeOut,
     PreviewIn,
     PreviewOut,
     PrOut,
@@ -36,11 +39,15 @@ from jesinia.apps.review.api.schemas import (
     ReviewErrorOut,
     ReviewSettingsBody,
     RoundOut,
+    StackOpenIn,
+    StackOpenOut,
+    StackOut,
 )
 from jesinia.apps.review.application.pipeline import OpenResult, Pipeline
 from jesinia.apps.review.application.posting import PostingFailed, PostingService
 from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.reviews import ReviewReads
+from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import GateInputError
 from jesinia.apps.review.domain.posting import (
@@ -71,6 +78,11 @@ from jesinia.apps.review.domain.queue import (
     QueueFilter,
     ReviewNotAllowedError,
 )
+from jesinia.apps.review.domain.stacks import (
+    InvalidPostAllError,
+    NotAStackError,
+    PostAllStopped,
+)
 from jesinia.core.auth import Principal, require_owner
 from jesinia.core.idempotency import IdempotencyStore, IdempotentCall, idempotent
 from jesinia.services.github.application.service import (
@@ -97,12 +109,17 @@ class ReviewHost(Protocol):
     def reviews(self) -> ReviewReads: ...
 
     @property
+    def stacks(self) -> StackReviews: ...
+
+    @property
     def idempotency(self) -> IdempotencyStore: ...
 
 
 _STATUS: dict[type[Exception], int] = {
     PrNotInQueueError: status.HTTP_404_NOT_FOUND,
     NoReviewRound: status.HTTP_404_NOT_FOUND,
+    NotAStackError: status.HTTP_404_NOT_FOUND,
+    InvalidPostAllError: status.HTTP_400_BAD_REQUEST,
     InvalidPrRefError: status.HTTP_400_BAD_REQUEST,
     InvalidSettingError: status.HTTP_400_BAD_REQUEST,
     InvalidDraftError: status.HTTP_400_BAD_REQUEST,
@@ -154,6 +171,11 @@ def _status_of(exc: Exception) -> int:
 
 
 def _error(exc: Exception) -> JSONResponse:
+    outcomes = None
+    if isinstance(exc, PostAllStopped):
+        # The PR that stopped it answers (its error, status and fields), with every outcome.
+        outcomes = [PostOutcomeOut.of(o) for o in exc.outcomes]
+        exc = exc.cause
     warnings = list(exc.warnings) if isinstance(exc, NeedsConfirmation) else None
     earlier = exc if isinstance(exc, EarlierReviewPosted) else None
     refused = exc if isinstance(exc, InvalidDraftContent) else None
@@ -171,6 +193,7 @@ def _error(exc: Exception) -> JSONResponse:
         retry_after=exc.retry_after
         if isinstance(exc, PostingStillUncertain | PostingInProgress)
         else None,
+        stack_outcomes=outcomes,
     )
     headers = None if body.retry_after is None else {"Retry-After": str(body.retry_after)}
     return JSONResponse(
@@ -324,7 +347,9 @@ def build_router(host: ReviewHost) -> APIRouter:
         asked = body or OpenIn()
 
         def start(ref: PrRef) -> Awaitable[OpenResult]:
-            return host.pipeline.open(ref, depth=asked.depth, walk_everything=asked.walk_everything)
+            return host.pipeline.open(
+                ref, depth=asked.depth, walk_everything=asked.walk_everything, quiz=asked.quiz
+            )
 
         return await _open(idem, start, owner, repo, number)
 
@@ -418,6 +443,67 @@ def build_router(host: ReviewHost) -> APIRouter:
 
         async def run() -> RoundOut:
             return RoundOut.of(host.reviews.done(_ref(owner, repo, number), shown))
+
+        return await idem.run(lambda: _respond(run))
+
+    stack_path = "/stacks/{owner}/{repo}/{number}"
+
+    @r.get(stack_path, response_model=StackOut)
+    async def get_stack(owner: Owner, repo: Name, number: Number) -> Response:
+        """The stack holding the PR (spec §4.3), from the cache only: each PR's view, the
+        stack review of their heads, and the cross-PR findings."""
+
+        async def run() -> StackOut:
+            return StackOut.of(host.stacks.view(_ref(owner, repo, number)))
+
+        return await _respond(run)
+
+    stack_open_responses: dict[int | str, dict[str, Any]] = {
+        202: {"model": StackOpenOut, "description": "Stack jobs started"}
+    }
+
+    @r.post(f"{stack_path}/open", response_model=StackOpenOut, responses=stack_open_responses)
+    async def open_stack(
+        owner: Owner,
+        repo: Name,
+        number: Number,
+        body: StackOpenIn | None = None,
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Open the stack: open each PR (under its own gates), then start the stack's
+        Overview, Background and stack walkthrough it lacks (202) once no PR is held."""
+        retry = body is not None and body.retry
+
+        async def run() -> Response:
+            try:
+                result = await host.stacks.open(_ref(owner, repo, number), retry=retry)
+            except _TYPED as exc:
+                return _error(exc)
+            code = status.HTTP_202_ACCEPTED if result.state == "started" else status.HTTP_200_OK
+            return JSONResponse(jsonable_encoder(StackOpenOut.of(result)), status_code=code)
+
+        return await idem.run(run)
+
+    @r.post(f"{stack_path}/post-all", response_model=PostAllOut)
+    async def post_all(
+        owner: Owner,
+        repo: Name,
+        number: Number,
+        body: PostAllIn,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Post every PR's confirmed review, bottom-up, stopping at the first that can't be
+        posted (its error, with ``stack_outcomes``). Owner only; each PR's attempt is keyed
+        from this request's key, so a replay never posts a PR twice."""
+
+        async def run() -> PostAllOut:
+            result = await host.stacks.post_all(
+                _ref(owner, repo, number),
+                [item.item() for item in body.items],
+                key=idem.key or "",
+            )
+            return PostAllOut(outcomes=[PostOutcomeOut.of(o) for o in result.outcomes])
 
         return await idem.run(lambda: _respond(run))
 
