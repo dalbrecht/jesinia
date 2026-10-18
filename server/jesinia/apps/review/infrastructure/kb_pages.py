@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from jesinia.apps.review.application.errors import KnowledgeSourceError
 from jesinia.apps.review.application.knowledge import PageContent, PageRev
-from jesinia.services.kb.application.errors import PageNotFound
+from jesinia.services.kb.application.errors import KbError, PageNotFound
 from jesinia.services.kb.application.service import KbService
 from jesinia.services.kb.domain.page import PageId
 
@@ -29,10 +30,12 @@ class KbKnowledgePages:
         """The page's front matter and body; ``None`` when it is gone since it was listed.
 
         Raises:
-            KbUnavailable: no KB folder is set.
+            KnowledgeSourceError: the KB couldn't be read (no KB folder, say), with its cause.
         """
         try:
             found = await self._kb.read(PageId(page_id))
         except PageNotFound:
             return None
+        except KbError as exc:
+            raise KnowledgeSourceError(f"KB page {page_id} couldn't be read: {exc}") from exc
         return PageContent(found.page.jesinia, found.page.body)

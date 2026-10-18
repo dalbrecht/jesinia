@@ -655,6 +655,8 @@ async def test_the_pack_carries_standards_pr_data_and_knowledge(env: Env) -> Non
     # The session exists before its worktree is resolved and bound (no prune gap).
     assert env.workspace.sessions_at_worktree == [1]
     assert "## lang-01_python_standards.md › Errors [base]" in pack["standards.md"]
+    # R79: the knowledge summary names folders anyone could write: fenced as untrusted.
+    assert pack["knowledge.md"].startswith("<untrusted-data")
     assert "The author knows src/ well." in pack["knowledge.md"]
     assert "Acme/Widget#7" in pack["job.md"] and HEAD in pack["job.md"]
     assert pack["pr.md"].startswith("<untrusted-data") and "Add the widget" in pack["pr.md"]

@@ -642,8 +642,8 @@ async def test_pr_text_never_reaches_the_knowledge_summary(env: Env) -> None:
     asked: list[tuple[str, tuple[str, ...]]] = []
 
     class Knowledge:
-        def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
-            return None
+        def assess(self, repo: str, paths: Sequence[str]) -> tuple[float | None, str]:
+            return None, self.summary(repo, paths)
 
         def summary(self, repo: str, paths: Sequence[str]) -> str:
             asked.append((repo, tuple(paths)))

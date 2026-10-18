@@ -4,7 +4,8 @@
 -- `tag/<tag>`. Times are ISO 8601 UTC text with microseconds, so they sort as text.
 
 -- Each signal is stored once, keyed by its source (`commit:<repo>:<sha>`, `round:<id>`,
--- `quiz:<id>`, `kb:<page>@<rev>`), even when it exposed no unit.
+-- `quiz:<id>`, `kb:<page>`: a page's newest revision replaces its last), even when it
+-- exposed no unit.
 CREATE TABLE knowledge_sources (
     source TEXT PRIMARY KEY,
     recorded_at TEXT NOT NULL

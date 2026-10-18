@@ -4073,8 +4073,16 @@ export interface components {
             tag: string | null;
             /** Familiarity */
             familiarity: number;
-            /** Override */
+            /**
+             * Override
+             * @description The override in force: the unit's own, or its nearest folder's
+             */
             override: ("known" | "unknown") | null;
+            /**
+             * Override Unit
+             * @description Where the override is set
+             */
+            override_unit?: string | null;
             /** Exposures */
             exposures: {
                 [key: string]: number;

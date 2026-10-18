@@ -742,7 +742,10 @@ class UnitOut(BaseModel):
     path: str
     tag: str | None
     familiarity: float = Field(ge=0.0, le=1.0)
-    override: Override | None
+    override: Override | None = Field(
+        description="The override in force: the unit's own, or its nearest folder's"
+    )
+    override_unit: str | None = Field(default=None, description="Where the override is set")
     exposures: dict[ExposureKind, int]
     last_exposure: datetime | None
     changes_since_last: int
@@ -759,6 +762,7 @@ class UnitOut(BaseModel):
             tag=unit.tag,
             familiarity=round(view.familiarity, 4),
             override=view.override,
+            override_unit=None if view.override_unit is None else view.override_unit.id,
             exposures=dict(view.exposures),
             last_exposure=view.last_exposure,
             changes_since_last=view.changes_since_last,

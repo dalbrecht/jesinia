@@ -15757,7 +15757,20 @@
                 "type": "null"
               }
             ],
-            "title": "Override"
+            "title": "Override",
+            "description": "The override in force: the unit's own, or its nearest folder's"
+          },
+          "override_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Unit",
+            "description": "Where the override is set"
           },
           "exposures": {
             "additionalProperties": {

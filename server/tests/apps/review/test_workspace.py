@@ -1097,14 +1097,104 @@ async def test_commit_log_reads_authors_and_changed_lines(
         await ws.commit_log(REPO, "f" * 40, after=None, since=None, limit=10)
 
 
+def _record(sha: str, *files: str, email: str = "me@x") -> str:
+    fields = (sha, "2026-10-18T10:00:00+02:00", "2026-10-17T10:00:00+02:00", email)
+    head = "".join(f"\x00{field}" for field in fields) + "\x00"
+    return head + ("\n" + "\0".join(files) + "\0" if files else "")
+
+
 def test_parse_commit_log_drops_a_cut_last_record() -> None:
     sha = "a" * 40
-    record = f"\x1e{sha}\x1f2026-10-18T10:00:00+02:00\x1fme@x\0\n1\t2\tsrc/a.py\0-\t-\tb.bin\0"
+    record = _record(sha, "1\t2\tsrc/a.py", "-\t-\tb.bin")
     data = (record + record[:20]).encode()
     (only,) = parse_commit_log(data, complete=False)
     assert only.files == (("src/a.py", 3), ("b.bin", 0))
-    assert only.at.utcoffset() == timedelta(hours=2)
-    assert len(parse_commit_log(record.encode() * 2)) == 2
+    assert only.at.utcoffset() == timedelta(hours=2) and only.at.day == 17
+    assert only.landed_at is not None and only.landed_at.day == 18
+    assert len(parse_commit_log((record * 2).encode())) == 2
+    # Cut inside a header, or inside a record's files: that record is dropped.
+    assert len(parse_commit_log((record + record[:50]).encode(), complete=False)) == 1
+    cut_files = record + _record("b" * 40, "1\t1\tpartial")[:-1]
+    assert len(parse_commit_log(cut_files.encode(), complete=False)) == 1
+    assert len(parse_commit_log(cut_files.encode())) == 2  # complete: the last is whole
+
+
+def test_parse_commit_log_reads_by_structure_and_skips_what_it_cannot(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R81: NUL-delimited records with a NUL-led header; paths may hold the old separators
+    and newlines; an unparsable record is skipped and logged, never raised."""
+    good, other, empty = "a" * 40, "b" * 40, "c" * 40
+    data = (
+        _record(good, "1\t0\ta\x1eb", "2\t1\tn\nl", "1\t0\tu\x1fv\t1\t2\tfake")
+        + _record(empty)
+        + "\0not-a-sha\0junk\0\0\0"
+        + _record(other, "x\ty\tbroken")
+        + _record(other, "3\t3\tok.py")
+    ).encode()
+    commits = parse_commit_log(data)
+    assert [c.sha for c in commits] == [good, empty, other]
+    assert commits[0].files == (
+        ("a\x1eb", 1), ("n\nl", 3), ("u\x1fv\t1\t2\tfake", 1)
+    )  # fmt: skip
+    assert commits[1].files == () and commits[2].files == (("ok.py", 6),)
+    assert caplog.text.count("skipping an unreadable commit record") == 2
+    assert parse_commit_log(b"") == [] and parse_commit_log(b"garbage") == []
+
+
+async def test_commit_log_reads_odd_paths_from_real_git(
+    tmp_path: Path, history: tuple[Path, list[str]]
+) -> None:
+    remote, _ = history
+    work = tmp_path / "odd"
+    subprocess.run(["git", "clone", "-q", str(remote), str(work)], check=True, capture_output=True)
+    names = ["a\x1eb", "n\nl", "u\x1fv"]
+    for name in names:
+        (work / name).write_text("x\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "odd", "--author", "Me <me@example.com>")
+    git(work, "push", "-q", "origin", "main")
+    ws = GitWorkspace(tmp_path / "repos", lambda repo: str(remote))
+    await ws.ensure_mirror(REPO)
+    tip = await ws.fetch_default_branch(REPO)
+    newest = (await ws.commit_log(REPO, tip, after=None, since=None, limit=1)).commits[0]
+    assert sorted(path for path, _ in newest.files) == sorted(names)
+
+
+async def test_commit_log_never_reads_other_branches(
+    tmp_path: Path, history: tuple[Path, list[str]]
+) -> None:
+    """R80: a commit on a feature branch with the author's email is never in the log read
+    from the default branch's tip."""
+    remote, (_, _, third) = history
+    work = tmp_path / "spoof"
+    subprocess.run(["git", "clone", "-q", str(remote), str(work)], check=True, capture_output=True)
+    git(work, "checkout", "-q", "-b", "feature")
+    (work / "spoof.py").write_text("x\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "spoof", "--author", "Me <me@example.com>")
+    spoof = git(work, "rev-parse", "HEAD")
+    git(work, "push", "-q", "origin", "feature")
+    ws = GitWorkspace(tmp_path / "repos", lambda repo: str(remote))
+    await ws.ensure_mirror(REPO)
+    await ws.fetch(REPO, ["refs/heads/feature"])
+    tip = await ws.fetch_default_branch(REPO)
+    assert tip == third
+    shas = [
+        c.sha for c in (await ws.commit_log(REPO, tip, after=None, since=None, limit=100)).commits
+    ]
+    assert spoof not in shas and third in shas
+
+
+async def test_commit_log_skips_past_what_it_already_returned(
+    tmp_path: Path, history: tuple[Path, list[str]]
+) -> None:
+    remote, (first, second, third) = history
+    ws = GitWorkspace(tmp_path / "repos", lambda repo: str(remote))
+    await ws.ensure_mirror(REPO)
+    tip = await ws.fetch_default_branch(REPO)
+    page = await ws.commit_log(REPO, tip, after=None, since=None, limit=2, skip=2)
+    assert [c.sha for c in page.commits] == [first] and not page.truncated
 
 
 async def test_identity_email_reads_the_global_git_identity(

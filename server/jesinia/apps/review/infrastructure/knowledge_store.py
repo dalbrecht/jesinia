@@ -51,10 +51,13 @@ def _unit(text: str) -> Unit | None:
         return None
 
 
-def _files(raw: str | None) -> tuple[str, ...] | None:
-    if raw is None:
+def _paths(stored: str | None, cached: str | None) -> tuple[str, ...] | None:
+    """A round's touched paths: stored with it, else its PR's cached files, else unknown."""
+    if stored is not None:
+        return tuple(str(path) for path in json.loads(stored))
+    if cached is None:
         return None
-    return tuple(str(item["filename"]) for item in json.loads(raw))
+    return tuple(str(item["filename"]) for item in json.loads(cached))
 
 
 class SqliteKnowledgeStore:
@@ -104,11 +107,9 @@ class SqliteKnowledgeStore:
         return int(row[0])
 
     def known_repos(self) -> set[str]:
-        rows = self._conn.execute(
-            "SELECT repo FROM knowledge_repos UNION "
-            "SELECT DISTINCT repo FROM knowledge_exposures WHERE repo IS NOT NULL"
-        )
-        known = {str(repo) for (repo,) in rows}
+        """Repos whose history was read; an exposure alone (a round, a KB page) doesn't make
+        the rest of a repo known (M5). An override is the author's word: it does."""
+        known = {str(repo) for (repo,) in self._conn.execute("SELECT repo FROM knowledge_repos")}
         overridden = (_unit(text) for (text,) in self._conn.execute(
             "SELECT unit FROM knowledge_overrides"
         ))  # fmt: skip
@@ -150,20 +151,19 @@ class SqliteKnowledgeStore:
         ).fetchone()
         return None if row is None else RepoState(row[0], row[1])
 
-    def record_commits(
-        self,
-        repo: str,
-        state: RepoState,
-        churn: Sequence[ChurnRow],
-        mine: Mapping[str, Sequence[ExposureRow]],
-    ) -> int:
-        now = _time(datetime.now(UTC))
+    def add_churn(self, repo: str, churn: Sequence[ChurnRow]) -> None:
         with transaction(self._conn):
             self._conn.executemany(
                 "INSERT OR IGNORE INTO knowledge_churn (repo, sha, path, at, lines) "
                 "VALUES (?, ?, ?, ?, ?)",
                 [(repo, sha, path, _time(at), lines) for sha, at, path, lines in churn],
             )
+
+    def record_commits(
+        self, repo: str, state: RepoState, mine: Mapping[str, Sequence[ExposureRow]]
+    ) -> int:
+        now = _time(datetime.now(UTC))
+        with transaction(self._conn):
             added = sum(self._add(source, rows, now) for source, rows in mine.items())
             self._conn.execute(
                 "INSERT INTO knowledge_repos (repo, tip, emails, read_at) VALUES (?, ?, ?, ?) "
@@ -177,12 +177,16 @@ class SqliteKnowledgeStore:
 
     def pending_rounds(self) -> list[PendingRound]:
         """Rounds the author posted or marked done, not yet counted: at the posting's time
-        when there is one, else when the round finished."""
+        when there is one, else when the round finished. Their paths are the ones stored
+        with the round (I3: they outlive the PR's place in the queue), else, for a round
+        from before they were stored, its PR's cached file list."""
         rows = self._conn.execute(
             "SELECT r.id, r.repo, r.depth, COALESCE(("
             "SELECT MAX(p.started_at) FROM postings p "
             "WHERE p.round_id = r.id AND p.state = 'posted'), r.finished_at, r.started_at), "
-            "f.json FROM rounds r LEFT JOIN pr_files f "
+            "a.json, f.json FROM rounds r "
+            "LEFT JOIN artifacts a ON a.round_id = r.id AND a.kind = 'paths' "
+            "LEFT JOIN pr_files f "
             "ON f.repo = r.repo AND f.number = r.number AND f.head_sha = r.head_sha "
             "WHERE r.done = 1 AND NOT EXISTS ("
             "SELECT 1 FROM knowledge_sources s WHERE s.source = 'round:' || r.id) "
@@ -194,23 +198,27 @@ class SqliteKnowledgeStore:
                 repo,
                 "review_deep" if depth == "deep" else "review_quick",
                 _parse(at),
-                _files(files),
+                _paths(paths, files),
             )
-            for round_id, repo, depth, at, files in rows
+            for round_id, repo, depth, at, paths, files in rows
         ]
 
     def pending_quizzes(self) -> list[PendingRound]:
         rows = self._conn.execute(
-            "SELECT q.round_id, r.repo, q.correct, q.answered, q.recorded_at, f.json "
-            "FROM quiz_results q JOIN rounds r ON r.id = q.round_id LEFT JOIN pr_files f "
+            "SELECT q.round_id, r.repo, q.correct, q.answered, q.recorded_at, a.json, f.json "
+            "FROM quiz_results q JOIN rounds r ON r.id = q.round_id "
+            "LEFT JOIN artifacts a ON a.round_id = r.id AND a.kind = 'paths' "
+            "LEFT JOIN pr_files f "
             "ON f.repo = r.repo AND f.number = r.number AND f.head_sha = r.head_sha "
             "WHERE NOT EXISTS ("
             "SELECT 1 FROM knowledge_sources s WHERE s.source = 'quiz:' || q.round_id) "
             "ORDER BY q.round_id"
         )
         return [
-            PendingRound(round_id, repo, quiz_kind(correct, answered), _parse(at), _files(files))
-            for round_id, repo, correct, answered, at, files in rows
+            PendingRound(
+                round_id, repo, quiz_kind(correct, answered), _parse(at), _paths(paths, files)
+            )
+            for round_id, repo, correct, answered, at, paths, files in rows
         ]
 
     def round_pr(self, round_id: int) -> PrRef | None:
@@ -233,8 +241,11 @@ class SqliteKnowledgeStore:
         return dict(self._conn.execute("SELECT page_id, rev FROM knowledge_pages").fetchall())
 
     def record_page(self, page_id: str, rev: str, rows: Sequence[ExposureRow]) -> bool:
+        source = f"kb:{page_id}"
         with transaction(self._conn):
-            added = self._add(f"kb:{page_id}@{rev}", rows, _time(datetime.now(UTC)))
+            # One set per page (M8): a new revision replaces the last one's exposures.
+            self._conn.execute("DELETE FROM knowledge_sources WHERE source = ?", (source,))
+            added = bool(rows) and self._add(source, rows, _time(datetime.now(UTC)))
             self._conn.execute(
                 "INSERT INTO knowledge_pages (page_id, rev) VALUES (?, ?) "
                 "ON CONFLICT (page_id) DO UPDATE SET rev = excluded.rev",

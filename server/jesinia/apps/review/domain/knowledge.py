@@ -11,17 +11,23 @@ Pure: exposures, the clock and counts in, a score out.
 
   - ``recency``: each exposure weighs ``KIND_WEIGHTS[kind]``, halved every ``HALF_LIFE``;
     exposures combine as independent evidence, ``1 - Π(1 - weight · decay)``, so more of
-    them means more familiarity without ever passing 1;
+    them means more familiarity without ever passing 1. Commits combine first and are
+    capped at ``COMMIT_RECENCY_CAP``, below the quick threshold: a commit's author email is
+    anyone's to claim, so commits alone never make a PR quick (R80);
+  - a unit with no weighted exposure of its own gets a prior instead (R82, spec §3.1 "how
+    novel or distant"): the recency of its nearest top unit (one of the author's
+    ``TOP_UNITS`` best-known units) times ``1 - distance``, the share of the unit's path not
+    shared with it. A unit with evidence of its own is scored on that alone;
   - times ``1 - c / (c + CHANGE_SCALE)``, ``c`` the lines changed in the unit since the
     author's last exposure;
-  - times ``1 - distance``, the share of the unit's path not shared with the author's
-    ``TOP_UNITS`` best-known units;
-  - an override wins: ``known`` is 1.0, ``unknown`` 0.0.
+  - an override wins: ``known`` is 1.0, ``unknown`` 0.0; an override on a folder covers
+    every unit beneath it (the nearest one wins).
 """
 
 from __future__ import annotations
 
-import json
+import hashlib
+import re
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -29,6 +35,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from jesinia.apps.review.domain.errors import ReviewError
+from jesinia.apps.review.domain.gates import LOW_FAMILIARITY
 from jesinia.apps.review.domain.workspace import WorkspaceError, canonical_repo
 from jesinia.services.kb.domain.tags import is_valid_tag
 
@@ -56,6 +63,8 @@ KIND_WEIGHTS: Mapping[ExposureKind, float] = {
     "quiz_fail": 0.0,
 }
 CHANGE_SCALE = 200
+# What commits alone can add up to: below the quick threshold (R80).
+COMMIT_RECENCY_CAP = LOW_FAMILIARITY - 0.05
 MAX_UNIT_DEPTH = 3
 TOP_UNITS = 10
 # A quiz passes with at least this share of the answered questions right (builder's call).
@@ -70,6 +79,8 @@ COMPONENT_MAX = 100
 SUMMARY_CHARS = 2_000
 SUMMARY_UNITS = 20
 SUMMARY_TOPICS = 5
+# Names agents see (R79): only this charset, at most this long; anything else is hashed.
+_SAFE_LABEL = re.compile(r"[A-Za-z0-9._/-]{1,64}")
 
 _UNIT_REPO = "repo/"
 _UNIT_TAG = "tag/"
@@ -158,10 +169,12 @@ class Unit:
         return (str(self.repo), *(self.path.split("/") if self.path else ()))
 
     @property
-    def label(self) -> str:
-        if self.tag is not None:
-            return f"#{self.tag}"
-        return self.path or _ROOT_LABEL
+    def lineage(self) -> tuple[Unit, ...]:
+        """The unit, then each folder above it up to the repo root (a tag: itself)."""
+        if self.tag is not None or not self.path:
+            return (self,)
+        parts = self.path.split("/")
+        return tuple(Unit(self.repo, "/".join(parts[:n]), None) for n in range(len(parts), -1, -1))
 
 
 def parse_unit(text: str) -> Unit:
@@ -263,13 +276,19 @@ class UnitRecord:
 
 @dataclass(frozen=True)
 class LoggedCommit:
-    """A default-branch commit as the workspace logs it: its author's email and each file
-    with its changed lines (added plus deleted; 0 for a binary file)."""
+    """A default-branch commit as the workspace logs it: when it was authored (``at``), its
+    author's email, each file with its changed lines (added plus deleted; 0 for a binary
+    file), and when it landed (the committer date: when the code changed for everyone)."""
 
     sha: str
     at: datetime
     email: str
     files: tuple[tuple[str, int], ...]
+    landed_at: datetime | None = None
+
+    @property
+    def changed_at(self) -> datetime:
+        return self.at if self.landed_at is None else self.landed_at
 
 
 def _aware(now: datetime) -> None:
@@ -279,13 +298,19 @@ def _aware(now: datetime) -> None:
 
 def recency(exposures: Iterable[Exposure], now: datetime) -> float:
     """How recently and how much the author engaged: ``1 - Π(1 - weight · decay)``, the
-    decay halving every ``HALF_LIFE`` (an exposure in the future counts as now)."""
+    decay halving every ``HALF_LIFE`` (an exposure in the future counts as now); commits
+    together count at most ``COMMIT_RECENCY_CAP`` (R80)."""
     _aware(now)
-    unseen = 1.0
+    unseen, commits_unseen = 1.0, 1.0
     for exposure in exposures:
         age = max((now - exposure.at) / HALF_LIFE, 0.0)
-        unseen *= 1.0 - KIND_WEIGHTS[exposure.kind] * 0.5**age
-    return 1.0 - unseen
+        miss = 1.0 - KIND_WEIGHTS[exposure.kind] * 0.5**age
+        if exposure.kind == "commit":
+            commits_unseen *= miss
+        else:
+            unseen *= miss
+    commits = min(1.0 - commits_unseen, COMMIT_RECENCY_CAP)
+    return 1.0 - unseen * (1.0 - commits)
 
 
 def last_exposure(exposures: Iterable[Exposure]) -> datetime | None:
@@ -300,37 +325,80 @@ def top_units(scores: Mapping[Unit, float], limit: int = TOP_UNITS) -> tuple[Uni
     return tuple(ranked[:limit])
 
 
+def _shared(mine: tuple[str, ...], other: Unit) -> int:
+    common = 0
+    for a, b in zip(mine, other.components, strict=False):
+        if a != b:
+            break
+        common += 1
+    return common
+
+
+def nearest(unit: Unit, top: Sequence[Unit]) -> Unit | None:
+    """The top unit sharing the most of ``unit``'s path (the first, best-known, on a tie);
+    ``None`` when none shares any of it."""
+    mine = unit.components
+    best, shared = None, 0
+    for other in top:
+        if (common := _shared(mine, other)) > shared:
+            best, shared = other, common
+    return best
+
+
 def distance(unit: Unit, top: Iterable[Unit]) -> float:
     """The share of ``unit``'s path not shared with the closest of the ``top`` units."""
     mine = unit.components
-    shared = 0
-    for other in top:
-        common = 0
-        for a, b in zip(mine, other.components, strict=False):
-            if a != b:
-                break
-            common += 1
-        shared = max(shared, common)
+    shared = max((_shared(mine, other) for other in top), default=0)
     return 1.0 - shared / len(mine)
 
 
+def has_evidence(exposures: Iterable[Exposure]) -> bool:
+    """Whether any exposure carries weight: the unit is then scored on its own (R82)."""
+    return last_exposure(exposures) is not None
+
+
 def familiarity(
-    record: UnitRecord, now: datetime, changes_since_last: int, distance: float
+    record: UnitRecord,
+    now: datetime,
+    changes_since_last: int,
+    distance: float,
+    *,
+    prior: float = 0.0,
 ) -> float:
     """The author's familiarity with ``record.unit`` in [0, 1] (see the module docstring).
+    ``distance`` and ``prior`` (the nearest top unit's recency) apply only to a unit with no
+    weighted exposure of its own (R82).
 
     Raises:
-        KnowledgeInputError: negative changes, a distance outside 0 to 1, a naive ``now``.
+        KnowledgeInputError: negative changes, a distance or prior outside 0 to 1, a naive
+            ``now``.
     """
     if changes_since_last < 0:
         raise KnowledgeInputError(f"changes can't be negative, got {changes_since_last}")
     if not 0.0 <= distance <= 1.0:  # also refuses NaN
         raise KnowledgeInputError(f"distance must be between 0 and 1, got {distance}")
+    if not 0.0 <= prior <= 1.0:
+        raise KnowledgeInputError(f"the prior must be between 0 and 1, got {prior}")
     _aware(now)
     if record.override is not None:
         return 1.0 if record.override == "known" else 0.0
     changed = changes_since_last / (changes_since_last + CHANGE_SCALE)
-    return recency(record.exposures, now) * (1.0 - changed) * (1.0 - distance)
+    if has_evidence(record.exposures):
+        base = recency(record.exposures, now)
+    else:
+        base = prior * (1.0 - distance)
+    return base * (1.0 - changed)
+
+
+def summary_label(unit: Unit) -> str:
+    """A unit's name as agents see it (R79): only ``[A-Za-z0-9._/-]`` and short, or else an
+    opaque ``area-<hash>``. Folder names and tags are anyone's to write."""
+    if unit.tag is None and not unit.path:
+        return _ROOT_LABEL
+    name = unit.tag if unit.tag is not None else unit.path
+    if _SAFE_LABEL.fullmatch(name):
+        return f"#{name}" if unit.tag is not None else name
+    return f"area-{hashlib.sha256(unit.id.encode()).hexdigest()[:8]}"
 
 
 def churn_by_prefix(files: Iterable[tuple[str, int]]) -> dict[str, int]:
@@ -373,8 +441,7 @@ def _ago(at: datetime, now: datetime) -> str:
 
 
 def _entry_line(entry: SummaryEntry, now: datetime) -> str:
-    name = json.dumps(entry.unit.label, ensure_ascii=False)
-    line = f"- {name}: {entry.familiarity:.2f}"
+    line = f"- {summary_label(entry.unit)}: {entry.familiarity:.2f}"
     if entry.override is not None:
         return f"{line}, marked {entry.override} by the author"
     if entry.last_kind is not None and entry.last_at is not None:
@@ -393,8 +460,9 @@ def render_summary(
     now: datetime,
 ) -> str:
     """The knowledge summary for the ContextPack, at most ``SUMMARY_CHARS``: the recorded
-    units a PR touches (the author's overrides first, then least familiar first, names
-    quoted), how many touched areas have no record, and the author's best-known topics.
+    units a PR touches (the author's overrides first, then least familiar first, names as
+    ``summary_label`` shows them), how many touched areas have no record, and the author's
+    best-known topics.
     Empty when there is nothing to say."""
     if not entries and not unknown:
         return ""
@@ -412,11 +480,13 @@ def render_summary(
     if len(ranked) > shown:
         lines.append(f"- {len(ranked) - shown} more areas not listed")
     if unknown:
-        area = "area has" if unknown == 1 else "areas have"
-        lines.append(f"{unknown} touched {area} no record: treat them as new to the author.")
+        area = (
+            "area has no record of its own" if unknown == 1 else "areas have no record of their own"
+        )
+        lines.append(f"{unknown} touched {area}: familiarity there is inferred from nearby areas.")
     if ranked:
         lines.append(f"Lowest familiarity: {min(e.familiarity for e in ranked):.2f}.")
     if topics:
-        best = ", ".join(f"{u.label} {score:.2f}" for u, score in topics[:SUMMARY_TOPICS])
+        best = ", ".join(f"{summary_label(u)} {s:.2f}" for u, s in topics[:SUMMARY_TOPICS])
         lines.append(f"Topics the author knows: {best}.")
     return "\n".join(lines)[:SUMMARY_CHARS]

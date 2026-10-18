@@ -127,8 +127,11 @@ _LOG_READ_OPTIONS = (
 )
 # Bytes of `commit_log` output read at most; past it the log is cut (newest commits kept).
 LOG_LIMIT = 32 * 1024 * 1024
-_RECORD = b"\x1e"
-_FIELD = "\x1f"
+# `commit_log`'s records (R81): with `-z`, every field and numstat entry ends with NUL, and
+# each record starts with one, so paths can hold anything but NUL.
+_LOG_FORMAT = "%x00%H%x00%cI%x00%aI%x00%ae"
+_SHA = re.compile(rb"[0-9a-f]{40}")
+_NUMSTAT = re.compile(rb"\n?(\d+|-)\t(\d+|-)\t(.+)", re.DOTALL)
 # git's stderr kept for error messages; the rest is drained and dropped.
 _STDERR_LIMIT = 64 * 1024
 # Pinned so the user's diff.* settings never change what later steps parse.
@@ -447,12 +450,21 @@ class GitWorkspace:
         return (self._mirror(repo) / "HEAD").is_file()
 
     async def commit_log(
-        self, repo: str, tip: str, *, after: str | None, since: datetime | None, limit: int
+        self,
+        repo: str,
+        tip: str,
+        *,
+        after: str | None,
+        since: datetime | None,
+        limit: int,
+        skip: int = 0,
     ) -> CommitLog:
         """The non-merge commits reachable from ``tip`` (only those after ``after`` when
-        given; only those since ``since`` when given), newest first, at most ``limit``, each
-        with its author's email and its files' changed lines (renames as delete plus add).
-        ``truncated`` when ``limit`` or ``LOG_LIMIT`` bytes cut older commits.
+        given; only those since ``since`` when given), newest first, past the first ``skip``,
+        at most ``limit``, each with its author's email and its files' changed lines (renames
+        as delete plus add). Only ``tip``'s history is read: the caller passes the default
+        branch's tip, so a commit on any other branch never counts (R80). ``truncated`` when
+        ``limit`` or ``LOG_LIMIT`` bytes cut older commits.
 
         Raises:
             InvalidShaError: before git runs.
@@ -469,8 +481,9 @@ class GitWorkspace:
             "--no-textconv",
             "--numstat",
             "-z",
-            f"--format={_RECORD.decode()}%H{_FIELD}%aI{_FIELD}%ae",
+            f"--format={_LOG_FORMAT}",
             f"--max-count={max(limit, 1)}",
+            f"--skip={max(skip, 0)}",
         ]
         if since is not None:
             args.append(f"--since={since.astimezone(UTC).isoformat(timespec='seconds')}")
@@ -793,27 +806,67 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
 
 
 def parse_commit_log(data: bytes, *, complete: bool = True) -> list[LoggedCommit]:
-    """``commit_log``'s output as commits. When the output was cut (``complete`` false), the
-    last record may be partial and is dropped. A file's changed lines are added plus deleted
-    (0 for a binary file)."""
-    records = data.split(_RECORD)[1:]
-    if not complete:
-        records = records[:-1]
+    """``commit_log``'s output as commits, read by its structure (R81): NUL-separated tokens;
+    a record is an empty token (its leading NUL), the SHA, the committer and author dates
+    and the email, then one token per file (``added\tdeleted\tpath``, the first after a
+    newline) up to the next empty token. Paths can hold anything but NUL. A record that
+    doesn't parse, and anything between records, is skipped and logged; nothing raises.
+    When the output was cut (``complete`` false), a last record running to the cut is
+    dropped."""
+    tokens = data.split(b"\0")
+    count = len(tokens)
     commits: list[LoggedCommit] = []
-    for record in records:
-        header, _, rest = record.partition(b"\0")
-        sha, at, email = header.decode(errors="replace").split(_FIELD, 2)
-        files: list[tuple[str, int]] = []
-        for entry in rest.lstrip(b"\n").split(b"\0"):
-            added, deleted, path = (entry.split(b"\t", 2) + [b"", b""])[:3]
-            if not path:
-                continue
-            lines = sum(int(n) for n in (added, deleted) if n.isdigit())
-            files.append((path.decode(errors="replace"), lines))
-        commits.append(
-            LoggedCommit(check_sha(sha), datetime.fromisoformat(at), email, tuple(files))
-        )
+    position = 0
+    while position < count:
+        if not tokens[position] and position + 1 < count and _SHA.fullmatch(tokens[position + 1]):
+            end = position + 5
+            if end > count:
+                break  # a header cut short
+            while end < count and tokens[end]:
+                end += 1
+            if end >= count and not complete:
+                break  # the last record runs to where the output was cut: dropped
+            parsed = _parse_record(tokens[position + 1 : end])
+            if parsed is not None:
+                commits.append(parsed)
+            position = end
+            continue
+        if tokens[position]:
+            stray = position
+            while position < count and tokens[position]:
+                position += 1
+            log.warning(
+                "skipping an unreadable commit record: %d stray fields from %r",
+                position - stray,
+                tokens[stray][:40],
+            )
+            continue
+        position += 1
     return commits
+
+
+def _parse_record(fields: list[bytes]) -> LoggedCommit | None:
+    """One record's tokens (header and files), or ``None`` (logged) when they don't parse."""
+    try:
+        sha, landed, authored, email = (f.decode() for f in fields[:4])
+        files: list[tuple[str, int]] = []
+        for entry in fields[4:]:
+            match = _NUMSTAT.fullmatch(entry)
+            if match is None:
+                raise ValueError(f"not a numstat entry: {entry[:40]!r}")
+            added, deleted, path = match.groups()
+            lines = sum(int(n) for n in (added, deleted) if n != b"-")
+            files.append((path.decode(errors="replace"), lines))
+        return LoggedCommit(
+            check_sha(sha),
+            datetime.fromisoformat(authored),
+            email,
+            tuple(files),
+            datetime.fromisoformat(landed),
+        )
+    except (ValueError, WorkspaceError) as exc:  # UnicodeDecodeError is a ValueError
+        log.warning("skipping an unreadable commit record: %s", exc)
+        return None
 
 
 def _bare(mirror: Path) -> tuple[str, ...]:

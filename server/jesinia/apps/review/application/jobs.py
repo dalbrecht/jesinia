@@ -97,6 +97,7 @@ BODY_CHARS = 16_000
 COMMITS_CHARS = 32_000
 COMMIT_MESSAGE_CHARS = 4_000
 KNOWLEDGE_CHARS = 8_000
+KNOWLEDGE_SOURCE = "jesinia:knowledge-model"
 # Headings, fences and separators the inlined pack adds around its files.
 _PACK_OVERHEAD = 2_000
 _FENCED_REPLY = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\n(.*)\n```$", re.DOTALL)
@@ -666,6 +667,8 @@ class JobRunner:
             "pr.md": UntrustedDoc(pr.url, f"# {title}\n\nAuthor: {pr.author}\n\n{body}"),
             "commits.md": UntrustedDoc(f"{pr.url}/commits", _commit_log(round.commits, notes)),
             "diff-index.md": UntrustedDoc(f"{pr.url}/files", f"# Hunk index\n\n{listing}"),
+            # Folder names in it are anyone's to write (R79): fenced, never trusted.
+            "knowledge.md": UntrustedDoc(KNOWLEDGE_SOURCE, knowledge),
         }
         merge_base = (
             f"- Merge base (hunks are numbered against it): {round.merge_base}\n"
@@ -698,9 +701,7 @@ class JobRunner:
             + (f"\n## Cut to fit (by Jesinia)\n\n{cut}" if cut else "")
         )
         # Counted as inlined: fenced, with any fence tags in the text neutralised (longer).
-        others = (
-            len(facts) + len(knowledge) + sum(map(len, map(wrap_untrusted, untrusted.values())))
-        )
+        others = len(facts) + sum(map(len, map(wrap_untrusted, untrusted.values())))
         budget = PACK_INLINE_LIMIT - others - _PACK_OVERHEAD
         everything = job is JobKind.WALKTHROUGH and round.walk_everything
         walk_all = f"\n\n{WALK_EVERYTHING_INSTRUCTION}" if everything else ""
@@ -712,7 +713,6 @@ class JobRunner:
             files={
                 "standards.md": standards.as_prompt(limit=budget),
                 "job.md": facts,
-                "knowledge.md": knowledge,
             },
             untrusted=untrusted,
         )
@@ -727,7 +727,10 @@ class JobRunner:
         knowledge = (
             f"# What the author knows\n\n{_capped(known, KNOWLEDGE_CHARS, 'the summary', notes)}\n"
         )
-        untrusted: dict[str, UntrustedDoc] = {}
+        # Folder names in it are anyone's to write (R79): fenced, never trusted.
+        untrusted: dict[str, UntrustedDoc] = {
+            "knowledge.md": UntrustedDoc(KNOWLEDGE_SOURCE, knowledge)
+        }
         lines: list[str] = []
         for member in stack.members:
             pr, n = member.pr, member.pr.number
@@ -760,9 +763,7 @@ class JobRunner:
             + "\n"
             + (f"\n## Cut to fit (by Jesinia)\n\n{cut}" if cut else "")
         )
-        others = (
-            len(facts) + len(knowledge) + sum(map(len, map(wrap_untrusted, untrusted.values())))
-        )
+        others = len(facts) + sum(map(len, map(wrap_untrusted, untrusted.values())))
         budget = max(0, PACK_INLINE_LIMIT - others - _PACK_OVERHEAD)
         own = (
             f"\n\n{OWN_PR_INSTRUCTIONS[job]}" if stack.own_pr and job in OWN_PR_INSTRUCTIONS else ""
@@ -772,7 +773,6 @@ class JobRunner:
             files={
                 "standards.md": standards.as_prompt(limit=budget),
                 "job.md": facts,
-                "knowledge.md": knowledge,
             },
             untrusted=untrusted,
         )

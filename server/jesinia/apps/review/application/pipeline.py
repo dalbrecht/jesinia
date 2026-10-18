@@ -155,11 +155,11 @@ Clock = Callable[[], datetime]
 
 class KnowledgeSource(Protocol):
     """The author's knowledge, from the knowledge model (plan Task 14, ``KnowledgeService``).
-    The summary is trusted context for the agents, so it is built from Jesinia's own records
-    only, never PR text."""
+    The summary names folders anyone could write, so the jobs fence it as untrusted (R79)."""
 
-    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
-        """The lowest familiarity over the units ``paths`` touch; ``None`` when unknown."""
+    def assess(self, repo: str, paths: Sequence[str]) -> tuple[float | None, str]:
+        """The lowest familiarity over the units ``paths`` touch (``None`` when unknown) and
+        the knowledge summary, from one read of the model."""
         ...
 
     def summary(self, repo: str, paths: Sequence[str]) -> str: ...
@@ -169,6 +169,8 @@ OpenState = Literal["started", "running", "up_to_date", "failed", "checking"] | 
 # Why an open waits (Codex P1 on PR #63): planning a round before its head is classified would
 # leave out the re-review for good.
 CHECKING = "checking this head against your previous review first"
+# The touched paths a round keeps for the knowledge model.
+ROUND_PATHS_MAX = 5_000
 ProgressState = Literal["started", "job_started", "job_done", "job_failed", "finished", "failed"]
 
 
@@ -195,8 +197,8 @@ def background_jobs(mode: PreReviewMode, depth: Depth, *, loaded: bool) -> tuple
 class NothingKnown:
     """No knowledge model: no familiarity and an empty summary."""
 
-    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
-        return None
+    def assess(self, repo: str, paths: Sequence[str]) -> tuple[float | None, str]:
+        return None, ""
 
     def summary(self, repo: str, paths: Sequence[str]) -> str:
         return ""
@@ -831,6 +833,9 @@ class Pipeline:
         )
         correctness_depth = await self._jobs.correctness_depth(round)
         self._store.set_depth(ref, head, round_id, depth)
+        # Kept with the round, so the knowledge model counts it once it is done, even after
+        # the PR has left the queue (and its cached file list with it).
+        self._store.put_artifact(round_id, "paths", paths[:ROUND_PATHS_MAX])
         self._store.put_artifact(
             round_id,
             "depth",
@@ -853,8 +858,7 @@ class Pipeline:
         """The lowest familiarity over the touched paths and the knowledge summary. The model
         is secondary: a failure leaves the depth to the PR's size, with a warning."""
         try:
-            familiarity = self._knowledge.familiarity(ref.repo, paths)
-            return familiarity, self._knowledge.summary(ref.repo, paths)
+            return self._knowledge.assess(ref.repo, paths)
         except Exception as exc:  # secondary: the round goes on without the model
             log.warning("reading the knowledge model for %s failed: %s", ref, exc, exc_info=exc)
             warnings.append(f"the knowledge model couldn't be read, so it was left out: {exc}")

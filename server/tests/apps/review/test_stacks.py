@@ -1282,8 +1282,8 @@ class StackKnowledge:
         self.error = error
         self.asked: list[tuple[str, tuple[str, ...]]] = []
 
-    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
-        return None
+    def assess(self, repo: str, paths: Sequence[str]) -> tuple[float | None, str]:
+        return None, self.summary(repo, paths)
 
     def summary(self, repo: str, paths: Sequence[str]) -> str:
         self.asked.append((repo, tuple(paths)))

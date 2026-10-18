@@ -7,7 +7,8 @@ Ingest is a secondary subsystem: best-effort and error-isolated. Each source (fi
 rounds, quiz results, KB pages, each repo's history) runs on its own; a failure is logged
 with its cause and reported, and never stops another source, a round or a posting. Every
 signal is stored once, keyed by its source id (``commit:<repo>:<sha>``, ``round:<id>``,
-``quiz:<id>``, ``kb:<page>@<rev>``), so running it again changes nothing.
+``quiz:<id>``, ``kb:<page>``, whose newest revision replaces the last), so running it
+again changes nothing.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from jesinia.apps.review.application.errors import KnowledgeSourceError
 from jesinia.apps.review.domain.knowledge import (
     HISTORY_HORIZON,
     Exposure,
@@ -35,6 +37,7 @@ from jesinia.apps.review.domain.knowledge import (
     distance,
     familiarity,
     last_exposure,
+    nearest,
     quiz_kind,
     recency,
     render_summary,
@@ -57,6 +60,10 @@ COMMIT_LOG_LIMIT = 20_000
 VIEW_LIMIT = 500
 # Tags one KB page adds as topics at most.
 PAGE_TAGS_MAX = 20
+# Pages of ``COMMIT_LOG_LIMIT`` commits one history read goes through (M2).
+LOG_PAGES = 10
+# Churn rows stored per write, yielding to the event loop between writes (M4).
+CHURN_CHUNK = 5_000
 
 
 @dataclass(frozen=True)
@@ -123,20 +130,20 @@ class KnowledgeStore(Protocol):
         ...
 
     def known_repos(self) -> set[str]:
-        """Repos whose history was read, or with any exposure or override."""
+        """Repos whose history was read, or with an override (M5)."""
         ...
 
     def repo_state(self, repo: str) -> RepoState | None: ...
 
+    def add_churn(self, repo: str, churn: Sequence[ChurnRow]) -> None:
+        """Store changed lines per commit and unit path (each row once)."""
+        ...
+
     def record_commits(
-        self,
-        repo: str,
-        state: RepoState,
-        churn: Sequence[ChurnRow],
-        mine: Mapping[str, Sequence[ExposureRow]],
+        self, repo: str, state: RepoState, mine: Mapping[str, Sequence[ExposureRow]]
     ) -> int:
-        """Store a history read and move the repo's state on, in one transaction; ``mine``
-        maps each source id to its exposures. Returns how many sources were new."""
+        """Store the author's commits and move the repo's state on, in one transaction;
+        ``mine`` maps each source id to its exposures. Returns how many sources were new."""
         ...
 
     def add_exposures(self, source: str, rows: Sequence[ExposureRow]) -> bool:
@@ -158,7 +165,8 @@ class KnowledgeStore(Protocol):
         ...
 
     def record_page(self, page_id: str, rev: str, rows: Sequence[ExposureRow]) -> bool:
-        """Store a page revision's exposures and remember the revision as read."""
+        """Replace the page's exposures with this revision's (M8) and remember the revision
+        as read. ``True`` when it has any."""
         ...
 
     def prune(self, before: datetime) -> None:
@@ -176,8 +184,17 @@ class KnowledgeWorkspace(Protocol):
     async def is_ancestor(self, repo: str, ancestor: str, descendant: str) -> bool: ...
 
     async def commit_log(
-        self, repo: str, tip: str, *, after: str | None, since: datetime | None, limit: int
-    ) -> CommitLog: ...
+        self,
+        repo: str,
+        tip: str,
+        *,
+        after: str | None,
+        since: datetime | None,
+        limit: int,
+        skip: int = 0,
+    ) -> CommitLog:
+        """Commits reachable from ``tip`` (the default branch's: R80) only, newest first."""
+        ...
 
     async def identity_email(self) -> str | None:
         """The local git identity's email (``user.email``), if one is set."""
@@ -215,11 +232,12 @@ class UnitView:
 
     unit: Unit
     familiarity: float
-    override: Override | None
+    override: Override | None  # the one in force: the unit's own or its nearest folder's
     exposures: Mapping[ExposureKind, int]
     last_exposure: datetime | None
     changes_since_last: int
-    distance: float
+    distance: float  # applied only without evidence of its own (R82), else 0
+    override_unit: Unit | None = None  # where ``override`` is set
 
 
 @dataclass(frozen=True)
@@ -235,7 +253,15 @@ class KnowledgeView:
 class _Model:
     exposures: Mapping[Unit, Sequence[Exposure]]
     overrides: Mapping[Unit, Override]
+    scores: Mapping[Unit, float]
     top: tuple[Unit, ...]
+
+    def override_of(self, unit: Unit) -> tuple[Override, Unit] | None:
+        """The nearest override on the unit or a folder above it (I2), and where it is."""
+        for candidate in unit.lineage:
+            if (found := self.overrides.get(candidate)) is not None:
+                return found, candidate
+        return None
 
 
 def _no_repos() -> Iterable[str]:
@@ -348,7 +374,7 @@ class KnowledgeService:
             if units and content is not None:
                 units += _page_tags(content)
             rows: list[ExposureRow] = [(unit, "kb_page", rev.changed_at) for unit in units]
-            if self._store.record_page(rev.page_id, rev.rev, rows) and rows:
+            if self._store.record_page(rev.page_id, rev.rev, rows):
                 added += 1
         return added
 
@@ -357,7 +383,12 @@ class KnowledgeService:
         identity's (whatever the workspace allows)."""
         emails: set[str] = set()
         if self._identity is not None:
-            emails |= set(await self._identity.viewer_emails())
+            try:
+                emails |= set(await self._identity.viewer_emails())
+            except Exception as exc:  # any adapter failure: typed, with its cause
+                raise KnowledgeSourceError(
+                    f"the signed-in user's emails couldn't be read: {exc}"
+                ) from exc
         if local := await workspace.identity_email():
             emails.add(local)
         return {email.strip().lower() for email in emails if email.strip()}
@@ -398,23 +429,41 @@ class KnowledgeService:
             after = state.tip
         else:
             since = self._clock() - HISTORY_HORIZON
-        read = await workspace.commit_log(
-            repo, tip, after=after, since=since, limit=COMMIT_LOG_LIMIT
-        )
-        if read.truncated:
-            log.warning(
-                "knowledge ingest: %s's history was cut at %d commits", repo, COMMIT_LOG_LIMIT
-            )
+        commits = await self._read_history(workspace, repo, tip, after, since)
         churn: list[ChurnRow] = []
         mine: dict[str, list[ExposureRow]] = {}
-        for commit in read.commits:
-            churn += [
-                (commit.sha, commit.at, p, n) for p, n in churn_by_prefix(commit.files).items()
-            ]
+        for commit in commits:
+            # When the code landed counts for "changed since" (M3); authoring for my own.
+            changed = commit.changed_at
+            churn += [(commit.sha, changed, p, n) for p, n in churn_by_prefix(commit.files).items()]
             if commit.email.strip().lower() in emails:
                 units = _round_units(repo, (path for path, _ in commit.files))
                 mine[f"commit:{repo}:{commit.sha}"] = [(u, "commit", commit.at) for u in units]
-        return self._store.record_commits(repo, RepoState(tip, digest), churn, mine)
+        for start in range(0, len(churn), CHURN_CHUNK):
+            self._store.add_churn(repo, churn[start : start + CHURN_CHUNK])
+            await asyncio.sleep(0)  # a first read can be large: let the loop breathe
+        return self._store.record_commits(repo, RepoState(tip, digest), mine)
+
+    @staticmethod
+    async def _read_history(
+        workspace: KnowledgeWorkspace,
+        repo: str,
+        tip: str,
+        after: str | None,
+        since: datetime | None,
+    ) -> list[LoggedCommit]:
+        """Every commit of the range, page by page (M2): a cut read goes on past what it
+        returned, up to ``LOG_PAGES`` pages; past that it is logged."""
+        commits: list[LoggedCommit] = []
+        for _ in range(LOG_PAGES):
+            read = await workspace.commit_log(
+                repo, tip, after=after, since=since, limit=COMMIT_LOG_LIMIT, skip=len(commits)
+            )
+            commits += read.commits
+            if not read.truncated or not read.commits:
+                return commits
+        log.warning("knowledge ingest: %s's history was cut at %d commits", repo, len(commits))
+        return commits
 
     @staticmethod
     async def _descends(workspace: KnowledgeWorkspace, repo: str, old: str, new: str) -> bool:
@@ -450,23 +499,30 @@ class KnowledgeService:
         exposures = self._store.exposures()
         now = self._clock()
         scores = {unit: recency(seen, now) for unit, seen in exposures.items()}
-        return _Model(exposures, self._store.overrides(), top_units(scores))
+        return _Model(exposures, self._store.overrides(), scores, top_units(scores))
 
     def _view(self, model: _Model, unit: Unit) -> UnitView:
         seen = tuple(model.exposures.get(unit, ()))
         last = last_exposure(seen)
         changes = 0 if last is None else self._store.changes_since(unit, last)
-        far = distance(unit, model.top)
-        record = UnitRecord(unit, seen, model.overrides.get(unit))
+        override = model.override_of(unit)
+        # Distance is a prior for a unit with no evidence of its own (R82).
+        far, prior = 0.0, 0.0
+        if last is None:
+            far = distance(unit, model.top)
+            closest = nearest(unit, model.top)
+            prior = 0.0 if closest is None else model.scores[closest]
+        record = UnitRecord(unit, seen, None if override is None else override[0])
         counts: dict[ExposureKind, int] = {}
         for exposure in seen:
             counts[exposure.kind] = counts.get(exposure.kind, 0) + 1
-        score = familiarity(record, self._clock(), changes, far)
-        return UnitView(unit, score, record.override, counts, last, changes, far)
+        score = familiarity(record, self._clock(), changes, far, prior=prior)
+        source = None if override is None else override[1]
+        return UnitView(unit, score, record.override, counts, last, changes, far, source)
 
     def _touched(self, repo: str, paths: Sequence[str]) -> list[Unit] | None:
         """The deepest unit of each touched path, or ``None`` when nothing can be said yet:
-        no paths, or a repo the model has no record of (its history unread)."""
+        no paths, or a repo whose history was never read and has no override (M5)."""
         if not paths:
             return None
         try:
@@ -478,29 +534,36 @@ class KnowledgeService:
             return None
         return list({unit.id: unit for unit in units}.values())
 
-    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
+    def assess(self, repo: str, paths: Sequence[str]) -> tuple[float | None, str]:
         """The lowest familiarity over the units ``paths`` touch (what ``propose_depth``
-        reads); ``None`` when unknown (see ``_touched``)."""
+        reads; ``None`` when unknown, see ``_touched``) and the knowledge summary for the
+        ContextPack, from one read of the model (M4)."""
         units = self._touched(repo, paths)
         if units is None:
-            return None
+            return None, ""
         model = self._model()
-        return min(self._view(model, unit).familiarity for unit in units)
+        views = [self._view(model, unit) for unit in units]
+        lowest = min(view.familiarity for view in views)
+        return lowest, self._summary(model, canonical_repo(repo), views)
+
+    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
+        """The lowest familiarity over the touched units (see ``assess``)."""
+        return self.assess(repo, paths)[0]
 
     def summary(self, repo: str, paths: Sequence[str]) -> str:
-        """The knowledge summary for the ContextPack (bounded; see ``render_summary``). Only
-        units with a record are named, so a PR's own folder names never enter it."""
-        units = self._touched(repo, paths)
-        if units is None:
-            return ""
-        model = self._model()
+        """The knowledge summary (see ``assess`` and ``render_summary``)."""
+        return self.assess(repo, paths)[1]
+
+    def _summary(self, model: _Model, repo: str, views: Sequence[UnitView]) -> str:
+        """Names only units with a record or an override in force, as ``summary_label``
+        shows them (R79); the rest are counted."""
         entries: list[SummaryEntry] = []
         unknown = 0
-        for unit in units:
-            if unit not in model.exposures and unit not in model.overrides:
+        for view in views:
+            unit = view.unit
+            if unit not in model.exposures and view.override is None:
                 unknown += 1
                 continue
-            view = self._view(model, unit)
             newest = max(model.exposures.get(unit, ()), key=lambda e: e.at, default=None)
             entries.append(
                 SummaryEntry(
@@ -515,9 +578,7 @@ class KnowledgeService:
         tags = {u for u in (*model.exposures, *model.overrides) if u.kind == "tag"}
         scored = [(u, self._view(model, u).familiarity) for u in tags]
         topics = sorted((t for t in scored if t[1] > 0), key=lambda t: (-t[1], t[0].id))
-        return render_summary(
-            canonical_repo(repo), entries, unknown=unknown, topics=topics, now=self._clock()
-        )
+        return render_summary(repo, entries, unknown=unknown, topics=topics, now=self._clock())
 
     def view(self, repo: str | None = None, limit: int = VIEW_LIMIT) -> KnowledgeView:
         """Every unit with a record or an override, by id (only ``repo``'s path units when
