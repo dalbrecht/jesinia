@@ -630,3 +630,28 @@ describe("Settings → Issues: final review minors", () => {
     expect(web.getByText("Save labels first: the previews plan from the saved schema.")).toBeInTheDocument();
   });
 });
+
+describe("Codex round 2 on PR #72", () => {
+  it("a labels.yml repo shows its effective schema, and says a saved Settings schema is kept but inactive", async () => {
+    const settings = { ...SCHEMA, readiness: [value("agent-ready"), value("design-needed", ["needs design"])] };
+    renderIssues({}, [
+      repo({
+        schema_source: "repo",
+        label_schema: SCHEMA,
+        settings_schema: settings,
+        unmapped_labels: ["needs design"],
+      }),
+    ]);
+    const web = await repoGroup();
+    // labels.yml's alias, not the inactive Settings one.
+    const row = web.getAllByRole("listitem").find((li) => li.querySelector("strong")?.textContent === "design-needed");
+    expect(row).toHaveTextContent("design needed");
+    expect(row).not.toHaveTextContent("needs design");
+    expect(
+      web.getByText("Your Settings schema is kept, but inactive while .jesinia/labels.yml exists."),
+    ).toBeInTheDocument();
+    // The unmapped labels are judged against the effective schema: "needs design" still counts for nothing.
+    expect(web.getByRole("list", { name: "Labels on GitHub not in the schema" })).toHaveTextContent("needs design");
+    expect(web.queryByRole("button", { name: "Use the default for acme/web" })).toBeNull();
+  });
+});

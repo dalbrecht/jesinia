@@ -265,7 +265,9 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
   const client = useClient();
   const toast = useToast();
   const editable = config.schema_source !== "repo";
-  const base = config.settings_schema ?? config.label_schema;
+  // labels.yml wins while it exists: show what is in effect (read-only), never the Settings
+  // schema it overrides (which is kept, inactive). Otherwise the Settings schema, else the default.
+  const base = editable ? (config.settings_schema ?? config.label_schema) : config.label_schema;
   const [draft, setDraft] = useState<Draft>(() => draftOf(base));
   // Bumped when an alias is picked from the repo's labels, so the alias editors start again
   // from the draft (they keep their own text while typed in).
@@ -393,6 +395,9 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
       <div>
         <h3 className={s.settingTitle}>Label schema</h3>
         <p className={s.muted}>{SOURCE[config.schema_source]}</p>
+        {!editable && config.settings_schema !== null ? (
+          <p className={s.muted}>Your Settings schema is kept, but inactive while .jesinia/labels.yml exists.</p>
+        ) : null}
         {config.schema_errors.length > 0 ? (
           <ul className={s.plainList}>
             {config.schema_errors.map((error) => (
