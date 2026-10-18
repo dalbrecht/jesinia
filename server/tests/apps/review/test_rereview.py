@@ -8,6 +8,7 @@ Fixture repos are real git in tmp dirs (``GIT_CONFIG_GLOBAL=/dev/null``), fetche
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -25,7 +26,7 @@ from jesinia.apps.review.application.jobs import parse_job_output, schema_for
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.rereview import Rereviews, RereviewWorkspace
-from jesinia.apps.review.application.scheduler import Scheduler
+from jesinia.apps.review.application.scheduler import PreReviewRequest, Scheduler
 from jesinia.apps.review.domain.coverage import (
     HunkRef,
     Skip,
@@ -76,7 +77,13 @@ from jesinia.services.github.application.service import GitHubRequestError
 from jesinia.services.github.domain.pr import ReviewEvent, ReviewSide, ReviewSummary, ReviewThread
 from tests.apps.review.fakes import START, FakeClock, FakePullRequests, pull
 from tests.apps.review.test_followup import commit, git, text
-from tests.apps.review.test_pipeline import FakeFiles, FakeGitHub, FakeJobs, FakeWorkspace
+from tests.apps.review.test_pipeline import (
+    FakeFiles,
+    FakeGitHub,
+    FakeJobs,
+    FakeWorkspace,
+    wait_until,
+)
 
 REPO = "acme/web"
 LINES = [f"line {i}" for i in range(1, 41)]
@@ -1190,3 +1197,39 @@ async def test_a_comment_with_no_known_commit_is_unplaced_with_the_reason(env: E
     # The pure rule: a general comment has nowhere to go and stays as it is.
     general = PreviousComment("c1", "x")
     assert place(general, {}, {}) is general
+
+
+async def test_a_head_prepared_before_it_was_classified_still_gets_its_rereview(
+    env: Env,
+) -> None:
+    """Final I1: a loaded PR's new head is pre-reviewed at once (no debounce); its
+    preparation can run before the background refresh classifies the head. An open after
+    the refresh plans the re-review: it runs on a preparation that knows the follow-up, not
+    a stale one that would fail it."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    inline = {"path": "app.py", "line": 30, "side": "RIGHT", "body": "Off by one here.",
+              "start_line": None, "start_side": None}  # fmt: skip
+    env.posted_round(repo.head, repo.base, "COMMENT", "A few notes.", [inline])
+    env.sync(repo.pushed, repo.base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    round_id = env.store.start_round(env.ref, repo.pushed, repo.base, "quick", env.clock())
+    request = PreReviewRequest(
+        round_id, env.ref, REPO, repo.pushed, repo.base, "quick", "triage", True
+    )
+    env.jobs.hold = asyncio.Event()
+    background = asyncio.create_task(env.pipeline.prereview(request))
+    await wait_until(lambda: bool(env.jobs.ran))  # prepared (unclassified), in its first job
+    assert (await env.followups.classify(stored)).kind == "rereview"
+
+    result = await env.pipeline.open(env.ref)
+    env.jobs.hold.set()
+    await background
+    await env.pipeline.drain()
+
+    assert result.round_id == round_id and JobKind.REREVIEW in result.jobs
+    jobs = env.store.artifact(round_id, "jobs")
+    assert isinstance(jobs, dict) and jobs["rereview"] == {"state": "done", "error": None}
+    assert isinstance(env.store.artifact(round_id, "rereview"), dict)
+    assert _given(env).new_hunks == (HunkRef("app.py", 1),)

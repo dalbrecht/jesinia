@@ -1254,3 +1254,40 @@ def test_rounds_superseded_before_0007_are_frozen(tmp_path: Path) -> None:
         assert after.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         after.close()
+
+
+async def test_a_loaded_pr_waits_for_its_heads_check_before_its_pre_review(env: Env) -> None:
+    """Final I1: with the module's hold on, a loaded PR's new head isn't pre-reviewed until
+    its follow-up row exists (classified, or recorded unchecked)."""
+    repo = env.repo
+    env.sync(repo.rebased, repo.rebased_base)
+    env.store.set_loaded(env.ref)
+    ran: list[object] = []
+
+    async def run(request: object) -> None:
+        ran.append(request)
+
+    scheduler = Scheduler(env.store, env.clock, run=run, hold_unchecked=True)
+    await scheduler.tick()
+    await scheduler.drain()
+    assert ran == []
+    stored = env.store.pr(env.ref)
+    assert stored is not None and stored.state == "queued"
+    assert "previous review" in stored.state_reason
+    env.store.put_followup(env.ref, repo.rebased, FollowUp("new", error="GitHub was down"))
+    await scheduler.tick()
+    await scheduler.drain()
+    assert len(ran) == 1
+    # A head recorded unchecked is a write too: the background refresh ticks after it, so a
+    # held PR doesn't wait for the next sync.
+    env.sync(repo.conflict, repo.conflict_base)
+    env.github.error = GitHubRequestError(502, "Bad Gateway")
+    ticks: list[int] = []
+
+    async def tick() -> None:
+        ticks.append(1)
+
+    followups = FollowUps(github=env.github, workspace=env.workspace, store=env.store, after=tick)
+    followups.start_refresh()
+    await followups.drain()
+    assert ticks == [1]

@@ -647,6 +647,15 @@ class Pipeline:
         published as ``failed`` before it is raised."""
         try:
             prepared = self._prepared.get(round_id)
+            if (
+                prepared is not None
+                and prepared.followup is None
+                and self._rereview_of(ref, head) is not None
+            ):
+                # Prepared before the head was classified (a loaded PR is pre-reviewed at
+                # once, final I1): the re-review needs the follow-up's narrowing and new
+                # hunks, so this runner prepares again rather than fail its job.
+                prepared = None
             if prepared is None:
                 prepared = await self._prepare_flights.run(
                     round_id, lambda: self._prepare(ref, head, round_id)

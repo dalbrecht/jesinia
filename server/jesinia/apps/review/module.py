@@ -243,7 +243,13 @@ class ReviewModule:
         reviews = isinstance(agents, SessionService) and isinstance(github, GitHubService)
         # The review pipeline runs the pre-reviews; without agents and GitHub the gates are
         # still applied and ready PRs show as queued.
-        self._scheduler = Scheduler(store, _utc_now, run=self._prereview if reviews else None)
+        # The follow-ups run with GitHub: a loaded PR's new head then waits for its check.
+        self._scheduler = Scheduler(
+            store,
+            _utc_now,
+            run=self._prereview if reviews else None,
+            hold_unchecked=isinstance(github, GitHubService),
+        )
         if interrupted := self._scheduler.recover():
             log.info("re-queued %d review rounds left running by a stop", interrupted)
         self._pruner = WorkspacePruner(store, self._workspace, self.sessions.bound_trees)

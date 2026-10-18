@@ -188,6 +188,8 @@ class FollowUps:
         self._store = store
         self._after = after
         self._task: asyncio.Task[None] | None = None
+        # Follow-up rows written (classified or unchecked): a held loaded PR waits for one.
+        self._written = 0
 
     def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
         """What ``head_sha`` needs, once checked, under the PR's CI as cached now (C2)."""
@@ -334,6 +336,7 @@ class FollowUps:
             return 0
         if config is not None and config.suggested and not stored.loaded:
             return 0
+        self._written += 1  # a row is written either way: classified, or unchecked
         try:
             found = await self.classify(stored)
         except Exception as exc:  # one PR's failure must not stop the others; cause kept
@@ -345,13 +348,17 @@ class FollowUps:
 
     def start_refresh(self) -> None:
         """Run ``refresh`` in the background (one at a time), then ``after`` if it classified
-        anything."""
+        or recorded anything."""
         if self._task is not None and not self._task.done():
             return
         self._task = asyncio.create_task(self._refresh_then_tick(), name="review-followups")
 
     async def _refresh_then_tick(self) -> None:
-        if await self.refresh() and self._after is not None:
+        """Refresh, then tick when any row was written (a still-approved head isn't
+        pre-reviewed; a held loaded PR goes once its head is checked)."""
+        before = self._written
+        await self.refresh()
+        if self._written != before and self._after is not None:
             await self._after()
 
     async def drain(self) -> None:
