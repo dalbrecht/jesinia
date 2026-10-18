@@ -80,10 +80,11 @@ test("a new issue: approve the agent's suggestion at once, stage a picker change
 
   // A picker change is staged, not written: nothing reaches GitHub until Apply.
   await page.getByRole("combobox", { name: "Priority" }).selectOption("priority: high");
-  await expect(tray.getByText("Set priority to priority: high")).toBeVisible();
-  const staged = (await githubRequests(page)).length;
-  await page.waitForTimeout(500);
-  expect((await githubRequests(page)).length).toBe(staged);
+  await expect(tray.getByText("Set priority to high")).toBeVisible();
+  // Staged only: the tray has read it back, and no label write reached GitHub since.
+  const labelWrites = async () =>
+    (await githubRequests(page)).filter((r) => r.method !== "GET" && r.path.startsWith(labelsPath)).length;
+  expect(await labelWrites()).toBe(1);
   await tray.getByRole("button", { name: /^Apply/ }).click();
   await expect(tray.getByText("All changes applied")).toHaveCount(2, { timeout: 30_000 });
   const results = tray.getByRole("listitem", { name: ref });

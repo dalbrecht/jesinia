@@ -4,7 +4,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IDLE_POLL_MS, SYNCING_POLL_MS } from "../App";
+import { IDLE_POLL_MS, SYNCING_POLL_MS } from "../api";
 import {
   callsTo,
   finished,
@@ -137,7 +137,10 @@ describe("the list", () => {
     const other = suggestion("s3", { n: 2 });
     const { calls } = renderApp(
       issuesRoutes({
-        "GET /api/issues/suggestions": suggestions([S_READY, S_DUP, other]),
+        "GET /api/issues/suggestions": (req: Request) => {
+          const n = Number(new URL(req.url).searchParams.get("n"));
+          return json(suggestions([S_READY, S_DUP, other].filter((sug) => sug.n === n)));
+        },
         "POST /api/issues/suggestions/s1/approve": () => json({ suggestion: S_READY, batch: finished("b1") }, 202),
         "POST /api/issues/suggestions/s2/approve": () => json({ suggestion: S_DUP, batch: finished("b2") }, 202),
       }),
@@ -151,8 +154,10 @@ describe("the list", () => {
     await waitFor(() => expect(callsTo(calls, "POST", "/api/issues/suggestions/s2/approve")).toHaveLength(1));
     expect(callsTo(calls, "POST", "/api/issues/suggestions/s1/approve")).toHaveLength(1);
     expect(callsTo(calls, "POST", "/api/issues/suggestions/s3/approve")).toHaveLength(0);
+    // Read per selected issue: never a capped page of the whole repo (I4).
     const read = callsTo(calls, "GET", "/api/issues/suggestions").at(-1);
-    expect(new URL(read?.url ?? "").searchParams.get("repo")).toBe("acme/app");
+    expect(new URL(read?.url ?? "").searchParams.get("n")).toBe("1");
+    expect(await toast(/Approved 2 of 2 suggestions/)).toBe(true);
   });
 
   it("Approve all with nothing to approve says so", async () => {

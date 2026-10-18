@@ -815,7 +815,7 @@ Each part exposes its state as `data-drop-state` (`idle`, `available`, `unavaila
 |---|---|
 | Mouse, trackpad | Press and move 4 px to lift |
 | Touch | Long-press 250 ms to lift (`LONG_PRESS_MS`); moving more than 5 px first scrolls instead |
-| Keyboard | Space or Enter picks up; arrows move between drop targets in document order; Space or Enter drops; Escape or Tab cancels (moving focus away never commits a drop) |
+| Keyboard | Space or Enter picks up; arrows move between drop targets in document order; Space or Enter drops; Escape or Tab cancels (moving focus away never commits a drop). Keys pressed right after the pick-up, before dnd-kit's sensor listens, are held and replayed in order, never lost |
 | Auto-scroll | While the pointer rests within 40 px of a scrolling list's or board's edge, it scrolls, faster nearer the edge, up to 16 px a tick. It scrolls the containers under the pointer as well as around the dragged item, so a drag from one pane into a long list in another works. If the inner container can't go further, the outer one scrolls, and last the page itself |
 
 With the keyboard, ↓ and → step to the next target and ↑ and ← to the previous; the first press

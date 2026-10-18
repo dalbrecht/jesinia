@@ -6,7 +6,7 @@
 import type { JesiniaClient } from "@jesinia/client";
 import { useToast } from "@jesinia/design";
 import { AppShell, useClient, VisibleText } from "@jesinia/shell";
-import { useCallback, useEffect, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { errorCause, getRepos, refOf, routeOf, routePath, type IssueRow, type Repo, type Route } from "./api";
 import { Backlog } from "./Backlog";
 import { Inbox } from "./Inbox";
@@ -14,8 +14,6 @@ import s from "./issues.module.css";
 import { IssueView } from "./IssueView";
 import { loadTabs, sameTab, saveTabs, type OpenTab } from "./tabs";
 import { TrayProvider, useTray } from "./Tray";
-
-export { IDLE_POLL_MS, SYNCING_POLL_MS } from "./api";
 
 type Fixed = "inbox" | "backlog" | "epics" | "queues";
 const FIXED: { kind: Fixed; label: string }[] = [
@@ -25,7 +23,9 @@ const FIXED: { kind: Fixed; label: string }[] = [
   { kind: "queues", label: "Queues" },
 ];
 
-const tabKey = (route: Route) => (route.kind === "issue" ? `${route.repo}#${route.number}` : route.kind);
+/** A screen's key: issues by ref, without case (GitHub's repo names compare that way). */
+const tabKey = (route: Route) => (route.kind === "issue" ? `${route.repo}#${route.number}`.toLowerCase() : route.kind);
+const issueKey = (tab: OpenTab) => `${tab.repo}#${tab.number}`.toLowerCase();
 
 function Workspace() {
   const client = useClient();
@@ -46,6 +46,18 @@ function Workspace() {
   const [visited, setVisited] = useState<ReadonlySet<string>>(
     () => new Set([tabKey(routeOf(window.location.pathname))]),
   );
+  // Keyboard and screen-reader users keep their place: the opened issue's tab takes focus, and
+  // closing a tab moves focus to its neighbour, or to the Inbox tab.
+  const nav = useRef<HTMLElement>(null);
+  const focusTab = useRef<string | null>(null);
+  useEffect(() => {
+    const key = focusTab.current;
+    if (key === null) return;
+    const link = nav.current?.querySelector<HTMLElement>(`[data-tab="${CSS.escape(key)}"]`);
+    if (!link) return;
+    focusTab.current = null;
+    link.focus();
+  });
 
   useEffect(() => {
     getRepos(client).then(setRepos, (e: unknown) =>
@@ -87,7 +99,9 @@ function Workspace() {
     (repo: string, number: number, title?: string) => {
       const label = title === undefined ? `${repo}#${number}` : `${repo}#${number} ${title}`;
       openTab({ repo, number, label });
-      navigate({ kind: "issue", repo, number });
+      const to: Route = { kind: "issue", repo, number };
+      focusTab.current = tabKey(to);
+      navigate(to);
     },
     [openTab, navigate],
   );
@@ -109,12 +123,14 @@ function Workspace() {
     setTabs((prev) => prev.filter((t) => !sameTab(t, tab)));
     setVisited((prev) => {
       const next = new Set(prev);
-      next.delete(`${tab.repo}#${tab.number}`);
+      next.delete(issueKey(tab));
       return next;
     });
-    if (route.kind === "issue" && sameTab(route, tab)) {
-      navigate(neighbour ? { kind: "issue", repo: neighbour.repo, number: neighbour.number } : { kind: "inbox" });
-    }
+    const next: Route = neighbour
+      ? { kind: "issue", repo: neighbour.repo, number: neighbour.number }
+      : { kind: "inbox" };
+    focusTab.current = tabKey(next);
+    if (route.kind === "issue" && sameTab(route, tab)) navigate(next);
   };
 
   const follow = (e: MouseEvent<HTMLAnchorElement>, to: Route) => {
@@ -127,11 +143,13 @@ function Workspace() {
 
   return (
     <div className={s.workspace}>
-      <nav className={s.wtabs} aria-label="Workspace">
+      <nav ref={nav} className={s.wtabs} aria-label="Workspace">
         {FIXED.map((f) => (
           <a
             key={f.kind}
             className={s.wtab}
+            data-tab={f.kind}
+            data-focus-home={route.kind === f.kind ? "" : undefined}
             href={routePath({ kind: f.kind })}
             aria-current={route.kind === f.kind ? "page" : undefined}
             onClick={(e) => follow(e, { kind: f.kind })}
@@ -143,9 +161,11 @@ function Workspace() {
           const to: Route = { kind: "issue", repo: t.repo, number: t.number };
           const ref = refOf(t);
           return (
-            <span key={ref} className={s.wtabItem}>
+            <span key={issueKey(t)} className={s.wtabItem}>
               <a
                 className={s.wtab}
+                data-tab={tabKey(to)}
+                data-focus-home={isShown(to) ? "" : undefined}
                 href={routePath(to)}
                 aria-current={isShown(to) ? "page" : undefined}
                 onClick={(e) => follow(e, to)}
@@ -164,12 +184,12 @@ function Workspace() {
       <div className={s.body}>
         {visited.has("inbox") ? (
           <div className={s.pane} hidden={route.kind !== "inbox"}>
-            <Inbox repos={repos} onOpen={openRow} />
+            <Inbox repos={repos} onOpen={openRow} active={route.kind === "inbox"} />
           </div>
         ) : null}
         {visited.has("backlog") ? (
           <div className={s.pane} hidden={route.kind !== "backlog"}>
-            <Backlog repos={repos} onOpen={openRow} />
+            <Backlog repos={repos} onOpen={openRow} active={route.kind === "backlog"} />
           </div>
         ) : null}
         {route.kind === "epics" ? (
@@ -179,9 +199,13 @@ function Workspace() {
           <p className={s.empty}>Queues aren't in this version yet: they arrive with ordering and Done.</p>
         ) : null}
         {tabs
-          .filter((t) => visited.has(`${t.repo}#${t.number}`))
+          .filter((t) => visited.has(issueKey(t)))
           .map((t) => (
-            <div key={refOf(t)} className={s.pane} hidden={!isShown({ kind: "issue", repo: t.repo, number: t.number })}>
+            <div
+              key={issueKey(t)}
+              className={s.pane}
+              hidden={!isShown({ kind: "issue", repo: t.repo, number: t.number })}
+            >
               <IssueView
                 repo={t.repo}
                 number={t.number}

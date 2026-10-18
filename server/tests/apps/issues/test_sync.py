@@ -44,6 +44,7 @@ from jesinia.services.github.domain.issue import (
     IssueComment,
     IssueRef,
     Label,
+    LinkedPr,
     Milestone,
     Page,
     TimelineEvent,
@@ -122,6 +123,7 @@ class FakeIssues:
         self.children: dict[tuple[str, int], list[Issue]] = {}
         self.issue_comments: dict[tuple[str, int], list[IssueComment]] = {}
         self.events: dict[tuple[str, int], list[TimelineEvent]] = {}
+        self.links: dict[tuple[str, int], list[LinkedPr]] = {}
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         # Called before each list_issues answer: raise to fail the call, mutate to race it.
         self.before_list: Callable[[int], None] | None = None
@@ -200,6 +202,10 @@ class FakeIssues:
     ) -> Page[TimelineEvent]:
         self.calls.append(("timeline", (repo, n, page_token)))
         return Page(self.events.get((repo, n), []), None)
+
+    async def timeline_links(self, repo: str, n: int) -> list[LinkedPr]:
+        self.calls.append(("timeline_links", (repo, n)))
+        return self.links.get((repo, n), [])
 
 
 class InboxLog:
@@ -1260,3 +1266,39 @@ async def test_an_issue_opened_in_the_same_second_as_the_watch_is_in_the_inbox(
     await service.sync(REPO)
     assert await numbers(queries, "inbox") == [1]
     assert await numbers(queries, "backlog") == [2]
+
+
+async def test_should_fill_linked_pr_state_for_changed_open_issues_after_the_first_sync(
+    service: SyncService,
+    github: FakeIssues,
+    clock: FakeClock,
+    store: SqliteIssuesStore,
+    queries: IssueQueries,
+) -> None:
+    """IR62 within the IR20 budget: the board's status view needs the linked PRs, read only for
+    issues a sync sees change (never on the first sync, never for closed issues)."""
+    github.put(issue(1), issue(2))
+    pr = LinkedPr(REPO, 50, "open", "https://github.com/acme/app/pull/50")
+    github.links[(REPO, 1)] = [pr]
+    await watched(service, clock)
+    await service.sync(REPO)
+    assert "timeline_links" not in github.call_names()
+
+    clock.now += timedelta(minutes=5)
+    github.put(issue(1, updated=clock.now), issue(3, created=clock.now, state="closed"))
+    await service.sync(REPO)
+    assert [args for name, args in github.calls if name == "timeline_links"] == [(REPO, 1)]
+    rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
+    assert rows[1].linked_pr_state == "open" and rows[2].linked_pr_state is None
+
+    # Unchanged at the next sync: the stored state stays, and it isn't read again.
+    await service.sync(REPO)
+    assert github.call_names().count("timeline_links") == 1
+    # An apply's fresh read (no links) keeps what sync found.
+    found = store.issue(REPO, 1)
+    assert found is not None
+    cached = store.cached_issue(REPO, 1)
+    assert cached is not None
+    store.refresh_issue(replace(found, linked_pr_state=None), cached.triage)
+    again = store.issue(REPO, 1)
+    assert again is not None and again.linked_pr_state == "open"

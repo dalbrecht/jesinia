@@ -56,7 +56,13 @@ from jesinia.services.github.application.service import (
     GitHubRequestError,
     GitHubUnavailable,
 )
-from jesinia.services.github.domain.issue import Issue, IssueComment, Milestone, TimelineEvent
+from jesinia.services.github.domain.issue import (
+    Issue,
+    IssueComment,
+    LinkedPr,
+    Milestone,
+    TimelineEvent,
+)
 from jesinia.services.kb.application.service import KbService
 from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.infrastructure.fs import LocalFiles
@@ -483,6 +489,16 @@ async def test_should_carry_state_and_linked_pr_state_on_view_rows(env: Env) -> 
     view = (await env.client.get(f"{API}/backlog", params={"repo": REPO})).json()
     row = next(row for row in view["rows"] if row["number"] == 1)
     assert row["state"] == "open" and row["linked_pr_state"] is None
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(replace(issue(1), state="closed", updated_at=env.clock.now))
+    env.github.links[(REPO, 2)] = [LinkedPr(REPO, 9, "merged", "https://github.com/x/pull/9")]
+    env.github.put(replace(issue(2, labels=COMPLETE), updated_at=env.clock.now))
+    await env.client.post(f"{REPO_PATH}/sync", headers=keyed())
+    view = (await env.client.get(f"{API}/backlog", params={"repo": REPO})).json()
+    rows = {row["number"]: row for row in view["rows"]}
+    assert 1 not in rows  # closed: out of the lists (its item says so)
+    assert (await env.client.get(ITEM)).json()["state"] == "closed"
+    assert rows[2]["state"] == "open" and rows[2]["linked_pr_state"] == "merged"
 
 
 async def test_an_item_is_served_from_the_cache_and_refreshed_on_demand(env: Env) -> None:
@@ -674,6 +690,7 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
         "comment",
         "create_issue",
         "add_sub_issue",
+        "timeline_links",
     ]
     for name in names:
 
@@ -697,10 +714,10 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
             owner="acme", repo="web", n=n, view="backlog", batch=batch, queue_id=queue, tag="sync"
         )
         gets.append(made + queries.get(made, ""))
-    # repos, suggestions, pending, a batch, a view, an item; epics, an epic, a drop check, a
-    # conversion plan; milestones, a milestone; queues, a queue, its warnings; themes, a theme,
-    # its epic plan
-    assert len(gets) == 18
+    # repos, suggestions, pending, the unfinished batches, a batch, a view, an item; epics, an
+    # epic, a drop check, a conversion plan; milestones, a milestone; queues, a queue, its
+    # warnings; themes, a theme, its epic plan
+    assert len(gets) == 19
     for path in [*gets, f"{API}/inbox"]:
         response = await env.client.get(path)
         assert response.status_code == 200, path
@@ -1104,6 +1121,26 @@ async def test_applying_some_pending_changes_keeps_the_rest(env: Env) -> None:
     assert [c["n"] for c in (await env.client.get(PENDING)).json()["changes"]] == [2]
 
 
+async def test_should_list_unfinished_batches_so_a_reload_can_retry_them(env: Env) -> None:
+    await env.watch_and_sync()
+    await env.client.post(
+        PENDING, json=_staged(2, {"kind": "comment", "body": "x"}), headers=keyed()
+    )
+    done = await _polled(env, await env.client.post(f"{PENDING}/apply", json={}, headers=keyed()))
+    assert done["complete"]
+    env.github.fail["add_labels:1"] = GitHubRateLimitedError(
+        403, "secondary rate limit", env.clock.now + timedelta(seconds=30)
+    )
+    await env.client.post(PENDING, json=_staged(1, PRIORITY_HIGH), headers=keyed())
+    stopped = await _polled(
+        env, await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
+    )
+    assert not stopped["complete"]
+    listed = (await env.client.get(f"{API}/batches")).json()
+    assert [b["id"] for b in listed["batches"]] == [stopped["id"]]
+    assert listed["batches"][0]["stopped"]
+
+
 async def test_a_replayed_apply_answers_its_batch_and_never_applies_the_tray_again(
     env: Env,
 ) -> None:
@@ -1461,6 +1498,8 @@ async def test_a_second_conversion_while_one_runs_is_a_409(env: Env) -> None:
     held.set()
     assert first.status_code == 202
     assert second.status_code == 409 and second.json()["error"] == "EarlierBatchError"
+    # The batch to retry or abandon is named, so the client can follow it (Task 12 I3).
+    assert second.json()["batch_id"] == first.headers["Location"].rsplit("/", 1)[1]
     await _polled(env, first)
     after = await env.client.post(f"{EPIC3}/conversion", json={"digest": digest}, headers=keyed())
     assert after.status_code == 409  # the plan changed: the item is converted

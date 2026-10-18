@@ -51,14 +51,6 @@
 .banners {
   padding: var(--jx-space-2) var(--jx-space-3) 0;
 }
-.visuallyHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
 .kbd {
   margin-left: 6px;
   font-family: var(--jx-font-mono);
@@ -172,8 +164,7 @@
   font-size: var(--jx-text-xs);
 }
 .field select,
-.sugActions select,
-.sugActions input {
+.sugActions select {
   min-height: 28px;
   padding: 0 var(--jx-space-2);
   border: 1px solid var(--jx-input-border);
@@ -185,6 +176,7 @@
 }
 .segmented {
   display: inline-flex;
+  position: relative;
   margin: 0;
   padding: 2px;
   border: 1px solid var(--jx-border);
@@ -322,7 +314,8 @@
   grid-auto-flow: column;
   grid-auto-columns: minmax(214px, 1fr);
   gap: var(--jx-space-3);
-  height: calc(100% - 48px);
+  flex: 1;
+  min-height: 0;
   padding: var(--jx-space-3) var(--jx-space-4);
   overflow-x: auto;
 }

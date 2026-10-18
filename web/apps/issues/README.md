@@ -16,6 +16,7 @@ reads and writes is `server/jesinia/apps/issues/README.md`.
 - **Pending changes:** every GitHub change except an approval waits in the tray until Apply
   (⌘↵). Applies, retries and approvals run in the background on the server; the tray polls each
   batch to its per-issue results, with Retry, and Abandon for a batch that creates issues.
+  Batches that didn't finish are read back from the server on load (`GET /api/issues/batches`).
 
 Issue text and agent text are untrusted: Markdown goes through the shell's `SafeMarkdown` (no raw
 HTML, no images) and hidden characters show as visible tokens (`VisibleText`).

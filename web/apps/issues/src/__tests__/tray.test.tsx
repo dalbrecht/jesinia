@@ -64,7 +64,7 @@ describe("staging", () => {
     const { calls } = renderApp(issuesRoutes(t.routes), ISSUE);
     expect(screen.queryByRole("region", { name: "Pending changes" })).toBeNull();
     await userEvent.selectOptions(await screen.findByRole("combobox", { name: "Priority" }), "priority: high");
-    await waitFor(() => expect(within(tray()).getByText("Set priority to priority: high")).toBeInTheDocument());
+    await waitFor(() => expect(within(tray()).getByText("Set priority to high")).toBeInTheDocument());
     const [post] = callsTo(calls, "POST", "/api/issues/pending");
     expect(post?.headers.get("Idempotency-Key")).toMatch(/[0-9a-f-]{36}/);
     expect(await post?.clone().json()).toEqual({
@@ -100,7 +100,7 @@ describe("undo", () => {
     const { calls } = renderApp(issuesRoutes(t.routes));
     await userEvent.click(
       await within(await screen.findByRole("region", { name: "Pending changes" })).findByRole("button", {
-        name: "Undo: Set priority to priority: high on acme/app#1",
+        name: "Undo: Set priority to high on acme/app#1",
       }),
     );
     await waitFor(() => expect(screen.queryByRole("region", { name: "Pending changes" })).toBeNull());
@@ -118,9 +118,7 @@ describe("undo", () => {
     );
     const region = await screen.findByRole("region", { name: "Pending changes" });
     expect(within(region).getByText("Close as completed")).toBeInTheDocument();
-    await userEvent.click(
-      within(region).getByRole("button", { name: "Undo: Set priority to priority: high on acme/app#1" }),
-    );
+    await userEvent.click(within(region).getByRole("button", { name: "Undo: Set priority to high on acme/app#1" }));
     expect(await toast(/A queue item's Done holds this change/)).toBeTruthy();
     await userEvent.click(within(region).getByRole("button", { name: "Undo all" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Pending changes" })).toBeNull());
@@ -168,7 +166,7 @@ describe("apply", () => {
     const [apply] = callsTo(calls, "POST", "/api/issues/pending/apply");
     expect(apply?.headers.get("Idempotency-Key")).toBeTruthy();
     expect(await apply?.clone().json()).toEqual({});
-    expect(within(tray()).queryByText("Set priority to priority: high")).toBeNull();
+    expect(within(tray()).queryByText("Set priority to high")).toBeNull();
 
     current = failed;
     await tick(BATCH_POLL_MS);
@@ -216,7 +214,7 @@ describe("apply", () => {
     expect(keys[0]).toBe(keys[1]);
   });
 
-  it("an empty tray, a running batch and an earlier unfinished batch get clear copy", async () => {
+  it("applying an empty tray says nothing is staged", async () => {
     const t = trayRoutes([pending("p1")]);
     renderApp(
       issuesRoutes({
@@ -234,6 +232,7 @@ describe("apply", () => {
   });
 
   it("an interrupted batch that created issues offers Retry and Abandon; Abandon is keyed", async () => {
+    let abandoned = false;
     const interrupted = batch("b9", {
       origin: "epic",
       status: "interrupted",
@@ -254,14 +253,16 @@ describe("apply", () => {
       issuesRoutes({
         "GET /api/issues/pending": { changes: [pending("p1")] },
         "POST /api/issues/pending/apply": () => json(interrupted, 202),
-        "GET /api/issues/pending/b9": () => json(interrupted),
-        "POST /api/issues/pending/b9/abandon": () =>
-          json({
+        "GET /api/issues/pending/b9": () => json(abandoned ? { ...interrupted, status: "abandoned" } : interrupted),
+        "POST /api/issues/pending/b9/abandon": () => {
+          abandoned = true;
+          return json({
             batch_id: "b9",
             origin: "conversion:acme/app#3",
             state: "abandoned",
             created: [{ temp_id: "t1", repo: REPO, n: 40 }],
-          }),
+          });
+        },
       }),
     );
     await userEvent.click(

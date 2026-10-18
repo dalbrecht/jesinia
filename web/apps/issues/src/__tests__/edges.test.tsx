@@ -408,8 +408,11 @@ describe("tray edges", () => {
     await user.click(within(tray).getByRole("button", { name: "Undo all" }));
     expect(await toast(/Couldn't undo the pending changes/)).toBe(true);
     await user.click(within(tray).getByRole("button", { name: /^Apply/ }));
-    expect(within(tray).getByText("Not run yet")).toBeInTheDocument();
-    await tick(BATCH_POLL_MS); // a failed read: tried again
+    expect(within(tray).getByText("In progress")).toBeInTheDocument(); // not "skipped" while it runs
+    await tick(BATCH_POLL_MS); // a failed read: tried again, after twice as long (M5)
+    const polled = callsTo(calls, "GET", "/api/issues/pending/b5").length;
+    await tick(BATCH_POLL_MS);
+    expect(callsTo(calls, "GET", "/api/issues/pending/b5")).toHaveLength(polled);
     await tick(BATCH_POLL_MS);
     expect(await within(tray).findByText(/Interrupted/)).toBeInTheDocument();
     expect(within(tray).getByText("ensure_label failed: no cause given")).toBeInTheDocument();

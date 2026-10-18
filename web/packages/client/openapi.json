@@ -6552,6 +6552,78 @@
         }
       }
     },
+    "/api/issues/batches": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Unfinished Batches",
+        "description": "The batches that didn't finish (running, interrupted, or finished with steps not\napplied), newest first, from the cache: what the tray offers Retry or Abandon for after\na reload (no GitHub).",
+        "operationId": "get_unfinished_batches_api_issues_batches_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyBatchesOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/pending/{batch}": {
       "get": {
         "tags": [
@@ -14101,6 +14173,23 @@
         "title": "ApplyBatchOut",
         "description": "A batch and its result. ``status``: ``running`` (poll ``GET /pending/{id}``; steps not\nreached yet are ``skipped``, ``not run yet``), ``finished`` (the result is final) or\n``interrupted`` (a stop cut it off). ``stopped`` is set when GitHub stopped it (a rate\nlimit, with ``rate_limited_until``, or a rejected token). An interrupted or stopped batch is\nresumed only with ``POST /pending/{id}/retry`` (its changes already left the tray); steps\nalready done are never repeated."
       },
+      "ApplyBatchesOut": {
+        "properties": {
+          "batches": {
+            "items": {
+              "$ref": "#/components/schemas/ApplyBatchOut"
+            },
+            "type": "array",
+            "title": "Batches"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batches"
+        ],
+        "title": "ApplyBatchesOut",
+        "description": "Batches that didn't finish: running, interrupted, or finished with something not applied\n(newest first). A client shows them after a reload, so Retry and Abandon stay reachable."
+      },
       "ApplyCreatedOut": {
         "properties": {
           "temp_id": {
@@ -16225,12 +16314,21 @@
           },
           "state": {
             "type": "string",
+            "enum": [
+              "open",
+              "closed"
+            ],
             "title": "State"
           },
           "linked_pr_state": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "enum": [
+                  "merged",
+                  "open",
+                  "closed"
+                ]
               },
               {
                 "type": "null"
@@ -16640,6 +16738,17 @@
               }
             ],
             "title": "Retry After"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
           }
         },
         "type": "object",

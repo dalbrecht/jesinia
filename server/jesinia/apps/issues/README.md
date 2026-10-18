@@ -246,8 +246,12 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - `POST /repos/{owner}/{repo}/sync`: sync the repo now.
   - `GET /{inbox|backlog}?repo&filter`: a view, served from the cache, even without the
     `github` service. Each row carries GitHub's `state` and `linked_pr_state` (the linked PRs
-    summed up as `merged`, `open` or `closed`; `null` until something fills it), which the
-    board's status view is derived from.
+    summed up as `merged`, `open` or `closed`), which the board's status view is derived
+    from. Sync reads the linked PRs only for open issues it sees change, never on a repo's first
+    sync (IR20), and an apply's fresh read keeps what sync found.
+  - `GET /batches`: the batches that didn't finish (running, interrupted, or finished with a
+    step not applied), newest first, so the tray offers Retry or Abandon after a reload. An
+    `EarlierBatchError` names its batch in `batch_id`.
   - `GET /item/{owner}/{repo}/{n}` and `POST …/refresh`: one issue, and a fetch of its
     comments and timeline.
   - `POST /labels/{owner}/{repo}/preview` with `{kind}`. It isn't keyed, on purpose: it writes

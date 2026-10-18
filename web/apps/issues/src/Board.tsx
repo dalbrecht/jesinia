@@ -27,7 +27,7 @@ const ISSUES = { one: "issue", other: "issues" };
 const NONE = "\u0000none";
 
 type Column = { id: string; label: string; value: string | null; rows: IssueRow[] };
-type ColumnData = { kind: "column"; grouping: Grouping; value: string | null };
+type ColumnData = { grouping: Grouping; value: string | null };
 
 const DERIVED: Refusal = {
   code: "derived",
@@ -93,30 +93,33 @@ export function Board({ rows, repos, grouping, selected, onOpen }: BoardProps) {
     // Only readiness and priority columns with a value take drops (the rest refuse, and refused
     // drops never reach onDrop), so the target is one of those.
     const { grouping: dimension, value } = target.data as { grouping: Dimension; value: string };
-    for (const row of rowsOf(dropped)) {
-      if (row[dimension] === value) continue;
-      void tray.stage(row.repo, row.number, { kind: "set_dimension", dimension, value }, "drag");
-    }
+    // One after another, then one read of the tray, so it shows every change staged.
+    const changes = rowsOf(dropped)
+      .filter((row) => row[dimension] !== value)
+      .map((row) => ({ repo: row.repo, n: row.number, change: { kind: "set_dimension" as const, dimension, value }, source: "drag" as const })); // prettier-ignore
+    void tray.stageAll(changes);
   };
 
   return (
     <DndProvider onDrop={onDrop} noun={ISSUES}>
       <div className={s.board}>
         {columns.map((column) => {
-          const data: ColumnData = { kind: "column", grouping, value: column.value };
+          const data: ColumnData = { grouping, value: column.value };
           return (
             <DropTarget
               key={column.id}
               id={`column:${grouping}:${column.id}`}
-              label={column.label}
+              label={visibleText(column.label)}
               data={data}
               accepts={(dragged) => columnRefusal(repos, grouping, column.value, rowsOf(dragged))}
               className={s.column}
               role="group"
-              aria-label={column.label}
+              aria-label={visibleText(column.label)}
             >
               <div className={s.columnHead}>
-                <span className={s.columnTitle}>{column.label}</span>
+                <span className={s.columnTitle}>
+                  <VisibleText text={column.label} />
+                </span>
                 <span className={s.muted}>{column.rows.length}</span>
               </div>
               <div className={s.columnBody}>
@@ -134,7 +137,7 @@ export function Board({ rows, repos, grouping, selected, onOpen }: BoardProps) {
                       {(handle) => (
                         <>
                           <div className={s.cardTop}>
-                            <button type="button" {...handle} className={s.grip} aria-label={item.label}>
+                            <button type="button" {...handle} className={s.grip} aria-label={`Move ${item.label}`}>
                               <span aria-hidden="true">⠿</span>
                             </button>
                             <span className={s.ref}>{refOf(row)}</span>

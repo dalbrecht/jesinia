@@ -69,6 +69,53 @@ const KEYBOARD_CODES = { start: ["Space", "Enter"], cancel: ["Escape", "Tab"], e
 
 const KEY_STEPS: Record<string, 1 | -1> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
 
+/** The keys a keyboard drag reacts to once picked up. */
+const DRAG_KEYS = new Set([...Object.keys(KEY_STEPS), ...KEYBOARD_CODES.end, ...KEYBOARD_CODES.cancel]);
+
+/**
+ * dnd-kit's keyboard sensor starts listening a task after the pick-up (so the activating key
+ * doesn't also drop), and a browser may run input before that timer: an arrow pressed at once
+ * would be lost (IR62). From the pick-up until the sensor listens, drag keys are held here,
+ * then replayed in order, one per task. Returns the cleanup (stops holding, drops the rest).
+ */
+function holdEarlyKeys(activator: Event): () => void {
+  const target = activator.target instanceof Node ? activator.target : null;
+  const doc = target?.ownerDocument ?? document;
+  const held: KeyboardEvent[] = [];
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const hold = (e: KeyboardEvent) => {
+    if (e === activator || !DRAG_KEYS.has(e.code)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    held.push(e);
+  };
+  const replay = () => {
+    const next = held.shift();
+    if (!next) return;
+    const at = doc.activeElement ?? doc.body;
+    const { key, code, shiftKey, altKey, ctrlKey, metaKey } = next;
+    at.dispatchEvent(new KeyboardEvent("keydown", { key, code, shiftKey, altKey, ctrlKey, metaKey, bubbles: true, cancelable: true })); // prettier-ignore
+    timers.push(setTimeout(replay));
+  };
+  doc.addEventListener("keydown", hold, true);
+  // The sensor's timer was set after this one, in the same task: two hops land after it.
+  timers.push(
+    setTimeout(() =>
+      timers.push(
+        setTimeout(() => {
+          doc.removeEventListener("keydown", hold, true);
+          replay();
+        }),
+      ),
+    ),
+  );
+  return () => {
+    doc.removeEventListener("keydown", hold, true);
+    held.length = 0;
+    for (const timer of timers) clearTimeout(timer);
+  };
+}
+
 export type DndProviderProps = {
   /**
    * A completed drop onto a DropTarget (`position` is `null`) or into a SortableList from outside
@@ -284,6 +331,8 @@ export function DndProvider({
   const dragRef = useRef<DragState>(IDLE);
   const overDataRef = useRef<DropData | null>(null);
   const keyboardTargetRef = useRef<string | null>(null);
+  const releaseKeysRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => releaseKeysRef.current?.(), []);
   const isKeyboardDragRef = useRef(false);
   const pointerRef = useRef<Coordinates | null>(null);
 
@@ -322,6 +371,8 @@ export function DndProvider({
   );
 
   const finish = useCallback(() => {
+    releaseKeysRef.current?.();
+    releaseKeysRef.current = null;
     update(IDLE);
     overDataRef.current = null;
     moveKeyboardTarget(null);
@@ -335,6 +386,8 @@ export function DndProvider({
       const items = source?.items ?? [{ id: String(event.active.id) }];
       const isKeyboard = isKeyboardEvent(event.activatorEvent);
       isKeyboardDragRef.current = isKeyboard;
+      releaseKeysRef.current?.();
+      releaseKeysRef.current = isKeyboard && event.activatorEvent ? holdEarlyKeys(event.activatorEvent) : null;
       pointerRef.current = null;
       setIsPointerDrag(!isKeyboard);
       moveKeyboardTarget(null);

@@ -64,7 +64,8 @@ const FIXED = new RegExp("^/issues/(backlog|epics|queues)/?$");
 /** The screen a path names; anything unknown is the Inbox. */
 export function routeOf(pathname: string): Route {
   const issue = ISSUE_ROUTE.exec(pathname);
-  if (issue) return { kind: "issue", repo: `${issue[1]}/${issue[2]}`.toLowerCase(), number: Number(issue[3]) };
+  // GitHub's casing is kept (the server casefolds only to compare); tabs compare without case.
+  if (issue) return { kind: "issue", repo: `${issue[1]}/${issue[2]}`, number: Number(issue[3]) };
   const fixed = FIXED.exec(pathname)?.[1];
   if (fixed === "backlog" || fixed === "epics" || fixed === "queues") return { kind: fixed };
   return { kind: "inbox" };
@@ -84,6 +85,8 @@ export class IssuesRequestError extends Error {
     /** The typed error's name, such as `EarlierBatchError`; null for an untyped answer. */
     readonly code: string | null,
     readonly retryAfter: number | null = null,
+    /** `EarlierBatchError`: the batch to retry or abandon first. */
+    readonly batchId: string | null = null,
   ) {
     super(message);
     this.name = "IssuesRequestError";
@@ -163,6 +166,7 @@ function unwrap<T>(r: Result<T>): T {
       r.response.status,
       typeof body.error === "string" ? body.error : null,
       retry,
+      typeof body.batch_id === "string" ? body.batch_id : null,
     );
   }
   return r.data as T;
@@ -315,11 +319,32 @@ const CLOSE_REASON: Record<"completed" | "not_planned" | "duplicate", string> = 
   duplicate: "a duplicate",
 };
 
+/** A value without its dimension's own prefix: "priority: high" reads "high" after "priority". */
+export function shortValue(dimension: string, value: string): string {
+  const prefix = `${dimension}:`;
+  const short = value.toLowerCase().startsWith(prefix) ? value.slice(prefix.length).trim() : value;
+  return short || value;
+}
+
+/** Line endings are ordinary text: only what lies between them is checked for hidden characters
+ * (R62 tokens are for bidi and invisible characters, never a newline). */
+export function revealLines(value: string, reveal: (line: string) => string): string {
+  return value
+    .split(/(\r\n|\n|\r)/)
+    .map((part, i) => (i % 2 === 1 ? part : reveal(part)))
+    .join("");
+}
+
+/** The batches the server says didn't finish (for the tray after a reload). */
+export async function getUnfinishedBatches(client: JesiniaClient): Promise<ApplyBatch[]> {
+  return unwrap(await client.GET("/api/issues/batches")).batches;
+}
+
 /** A staged change in a few words, for the tray. */
 export function describeChange(change: PendingChange): string {
   switch (change.kind) {
     case "set_dimension":
-      return `Set ${change.dimension} to ${change.value}`;
+      return `Set ${change.dimension} to ${shortValue(change.dimension, change.value)}`;
     case "add_area":
       return `Add area ${change.value}`;
     case "remove_area":
@@ -376,11 +401,17 @@ export function batchHeadline(batch: ApplyBatch): string {
   return batch.complete ? "All changes applied" : "Some changes didn't apply";
 }
 
-export type IssueOutcome = { state: "applied" | "failed" | "skipped"; text: string; conflict: boolean };
+export type IssueOutcome = { state: "applied" | "failed" | "skipped" | "pending"; text: string; conflict: boolean };
 
-/** One issue's result: applied, or the first step that failed or was skipped, with its cause. */
-export function issueResult(issue: { steps: ApplyIssue["steps"] }): IssueOutcome {
+/**
+ * One issue's result: applied, or the first step that failed or was skipped, with its cause.
+ * While its batch runs, steps not reached yet are reported skipped ("not run yet"): pending.
+ */
+export function issueResult(issue: { steps: ApplyIssue["steps"] }, isRunning = false): IssueOutcome {
   const failed = issue.steps.find((step) => step.state === "failed");
+  if (!failed && isRunning && issue.steps.some((step) => step.state !== "done")) {
+    return { state: "pending", text: "In progress", conflict: false };
+  }
   if (failed) {
     return { state: "failed", text: `${failed.kind} failed: ${failed.cause ?? "no cause given"}`, conflict: failed.conflict === true };
   } // prettier-ignore
@@ -406,8 +437,9 @@ export const STATUS_COLUMNS: { id: StatusId; label: string }[] = [
 
 /**
  * The derived status (spec §6.2): Done once closed or its PR merged; In progress while a linked
- * PR is open; Triage while incomplete; else Backlog. In review needs a PR's review state, which
- * the cache doesn't hold yet, so nothing lands there for now.
+ * PR is open (sync reads the linked PRs of the issues it sees change); Triage while incomplete;
+ * else Backlog. The spec names In review without defining it, and the cache holds a linked PR's
+ * state only (open, merged, closed), not its review state, so nothing lands there yet.
  */
 export function statusOf(row: IssueRow): StatusId {
   if (row.state === "closed" || row.linked_pr_state === "merged") return "done";

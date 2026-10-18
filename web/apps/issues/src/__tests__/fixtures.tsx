@@ -188,6 +188,7 @@ export function issuesRoutes(over: Routes = {}): Routes {
     "GET /api/issues/inbox": view([ROW_1]),
     "GET /api/issues/backlog": view([ROW_1, ROW_2]),
     "GET /api/issues/pending": { changes: [] },
+    "GET /api/issues/batches": { batches: [] },
     "GET /api/issues/suggestions": suggestions(),
     "GET /api/issues/item/acme/app/1": detail(),
     "POST /api/issues/item/acme/app/1/refresh": detail(),

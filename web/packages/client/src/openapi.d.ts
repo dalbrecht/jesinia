@@ -1392,6 +1392,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/issues/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Unfinished Batches
+         * @description The batches that didn't finish (running, interrupted, or finished with steps not
+         *     applied), newest first, from the cache: what the tray offers Retry or Abandon for after
+         *     a reload (no GitHub).
+         */
+        get: operations["get_unfinished_batches_api_issues_batches_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/issues/pending/{batch}": {
         parameters: {
             query?: never;
@@ -2603,6 +2625,15 @@ export interface components {
             /** Rate Limited Until */
             rate_limited_until: string | null;
         };
+        /**
+         * ApplyBatchesOut
+         * @description Batches that didn't finish: running, interrupted, or finished with something not applied
+         *     (newest first). A client shows them after a reload, so Retry and Abandon stay reachable.
+         */
+        ApplyBatchesOut: {
+            /** Batches */
+            batches: components["schemas"]["ApplyBatchOut"][];
+        };
         /** ApplyCreatedOut */
         ApplyCreatedOut: {
             /** Temp Id */
@@ -3380,10 +3411,13 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
-            /** State */
-            state: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "closed";
             /** Linked Pr State */
-            linked_pr_state: string | null;
+            linked_pr_state: ("merged" | "open" | "closed") | null;
         };
         /**
          * IssueSuggestionEditIn
@@ -3558,6 +3592,8 @@ export interface components {
             detail: string;
             /** Retry After */
             retry_after?: number | null;
+            /** Batch Id */
+            batch_id?: string | null;
         };
         /**
          * IssuesRepoIn
@@ -10179,6 +10215,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_unfinished_batches_api_issues_batches_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchesOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
             /** @description Bad Gateway */

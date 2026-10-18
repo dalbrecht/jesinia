@@ -31,5 +31,6 @@ export function saveTabs(tabs: OpenTab[]): void {
   }
 }
 
+/** The same issue: repo names compare without case, as GitHub's (and the server's) do. */
 export const sameTab = (a: { repo: string; number: number }, b: { repo: string; number: number }): boolean =>
-  a.repo === b.repo && a.number === b.number;
+  a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;

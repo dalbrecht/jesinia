@@ -76,7 +76,7 @@ describe("readiness and priority columns", () => {
     const { staged, routes } = stagingRoutes();
     const { calls } = renderApp(routes);
     await openBoard();
-    const user = await pickUp("acme/app#1 Fix login");
+    const user = await pickUp("Move acme/app#1 Fix login");
     await moveTo(user, "blocked");
     await user.keyboard("[Space]");
     await waitFor(() => expect(staged).toHaveLength(1));
@@ -97,7 +97,7 @@ describe("readiness and priority columns", () => {
     renderApp(routes);
     await openBoard("Priority");
     expect(within(column("priority: medium")).getByText("Fix login")).toBeInTheDocument();
-    const user = await pickUp("acme/app#1 Fix login");
+    const user = await pickUp("Move acme/app#1 Fix login");
     await moveTo(user, "priority: low");
     await user.keyboard("[Space]");
     await waitFor(() => expect(staged).toHaveLength(1));
@@ -115,7 +115,7 @@ describe("readiness and priority columns", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: "Select acme/app#2" })); // already agent-ready
     await userEvent.click(screen.getByRole("checkbox", { name: "Select acme/app#3" }));
     await openBoard();
-    const user = await pickUp("acme/app#1 Fix login");
+    const user = await pickUp("Move acme/app#1 Fix login");
     expect(said()).toMatch(/^Picked up 3 issues/);
     await moveTo(user, "agent-ready");
     await user.keyboard("[Space]");
@@ -128,15 +128,15 @@ describe("readiness and priority columns", () => {
     const { staged, routes } = stagingRoutes([ROW_1, ROW_2, other]);
     renderApp(routes);
     await openBoard();
-    let user = await pickUp("acme/app#2 Add export");
+    let user = await pickUp("Move acme/app#2 Add export");
     expect(await moveTo(user, "No readiness")).toMatch(/Pick a value/);
     await user.keyboard("[Escape]");
-    user = await pickUp("acme/app#2 Add export");
+    user = await pickUp("Move acme/app#2 Add export");
     expect(await moveTo(user, "agent-ready")).toMatch(/Already agent-ready/);
     await user.keyboard("[Space]");
     await waitFor(() => expect(said()).toMatch(/Nothing changed/));
     // acme/other isn't in Settings → Issues here, so it has no known schema values.
-    user = await pickUp("acme/other#4 Elsewhere");
+    user = await pickUp("Move acme/other#4 Elsewhere");
     expect(await moveTo(user, "blocked")).toMatch(/acme\/other's label schema has no blocked/);
     await user.keyboard("[Escape]");
     expect(staged).toHaveLength(0);
@@ -158,7 +158,7 @@ describe("status columns", () => {
     expect(within(column("In progress")).getByText("Being built")).toBeInTheDocument();
     expect(within(column("Done")).getByText("Shipped")).toBeInTheDocument();
     expect(column("In review")).toBeInTheDocument();
-    const user = await pickUp("acme/app#1 Fix login");
+    const user = await pickUp("Move acme/app#1 Fix login");
     expect(await moveTo(user, "Backlog")).toMatch(/Status comes from GitHub/);
     await user.keyboard("[Space]");
     await waitFor(() => expect(said()).toMatch(/Nothing changed/));

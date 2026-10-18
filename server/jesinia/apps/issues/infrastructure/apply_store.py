@@ -204,6 +204,14 @@ class SqliteApplyStore:
         ).fetchone()
         return None if row is None else _batch(row)
 
+    def recent_batches(self, limit: int) -> list[AppliedBatch]:
+        rows = self._conn.execute(
+            f"SELECT {_BATCH_COLUMNS} FROM apply_batches WHERE status != 'abandoned' "
+            "ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+            (limit,),
+        )
+        return [_batch(row) for row in rows]
+
     def interrupt_running(self) -> int:
         with transaction(self._conn):
             self._conn.execute(

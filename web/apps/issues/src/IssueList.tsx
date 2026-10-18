@@ -3,11 +3,12 @@
 // with Claude", "Approve all"), or the board as a view toggle. Served from the cache at once and
 // read again in the background, with "Updated N min ago · refreshing…" (spec §6.3); when GitHub
 // can't be read the cached list stays under a banner.
-import { Badge, Banner, Button, toneFor, useToast } from "@jesinia/design";
+import { Badge, Banner, Button, toneFor, useToast, VisuallyHidden } from "@jesinia/design";
 import { useClient, VisibleText } from "@jesinia/shell";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActionKeys,
+  IDLE_POLL_MS,
   errorCause,
   freshness,
   getSuggestions,
@@ -50,9 +51,11 @@ export type IssueListProps = {
   view: ViewName;
   repos: Repo[];
   onOpen: (row: IssueRow) => void;
+  /** Shown now: a hidden list reads the cache at the idle pace only. */
+  active: boolean;
 };
 
-export function IssueList({ view, repos, onOpen }: IssueListProps) {
+export function IssueList({ view, repos, onOpen, active }: IssueListProps) {
   const client = useClient();
   const toast = useToast();
   const tray = useTray();
@@ -68,9 +71,15 @@ export function IssueList({ view, repos, onOpen }: IssueListProps) {
   const [grouping, setGrouping] = useState<Grouping>("readiness");
   const [busy, setBusy] = useState<string | null>(null);
 
+  // A read started earlier (another filter, a poll) may resolve later: only the newest shows.
+  const reads = useRef({ issued: 0, shown: 0 });
   const read = useCallback(async () => {
+    const id = ++reads.current.issued;
     try {
-      setData(await getView(client, view, { repo: repo || undefined, filter: filter || undefined }));
+      const found = await getView(client, view, { repo: repo || undefined, filter: filter || undefined });
+      if (id < reads.current.shown) return;
+      reads.current.shown = id;
+      setData(found);
       setReadError(null);
       setFailedReads(0);
     } catch (e) {
@@ -86,7 +95,7 @@ export function IssueList({ view, repos, onOpen }: IssueListProps) {
     void read();
   }, [read, tray.revision]);
 
-  const pollMs = nextPollMs(data, failedReads);
+  const pollMs = active ? nextPollMs(data, failedReads) : Math.max(IDLE_POLL_MS, nextPollMs(data, failedReads));
   useEffect(() => {
     const timer = setTimeout(() => void read(), pollMs);
     return () => clearTimeout(timer);
@@ -123,27 +132,38 @@ export function IssueList({ view, repos, onOpen }: IssueListProps) {
     }
   };
 
-  // Approving applies at once (spec §6.2), one batch per suggestion, followed in the tray.
+  // Approving applies at once (spec §6.2), one batch per suggestion, followed in the tray. Each
+  // selected issue's suggestions are read on their own (never a capped repo page), and every
+  // outcome is reported: nothing is skipped without saying so.
   const approveAll = async () => {
     setBusy("approve");
-    try {
-      const wanted = new Set(chosen.map(refOf));
-      const byRepo = [...new Set(chosen.map((row) => row.repo))];
-      const open = [];
-      for (const name of byRepo) {
-        const found = await getSuggestions(client, { repo: name });
-        open.push(...found.suggestions.filter((sug) => wanted.has(`${sug.repo ?? ""}#${sug.n ?? 0}`)));
+    const unread: string[] = [];
+    let open = 0;
+    let started = 0;
+    for (const row of chosen) {
+      let found;
+      try {
+        found = await getSuggestions(client, { repo: row.repo, n: row.number });
+      } catch (e) {
+        unread.push(refOf(row));
+        toast.show({ tone: "danger", message: `Couldn't read the suggestions for ${refOf(row)}: ${errorCause(e)}` });
+        continue;
       }
-      if (open.length === 0) {
-        toast.show({ tone: "info", message: "No open suggestions to approve for the selected issues." });
-        return;
+      for (const suggestion of found.suggestions) {
+        open += 1;
+        if (await tray.approve(suggestion)) started += 1;
       }
-      for (const suggestion of open) await tray.approve(suggestion);
-    } catch (e) {
-      toast.show({ tone: "danger", message: `Couldn't read the suggestions: ${errorCause(e)}` });
-    } finally {
-      setBusy(null);
     }
+    setBusy(null);
+    const parts = [];
+    if (open === 0 && unread.length === 0) parts.push("No open suggestions to approve for the selected issues.");
+    if (open > 0)
+      parts.push(
+        `Approved ${started} of ${plural(open, "suggestion", "suggestions")}; results are in Pending changes.`,
+      );
+    if (started < open) parts.push(`${open - started} couldn't be approved (see why above).`);
+    if (unread.length > 0) parts.push(`Suggestions of ${unread.join(", ")} couldn't be read.`);
+    toast.show({ tone: started === open && unread.length === 0 ? "info" : "warn", message: parts.join(" ") });
   };
 
   const syncError = data?.sync_error ?? null;
@@ -175,7 +195,9 @@ export function IssueList({ view, repos, onOpen }: IssueListProps) {
           </select>
         </label>
         <fieldset className={s.segmented}>
-          <legend className={s.visuallyHidden}>View</legend>
+          <legend>
+            <VisuallyHidden>View</VisuallyHidden>
+          </legend>
           {(["list", "board"] as const).map((m) => (
             <label key={m} className={s.segment} data-on={mode === m || undefined}>
               <input type="radio" name={`${view}-mode`} checked={mode === m} onChange={() => setMode(m)} />
@@ -185,7 +207,9 @@ export function IssueList({ view, repos, onOpen }: IssueListProps) {
         </fieldset>
         {mode === "board" ? (
           <fieldset className={s.segmented}>
-            <legend className={s.visuallyHidden}>Columns by</legend>
+            <legend>
+              <VisuallyHidden>Columns by</VisuallyHidden>
+            </legend>
             {(["readiness", "priority", "status"] as const).map((g) => (
               <label key={g} className={s.segment} data-on={grouping === g || undefined}>
                 <input

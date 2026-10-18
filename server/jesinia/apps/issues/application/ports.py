@@ -38,6 +38,7 @@ from jesinia.services.github.domain.issue import (
     IssueRef,
     Label,
     LabeledItem,
+    LinkedPr,
     Milestone,
     Page,
     TimelineEvent,
@@ -70,6 +71,9 @@ class IssueReads(Protocol):
     async def file(self, repo: str, path: str) -> str | None: ...
 
     async def sub_issues(self, repo: str, n: int) -> list[Issue]: ...
+
+    async def timeline_links(self, repo: str, n: int) -> list[LinkedPr]:
+        """The pull requests that reference the issue (its whole timeline)."""
 
     async def comments(
         self, repo: str, n: int, since: datetime | None, page_token: str | None = None
@@ -502,6 +506,9 @@ class ApplyStore(Protocol):
 
     def batch_by_key(self, request_key: str) -> AppliedBatch | None:
         """The batch a request with this Idempotency-Key started."""
+
+    def recent_batches(self, limit: int) -> list[AppliedBatch]:
+        """The ``limit`` most recently updated batches, newest first (abandoned ones left out)."""
 
     def interrupt_running(self) -> int:
         """Mark every ``running`` batch ``interrupted`` (at start nothing runs yet)."""

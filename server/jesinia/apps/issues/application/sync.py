@@ -65,7 +65,7 @@ from jesinia.apps.issues.domain.triage import (
 )
 from jesinia.services.github.application.payload import GitHubPayloadError
 from jesinia.services.github.application.service import GitHubError, GitHubRateLimitedError
-from jesinia.services.github.domain.issue import Issue, Page
+from jesinia.services.github.domain.issue import Issue, Page, summarize_linked_prs
 from jesinia.services.github.domain.repo import validate_repo
 
 log = logging.getLogger(__name__)
@@ -310,6 +310,8 @@ class SyncService:
                 if not (cursor.covers(i.updated_at, i.id) and self._store.is_unchanged(repo, i))
             ]
             links = {} if is_first else await self._children(repo, fresh)
+            if not is_first:
+                fresh = [await self._with_linked_prs(repo, i) for i in fresh]
             stored, entered, edited = self._triaged(state, schema, fresh)
             cursor, done = cursor.after_page(
                 [(i.updated_at, i.id) for i in page.items], page.next_token
@@ -324,6 +326,15 @@ class SyncService:
             for n in self._store.epics_without_links(repo, EPIC_BACKFILL_PER_SYNC):
                 children = await self._github.sub_issues(repo, n)
                 self._store.set_sub_issue_links(repo, n, children, self._clock())
+
+    async def _with_linked_prs(self, repo: str, issue: Issue) -> Issue:
+        """``issue`` with its linked PRs summed up (the board's status view, IR62). Only issues
+        a later sync sees change are read, and only open ones (a closed issue is Done anyway),
+        so a big first sync costs no per-issue calls (IR20)."""
+        if issue.state != "open":
+            return issue
+        links = await self._github.timeline_links(repo, issue.number)
+        return replace(issue, linked_pr_state=summarize_linked_prs(links))
 
     async def _children(
         self, repo: str, issues: Sequence[Issue]

@@ -470,7 +470,11 @@ class SqliteIssuesStore:
         row = self._conn.execute(
             "SELECT json FROM issues WHERE repo = ? AND number = ?", (repo, issue.number)
         ).fetchone()
-        return row is not None and row[0] == _issue_json(issue)
+        if row is None:
+            return False
+        # Sync fills the linked PRs itself (GitHub's list doesn't carry them): compare the rest.
+        kept = json.loads(row[0]).get("linked_pr_state")
+        return bool(row[0] == _issue_json(replace(issue, linked_pr_state=kept)))
 
     def save_page(
         self,
@@ -532,6 +536,10 @@ class SqliteIssuesStore:
             self._write_triage(issue.repo, [(issue.number, triaged)])
 
     def refresh_issue(self, issue: Issue, triaged: Triage) -> None:
+        stored = self.issue(issue.repo, issue.number)
+        if issue.linked_pr_state is None and stored is not None:
+            # A fresh read (an apply's) doesn't carry the linked PRs: keep what sync found.
+            issue = replace(issue, linked_pr_state=stored.linked_pr_state)
         with transaction(self._conn):
             updated = self._conn.execute(
                 "UPDATE issues SET json = ?, state = ?, updated_at = ?, sub_issue_count = ? "

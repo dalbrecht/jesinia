@@ -132,6 +132,8 @@ class IssuesErrorOut(BaseModel):
     error: str
     detail: str
     retry_after: int | None = None
+    # ``EarlierBatchError``: the batch to retry or abandon first, so a client can follow it.
+    batch_id: str | None = None
 
 
 class LabelCanonicalBody(BaseModel):
@@ -245,8 +247,8 @@ class IssueRowOut(BaseModel):
     milestone: str | None
     created_at: datetime
     updated_at: datetime
-    state: str
-    linked_pr_state: str | None
+    state: Literal["open", "closed"]
+    linked_pr_state: Literal["merged", "open", "closed"] | None
 
     @classmethod
     def of(cls, row: IssueRow) -> IssueRowOut:
@@ -971,6 +973,13 @@ class ApplyBatchOut(BaseModel):
             rate_limited=result.is_rate_limited,
             rate_limited_until=result.rate_limited_until,
         )
+
+
+class ApplyBatchesOut(BaseModel):
+    """Batches that didn't finish: running, interrupted, or finished with something not applied
+    (newest first). A client shows them after a reload, so Retry and Abandon stay reachable."""
+
+    batches: list[ApplyBatchOut]
 
 
 class SuggestionApproveOut(BaseModel):

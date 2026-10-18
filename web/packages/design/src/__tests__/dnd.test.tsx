@@ -120,6 +120,23 @@ describe("DndProvider with Draggable and DropTarget (keyboard)", () => {
     expect(dropState("Epic B")).toBe("idle");
   });
 
+  it("keys pressed right after pick-up still count (IR62: the sensor listens a task later)", async () => {
+    const onDrop = vi.fn<OnDrop>();
+    render(<Board onDrop={onDrop} />);
+    const handle = screen.getByRole("button", { name: "Fix sync" });
+    handle.focus();
+    // All in one task, before dnd-kit's keyboard sensor has attached its key listener.
+    act(() => {
+      fireEvent.keyDown(handle, { key: " ", code: "Space" });
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "ArrowDown", code: "ArrowDown" });
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "ArrowDown", code: "ArrowDown" });
+    });
+    await waitFor(() => expect(said()).toBe("Over Epic B."));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: " ", code: "Space" });
+    await waitFor(() => expect(onDrop).toHaveBeenCalledOnce());
+    expect(onDrop.mock.calls[0]?.[1]).toMatchObject({ id: "epic-b" });
+  });
+
   it("drops with Enter too, and says so when dropped outside any target", async () => {
     const onDrop = vi.fn<OnDrop>();
     render(<Board onDrop={onDrop} />);

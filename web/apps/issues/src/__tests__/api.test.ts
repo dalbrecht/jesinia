@@ -155,7 +155,8 @@ describe("how things read", () => {
     expect(refOf({ repo: REPO, number: 4 })).toBe("acme/app#4");
     expect(issuePath(REPO, 4)).toBe("/issues/acme/app/4");
     expect(routeOf("/issues/acme/app/4")).toEqual({ kind: "issue", repo: REPO, number: 4 });
-    expect(routeOf("/issues/Acme/App/4/")).toEqual({ kind: "issue", repo: REPO, number: 4 });
+    // GitHub's casing is kept; tabs compare without case.
+    expect(routeOf("/issues/Acme/App/4/")).toEqual({ kind: "issue", repo: "Acme/App", number: 4 });
     expect(routeOf("/issues/")).toEqual({ kind: "inbox" });
     expect(routeOf("/issues")).toEqual({ kind: "inbox" });
     expect(routeOf("/issues/backlog")).toEqual({ kind: "backlog" });

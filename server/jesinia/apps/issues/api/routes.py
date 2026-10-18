@@ -32,6 +32,7 @@ from jesinia.apps.issues.api.schemas import (
     REPO_MAX,
     AbandonedOut,
     AbandonIn,
+    ApplyBatchesOut,
     ApplyBatchOut,
     ContainmentOut,
     ConversionIn,
@@ -323,7 +324,10 @@ def _status_of(exc: Exception) -> int:
 
 def _error(exc: Exception, now: Callable[[], datetime]) -> JSONResponse:
     wait = retry_after(exc.reset_at, now()) if isinstance(exc, GitHubRateLimitedError) else None
-    body = IssuesErrorOut(error=type(exc).__name__, detail=str(exc), retry_after=wait)
+    batch_id = exc.batch_id if isinstance(exc, EarlierBatchError) else None
+    body = IssuesErrorOut(
+        error=type(exc).__name__, detail=str(exc), retry_after=wait, batch_id=batch_id
+    )
     headers = None if wait is None else {"Retry-After": str(wait)}
     return JSONResponse(
         body.model_dump(exclude_none=True), status_code=_status_of(exc), headers=headers
@@ -667,6 +671,18 @@ def build_router(host: IssuesHost) -> APIRouter:
             return _started(started.id, ApplyBatchOut.of(started))
 
         return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get("/batches", response_model=ApplyBatchesOut)
+    async def get_unfinished_batches() -> Response:
+        """The batches that didn't finish (running, interrupted, or finished with steps not
+        applied), newest first, from the cache: what the tray offers Retry or Abandon for after
+        a reload (no GitHub)."""
+
+        async def run() -> ApplyBatchesOut:
+            unfinished = host.pending.unfinished()
+            return ApplyBatchesOut(batches=[ApplyBatchOut.of(b) for b in unfinished])
+
+        return await _respond(run, host.clock)
 
     @r.get("/pending/{batch}", response_model=ApplyBatchOut)
     async def get_batch(batch: ItemId) -> Response:

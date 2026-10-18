@@ -6,9 +6,9 @@
 // tray. The issue's text and the agent's reasons are untrusted: Markdown goes through the shared
 // safe renderer (no raw HTML, no images), everything else is plain text, and hidden characters
 // show as visible tokens (R62).
-import { Badge, Button, toneFor, useToast } from "@jesinia/design";
+import { Badge, Button, Input, toneFor, useToast } from "@jesinia/design";
 import { safeHttpUrl, SafeMarkdown, useClient, VisibleText, visibleText, type MdNode } from "@jesinia/shell";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   ActionKeys,
   describeSuggestion,
@@ -18,6 +18,7 @@ import {
   getItem,
   getSuggestions,
   parseRef,
+  revealLines,
   refreshItem,
   runSuggestions,
   syncedAgo,
@@ -31,9 +32,13 @@ import {
 import s from "./issues.module.css";
 import { useTray } from "./Tray";
 
-/** Every text node of the issue's Markdown with its hidden characters as visible tokens. */
+/**
+ * Every text node of the issue's Markdown with its hidden characters as visible tokens. Line
+ * endings stay as they are (a soft break, a code block's lines, GitHub's CRLF): tokens are for
+ * bidi and invisible characters, never an ordinary newline (R62).
+ */
 function revealTree(node: MdNode): void {
-  if (typeof node.value === "string") node.value = visibleText(node.value);
+  if (typeof node.value === "string") node.value = revealLines(node.value, visibleText);
   for (const child of node.children ?? []) revealTree(child);
 }
 
@@ -82,6 +87,8 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
   const tray = useTray();
   const keys = useRef(new ActionKeys());
   const ref = `${repo}#${number}`;
+  // Section ids unique per open tab (two repos' #12 can both be open, both mounted).
+  const ids = useId().replace(/:/g, "");
   const [issue, setIssue] = useState<IssueDetail | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [refreshProblem, setRefreshProblem] = useState<string | null>(null);
@@ -89,6 +96,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  const [approvingAll, setApprovingAll] = useState(false);
 
   const keyed = useCallback(async <T,>(action: string, work: (key: string) => Promise<T>): Promise<T> => {
     setBusy((prev) => new Set(prev).add(action));
@@ -131,10 +139,25 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
     }
   }, [client, repo, number, ref, fail]);
 
+  // The cache read and the refresh can resolve in either order: only a newer answer than the one
+  // shown replaces it (a slow cache read never hides fresh comments).
+  const loads = useRef({ issued: 0, shown: 0 });
+  const load = useCallback(
+    (read: () => Promise<IssueDetail>) => {
+      const id = ++loads.current.issued;
+      return read().then((found) => {
+        if (id < loads.current.shown) return;
+        loads.current.shown = id;
+        shown(found);
+      });
+    },
+    [shown],
+  );
+
   useEffect(() => {
-    getItem(client, repo, number).then(shown, (e: unknown) => setProblem(errorCause(e)));
+    load(() => getItem(client, repo, number)).catch((e: unknown) => setProblem(errorCause(e)));
     void readSuggestions();
-  }, [client, repo, number, shown, readSuggestions, tray.revision]);
+  }, [client, repo, number, load, readSuggestions, tray.revision]);
 
   // While Claude is suggesting, its drafts are read again until the run settles.
   const runStatus = list?.run?.status ?? null;
@@ -147,14 +170,27 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
 
   // Opening an issue fetches its comments and timeline once (the cache shows meanwhile).
   useEffect(() => {
-    keyed(`refresh:${ref}`, (key) => refreshItem(client, repo, number, key)).then(
-      (found) => {
-        shown(found);
-        setRefreshProblem(null);
-      },
+    load(() => keyed(`refresh:${ref}`, (key) => refreshItem(client, repo, number, key))).then(
+      () => setRefreshProblem(null),
       (e: unknown) => setRefreshProblem(errorCause(e)),
     );
-  }, [client, repo, number, ref, keyed, shown]);
+  }, [client, repo, number, ref, keyed, load]);
+
+  // A suggestion that held focus is gone (accepted, dismissed, or its editor saved): focus the
+  // one now in its place, or the Suggestions heading when none are left.
+  const sugList = useRef<HTMLUListElement>(null);
+  const sugHeading = useRef<HTMLHeadingElement>(null);
+  const focusAt = useRef<number | null>(null);
+  useEffect(() => {
+    const at = focusAt.current;
+    if (at === null) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && document.contains(active)) return;
+    focusAt.current = null;
+    const items = sugList.current?.querySelectorAll<HTMLElement>(":scope > li") ?? [];
+    const target = items[Math.min(at, items.length - 1)]?.querySelector<HTMLElement>("button");
+    (target ?? sugHeading.current)?.focus();
+  });
 
   if (issue === null) {
     return problem === null ? (
@@ -182,12 +218,16 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
     void tray.stage(repo, number, { kind: "set_dimension", dimension, value }, "picker");
   };
 
+  const indexOf = (suggestion: Suggestion) => open.findIndex((sug) => sug.id === suggestion.id);
+
   const accept = async (suggestion: Suggestion) => {
+    focusAt.current = indexOf(suggestion);
     await tray.approve(suggestion);
     await readSuggestions();
   };
 
   const dismiss = async (suggestion: Suggestion) => {
+    focusAt.current = indexOf(suggestion);
     try {
       await keyed(`dismiss:${suggestion.id}`, (key) => dismissSuggestion(client, suggestion.id, key));
     } catch (e) {
@@ -198,6 +238,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
 
   const save = async (suggestion: Suggestion) => {
     const dimension = String(suggestion.payload.dimension);
+    focusAt.current = indexOf(suggestion);
     try {
       await keyed(`edit:${suggestion.id}`, (key) =>
         editSuggestion(client, suggestion.id, { dimension, value: draft.trim() }, key),
@@ -210,11 +251,15 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
   };
 
   const approveAll = async () => {
+    setApprovingAll(true);
     for (const suggestion of open) await tray.approve(suggestion);
+    setApprovingAll(false);
+    focusAt.current = 0;
     await readSuggestions();
   };
 
   const dismissAll = async () => {
+    focusAt.current = 0;
     for (const suggestion of open) {
       try {
         await keyed(`dismiss:${suggestion.id}`, (key) => dismissSuggestion(client, suggestion.id, key));
@@ -247,7 +292,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
         <ol>
           {OUTLINE.map((part) => (
             <li key={part.id}>
-              <a href={`#${part.id}-${number}`} className={s.outlineLink}>
+              <a href={`#${ids}-${part.id}`} className={s.outlineLink}>
                 {part.label}
                 {part.id === "suggestions" && open.length > 0 ? <Badge>{open.length}</Badge> : null}
               </a>
@@ -265,7 +310,9 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
                 value={issue[dimension] ?? ""}
                 onChange={(e) => pick(dimension, e.target.value)}
               >
-                <option value="">{`No ${dimension}`}</option>
+                <option value="" disabled>
+                  {`No ${dimension}`}
+                </option>
                 {valuesFor(dimension).map((value) => (
                   <option key={value} value={value}>
                     {value}
@@ -294,7 +341,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
           ))}
         </p>
 
-        <section id={`summary-${number}`} className={s.section} aria-label="Summary">
+        <section id={`${ids}-summary`} className={s.section} aria-label="Summary">
           <h2 className={s.kicker}>Summary</h2>
           <div className={s.prose}>
             {issue.body.trim() ? (
@@ -312,7 +359,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
           </div>
         </section>
 
-        <section id={`timeline-${number}`} className={s.section} aria-label="Timeline">
+        <section id={`${ids}-timeline`} className={s.section} aria-label="Timeline">
           <h2 className={s.kicker}>Timeline</h2>
           {refreshProblem ? (
             <p className={s.muted}>{`Couldn't fetch the latest from GitHub: ${refreshProblem}`}</p>
@@ -344,8 +391,10 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
           </ol>
         </section>
 
-        <section id={`suggestions-${number}`} className={s.section} aria-label="Suggestions">
-          <h2 className={s.kicker}>Suggestions</h2>
+        <section id={`${ids}-suggestions`} className={s.section} aria-label="Suggestions">
+          <h2 className={s.kicker} ref={sugHeading} tabIndex={-1}>
+            Suggestions
+          </h2>
           <div className={s.runLine}>
             {status ? <span className={s.muted}>{status}</span> : null}
             <span className={s.spacer} />
@@ -353,7 +402,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
               Suggest with Claude
             </Button>
           </div>
-          <ul className={s.suggestions}>
+          <ul className={s.suggestions} ref={sugList}>
             {open.map((sug) => {
               const isLabel = sug.kind === "label" || sug.kind === "new_area";
               const dimension = String(sug.payload.dimension ?? "");
@@ -389,7 +438,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
                           ))}
                         </select>
                       ) : (
-                        <input aria-label="New area" value={draft} onChange={(e) => setDraft(e.target.value)} />
+                        <Input label="New area" hideLabel value={draft} onChange={(e) => setDraft(e.target.value)} />
                       )}
                       <Button
                         size="sm"
@@ -405,7 +454,12 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
                     </div>
                   ) : (
                     <div className={s.sugActions}>
-                      <Button size="sm" variant="primary" onClick={() => void accept(sug)}>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={tray.isApproving(sug.id)}
+                        onClick={() => void accept(sug)}
+                      >
                         Accept
                       </Button>
                       {isLabel ? (
@@ -435,33 +489,33 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
           </ul>
         </section>
 
-        <section id={`related-${number}`} className={s.section} aria-label="Related">
+        <section id={`${ids}-related`} className={s.section} aria-label="Related">
           <h2 className={s.kicker}>Related and duplicates</h2>
           {duplicates.length === 0 && !issue.children?.length ? (
             <p className={s.muted}>Nothing related found.</p>
           ) : null}
           <ul className={s.plain}>
-            {duplicates.map((sug) => (
-              <li key={sug.id}>
-                Possible duplicate:{" "}
-                <button
-                  type="button"
-                  className={s.linkButton}
-                  onClick={() => onOpenRef(String(sug.payload.repo), Number(sug.payload.n))}
-                >
-                  {`${String(sug.payload.repo)}#${String(sug.payload.n)}`}
-                </button>
-              </li>
-            ))}
-            {(issue.children ?? []).map((child) => (
-              <li key={child}>
-                Sub-issue: <span className={s.ref}>{child}</span>
-              </li>
-            ))}
+            {duplicates.map((sug) => {
+              // The agent's payload: only a well-formed ref is shown as a link, and opened.
+              const original = parseRef(`${String(sug.payload.repo)}#${String(sug.payload.n)}`);
+              return original ? (
+                <li key={sug.id}>
+                  Possible duplicate: <RefButton target={original} onOpen={onOpenRef} />
+                </li>
+              ) : null;
+            })}
+            {(issue.children ?? []).map((child) => {
+              const target = parseRef(child);
+              return (
+                <li key={child}>
+                  Sub-issue: {target ? <RefButton target={target} onOpen={onOpenRef} /> : <VisibleText text={child} />}
+                </li>
+              );
+            })}
           </ul>
         </section>
 
-        <section id={`epic-${number}`} className={s.section} aria-label="Epic">
+        <section id={`${ids}-epic`} className={s.section} aria-label="Epic">
           <h2 className={s.kicker}>Epic</h2>
           {parent ? (
             <p>
@@ -476,7 +530,12 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
         </section>
 
         <div className={s.decide} role="group" aria-label="Decide">
-          <Button variant="primary" disabled={open.length === 0} onClick={() => void approveAll()}>
+          <Button
+            variant="primary"
+            disabled={open.length === 0}
+            loading={approvingAll}
+            onClick={() => void approveAll()}
+          >
             Approve
           </Button>
           <Button variant="ghost" disabled={open.length === 0} onClick={() => void dismissAll()}>
@@ -486,5 +545,20 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
         </div>
       </article>
     </div>
+  );
+}
+
+/** An issue named by a ref, opened in its own tab. */
+function RefButton({
+  target,
+  onOpen,
+}: {
+  target: { repo: string; number: number };
+  onOpen: (repo: string, number: number) => void;
+}) {
+  return (
+    <button type="button" className={s.linkButton} onClick={() => onOpen(target.repo, target.number)}>
+      {`${target.repo}#${target.number}`}
+    </button>
   );
 }
