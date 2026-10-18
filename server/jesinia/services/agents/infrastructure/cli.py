@@ -11,7 +11,7 @@ import shutil
 # argv-only process spawning, never a shell. Aliased because the standards linter's
 # banned-builtin pattern also matches the name of this safe asyncio function.
 from asyncio import create_subprocess_exec as start_process
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -56,9 +56,23 @@ class CliRunner:
     name: str
     binary: str
 
-    def __init__(self, *, model: str | None = None, spawn: Spawn | None = None) -> None:
-        self.model = model
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        spawn: Spawn | None = None,
+        model_source: Callable[[], str | None] | None = None,
+    ) -> None:
+        """``model_source`` (Settings → Agents) is asked on every turn, so a changed model
+        applies without a restart; without one the fixed ``model`` is used (None: the CLI's
+        own default)."""
+        self._model = model
+        self._model_source = model_source
         self._spawn: Spawn = spawn or default_spawn
+
+    @property
+    def model(self) -> str | None:
+        return self._model_source() if self._model_source is not None else self._model
 
     # -- hooks for subclasses -------------------------------------------------------
     def build_argv(self, req: TurnRequest) -> list[str]:  # pragma: no cover - abstract

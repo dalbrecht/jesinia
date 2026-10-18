@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import json
+import os
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
@@ -11,7 +12,9 @@ from fastapi import FastAPI
 
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
+from jesinia.core.idempotency import StoredResponse
 from jesinia.services.agents.domain.events import TextDelta, TurnDone
+from jesinia.services.agents.infrastructure.codex import CodexRunner
 from jesinia.services.agents.infrastructure.fake import FakeRunner
 from jesinia.services.agents.module import AgentsModule, default_runners
 from jesinia.services.kb.module import KbModule
@@ -204,6 +207,32 @@ def test_module_before_start() -> None:
     assert mod.health().ok is False
     with pytest.raises(HTTPException):
         _ = mod.service
+    with pytest.raises(HTTPException):
+        _ = mod.models
+    with pytest.raises(HTTPException):
+        _ = mod.idempotency
+
+
+async def test_idempotency_keys_are_pruned_and_crash_leftovers_cleared(cfg: Config) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from jesinia.core.idempotency import RETENTION
+
+    agents = AgentsModule(runners={"fake": FakeRunner([TurnDone("f", None)])})
+    await agents.prune_idempotency_keys()  # before start: nothing to prune
+    app = create_app(replace(cfg, kb_path=None), [agents])
+    async with running(app):
+        store = agents.idempotency
+        old = datetime.now(UTC) - RETENTION - timedelta(days=1)
+        store.reserve("old", "r", old)
+        store.complete("old", "r", StoredResponse(200, None))
+        store.reserve("crashed", "r", datetime.now(UTC))  # never completed
+        await agents.prune_idempotency_keys()
+        assert store.reserve("old", "r", datetime.now(UTC)) is None  # forgotten
+    again = AgentsModule(runners={"fake": FakeRunner([TurnDone("f", None)])})
+    async with running(create_app(replace(cfg, kb_path=None), [again])):
+        # the pending reservation from the "crash" is gone, so the key is free again
+        assert again.idempotency.reserve("crashed", "r", datetime.now(UTC)) is None
 
 
 async def test_pending_write_events_show_the_real_target(app_env: AppEnv) -> None:
@@ -303,3 +332,90 @@ def test_preferred_runner_is_the_first_available_preferring_claude_code() -> Non
     assert mod.preferred_runner() == "codex"
     mod._status["codex"] = {"available": False}
     assert mod.preferred_runner() is None
+
+
+def _key(n: int) -> dict[str, str]:
+    return {"Idempotency-Key": f"agents-settings-{n}"}
+
+
+async def test_model_settings_default_environment_and_partial_patch(
+    app_env: AppEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JESINIA_CLAUDE_MODEL", "env-claude")
+    monkeypatch.delenv("JESINIA_CODEX_MODEL", raising=False)
+    c = app_env.client
+    got = (await c.get("/api/agents/settings")).json()
+    assert got == {
+        "models": {
+            "claude-code": {
+                "setting": None,
+                "environment": "env-claude",
+                "variable": "JESINIA_CLAUDE_MODEL",
+                "effective": "env-claude",
+                "source": "environment",
+            },
+            "codex": {
+                "setting": None,
+                "environment": None,
+                "variable": "JESINIA_CODEX_MODEL",
+                "effective": None,
+                "source": "default",
+            },
+        }
+    }
+    r = await c.patch("/api/agents/settings", json={"codex": "gpt-a"}, headers=_key(1))
+    assert r.status_code == 200, r.text
+    assert r.json()["models"]["codex"] == {
+        "setting": "gpt-a",
+        "environment": None,
+        "variable": "JESINIA_CODEX_MODEL",
+        "effective": "gpt-a",
+        "source": "setting",
+    }
+    # claude-code omitted: kept as it was
+    assert r.json()["models"]["claude-code"]["source"] == "environment"
+    r = await c.patch("/api/agents/settings", json={"claude-code": "set-claude"}, headers=_key(2))
+    models = r.json()["models"]
+    assert (
+        models["claude-code"]["effective"] == "set-claude" and models["codex"]["setting"] == "gpt-a"
+    )
+    r = await c.patch("/api/agents/settings", json={"codex": None}, headers=_key(3))
+    assert r.json()["models"]["codex"]["source"] == "default"
+    assert (await c.get("/api/agents/settings")).json()["models"]["claude-code"]["setting"] == (
+        "set-claude"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"codex": "-m"}, {"codex": "a b"}, {"codex": "x" * 101}, {"codex": ""}, {"fake": "x"}],
+)
+async def test_model_settings_refuse_unsafe_values(app_env: AppEnv, body: dict) -> None:  # type: ignore[type-arg]
+    r = await app_env.client.patch("/api/agents/settings", json=body, headers=_key(9))
+    assert r.status_code == 422
+    assert (await app_env.client.get("/api/agents/settings")).json()["models"]["codex"][
+        "setting"
+    ] is None
+
+
+async def test_model_settings_patch_needs_an_idempotency_key(app_env: AppEnv) -> None:
+    c = app_env.client
+    assert (await c.patch("/api/agents/settings", json={"codex": "a"})).status_code == 400
+    first = await c.patch("/api/agents/settings", json={"codex": "a"}, headers=_key(5))
+    again = await c.patch("/api/agents/settings", json={"codex": "a"}, headers=_key(5))
+    assert first.json() == again.json()
+
+
+async def test_started_module_feeds_runners_the_saved_model(cfg: Config) -> None:
+    agents = AgentsModule()  # the real runners, wired to the settings
+    app = create_app(replace(cfg, kb_path=None), [agents])
+    async with running(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url=BASE_URL, headers=bearer(cfg.token)
+        ) as c:
+            await c.patch("/api/agents/settings", json={"codex": "gpt-live"}, headers=_key(7))
+            codex = agents.service.runners["codex"]
+            assert isinstance(codex, CodexRunner) and codex.model == "gpt-live"
+            await c.patch("/api/agents/settings", json={"codex": None}, headers=_key(8))
+            assert codex.model == os.environ.get("JESINIA_CODEX_MODEL")

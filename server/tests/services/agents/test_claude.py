@@ -29,6 +29,17 @@ def test_claude_argv_confined(req: TurnRequest) -> None:
     assert "--resume" not in argv
 
 
+def test_claude_ignores_the_users_own_settings_plugins_and_skills(req: TurnRequest) -> None:
+    argv = ClaudeCodeRunner().build_argv(replace(req, resume_id="abc"))
+    # Built-in tools are allowlisted down to Read; MCP tools still come from --mcp-config.
+    assert value_after(argv, "--tools") == "Read"
+    # No user/project/local settings: no user hooks, permission rules or enabled plugins.
+    assert value_after(argv, "--setting-sources") == ""
+    assert "--disable-slash-commands" in argv and "--no-chrome" in argv
+    # --safe-mode would also drop the --mcp-config server, leaving the agent tool-less.
+    assert "--safe-mode" not in argv and "--bare" not in argv
+
+
 def test_claude_resume_flag_and_model(req: TurnRequest) -> None:
     argv = ClaudeCodeRunner(model="claude-opus-5-5").build_argv(replace(req, resume_id="abc"))
     assert (

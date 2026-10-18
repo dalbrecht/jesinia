@@ -231,6 +231,11 @@
   font-weight: var(--jx-weight-semibold);
   overflow-wrap: anywhere;
 }
+.fieldName {
+  padding: 0 var(--jx-space-1);
+  font-size: var(--jx-text-sm);
+  font-weight: var(--jx-weight-semibold);
+}
 .repo p {
   margin: 0;
 }

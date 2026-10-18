@@ -30,8 +30,9 @@ def test_codex_argv_read_only_sandbox(req: TurnRequest) -> None:
 
 def test_codex_resume_and_model(req: TurnRequest) -> None:
     argv = CodexRunner(model="gpt-5.6-sol").build_argv(replace(req, resume_id="t-1"))
-    i = argv.index("resume")
-    assert argv[i + 1] == "t-1" and argv[-1] == "-" and value_after(argv, "-m") == "gpt-5.6-sol"
+    assert (
+        "resume" in argv and argv[-2:] == ["t-1", "-"] and value_after(argv, "-m") == "gpt-5.6-sol"
+    )
 
 
 def test_codex_env_and_stdin(req: TurnRequest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -131,3 +132,71 @@ def test_codex_without_a_jesinia_server_configures_no_mcp(req: TurnRequest) -> N
     argv = r.build_argv(replace(req, allowed_tools=[]))
     assert not any(a.startswith("mcp_servers.") for a in argv)
     assert "JESINIA_MCP_TOKEN" not in r.build_env(req)
+
+
+def _overrides(argv: list[str]) -> list[str]:
+    return [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
+
+
+def _disabled(argv: list[str]) -> set[str]:
+    return {argv[i + 1] for i, a in enumerate(argv) if a == "--disable"}
+
+
+def test_codex_allows_jesinia_tools_without_a_prompt(req: TurnRequest) -> None:
+    # exec mode never prompts, so a tool needing approval is auto-denied; Jesinia's own gate
+    # enforces per-session tool limits server-side.
+    overrides = _overrides(CodexRunner().build_argv(req))
+    assert 'mcp_servers.jesinia.default_tools_approval_mode="approve"' in overrides
+
+
+def test_codex_ignores_the_users_own_codex_config(req: TurnRequest) -> None:
+    argv = CodexRunner().build_argv(replace(req, resume_id="t-1"))
+    assert "--ignore-user-config" in argv and "--ignore-rules" in argv
+    # Plugin, app/connector, browser, computer-use and other optional tool sources are off
+    # even when they come from somewhere other than config.toml.
+    assert {
+        "apps",
+        "plugins",
+        "remote_plugin",
+        "computer_use",
+        "browser_use",
+        "browser_use_external",
+        "in_app_browser",
+        "multi_agent",
+        "tool_suggest",
+        "goals",
+        "sleep_tool",
+        "image_generation",
+        "view_image",
+        "memories",
+        "hooks",
+        "shell_tool",
+        "unified_exec",
+    } <= _disabled(argv)
+    overrides = _overrides(argv)
+    assert 'web_search="disabled"' in overrides
+    assert "skills.include_instructions=false" in overrides
+    assert "project_doc_max_bytes=0" in overrides
+
+
+def test_codex_resume_puts_config_after_the_subcommand(req: TurnRequest) -> None:
+    # codex-cli 0.163.0 ignores -c / --disable given before `resume` (observed: web search
+    # and skills came back and the Jesinia MCP server never connected), but honours
+    # --sandbox / -C there; `resume` itself has no --sandbox or -C.
+    argv = CodexRunner(model="m1").build_argv(replace(req, resume_id="t-1"))
+    i = argv.index("resume")
+    before, after = argv[:i], argv[i + 1 :]
+    assert value_after(before, "--sandbox") == "read-only" and "-C" in before
+    assert after[-2:] == ["t-1", "-"]
+    assert "--ignore-user-config" in after and "--json" in after and "--ignore-rules" in after
+    assert {"apps", "plugins", "shell_tool"} <= _disabled(after)
+    assert 'mcp_servers.jesinia.default_tools_approval_mode="approve"' in _overrides(after)
+    assert 'mcp_servers.jesinia.url="http://127.0.0.1:5374/mcp"' in _overrides(after)
+    assert value_after(after, "-m") == "m1"
+
+
+def test_codex_isolated_even_without_a_jesinia_server(req: TurnRequest) -> None:
+    req.mcp_config.write_text('{"mcpServers": {}}')
+    argv = CodexRunner().build_argv(replace(req, allowed_tools=[]))
+    assert "--ignore-user-config" in argv and {"apps", "plugins"} <= _disabled(argv)
+    assert not any("default_tools_approval_mode" in a for a in argv)
