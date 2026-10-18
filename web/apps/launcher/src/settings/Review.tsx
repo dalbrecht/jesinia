@@ -246,28 +246,23 @@ function SettingsPanel() {
   }, [client, attemptNo]);
 
   // Writes go one at a time, and each sends only what it changes (I1): the server keeps every
-  // repo not listed and each folder left out, so a repo confirmed in the queue or edited in
-  // another tab since this page loaded is never put back. `prereview` and `runner` are
-  // required: they come from the server's latest answer.
-  const saved = useRef<Settings | null>(null);
-  useEffect(() => {
-    if (settings) saved.current = settings;
-  }, [settings]);
+  // field left out (the default, the runner, each folder, each repo and its fields), so a
+  // change made in the queue or another tab since this page loaded is never put back.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const write = useCallback(
     (patch: Partial<Settings>) => {
       const run = () => {
-        const latest = saved.current as Settings;
-        const body: Settings = { prereview: latest.prereview, runner: latest.runner, repos: [], ...patch };
+        // Only the fields a control changes are sent (Codex P2 on PR #68): the server keeps
+        // every field left out, so a change made elsewhere since this page loaded survives.
+        // The generated type marks fields with server defaults as required: the partial body
+        // is cast.
+        const body = { repos: [], ...patch } as Settings;
         return attempt(() => client.PUT("/api/review/settings", { params: { header: withIdempotency() }, body }));
       };
       const result = queue.current.then(run, run);
       queue.current = result;
       return result.then((outcome) => {
-        if ("data" in outcome) {
-          saved.current = outcome.data;
-          setSettings(outcome.data);
-        }
+        if ("data" in outcome) setSettings(outcome.data);
         return outcome;
       });
     },

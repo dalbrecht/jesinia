@@ -264,21 +264,21 @@ class ReviewReads:
 
     def update_settings(
         self,
-        prereview: PreReviewMode,
-        runner: str,
+        prereview: PreReviewMode | Literal[Keep.KEEP],
+        runner: str | Literal[Keep.KEEP],
         repos: Sequence[RepoConfig],
         *,
         standards_dir: str | None | Literal[Keep.KEEP] = KEEP,
         standards_user_dir: str | None | Literal[Keep.KEEP] = KEEP,
     ) -> ReviewSettings:
-        """Save Settings → Review; repos not listed, and folders left as ``KEEP``, keep
-        their settings. Everything is checked before anything is saved.
+        """Save Settings → Review; repos not listed, and the default, runner and folders
+        left as ``KEEP``, keep their settings. Everything is checked before anything is saved.
 
         Raises:
             InvalidSettingError: a runner name that isn't one, or a folder that isn't an
                 absolute path (or ``~/…``).
         """
-        if not _RUNNER.fullmatch(runner):
+        if runner is not KEEP and not _RUNNER.fullmatch(runner):
             raise InvalidSettingError(f"not an agent runner name: {runner!r}")
         folders: list[tuple[Callable[[Path | None], None], Path | None]] = []
         if standards_dir is not KEEP:
@@ -287,8 +287,10 @@ class ReviewReads:
         if standards_user_dir is not KEEP:
             path = parse_folder_setting(standards_user_dir, self._home())
             folders.append((self._store.set_standards_user_dir, path))
-        self._store.set_prereview_default(prereview)
-        self._store.set_job_runner(runner)
+        if prereview is not KEEP:
+            self._store.set_prereview_default(prereview)
+        if runner is not KEEP:
+            self._store.set_job_runner(runner)
         for setter, folder in folders:
             setter(folder)
         for config in repos:

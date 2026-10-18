@@ -729,6 +729,12 @@ async def test_every_review_setting_round_trips(env: Env, tmp_path: Path) -> Non
     ).json()
     web_now = next(r for r in after_metrics["repos"] if r["repo"] == "acme/web")
     assert web_now == {**web, "watched": True, "metrics": ["Docs"]}
+    # Codex P2 round 3: the pre-review default and the runner left out keep theirs too.
+    set_elsewhere = {"prereview": "everything", "runner": "claude", "repos": []}
+    await env.client.put(f"{API}/settings", json=set_elsewhere, headers=keyed())
+    repo_only = {"repos": [{"repo": "acme/web", "metrics": ["Docs"]}]}
+    kept_globals = (await env.client.put(f"{API}/settings", json=repo_only, headers=keyed())).json()
+    assert kept_globals["prereview"] == "everything" and kept_globals["runner"] == "claude"
     # A repo not yet known, sent with only its name, gets the defaults.
     fresh = {"prereview": "triage", "runner": "codex", "repos": [{"repo": "acme/new"}]}
     new = next(

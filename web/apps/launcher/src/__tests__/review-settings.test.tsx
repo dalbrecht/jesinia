@@ -133,17 +133,19 @@ describe("Settings → Review", () => {
     await userEvent.selectOptions(review.getByRole("combobox", { name: "Pre-review" }), "on_open");
     await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(1));
     // Only what changed (with the two required fields): no repo, no folder rides along (I1).
-    expect(await lastPut(calls)).toEqual({ prereview: "on_open", runner: "codex", repos: [] });
+    // Only what the control changes (Codex P2 on PR #68).
+    expect(await lastPut(calls)).toEqual({ prereview: "on_open", repos: [] });
     expect(await toast("Pre-review: on open only.")).toBeDefined();
     await userEvent.selectOptions(review.getByRole("combobox", { name: "Agent" }), "claude");
     await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(2));
-    expect(await lastPut(calls)).toEqual({ prereview: "on_open", runner: "claude", repos: [] });
+    expect(await lastPut(calls)).toEqual({ runner: "claude", repos: [] });
     const keys = sent(calls, "PUT", "/api/review/settings").map((c) => c.headers.get("Idempotency-Key"));
     expect(new Set(keys).size).toBe(2);
   });
 
   it("saves the standards folders, and shows why one is refused", async () => {
-    let answer: (req: Request) => Promise<Response> = async (req) => Response.json(await req.clone().json());
+    let answer: (req: Request) => Promise<Response> = async (req) =>
+      Response.json({ ...SETTINGS, ...((await req.clone().json()) as object) });
     const calls = renderReview({ "PUT /api/review/settings": (req: Request) => answer(req) });
     const review = await loaded();
     const mine = review.getByLabelText("Your own standards folder");
@@ -152,8 +154,6 @@ describe("Settings → Review", () => {
     await userEvent.click(review.getByRole("button", { name: "Save folders" }));
     await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(1));
     expect(await lastPut(calls)).toEqual({
-      prereview: "triage",
-      runner: "codex",
       repos: [],
       standards_dir: "/Users/me/coding-standards",
       standards_user_dir: "~/my-standards",
@@ -271,6 +271,37 @@ describe("Settings → Review", () => {
       suggested: false,
       metrics: ["Security"],
     });
+  });
+
+  it("a pre-review default changed elsewhere survives a repo's save here (Codex P2)", async () => {
+    let server: Settings = structuredClone(SETTINGS);
+    const calls = renderReview({
+      "GET /api/review/settings": () => Response.json(server),
+      "PUT /api/review/settings": async (req: Request) => {
+        const body = (await req.clone().json()) as Partial<Settings>;
+        const repos = new Map((server.repos ?? []).map((r) => [r.repo, r]));
+        for (const r of body.repos ?? []) repos.set(r.repo, { ...repos.get(r.repo), ...r } as RepoSetting);
+        server = {
+          ...server,
+          ...("prereview" in body ? { prereview: body.prereview } : {}),
+          ...("runner" in body ? { runner: body.runner } : {}),
+          repos: [...repos.values()],
+        } as Settings;
+        return Response.json(server);
+      },
+    });
+    const review = await loaded();
+    server = { ...server, prereview: "on_open", runner: "claude" }; // changed after the page loaded
+    const web = within(review.getByRole("group", { name: "acme/web" }));
+    await userEvent.click(web.getByLabelText("Metrics"));
+    await userEvent.paste("\nDocs");
+    await userEvent.click(web.getByRole("button", { name: "Save acme/web" }));
+    await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(1));
+    const body = await lastPut(calls);
+    expect(body).not.toHaveProperty("prereview");
+    expect(body).not.toHaveProperty("runner");
+    expect(server.prereview).toBe("on_open");
+    expect(server.runner).toBe("claude");
   });
 
   it("watching a suggested repo confirms it", async () => {

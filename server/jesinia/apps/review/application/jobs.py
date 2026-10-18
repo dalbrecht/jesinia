@@ -463,6 +463,39 @@ def metrics_prompt(criteria: Sequence[str]) -> str:
     )
 
 
+def _metrics_check(
+    criteria: Sequence[str] | None,
+) -> Callable[[dict[str, object]], dict[str, object]] | None:
+    """With the repo's metric set configured, a metrics reply must score exactly that set:
+    every criterion once, none missing or extra (case and spacing aside). It is kept in the
+    set's order and spelling. The message names the set (the author's own, trusted), never
+    the reply."""
+    if not criteria:
+        return None
+    wanted = {criterion.strip().casefold(): criterion for criterion in criteria}
+
+    def check(output: dict[str, object]) -> dict[str, object]:
+        scores = output.get("scores")
+        entries = [e for e in scores if isinstance(e, dict)] if isinstance(scores, list) else []
+        by_name: dict[str, dict[str, object]] = {}
+        for entry in entries:
+            name = str(entry.get("criterion", "")).strip().casefold()
+            if name not in wanted or name in by_name:
+                by_name = {}
+                break
+            by_name[name] = entry
+        if len(by_name) != len(wanted) or len(entries) != len(wanted):
+            listing = "; ".join(criteria)
+            raise InvalidAgentOutput(
+                f"the scores must be exactly the repo's {len(wanted)} metrics, each once and "
+                f"nothing else: {listing}"
+            )
+        ordered = [{**by_name[key], "criterion": name} for key, name in wanted.items()]
+        return {**output, "scores": ordered}
+
+    return check
+
+
 def _request(job: JobKind, depth: Depth, schema: Mapping[str, object]) -> str:
     label = "Correctness depth" if job is JobKind.CORRECTNESS else "Depth"
     return (
@@ -532,6 +565,7 @@ class JobRunner:
             self._pack(job, round, standards, depth),
             depth,
             round_id=round.id,
+            check=_metrics_check(round.metric_criteria) if job is JobKind.METRICS else None,
         )
         self._store.put_artifact(round.id, job.value, output)
         return output
@@ -582,8 +616,10 @@ class JobRunner:
         depth: Depth,
         *,
         round_id: int | None = None,
+        check: Callable[[dict[str, object]], dict[str, object]] | None = None,
     ) -> dict[str, object]:
-        """One job session bound to ``head_sha``'s worktree: ask, validate, clean up."""
+        """One job session bound to ``head_sha``'s worktree: ask, validate (``check`` too),
+        clean up."""
         schema = schema_for(job)
         runner = self._store.job_runner()
         try:
@@ -605,7 +641,9 @@ class JobRunner:
                 )
             except WorkspaceError as exc:
                 raise JobFailed(job, exc) from exc
-            output = await self._ask(job, session.id, schema, _request(job, depth, schema))
+            output = await self._ask(
+                job, session.id, schema, _request(job, depth, schema), check=check
+            )
             if round_id is not None:
                 self._record_agent(job, round_id, session.id, runner)
             # Before the unbind drops it: what the tools really returned to this session,
@@ -833,17 +871,30 @@ class JobRunner:
         )
 
     async def _ask(
-        self, job: JobKind, session_id: str, schema: Mapping[str, object], prompt: str
+        self,
+        job: JobKind,
+        session_id: str,
+        schema: Mapping[str, object],
+        prompt: str,
+        *,
+        check: Callable[[dict[str, object]], dict[str, object]] | None = None,
     ) -> dict[str, object]:
+        """The job's output, valid against ``schema`` and ``check`` (which may normalise it
+        and raises ``InvalidAgentOutput``); one corrective retry, then ``JobFailed``."""
+
+        def parse(reply: str) -> dict[str, object]:
+            output = parse_job_output(reply, schema)
+            return output if check is None else check(output)
+
         reply = await self._turn(job, session_id, prompt)
         try:
             # Off the loop: even a capped reply takes a while to validate.
-            return await asyncio.to_thread(parse_job_output, reply, schema)
+            return await asyncio.to_thread(parse, reply)
         except InvalidAgentOutput as first:
             log.warning("review.jobs %s output rejected, retrying once: %s", job.value, first)
             retry = await self._turn(job, session_id, _corrective(first))
         try:
-            return await asyncio.to_thread(parse_job_output, retry, schema)
+            return await asyncio.to_thread(parse, retry)
         except InvalidAgentOutput as second:
             raise JobFailed(job, second) from second
 

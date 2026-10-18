@@ -16,6 +16,7 @@ from jesinia.apps.review.application.reviews import PrView, ReviewSettings
 from jesinia.apps.review.application.stacks import StackOpenResult, StackView
 from jesinia.apps.review.domain.followup import FollowUpKind
 from jesinia.apps.review.domain.gates import CiState, Depth
+from jesinia.apps.review.domain.jobs import DEFAULT_RUNNER
 from jesinia.apps.review.domain.kept import KeptState
 from jesinia.apps.review.domain.knowledge import (
     QUIZ_MAX_QUESTIONS,
@@ -32,6 +33,7 @@ from jesinia.apps.review.domain.posting import (
     PostWarning,
 )
 from jesinia.apps.review.domain.queue import (
+    DEFAULT_PREREVIEW,
     AuthorKind,
     AutoReviewState,
     EvidenceSummary,
@@ -565,10 +567,16 @@ class ReviewRepoSettingBody(BaseModel):
 
 
 class ReviewSettingsBody(BaseModel):
-    """Settings → Review. A folder left out of a PUT keeps its value; null or "" clears it."""
+    """Settings → Review. In a PUT every field left out keeps its value (the pre-review
+    default, the runner, each folder, each repo's fields); a folder's null or "" clears it."""
 
-    prereview: PreReviewMode
-    runner: str = Field(min_length=1, max_length=RUNNER_MAX, description="The agent runner")
+    prereview: PreReviewMode = DEFAULT_PREREVIEW
+    runner: str = Field(
+        default=DEFAULT_RUNNER,
+        min_length=1,
+        max_length=RUNNER_MAX,
+        description="The agent runner",
+    )
     repos: list[ReviewRepoSettingBody] = Field(default_factory=list, max_length=500)
     standards_dir: str | None = Field(
         default=None,

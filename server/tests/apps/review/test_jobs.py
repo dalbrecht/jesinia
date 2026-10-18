@@ -1087,7 +1087,7 @@ async def test_the_metrics_job_scores_exactly_the_repos_criteria_when_set(env: E
     """Spec §5.2: the set of metrics is editable per repo; the author's set is their own
     standards (trusted), so it goes in Jesinia's files, never fenced as PR data."""
     pack = env.capture_pack()
-    reply: dict[str, object] = {"scores": []}
+    reply: dict[str, object] = {"scores": [_score("Security"), _score("Tests")]}
     env.script(json.dumps(reply))
     await env.jobs.run(JobKind.METRICS, replace(a_round(), metric_criteria=("Security", "Tests")))
     assert pack["metrics.md"] == (
@@ -1102,3 +1102,55 @@ async def test_the_metrics_job_scores_exactly_the_repos_criteria_when_set(env: E
         env.script(json.dumps(out))
         await env.jobs.run(job, replace(a_round(), metric_criteria=criteria))
         assert "metrics.md" not in pack
+
+
+def _score(criterion: str, score: float = 7) -> dict[str, object]:
+    return {"criterion": criterion, "rule": {"id": "x.md", "layer": "base"}, "score": score,
+            "note": "n"}  # fmt: skip
+
+
+SET = ("Security", "Tests", "Docs")
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        pytest.param([], id="empty"),
+        pytest.param(["Security", "Tests"], id="missing"),
+        pytest.param(["Security", "Tests", "Docs", "Speed"], id="extra"),
+        pytest.param(["Security", "Tests", "Docs", "Tests"], id="duplicate"),
+    ],
+)
+async def test_a_metrics_reply_off_the_repos_set_is_retried_once(
+    env: Env, first: list[str]
+) -> None:
+    """Codex P3 on PR #68: with the repo's set configured, the reply scores exactly that set;
+    a mismatch goes through the corrective retry, and the set is stored in its order."""
+    env.script(
+        json.dumps({"scores": [_score(c) for c in first]}),
+        json.dumps({"scores": [_score("Docs", 5), _score("tests", 6), _score("Security", 9)]}),
+    )
+    out = await env.jobs.run(JobKind.METRICS, replace(a_round(), metric_criteria=SET))
+    scores = out["scores"]
+    assert isinstance(scores, list)
+    assert [(s["criterion"], s["score"]) for s in scores] == [
+        ("Security", 9), ("Tests", 6), ("Docs", 5)
+    ]  # fmt: skip
+    assert "Security" in env.runner.requests[-1].prompt  # the corrective names the set
+
+
+async def test_a_reordered_metrics_reply_is_kept_in_the_sets_order(env: Env) -> None:
+    env.script(json.dumps({"scores": [_score("Docs"), _score("Security"), _score("Tests")]}))
+    out = await env.jobs.run(JobKind.METRICS, replace(a_round(), metric_criteria=SET))
+    scores = out["scores"]
+    assert isinstance(scores, list)
+    assert [s["criterion"] for s in scores] == list(SET)
+    assert len(env.runner.requests) == 1  # no retry needed
+
+
+async def test_a_metrics_reply_off_the_set_twice_fails_and_stores_nothing(env: Env) -> None:
+    off = json.dumps({"scores": [_score("Speed")]})
+    env.script(off, off)
+    with pytest.raises(JobFailed, match="metrics"):
+        await env.jobs.run(JobKind.METRICS, replace(a_round(), metric_criteria=SET))
+    assert (11, "metrics") not in env.store.artifacts

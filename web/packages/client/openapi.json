@@ -20570,14 +20570,16 @@
               "everything",
               "on_open"
             ],
-            "title": "Prereview"
+            "title": "Prereview",
+            "default": "triage"
           },
           "runner": {
             "type": "string",
             "maxLength": 64,
             "minLength": 1,
             "title": "Runner",
-            "description": "The agent runner"
+            "description": "The agent runner",
+            "default": "codex"
           },
           "repos": {
             "items": {
@@ -20615,12 +20617,8 @@
           }
         },
         "type": "object",
-        "required": [
-          "prereview",
-          "runner"
-        ],
         "title": "ReviewSettingsBody",
-        "description": "Settings \u2192 Review. A folder left out of a PUT keeps its value; null or \"\" clears it."
+        "description": "Settings \u2192 Review. In a PUT every field left out keeps its value (the pre-review\ndefault, the runner, each folder, each repo's fields); a folder's null or \"\" clears it."
       },
       "RoundOut": {
         "properties": {

@@ -659,8 +659,8 @@ def build_router(host: ReviewHost) -> APIRouter:
             repos = [repo.config(host.reviews.repo_config(repo.repo)) for repo in body.repos]
             sent = body.model_fields_set
             saved = host.reviews.update_settings(
-                body.prereview,
-                body.runner,
+                body.prereview if "prereview" in sent else KEEP,
+                body.runner if "runner" in sent else KEEP,
                 repos,
                 standards_dir=body.standards_dir if "standards_dir" in sent else KEEP,
                 standards_user_dir=body.standards_user_dir

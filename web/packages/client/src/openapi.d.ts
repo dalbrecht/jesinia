@@ -4830,17 +4830,20 @@ export interface components {
         };
         /**
          * ReviewSettingsBody
-         * @description Settings → Review. A folder left out of a PUT keeps its value; null or "" clears it.
+         * @description Settings → Review. In a PUT every field left out keeps its value (the pre-review
+         *     default, the runner, each folder, each repo's fields); a folder's null or "" clears it.
          */
         ReviewSettingsBody: {
             /**
              * Prereview
+             * @default triage
              * @enum {string}
              */
             prereview: "triage" | "everything" | "on_open";
             /**
              * Runner
              * @description The agent runner
+             * @default codex
              */
             runner: string;
             /** Repos */
