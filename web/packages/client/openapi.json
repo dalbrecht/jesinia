@@ -5604,7 +5604,7 @@
           "issues"
         ],
         "summary": "Suggest Priority",
-        "description": "Ask the agent to prioritise these cached open issues. The ask runs in the background\n(the request never waits for the agent); poll ``GET /suggestions?scope=`` with the\nanswer's ``scope`` (its ``priority_run``). When it is ``done`` there is one draft\n(``kind`` ``priority``, ``scope`` the batch) with a priority, a rank and a reason per\nissue; approving it (``/suggestions/{id}/approve``) sets the priorities. Asking for a\nbatch that is already being asked returns that run.",
+        "description": "Ask the agent to prioritise these cached open issues. The ask runs in the background\n(the request never waits for the agent); poll ``GET /suggestions?scope=`` with the\nanswer's ``scope`` (its ``ask_run``). When it is ``done`` there is one draft\n(``kind`` ``priority``, ``scope`` the batch) with a priority, a rank and a reason per\nissue; approving it (``/suggestions/{id}/approve``) sets the priorities. Asking for a\nbatch that is already being asked returns that run.",
         "operationId": "suggest_priority_api_issues_suggestions_priority_post",
         "parameters": [
           {
@@ -5642,7 +5642,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssuePriorityRunOut"
+                  "$ref": "#/components/schemas/IssueAskRunOut"
                 }
               }
             }
@@ -7238,7 +7238,7 @@
           "issues"
         ],
         "summary": "Convert",
-        "description": "Approve the conversion previewed with ``digest``: one batch (create the new issues,\nthen link every child in order) applied in the background, a 202 with the batch and\n``Location`` to poll. A 409 when the plan changed since (preview again) or has nothing\nto do. The checklist stays in the body.",
+        "description": "Approve the conversion previewed with ``digest``: one batch (create the new issues,\nthen link every child in order) applied in the background, a 202 with the batch and\n``Location`` to poll. A 409 when the plan changed since (preview again) or has nothing\nto do, or while another conversion of this epic is still running. The checklist stays in the\nbody, and the items converted are recorded, so converting it again never creates them\ntwice.",
         "operationId": "convert_api_issues_epics__owner___repo___n__conversion_post",
         "parameters": [
           {
@@ -7444,7 +7444,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssuePriorityRunOut"
+                  "$ref": "#/components/schemas/IssueAskRunOut"
                 }
               }
             }
@@ -7701,7 +7701,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssuePriorityRunOut"
+                  "$ref": "#/components/schemas/IssueAskRunOut"
                 }
               }
             }
@@ -7813,7 +7813,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssuePriorityRunOut"
+                  "$ref": "#/components/schemas/IssueAskRunOut"
                 }
               }
             }
@@ -11826,6 +11826,61 @@
         ],
         "title": "ImportResultOut"
       },
+      "IssueAskRunOut": {
+        "properties": {
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "done",
+              "waiting",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "suggestion_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggestion Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope",
+          "status",
+          "cause",
+          "updated_at",
+          "suggestion_id"
+        ],
+        "title": "IssueAskRunOut",
+        "description": "A background ask of the agent (ruling IR50): a priority ask for a batch of issues, a\ngrouping ask, a split ask or an epic's brief. ``scope`` names it (its drafts carry it);\n``status`` is ``running``, ``done`` (``suggestion_id`` is the draft, ``null`` when the reply\nproposed nothing), ``waiting`` (no agent runner; ask again) or ``failed`` (``cause``, \"inputs\nchanged, ask again\" included)."
+      },
       "IssueCommentOut": {
         "properties": {
           "id": {
@@ -12175,61 +12230,6 @@
         ],
         "title": "IssueEventOut",
         "description": "A timeline event; ``source`` is the referencing issue or PR as ``owner/name#n``."
-      },
-      "IssuePriorityRunOut": {
-        "properties": {
-          "scope": {
-            "type": "string",
-            "title": "Scope"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "running",
-              "done",
-              "waiting",
-              "failed"
-            ],
-            "title": "Status"
-          },
-          "cause": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cause"
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Updated At"
-          },
-          "suggestion_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Suggestion Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "scope",
-          "status",
-          "cause",
-          "updated_at",
-          "suggestion_id"
-        ],
-        "title": "IssuePriorityRunOut",
-        "description": "A priority ask for a batch of issues: ``scope`` names the batch, ``status`` is\n``running``, ``done`` (``suggestion_id`` is the draft), ``waiting`` (no agent runner; ask\nagain) or ``failed`` (``cause``)."
       },
       "IssueRefIn": {
         "properties": {
@@ -12671,20 +12671,10 @@
               }
             ]
           },
-          "priority_run": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/IssuePriorityRunOut"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "ask_run": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/IssuePriorityRunOut"
+                "$ref": "#/components/schemas/IssueAskRunOut"
               },
               {
                 "type": "null"
@@ -12698,7 +12688,7 @@
           "run"
         ],
         "title": "IssueSuggestionsOut",
-        "description": "Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked\nfor. When a ``scope`` was, ``ask_run`` is the latest background ask about it (a priority,\ngroups, split or brief ask); ``priority_run`` is the same run, kept for the priority\nclients."
+        "description": "Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked\nfor. When a ``scope`` was, ``ask_run`` is the latest background ask about it (a priority,\ngroups, split or brief ask)."
       },
       "IssueTargetBody": {
         "properties": {

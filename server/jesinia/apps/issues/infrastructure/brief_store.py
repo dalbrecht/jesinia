@@ -10,7 +10,7 @@ from typing import cast
 
 from jesinia.apps.issues.application.ports import BriefState, StoredBrief
 
-_COLUMNS = "repo, n, comment_id, url, body, state, attempt_at, posted_at, updated_at"
+_COLUMNS = "repo, n, comment_id, url, body, state, attempt_at, posted_at, updated_at, nonce"
 _STATES: tuple[BriefState, ...] = ("in_flight", "posted")
 
 
@@ -23,7 +23,7 @@ def _optional_time(value: object) -> datetime | None:
 
 
 def _brief(row: tuple[object, ...]) -> StoredBrief:
-    repo, n, comment_id, url, body, state, attempt, posted, updated = row
+    repo, n, comment_id, url, body, state, attempt, posted, updated, nonce = row
     return StoredBrief(
         repo=str(repo),
         n=cast(int, n),
@@ -34,6 +34,7 @@ def _brief(row: tuple[object, ...]) -> StoredBrief:
         attempt_at=_optional_time(attempt),
         posted_at=_optional_time(posted),
         updated_at=datetime.fromisoformat(str(updated)),
+        nonce=cast(str | None, nonce),
     )
 
 
@@ -49,14 +50,14 @@ class SqliteBriefStore:
         ).fetchone()
         return None if row is None else _brief(row)
 
-    def mark_in_flight(self, repo: str, n: int, body: str, now: datetime) -> None:
+    def mark_in_flight(self, repo: str, n: int, body: str, now: datetime, nonce: str) -> None:
         self._conn.execute(
-            "INSERT INTO epic_briefs (repo, n, comment_id, url, body, state, attempt_at, "
-            "updated_at) VALUES (?, ?, NULL, NULL, ?, 'in_flight', ?, ?) "
+            "INSERT INTO epic_briefs (repo, n, comment_id, url, body, state, attempt_at, nonce, "
+            "updated_at) VALUES (?, ?, NULL, NULL, ?, 'in_flight', ?, ?, ?) "
             "ON CONFLICT (repo, n) DO UPDATE SET comment_id = NULL, url = NULL, "
             "body = excluded.body, state = 'in_flight', attempt_at = excluded.attempt_at, "
-            "updated_at = excluded.updated_at",
-            (repo, n, body, _time(now), _time(now)),
+            "nonce = excluded.nonce, updated_at = excluded.updated_at",
+            (repo, n, body, _time(now), nonce, _time(now)),
         )
 
     def mark_posted(
@@ -67,6 +68,7 @@ class SqliteBriefStore:
             "updated_at) VALUES (?, ?, ?, ?, ?, 'posted', ?, ?) "
             "ON CONFLICT (repo, n) DO UPDATE SET comment_id = excluded.comment_id, "
             "url = excluded.url, body = excluded.body, state = 'posted', attempt_at = NULL, "
+            "nonce = NULL, "
             "posted_at = excluded.posted_at, updated_at = excluded.updated_at",
             (repo, n, comment_id, url, body, _time(now), _time(now)),
         )

@@ -25,11 +25,14 @@ from jesinia.apps.issues.domain.changes import Existing, InvalidChangeError, Set
 from jesinia.apps.issues.domain.epics import (
     BRIEF_MARKER,
     CROSS_REPO_WARNING,
+    BriefRecoveryIncompleteError,
     ContainmentRefusedError,
     ConversionOutdatedError,
+    ConversionRunningError,
     InvalidBriefError,
     NotAnEpicError,
     NothingToConvertError,
+    brief_marker,
     brief_scope,
     groups_scope,
     split_scope,
@@ -37,12 +40,14 @@ from jesinia.apps.issues.domain.epics import (
 from jesinia.apps.issues.domain.suggestions import (
     InvalidSuggestionFilterError,
     SuggestionFilters,
+    SuggestionInputsChangedError,
     SuggestionNotFoundError,
     SuggestionRunnerUnavailableError,
     SuggestionStaleError,
 )
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
+from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversionStore
 from jesinia.apps.issues.module import ISSUES_DB
 from jesinia.core.db import open_db
 from jesinia.services.agents.application.packs import ContextPack
@@ -104,6 +109,21 @@ class BriefGitHub(FakeWrites):
         return self.clock()
 
 
+class Nonces:
+    """Brief attempt nonces in order: ``nonce-1``, ``nonce-2``, ..."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def __call__(self) -> str:
+        self.count += 1
+        return f"nonce-{self.count}"
+
+
+async def dana() -> str:
+    return "dana"
+
+
 class Epics:
     """A ``World`` with the epic and brief services, an agent to ask, and the brief store."""
 
@@ -127,11 +147,19 @@ class Epics:
             self.world.clock,
         )
         self.briefs = SqliteBriefStore(conn)
+        self.conversions = SqliteConversionStore(conn)
         self.epics = EpicService(
-            self.world.store, self.world.drafts, self.suggest, self.briefs, self.world.clock
+            self.world.store,
+            self.world.drafts,
+            self.suggest,
+            self.briefs,
+            self.world.clock,
+            conversions=self.conversions,
+            batches=self.world.applied,
         )
         self.limited_until: datetime | None = None
         self.limits: list[datetime | None] = []
+        self.viewer = "dana"
         self.publisher = BriefService(
             self.github,
             self.world.store,
@@ -140,7 +168,12 @@ class Epics:
             self.world.clock,
             on_rate_limit=self.limits.append,
             blocked_until=lambda: self.limited_until,
+            viewer=self.login,
+            new_nonce=Nonces(),
         )
+
+    async def login(self) -> str:
+        return self.viewer
 
     async def synced(self, *issues: Issue) -> None:
         """Sync twice: a first sync fetches no children, the next one backfills the epics'."""
@@ -346,11 +379,14 @@ async def test_brief_comment_is_created_then_edited_in_place(env: Epics) -> None
     await env.synced()
 
     first = await env.publisher.approve(REPO, 1, "First brief")
-    assert env.github.writes == [("comment", (1, f"{BRIEF_MARKER}\nFirst brief"))]
+    assert env.github.writes == [("comment", (1, f"{brief_marker('nonce-1')}\nFirst brief"))]
     assert first.comment_id == 501 and first.state == "posted" and first.text == "First brief"
 
     second = await env.publisher.approve(REPO, 1, f"{BRIEF_MARKER}\nSecond brief")
-    assert env.github.writes[-1] == ("edit_comment", (501, f"{BRIEF_MARKER}\nSecond brief"))
+    assert env.github.writes[-1] == (
+        "edit_comment",
+        (501, f"{brief_marker('nonce-2')}\nSecond brief"),
+    )
     assert second.comment_id == 501 and len(env.github.comments_posted) == 1
     assert env.epics.epic(REPO, 1).brief == second
 
@@ -370,7 +406,10 @@ async def test_a_brief_cut_off_mid_post_is_never_posted_twice(env: Epics) -> Non
     again = await env.publisher.approve(REPO, 1, "Brief, again")
     # The comment that went out is found by its marker and edited, not posted again.
     assert len(env.github.comments_posted) == 1 and again.comment_id == 501
-    assert env.github.writes[-1] == ("edit_comment", (501, f"{BRIEF_MARKER}\nBrief, again"))
+    assert env.github.writes[-1] == (
+        "edit_comment",
+        (501, f"{brief_marker('nonce-2')}\nBrief, again"),
+    )
 
 
 async def test_a_brief_whose_cut_off_post_never_landed_is_posted(env: Epics) -> None:
@@ -588,7 +627,9 @@ async def test_a_brief_approval_checks_the_draft_and_the_epic(env: Epics) -> Non
 
 async def test_a_rate_limit_without_a_listener_is_still_raised(env: Epics) -> None:
     await env.synced(epic(1))
-    quiet = BriefService(env.github, env.world.store, env.briefs, env.world.drafts, env.world.clock)
+    quiet = BriefService(
+        env.github, env.world.store, env.briefs, env.world.drafts, env.world.clock, viewer=dana
+    )
     env.github.fail["comment:1"] = GitHubRateLimitedError(429, "slow down", None)
     with pytest.raises(GitHubRateLimitedError):
         await quiet.approve(REPO, 1, "x")
@@ -619,8 +660,8 @@ class Broken:
     def brief(self, repo: str, n: int) -> object:
         return self.inner.brief(repo, n)
 
-    def mark_in_flight(self, repo: str, n: int, body: str, now: datetime) -> None:
-        self.inner.mark_in_flight(repo, n, body, now)
+    def mark_in_flight(self, repo: str, n: int, body: str, now: datetime, nonce: str) -> None:
+        self.inner.mark_in_flight(repo, n, body, now, nonce)
 
     def mark_posted(self, *args: object) -> object:
         raise sqlite3.OperationalError("disk full")
@@ -649,6 +690,7 @@ async def test_a_failure_to_record_a_posted_brief_is_logged_not_raised(
         Broken(env.briefs),  # type: ignore[arg-type]
         BrokenDrafts(env.world.drafts),  # type: ignore[arg-type]
         env.world.clock,
+        viewer=dana,
     )
     posted = await shaky.approve(REPO, 1, "x", suggestion_id=draft.id)
     assert posted.comment_id == 501 and posted.state == "posted"
@@ -683,3 +725,199 @@ async def test_an_epic_page_shows_blocked_and_uncached_children(env: Epics) -> N
     assert [b.n for b in page.summary.readiness.blockers] == [2, 5]
     assert page.summary.readiness.warning == CROSS_REPO_WARNING
     assert "(not in the cache)" in page.default_brief
+
+
+# --- fix round 1 ---------------------------------------------------------------------------------
+
+
+async def test_converting_the_same_checklist_twice_creates_nothing_the_second_time(
+    env: Epics,
+) -> None:
+    await env.synced(epic(1, body=CHECKLIST), issue(2, labels=READY))
+    plan = env.epics.conversion(REPO, 1)
+    first = env.epics.start_conversion(REPO, 1, plan.digest, "convert:a", env.world.service)
+    await env.world.service.drain()
+    assert (
+        env.world.service.start_batch(lambda: pytest.fail("replayed"), "epic", "convert:a").id
+        == first.id
+    )
+    created = [w for w in env.github.writes if w[0] == "create_issue"]
+    assert len(created) == 1
+    replayed = env.epics.start_conversion(REPO, 1, "0" * 64, "convert:a", env.world.service)
+    assert replayed.id == first.id  # a replay never plans or records again
+    made = env.world.applied.batch(first.id).result.created["item-3"]  # type: ignore[union-attr]
+    env.github.put(later(replace(env.github.issues[(REPO, made.n)], parent=IssueRef(REPO, 1))))
+    env.world.clock.now += timedelta(minutes=1)
+    await env.world.sync.sync(REPO)
+
+    again = env.epics.conversion(REPO, 1)
+    assert [c.is_new for c in again.children] == []
+    new_n = env.world.applied.batch(first.id).result.created["item-3"].n  # type: ignore[union-attr]
+    assert ("Write the docs", f"already converted ({REPO}#{new_n})") in [
+        (s.item, s.reason) for s in again.skipped
+    ]
+    with pytest.raises(NothingToConvertError):
+        env.epics.start_conversion(REPO, 1, again.digest, "convert:b", env.world.service)
+    assert [w for w in env.github.writes if w[0] == "create_issue"] == created
+
+
+async def test_two_concurrent_conversions_start_one_batch_and_refuse_the_other(env: Epics) -> None:
+    await env.synced(epic(1, body=CHECKLIST), issue(2, labels=READY))
+    digest = env.epics.conversion(REPO, 1).digest
+    first = env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    held = env.epics.conversion(REPO, 1).skipped
+    assert next(x for x in held if x.item == "Write the docs").reason == (
+        f"being converted now (batch {first.id})"
+    )
+    with pytest.raises(ConversionRunningError):
+        env.epics.start_conversion(REPO, 1, digest, "convert:b", env.world.service)
+    await env.world.service.drain()
+    assert env.world.applied.batch(first.id).status == "finished"  # type: ignore[union-attr]
+    assert len([w for w in env.github.writes if w[0] == "create_issue"]) == 1
+
+
+async def test_an_item_an_unfinished_conversion_didnt_create_is_held_back(
+    env: Epics, conn: sqlite3.Connection
+) -> None:
+    await env.synced(epic(1, body="- [ ] Write the docs"))
+    env.github.fail["create_issue:Write the docs"] = GitHubRequestError(410, "Issues are disabled")
+    digest = env.epics.conversion(REPO, 1).digest
+    failed = env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    await env.world.service.drain()
+    again = env.epics.conversion(REPO, 1)
+    assert again.children == ()
+    assert again.skipped[0].reason == (
+        f"an earlier conversion (batch {failed.id}) didn't create it; retry that batch"
+    )
+    del env.github.fail["create_issue:Write the docs"]
+    await env.world.service.retry(failed.id)
+    made = env.world.applied.batch(failed.id).result.created["item-1"]  # type: ignore[union-attr]
+    done = env.epics.conversion(REPO, 1)  # records the issue it became
+    assert done.skipped[0].reason == f"already converted ({REPO}#{made.n})"
+    conn.execute("DELETE FROM apply_batches WHERE id = ?", (failed.id,))  # pruned
+    assert env.epics.conversion(REPO, 1).skipped[0].reason == done.skipped[0].reason
+
+
+async def test_an_item_whose_batch_record_is_gone_asks_to_check_github(
+    env: Epics, conn: sqlite3.Connection
+) -> None:
+    await env.synced(epic(1, body="- [ ] Write the docs"))
+    env.github.fail["create_issue:Write the docs"] = GitHubRequestError(410, "Issues are disabled")
+    digest = env.epics.conversion(REPO, 1).digest
+    started = env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    await env.world.service.drain()
+    conn.execute("DELETE FROM apply_batches WHERE id = ?", (started.id,))
+    plan = env.epics.conversion(REPO, 1)
+    assert plan.skipped[0].reason == (
+        "an earlier conversion may have created it, but its record is gone; check GitHub"
+    )
+
+
+async def test_recovery_never_adopts_another_users_or_another_attempts_comment(env: Epics) -> None:
+    await env.synced(epic(1))
+    now = env.world.clock()
+    env.github.fail["comment:1"] = asyncio.CancelledError()  # type: ignore[assignment]
+    with pytest.raises(asyncio.CancelledError):
+        await env.publisher.approve(REPO, 1, "Brief")  # attempt nonce-1, never landed
+    del env.github.fail["comment:1"]
+    env.github.issue_comments[(REPO, 1)] = [
+        IssueComment(7, "mallory", f"{brief_marker('nonce-1')}\nForged", now, "u"),
+        IssueComment(8, "dana", f"{brief_marker('nonce-0')}\nAnother attempt", now, "u"),
+        IssueComment(9, "dana", f"{BRIEF_MARKER}\nUnmarked attempt", now, "u"),
+    ]
+    posted = await env.publisher.approve(REPO, 1, "Brief")
+    assert posted.comment_id == 501 and len(env.github.comments_posted) == 1
+    assert not any(w[0] == "edit_comment" for w in env.github.writes)
+    # Deleted on GitHub, then a re-post cut off before it landed: recovered again, posted once.
+    env.github.deleted.add(501)
+    env.github.fail["comment:1"] = asyncio.CancelledError()  # type: ignore[assignment]
+    with pytest.raises(asyncio.CancelledError):
+        await env.publisher.approve(REPO, 1, "Brief")
+    del env.github.fail["comment:1"]
+    reposted = await env.publisher.approve(REPO, 1, "Brief")
+    assert reposted.comment_id == 502 and len(env.github.comments_posted) == 2
+
+
+async def test_recovery_adopts_the_earliest_own_comment_with_the_nonce(env: Epics) -> None:
+    await env.synced(epic(1))
+    env.github.crash_after_comment = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await env.publisher.approve(REPO, 1, "Brief")  # comment 501 carries nonce-1
+    env.github.crash_after_comment = None
+    later = env.world.clock() + timedelta(seconds=5)
+    env.github.issue_comments[(REPO, 1)].append(
+        IssueComment(600, "dana", f"{brief_marker('nonce-1')}\nA copy", later, "u")
+    )
+    again = await env.publisher.approve(REPO, 1, "Brief")
+    assert again.comment_id == 501
+
+
+async def test_recovery_that_cant_read_every_comment_fails_closed(
+    env: Epics, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await env.synced(epic(1))
+    env.github.issue_comments[(REPO, 1)] = [
+        IssueComment(i, "dana", "chatter", env.world.clock(), "u") for i in range(1, 7)
+    ]
+    env.github.fail["comment:1"] = asyncio.CancelledError()  # type: ignore[assignment]
+    with pytest.raises(asyncio.CancelledError):
+        await env.publisher.approve(REPO, 1, "Brief")
+    del env.github.fail["comment:1"]
+    monkeypatch.setattr("jesinia.apps.issues.application.epics.RECOVERY_PAGES", 2)
+    with pytest.raises(BriefRecoveryIncompleteError, match="check GitHub"):
+        await env.publisher.approve(REPO, 1, "Brief")
+    assert env.github.comments_posted == []
+    assert env.briefs.brief(REPO, 1).state == "in_flight"  # type: ignore[union-attr]
+
+
+async def test_accepts_warns_when_ancestors_arent_cached(env: Epics) -> None:
+    env.github.put(replace(epic(1), parent=IssueRef("acme/elsewhere", 9)), issue(2))
+    await env.synced()
+    found = env.epics.accepts(REPO, 1, REPO, 2)
+    assert found.refusal is None
+    assert found.warning == "ancestors beyond acme/elsewhere#9 aren't cached; GitHub will check"
+
+
+async def test_a_brief_draft_needs_fetched_children_and_discards_a_reordered_reply(
+    env: Epics,
+) -> None:
+    await env.world.synced(epic(1, count=2), issue(2), issue(3))  # children never fetched
+    with pytest.raises(InvalidSuggestionFilterError, match="refresh it"):
+        await env.epics.brief_draft(REPO, 1)
+    env.children(1, 2, 3)
+    env.world.clock.now += timedelta(minutes=1)
+    await env.world.sync.sync(REPO)
+    env.agent.gate = asyncio.Event()
+    env.agent.replies = [json.dumps({"scope": "S", "acceptance_criteria": []})]
+    asked = asyncio.create_task(env.epics.brief_draft(REPO, 1))
+    await wait_until(lambda: len(env.agent.asks) == 1)
+    env.world.store.set_sub_issue_links(
+        REPO, 1, [env.github.issues[(REPO, 3)], env.github.issues[(REPO, 2)]], env.world.clock()
+    )
+    env.agent.gate.set()
+    with pytest.raises(SuggestionInputsChangedError):
+        await asked
+
+
+async def test_the_ancestor_walk_stops_at_its_depth_and_says_where(env: Epics) -> None:
+    chain = [replace(issue(n), parent=IssueRef(REPO, n + 1)) for n in range(1, 11)]
+    await env.synced(*chain, issue(11), issue(20))
+    found = env.epics.accepts(REPO, 1, REPO, 20)
+    assert found.refusal is None
+    assert found.warning == "ancestors beyond acme/web#9 aren't cached; GitHub will check"
+
+
+async def test_a_failure_to_record_a_converted_issue_is_logged(
+    env: Epics, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await env.synced(epic(1, body="- [ ] Write the docs"))
+    digest = env.epics.conversion(REPO, 1).digest
+    env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    await env.world.service.drain()
+
+    def broken(*args: object) -> None:
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(env.conversions, "set_created", broken)
+    assert env.epics.conversion(REPO, 1).skipped[0].reason.startswith("already converted")
+    assert "recording acme/web#1's converted item failed" in caplog.text

@@ -84,6 +84,10 @@ _FULL_REF = re.compile(r"(?<![\w/])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d{1,9})\b
 _SHORT_REF = re.compile(r"(?<![\w/#])#(\d{1,9})\b")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*)$")
 _BULLET = re.compile(r"^\s{0,3}[-*+]\s+(?:\[[ xX]\]\s+)?(.*\S)\s*$")
+# A GitHub @mention (a user, or an org's team) not already inside code.
+_MENTION = re.compile(r"(?<![\w`])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:/[A-Za-z0-9_.-]+)?)")
+_ANY_MARKER = re.compile(r"<!-- jesinia:brief(?::[A-Za-z0-9-]{1,64})? -->")
+_NONCE = re.compile(r"[A-Za-z0-9-]{1,64}")
 
 
 class EpicDomainError(ValueError):
@@ -105,6 +109,16 @@ class NothingToConvertError(EpicDomainError):
 
 class InvalidBriefError(EpicDomainError):
     """A brief that can't be posted (blank, or over GitHub's comment limit)."""
+
+
+class ConversionRunningError(EpicDomainError):
+    """A conversion of this epic's checklist is still running: wait for it (poll its batch)
+    before approving another, or the same items could be created twice."""
+
+
+class BriefRecoveryIncompleteError(EpicDomainError):
+    """A brief post was cut off, and its comment couldn't be looked for among all the epic's
+    comments: nothing is posted, so a second brief can't appear; check GitHub, then retry."""
 
 
 @dataclass(frozen=True)
@@ -354,6 +368,23 @@ class PlannedChild:
     title: str
     is_new: bool
     warning: str | None = None
+    item_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class Converted:
+    """What an earlier conversion did with an unlinked item: the issue it ``created``, or
+    ``reason`` why that isn't known (so the item is held back, never created again)."""
+
+    created: tuple[str, int] | None
+    reason: str | None = None
+
+
+def item_hash(text: str, occurrence: int) -> str:
+    """An unlinked checklist item's key: its text casefolded with whitespace collapsed (cut to
+    a title's length), and which repeat of that text it is."""
+    normal = " ".join(text.casefold().split())[:TITLE_LIMIT]
+    return hashlib.sha256(f"{normal}\n{occurrence}".encode()).hexdigest()[:32]
 
 
 @dataclass(frozen=True)
@@ -428,14 +459,20 @@ def plan_conversion(
     items: Sequence[ChecklistItem],
     known: Mapping[Key, Facts],
     children: set[Key],
+    converted: Mapping[str, Converted] | None = None,
 ) -> ConversionPlan:
     """The plan converting ``epic``'s checklist ``items``. ``ancestors`` are the epic's own,
     ``known`` the cached issues the items may link, ``children`` its sub-issues now. A linked
     item becomes a child (a closed one too: it counts as done) unless it is uncached, already a
     child, listed twice, refused by ``can_contain`` or under another parent; an unchecked
     unlinked item becomes a new issue in the epic's repo (no labels, IR4); a checked unlinked
-    one is done already."""
+    one is done already. ``converted`` (by ``item_hash``) holds what earlier conversions did:
+    an item they created is matched to that issue (linked again only if it lost its link),
+    and one they may have created is held back, so the checklist (which stays in the body)
+    never creates an issue twice."""
     parent = epic.node
+    done_before = converted or {}
+    repeats: dict[str, int] = {}
     planned: list[PlannedChild] = []
     created: list[RepoChange] = []
     skipped: list[SkippedItem] = []
@@ -445,6 +482,18 @@ def plan_conversion(
             skipped.append(SkippedItem(item.text, f"over the {MAX_CHECKLIST_ITEMS}-item limit"))
             continue
         if item.ref is None:
+            normal = " ".join(item.text.casefold().split())
+            occurrence = repeats.get(normal, 0)
+            repeats[normal] = occurrence + 1
+            hashed = item_hash(item.text, occurrence)
+            if not item.checked and hashed in done_before:
+                child, why = _reconverted(done_before[hashed], parent, ancestors, known, children)
+                if child is None:
+                    skipped.append(SkippedItem(item.text, why))
+                else:
+                    seen.add(issue_key(child.repo, child.n))
+                    planned.append(PlannedChild(item.text, child, item.text, False))
+                continue
             if item.checked:
                 done = "checked off with no linked issue: nothing to create"
                 skipped.append(SkippedItem(item.text, done))
@@ -452,7 +501,9 @@ def plan_conversion(
             temp = f"item-{index}"
             body = f"Part of {epic.repo}#{epic.n}, from its checklist."
             created.append(CreateIssue(temp, epic.repo, _title(item.text), body))
-            planned.append(PlannedChild(item.text, New(temp), _title(item.text), True))
+            planned.append(
+                PlannedChild(item.text, New(temp), _title(item.text), True, None, hashed)
+            )
             continue
         repo, n = item.ref
         key = issue_key(repo, n)
@@ -475,6 +526,25 @@ def plan_conversion(
     return _plan(
         IssueRef(epic.repo, epic.n), Existing(epic.repo, epic.n), planned, created, skipped
     )
+
+
+def _reconverted(
+    done: Converted,
+    parent: Node,
+    ancestors: Sequence[Key],
+    known: Mapping[Key, Facts],
+    children: set[Key],
+) -> tuple[Existing | None, str]:
+    """An item an earlier conversion handled: the issue to link again (it lost its link), or
+    ``None`` and why it is skipped."""
+    if done.created is None:
+        return None, done.reason or "an earlier conversion may have created it; check GitHub"
+    key = issue_key(*done.created)
+    found = known.get(key)
+    already = f"already converted ({_name(done.created)})"
+    if key in children or found is None or _linkable(parent, ancestors, found, set(), key):
+        return None, already
+    return Existing(found.repo, found.n), already
 
 
 def new_epic_plan(
@@ -659,6 +729,25 @@ def _stale(plan: ConversionPlan) -> None:
         raise SuggestionStaleError(f"the proposal no longer fits ({reasons}); nothing was applied")
 
 
+def _shape(suggestion: Suggestion) -> None:
+    """Refuse an (edited) proposal below the minimums ``schemas/grouping.json`` sets.
+
+    Raises:
+        InvalidChangeError: a new group of fewer than 2 issues, an addition of none, or a split
+            into fewer than 2 parts.
+    """
+    payload = suggestion.payload
+    if suggestion.kind == "split":
+        if len(cast(list[object], payload["parts"])) < 2:
+            raise InvalidChangeError("a split needs at least 2 parts")
+        return
+    issues = len(cast(list[object], payload["issues"]))
+    if "epic" in payload and issues < 1:
+        raise InvalidChangeError("an addition to an epic needs at least 1 issue")
+    if "epic" not in payload and issues < 2:
+        raise InvalidChangeError("a new group needs at least 2 issues")
+
+
 def proposal_batch(
     suggestion: Suggestion,
     known: Mapping[Key, Facts],
@@ -688,6 +777,9 @@ def _proposal_batch(
     ancestors: Mapping[Key, tuple[Key, ...]],
 ) -> ChangeBatch:
     payload = suggestion.payload
+    if suggestion.kind not in ("group", "split"):
+        raise InvalidChangeError(f"a {suggestion.kind} suggestion isn't a proposal to apply")
+    _shape(suggestion)
     if suggestion.kind == "group" and "epic" in payload:
         epic = _facts(known, payload["epic"])
         members = [_facts(known, item) for item in cast(list[object], payload["issues"])]
@@ -708,26 +800,30 @@ def _proposal_batch(
         return plan.changes
     if suggestion.kind == "group":
         members = [_facts(known, item) for item in cast(list[object], payload["issues"])]
-        body = f"{str(payload['scope']).strip()}\n\nGrouped by Jesinia from an approved proposal."
-        plan = new_epic_plan(str(payload["repo"]), str(payload["title"]), body.strip(), members)
+        scope = neutralise_mentions(str(payload["scope"]).strip())
+        body = f"{scope}\n\nGrouped by Jesinia from an approved proposal."
+        title = neutralise_mentions(str(payload["title"]))
+        plan = new_epic_plan(str(payload["repo"]), title, body.strip(), members)
         _stale(plan)
         return plan.changes
-    if suggestion.kind == "split":
-        whole = _facts(known, payload["issue"])
-        parts = cast(list[dict[str, str]], payload["parts"])
-        footer = f"Part of {whole.repo}#{whole.n}, split by Jesinia from an approved proposal."
-        created: list[RepoChange] = [
-            CreateIssue(
-                f"part-{i}", whole.repo, p["title"], f"{p['body'].strip()}\n\n{footer}".strip()
-            )
-            for i, p in enumerate(parts, start=1)
-        ]
-        links: dict[Target, list[IssueChange]] = {
-            New(f"part-{i}"): [SetParent(Existing(whole.repo, whole.n), True)]
-            for i in range(1, len(parts) + 1)
-        }
-        return ChangeBatch.of(links, created)
-    raise InvalidChangeError(f"a {suggestion.kind} suggestion isn't a proposal to apply")
+    # A split.
+    whole = _facts(known, payload["issue"])
+    parts = cast(list[dict[str, str]], payload["parts"])
+    footer = f"Part of {whole.repo}#{whole.n}, split by Jesinia from an approved proposal."
+    created: list[RepoChange] = [
+        CreateIssue(
+            f"part-{i}",
+            whole.repo,
+            _title(neutralise_mentions(p["title"])),
+            f"{neutralise_mentions(p['body']).strip()}\n\n{footer}".strip(),
+        )
+        for i, p in enumerate(parts, start=1)
+    ]
+    links: dict[Target, list[IssueChange]] = {
+        New(f"part-{i}"): [SetParent(Existing(whole.repo, whole.n), True)]
+        for i in range(1, len(parts) + 1)
+    }
+    return ChangeBatch.of(links, created)
 
 
 # Delivery briefs ------------------------------------------------------------------------------
@@ -786,6 +882,12 @@ def derived_acceptance(bodies: Sequence[tuple[str, int, str]]) -> list[str]:
     return found[:ACCEPTANCE_MAX]
 
 
+def neutralise_mentions(text: str) -> str:
+    """``text`` with every @mention rendered as code (`` `@name` ``), so text taken from issues
+    or an agent never pings anyone once it is posted (ruling IR49)."""
+    return _MENTION.sub(lambda m: f"`@{m.group(1)}`", text)
+
+
 def compose_brief(
     title: str,
     repo: str,
@@ -796,35 +898,55 @@ def compose_brief(
     acceptance: Sequence[str],
     *,
     cross_repo: bool,
+    subject: str | None = None,
 ) -> str:
     """The delivery brief (spec §4: one epic, one PR): scope, the children in order,
-    acceptance criteria drawn from them, and links. Without the marker; ``brief_comment`` adds
-    it when it is stored."""
-    out = [f"# Delivery brief: {title}", "", f"{repo}#{n}, delivered as one pull request.", ""]
+    acceptance criteria drawn from them, and links. ``subject`` names what it is about (the
+    epic's ``repo#n`` by default; a milestone is named, so it never reads as an issue). Every
+    @mention in the issues' and agent's text is rendered as code (IR49). Without the marker;
+    ``brief_comment`` adds it when it is stored."""
+    about = subject or f"{repo}#{n}"
+    title, scope = neutralise_mentions(title), neutralise_mentions(scope)
+    out = [f"# Delivery brief: {title}", "", f"{about}, delivered as one pull request.", ""]
     if cross_repo:
         out += [f"Warning: its children span repos, so it {CROSS_REPO_WARNING}.", ""]
     out += ["## Scope", "", scope.strip() or "To be written.", "", "## Children, in order", ""]
     for index, line in enumerate(lines, start=1):
         box = "[ ]" if line.is_open else "[x]"
         state = (line.readiness or "no readiness") if line.is_open else "closed"
-        out.append(f"{index}. {box} {line.repo}#{line.n} {line.title} ({state})")
+        name = neutralise_mentions(line.title)
+        out.append(f"{index}. {box} {line.repo}#{line.n} {name} ({state})")
     if not lines:
         out.append("No children yet.")
     out += ["", "## Acceptance criteria", ""]
-    out += [f"- {criterion}" for criterion in acceptance] or ["None drawn from the children yet."]
-    out += ["", "## Links", "", f"- {repo}#{n}: {url}"]
+    out += [f"- {neutralise_mentions(c)}" for c in acceptance] or [
+        "None drawn from the children yet."
+    ]
+    out += ["", "## Links", "", f"- {about}: {url}"]
     out += [f"- {line.repo}#{line.n}: {line.url}" for line in lines]
     return "\n".join(out)
 
 
 def strip_marker(text: str) -> str:
     """``text`` without any brief marker (the author's text, as shown and edited)."""
-    return text.replace(BRIEF_MARKER, "").strip()
+    return _ANY_MARKER.sub("", text).strip()
 
 
-def brief_comment(text: str) -> str:
-    """The comment that stores a brief: the marker on the first line, then the text (any
-    marker inside it removed, so a comment carries exactly one).
+def brief_marker(nonce: str) -> str:
+    """One attempt's marker, ``<!-- jesinia:brief:<nonce> -->`` (IR48).
+
+    Raises:
+        InvalidBriefError: a nonce that isn't 1-64 letters, digits or '-'.
+    """
+    if not _NONCE.fullmatch(nonce):
+        raise InvalidBriefError("a brief nonce is 1-64 letters, digits or '-'")
+    return f"<!-- jesinia:brief:{nonce} -->"
+
+
+def brief_comment(text: str, nonce: str | None = None) -> str:
+    """The comment that stores a brief: the marker on the first line (with the attempt's
+    ``nonce`` when given), then the text (any marker inside it removed, so a comment carries
+    exactly one).
 
     Raises:
         InvalidBriefError: blank, or over GitHub's comment limit.
@@ -832,12 +954,19 @@ def brief_comment(text: str) -> str:
     body = strip_marker(text)
     if not body:
         raise InvalidBriefError("a brief needs some text")
-    comment = f"{BRIEF_MARKER}\n{body}"
+    marker = BRIEF_MARKER if nonce is None else brief_marker(nonce)
+    comment = f"{marker}\n{body}"
     if len(comment) > COMMENT_BODY_LIMIT:
         raise InvalidBriefError(f"a brief is at most {COMMENT_BODY_LIMIT} characters")
     return comment
 
 
 def is_brief_comment(body: str) -> bool:
-    """Whether a comment is a Jesinia brief (its first line is the marker)."""
-    return body.lstrip().startswith(BRIEF_MARKER)
+    """Whether a comment is a Jesinia brief (it starts with a marker, with or without a
+    nonce)."""
+    return _ANY_MARKER.match(body.lstrip()) is not None
+
+
+def carries_marker(body: str, nonce: str) -> bool:
+    """Whether a comment starts with exactly this attempt's marker (IR48)."""
+    return body.lstrip().startswith(brief_marker(nonce))

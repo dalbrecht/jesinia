@@ -33,12 +33,14 @@ from jesinia.apps.issues.application.suggest import RUN_INTERVAL, SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
+from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversionStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
 from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.idempotency import RETENTION, IdempotencyStore, SqliteIdempotencyStore
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.github.application.issues import IssueClient
+from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
 
 log = logging.getLogger(__name__)
@@ -220,7 +222,13 @@ class IssuesModule:
         self._pending = PendingService(applied, store, _utc_now)
         briefs = SqliteBriefStore(self._conn)
         self._epics = EpicService(
-            store, SqliteSuggestionStore(self._conn), suggest, briefs, _utc_now
+            store,
+            SqliteSuggestionStore(self._conn),
+            suggest,
+            briefs,
+            _utc_now,
+            conversions=SqliteConversionStore(self._conn),
+            batches=applied,
         )
         ctx.scheduler.every(SUGGEST_JOB, RUN_INTERVAL, self.run_suggestions, at_start=True)
         github = ctx.services.get("github")
@@ -256,6 +264,7 @@ class IssuesModule:
                 briefs,
                 SqliteSuggestionStore(self._conn),
                 _utc_now,
+                viewer=PrClient(github).viewer,
                 on_rate_limit=self._sync.back_off,
                 blocked_until=self._sync.backoff_until,
             )

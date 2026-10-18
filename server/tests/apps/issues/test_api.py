@@ -36,6 +36,7 @@ from jesinia.apps.issues.domain.suggestions import SuggestionFilters, priority_s
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
+from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversionStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
 from jesinia.apps.issues.module import ISSUES_DB, IssuesModule
@@ -51,9 +52,9 @@ from jesinia.services.github.application.service import (
     GitHubRequestError,
     GitHubUnavailable,
 )
-from jesinia.services.github.domain.issue import IssueComment, Milestone, TimelineEvent
+from jesinia.services.github.domain.issue import Issue, IssueComment, Milestone, TimelineEvent
 from tests.apps.issues.test_apply import FakeWrites
-from tests.apps.issues.test_epics import BriefGitHub
+from tests.apps.issues.test_epics import BriefGitHub, dana
 from tests.apps.issues.test_labels import AMICUS_YML, Pauses
 from tests.apps.issues.test_suggest import FakeAgent, triage_reply
 from tests.apps.issues.test_sync import COMPLETE, REPO, FakeClock, issue
@@ -170,9 +171,23 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
     pending = PendingService(applied, store, clock)
     apply = ApplyService(engine, applied, SqliteSuggestionStore(conn), store, clock)
     briefs = SqliteBriefStore(conn)
-    epics = EpicService(store, SqliteSuggestionStore(conn), suggest, briefs, clock)
+    epics = EpicService(
+        store,
+        SqliteSuggestionStore(conn),
+        suggest,
+        briefs,
+        clock,
+        conversions=SqliteConversionStore(conn),
+        batches=applied,
+    )
     publisher = BriefService(
-        github, store, briefs, SqliteSuggestionStore(conn), clock, on_rate_limit=sync.back_off
+        github,
+        store,
+        briefs,
+        SqliteSuggestionStore(conn),
+        clock,
+        viewer=dana,
+        on_rate_limit=sync.back_off,
     )
     host = Host(
         sync,
@@ -1172,9 +1187,9 @@ async def test_priority_is_asked_in_the_background_and_approved_through_the_engi
 
     states = {"scope": run["scope"], "state": ["draft", "edited"]}
     polled = await env.client.get(SUGGESTIONS, params=states)
-    assert polled.status_code == 200 and polled.json()["priority_run"]["status"] == "done"
+    assert polled.status_code == 200 and polled.json()["ask_run"]["status"] == "done"
     (draft,) = polled.json()["suggestions"]
-    assert polled.json()["priority_run"]["suggestion_id"] == draft["id"]
+    assert polled.json()["ask_run"]["suggestion_id"] == draft["id"]
     assert draft["kind"] == "priority" and draft["repo"] is None and draft["scope"] == run["scope"]
     assert draft["payload"]["items"][0]["reason"] == "blocks the release"
 
@@ -1194,13 +1209,12 @@ async def test_priority_status_reports_a_failed_ask_and_unknown_scopes(env: Env)
     started = await env.client.post(f"{SUGGESTIONS}/priority", json=body, headers=keyed())
     await env.host.suggest.drain()
     polled = await env.client.get(SUGGESTIONS, params={"scope": started.json()["scope"]})
-    assert polled.json()["priority_run"]["status"] == "failed"
-    assert "SuggestionJobFailedError" in polled.json()["priority_run"]["cause"]
+    assert polled.json()["ask_run"]["status"] == "failed"
+    assert "SuggestionJobFailedError" in polled.json()["ask_run"]["cause"]
     unknown = await env.client.get(SUGGESTIONS, params={"scope": "acme/web#42"})
     assert unknown.json() == {
         "suggestions": [],
         "run": None,
-        "priority_run": None,
         "ask_run": None,
     }
     missing = {"refs": [{"repo": REPO, "n": 99}]}
@@ -1350,3 +1364,25 @@ async def test_an_epic_page_names_its_blockers_and_uncached_children(env: Env) -
     blockers = page["epic"]["readiness"]["blockers"]
     assert [b["n"] for b in blockers] == [1, 7]
     assert page["epic"]["readiness"]["warning"] == "won't fit one PR"
+
+
+async def test_a_second_conversion_while_one_runs_is_a_409(env: Env) -> None:
+    await _with_epic(env, body="- [ ] Write docs", count=0)
+    digest = (await env.client.get(f"{EPIC3}/conversion")).json()["digest"]
+    held = asyncio.Event()
+    create = env.github.create_issue
+
+    async def gated(repo: str, title: str, body: str, labels: Sequence[str]) -> Issue:
+        await held.wait()  # the first batch is still running
+        return await create(repo, title, body, labels)
+
+    env.github.create_issue = gated  # type: ignore[method-assign]
+    first = await env.client.post(f"{EPIC3}/conversion", json={"digest": digest}, headers=keyed())
+    second = await env.client.post(f"{EPIC3}/conversion", json={"digest": digest}, headers=keyed())
+    held.set()
+    assert first.status_code == 202
+    assert second.status_code == 409 and second.json()["error"] == "ConversionRunningError"
+    await _polled(env, first)
+    after = await env.client.post(f"{EPIC3}/conversion", json={"digest": digest}, headers=keyed())
+    assert after.status_code == 409  # the plan changed: the item is converted
+    assert [w[0] for w in env.github.writes].count("create_issue") == 1

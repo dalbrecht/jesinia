@@ -91,6 +91,7 @@ infrastructure/
   suggestion_store.py  SqliteSuggestionStore: drafts, runs, the similarity corpus
   apply_store.py  SqliteApplyStore: the pending tray and the applied batches
   brief_store.py  SqliteBriefStore: each epic's brief comment
+  conversion_store.py  SqliteConversionStore: approved conversions and the items they created
 api/
   routes.py       REST under /api/issues
   schemas.py      request and response bodies (the generated web client's types)
@@ -129,7 +130,12 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   repo's schema on every read, a read-only labels.yml included, so a sync never drops them.
 - A suggestion's `apply_error` says why its last approval didn't apply.
 - `epic_briefs`: each epic's brief comment, by its GitHub comment id, with the body posted. It is
-  `in_flight` from right before a new comment is posted until its id is stored (ruling IR8).
+  `in_flight` from right before a new comment is posted until its id is stored (ruling IR8), with
+  the attempt's nonce (IR48).
+- `epic_conversions` and `converted_items`: each approved checklist conversion's batch, and each
+  unlinked item it created an issue for (by a hash of its normalised text and repeat), with the
+  issue it became. The checklist stays in the body, so this is what stops a second conversion
+  creating the item again.
 
 ## Jobs
 
@@ -187,7 +193,7 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     issues now, in the background (202).
   - `POST /suggestions/priority` with `{refs: [{repo, n}]}`: ask the agent, in the background
     (202), to prioritise those open cached issues. The answer names the batch's `scope`; poll
-    `GET /suggestions?scope=` for its `priority_run` (`running`, `done`, `waiting` or `failed`
+    `GET /suggestions?scope=` for its `ask_run` (`running`, `done`, `waiting` or `failed`
     with a cause; kept until the server restarts) and the draft. Asking for a batch already being
     asked returns that run.
   - `PATCH /suggestions/{id}` with `{payload, reason?}` edits a draft, checked against the
@@ -222,7 +228,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - `GET /epics/{owner}/{repo}/{n}/conversion`: the checklist conversion plan and its `digest`;
     nothing is written. `POST` the same path with `{digest}` to approve it: a 202 with the batch
     (`origin` `epic`) and `Location` to poll. A plan changed since is a 409
-    (`ConversionOutdatedError`), and so is one with nothing to do.
+    (`ConversionOutdatedError`), and so is one with nothing to do, or a second conversion while
+    one of the same epic is still running (`ConversionRunningError`).
   - `POST /epics/proposals` with `{repo?}`, `POST /suggestions/split` with `{repo, n}` and
     `POST /epics/{owner}/{repo}/{n}/brief/draft` ask the agent in the background (202 with the
     `scope`); poll `GET /suggestions?scope=` for its `ask_run` and the drafts.
@@ -343,19 +350,32 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   batch through the engine: the new issues first (`CreateIssue`), then each `SetParent` naming
   them by temp id. Every link is made against "no parent", so a parent set on GitHub since is a
   conflict, never a move. New issues carry no labels: a label is never created implicitly (IR4).
+- **Never twice:** the checklist stays in the body, so each item a conversion creates is
+  recorded. A later preview matches it to the issue it became ("already converted"), or holds it
+  back while that is unknown: an earlier batch still running, one that didn't create it (retry
+  that batch), or one whose record is gone (check GitHub). Conversions of one epic run one at a
+  time.
 - **Approve what was shown:** a conversion is approved by the digest of the plan the author saw;
   a plan that changed since (an edited checklist, a linked issue moved) is refused. A group or
   split draft is re-checked against the cache when approved: an issue closed, gone or under a
   parent since makes it stale (409), and nothing is applied.
+- **No pings (IR49):** text taken from issues or written by the agent renders every @mention as
+  code (`` `@name` ``): in briefs, and in the epics and parts an approved group or split creates.
+- **Drop checks see the cached chain:** when an ancestor isn't cached (or the chain is deeper than
+  8), the drop check warns "ancestors beyond … aren't cached; GitHub will check".
 - **Agent asks (IR37):** grouping, splitting and briefs ask through `SuggestService`'s one-shot
   facility, with the issues fenced as untrusted data. Replies are validated against
   `schemas/grouping.json` or `schemas/brief.json`, with one retry. Jesinia keeps only issues it
   listed, and a reply about issues that changed during the ask is discarded ("inputs changed,
   ask again"). A brief's children, their order and links are Jesinia's own; the agent writes only
   the scope and the acceptance criteria.
-- **The brief comment (IR8):** posting a new brief comment is checkpointed `in_flight` first. If
-  that can't be saved, nothing is sent. A post a stop or crash cut off is found again among the
-  epic's comments by its marker and edited, never posted twice. A stored comment deleted on GitHub
+- **The brief comment (IR8, IR48):** each attempt's marker carries a fresh nonce
+  (`<!-- jesinia:brief:<nonce> -->`). Posting a new brief comment is checkpointed `in_flight`,
+  with that nonce, first. If that can't be saved, nothing is sent. A post a stop or crash cut off
+  is found again among the epic's comments, and only a comment by the signed-in gh user carrying
+  that exact nonce is adopted (the earliest), then edited. Another user's marker, or another
+  attempt's, is never adopted. If the comments can't all be read, nothing is posted
+  (`BriefRecoveryIncompleteError`, 409: check GitHub). A stored comment deleted on GitHub
   (404) is posted anew and its id kept. A rate limit refuses the write, backs syncs off, and is a
   503 with `Retry-After`.
 

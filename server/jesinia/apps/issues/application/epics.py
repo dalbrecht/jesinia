@@ -30,29 +30,36 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
 from jesinia.apps.issues.application.ports import (
+    AppliedBatch,
+    ApplyOrigin,
+    BatchReads,
     BriefStore,
     BriefWrites,
     CachedIssue,
+    ConversionStore,
     EpicCache,
     RepoState,
     StoredBrief,
     SuggestionStore,
 )
 from jesinia.apps.issues.application.suggest import SuggestService
-from jesinia.apps.issues.domain.changes import Existing
+from jesinia.apps.issues.domain.changes import ChangeBatch, Existing, New
 from jesinia.apps.issues.domain.epics import (
     CROSS_REPO_WARNING,
     BriefLine,
+    BriefRecoveryIncompleteError,
     BriefReply,
     ContainmentRefusedError,
     ConversionOutdatedError,
     ConversionPlan,
+    ConversionRunningError,
+    Converted,
     Facts,
     GroupingReply,
     ItemKind,
@@ -66,6 +73,7 @@ from jesinia.apps.issues.domain.epics import (
     brief_comment,
     brief_scope,
     can_contain,
+    carries_marker,
     checklist,
     compose_brief,
     default_scope,
@@ -73,7 +81,6 @@ from jesinia.apps.issues.domain.epics import (
     epic_readiness,
     group_drafts,
     groups_scope,
-    is_brief_comment,
     is_cross_repo,
     is_epic,
     is_initiative,
@@ -155,6 +162,14 @@ def _doc(source: str, value: object) -> UntrustedDoc:
     return UntrustedDoc(source, json.dumps(value, ensure_ascii=False, indent=1))
 
 
+class BatchStarter(Protocol):
+    """Starts a batch in the background (``ApplyService`` has it)."""
+
+    def start_batch(
+        self, make: Callable[[], ChangeBatch], origin: ApplyOrigin, key: str | None
+    ) -> AppliedBatch: ...
+
+
 class FactsCache(Protocol):
     """What the containment checks read (``SqliteIssuesStore`` has it)."""
 
@@ -181,18 +196,29 @@ def facts_of(cache: FactsCache, repo: str, n: int) -> Facts | None:
     return None if found is None else _facts(cache, found)
 
 
-def ancestors_of(cache: FactsCache, repo: str, n: int) -> tuple[Key, ...]:
-    """The cached issue's ancestors, nearest first (as far as the cache knows them)."""
+def ancestry(cache: FactsCache, repo: str, n: int) -> tuple[tuple[Key, ...], str | None]:
+    """The cached issue's ancestors, nearest first, and where the chain stops being known:
+    ``repo#n`` of an ancestor whose own parent the cache can't tell (it isn't cached, or the
+    walk reached ``MAX_DEPTH``), ``None`` when the chain is complete."""
     found: list[Key] = []
     current = cache.cached_issue(repo, n)
-    while current is not None and current.issue.parent is not None and len(found) < MAX_DEPTH:
+    while current is not None and current.issue.parent is not None:
         parent = current.issue.parent
         key = issue_key(parent.repo, parent.number)
         if key in found:
-            break
+            return tuple(found), None
+        if len(found) == MAX_DEPTH:
+            return tuple(found), f"{current.issue.repo}#{current.issue.number}"
         found.append(key)
         current = cache.cached_issue(parent.repo, parent.number)
-    return tuple(found)
+        if current is None:
+            return tuple(found), f"{parent.repo}#{parent.number}"
+    return tuple(found), None
+
+
+def ancestors_of(cache: FactsCache, repo: str, n: int) -> tuple[Key, ...]:
+    """The cached issue's ancestors, nearest first (as far as the cache knows them)."""
+    return ancestry(cache, repo, n)[0]
 
 
 def _node(cache: FactsCache, repo: str, n: int) -> Node:
@@ -291,6 +317,8 @@ class EpicService:
         suggest: the suggestion service, whose one-shot asks and background runs this uses.
         briefs: the stored brief comments.
         clock: the current UTC time.
+        conversions: the conversions approved and the items they created.
+        batches: the stored batches (what a conversion's batch created).
         new_id: makes suggestion ids.
     """
 
@@ -302,6 +330,8 @@ class EpicService:
         briefs: BriefStore,
         clock: Clock,
         *,
+        conversions: ConversionStore,
+        batches: BatchReads,
         new_id: Callable[[], str] = _new_id,
     ) -> None:
         self._cache = cache
@@ -309,6 +339,8 @@ class EpicService:
         self._suggest = suggest
         self._briefs = briefs
         self._clock = clock
+        self._conversions = conversions
+        self._batches = batches
         self._new_id = new_id
 
     # Reads ------------------------------------------------------------------------------
@@ -408,9 +440,15 @@ class EpicService:
         parent = self._cached(repo, n).issue
         node = _node(self._cache, parent.repo, n)
         child = _node(self._cache, validate_repo(child_repo), child_n)
-        refusal = can_contain(node, child, ancestors_of(self._cache, parent.repo, n))
-        warning = CROSS_REPO_WARNING if refusal is None and is_cross_repo(node, child) else None
-        return Containment(refusal, warning)
+        ancestors, gap = ancestry(self._cache, parent.repo, n)
+        refusal = can_contain(node, child, ancestors)
+        if refusal is not None:
+            return Containment(refusal, None)
+        warnings = [CROSS_REPO_WARNING] if is_cross_repo(node, child) else []
+        if gap is not None:
+            # The drop check sees only the cached chain; GitHub refuses a cycle beyond it.
+            warnings.append(f"ancestors beyond {gap} aren't cached; GitHub will check")
+        return Containment(None, "; ".join(warnings) or None)
 
     def readiness(self, kind: ItemKind, repo: str, n: int) -> Readiness:
         """A queue item's readiness (Task 9): an issue's own, an epic's from its direct
@@ -449,6 +487,7 @@ class EpicService:
             lines,
             acceptance,
             cross_repo=False,
+            subject=f"milestone {milestone.number} of {repo}",
         )
         return MilestoneItem(
             repo, milestone, issues, rolled_up_readiness([_member(c) for c in issues]), brief
@@ -493,7 +532,14 @@ class EpicService:
         }
         children = {issue_key(c.ref.repo, c.ref.number) for c in self._children(cached) or ()}
         ancestors = ancestors_of(self._cache, issue.repo, n)
-        plan = plan_conversion(_facts(self._cache, cached), ancestors, items, known, children)
+        converted = self._converted(issue.repo, n)
+        for done in converted.values():
+            made = None if done.created is None else facts_of(self._cache, *done.created)
+            if made is not None:
+                known[made.key] = made
+        plan = plan_conversion(
+            _facts(self._cache, cached), ancestors, items, known, children, converted
+        )
         if digest is not None:
             if plan.digest != digest:
                 raise ConversionOutdatedError(
@@ -503,6 +549,75 @@ class EpicService:
             if not plan.children:
                 raise NothingToConvertError(f"{issue.repo}#{n}'s checklist has nothing to convert")
         return plan
+
+    def _converted(self, repo: str, n: int) -> dict[str, Converted]:
+        """What earlier conversions of this epic did with its unlinked items: the issue each
+        created (from its record, else its batch's result, then recorded), or why that isn't
+        known."""
+        found: dict[str, Converted] = {}
+        for row in self._conversions.converted(repo, n):
+            if row.created_repo is not None and row.created_n is not None:
+                found[row.item_hash] = Converted((row.created_repo, row.created_n))
+                continue
+            batch = self._batches.batch(row.batch_id)
+            made = None if batch is None else batch.result.created.get(row.temp_id)
+            if made is not None:
+                found[row.item_hash] = Converted((made.repo, made.n))
+                self._remember(repo, n, row.item_hash, made.repo, made.n)
+            elif batch is None:
+                reason = "an earlier conversion may have created it, but its record is gone; "
+                found[row.item_hash] = Converted(None, f"{reason}check GitHub")
+            elif batch.status == "running":
+                found[row.item_hash] = Converted(None, f"being converted now (batch {batch.id})")
+            else:
+                found[row.item_hash] = Converted(
+                    None,
+                    f"an earlier conversion (batch {batch.id}) didn't create it; retry that batch",
+                )
+        return found
+
+    def _remember(self, repo: str, n: int, item_hash: str, made_repo: str, made_n: int) -> None:
+        """Record the issue an item became, so it outlives its batch (pruned after 30 days).
+        Best effort: the batch still answers until then."""
+        try:
+            self._conversions.set_created(repo, n, item_hash, made_repo, made_n)
+        except Exception:
+            log.exception("issues: recording %s#%d's converted item failed", repo, n)
+
+    def start_conversion(
+        self, repo: str, n: int, digest: str, key: str | None, starter: BatchStarter
+    ) -> AppliedBatch:
+        """Approve the conversion previewed with ``digest``: one batch through the apply engine,
+        in the background (IR45), with its new items recorded so a later conversion never
+        creates them again. A replay of ``key`` answers its batch (IR46).
+
+        Raises:
+            InvalidRepoError, IssueNotCachedError, ConversionOutdatedError,
+            NothingToConvertError: see ``conversion``.
+            ConversionRunningError: a conversion of this epic is still running.
+        """
+        home = self._cached(repo, n).issue.repo
+        planned: list[ConversionPlan] = []
+
+        def make() -> ChangeBatch:
+            running = self._conversions.running_conversion(home, n)
+            if running is not None:
+                raise ConversionRunningError(
+                    f"a conversion of {home}#{n} is still running (batch {running}); wait for it"
+                )
+            plan = self.conversion(home, n, digest)
+            planned.append(plan)
+            return plan.changes
+
+        started = starter.start_batch(make, "epic", key)
+        if planned:  # a new batch, not a replay: nothing awaited since it was stored
+            items = [
+                (c.item_hash, c.target.temp_id)
+                for c in planned[0].children
+                if c.item_hash is not None and isinstance(c.target, New)
+            ]
+            self._conversions.record(started.id, home, n, items, self._clock())
+        return started
 
     # Agent asks (IR37) ------------------------------------------------------------------
 
@@ -738,9 +853,15 @@ class EpicService:
         """
         cached = self._epic(repo, n)
         issue = cached.issue
-        children = self._children(cached) or ()
+        fetched = self._children(cached)
+        if fetched is None:
+            raise InvalidSuggestionFilterError(
+                f"{issue.repo}#{n}'s children haven't been fetched yet; refresh it"
+            )
+        children = fetched
         known = [c.cached for c in children if c.cached is not None]
         before = self._fingerprint([cached, *known])
+        order = [c.ref for c in children]
         pack = ContextPack(
             BRIEF_ROLE,
             files={"job.md": f"# Brief\n\n- Epic: {issue.repo}#{n}\n- Children: {len(children)}\n"},
@@ -762,6 +883,12 @@ class EpicService:
         )  # fmt: skip
         data = await self._suggest.ask(pack, "brief")
         self._unchanged([cached, *known], before)
+        now_children = self._children(self._cached(issue.repo, n)) or ()
+        if [c.ref for c in now_children] != order:
+            raise SuggestionInputsChangedError(
+                "inputs changed, ask again: the epic's children changed while the agent was "
+                "answering"
+            )
         reply = BriefReply.from_json(data)
         text = self._compose(cached, children, reply.scope, reply.acceptance_criteria)
         payload: dict[str, object] = {"repo": issue.repo, "n": n, "text": text}
@@ -788,8 +915,10 @@ class BriefService:
         briefs: the stored brief comments.
         drafts: the suggestion drafts (a ``brief`` draft is marked approved once posted).
         clock: the current UTC time.
+        viewer: the signed-in gh user's login (only their own comment is ever adopted).
         on_rate_limit: told GitHub's reset time when a rate limit refuses a write.
         blocked_until: GitHub's reset time while a rate limit is known; nothing is asked then.
+        new_nonce: makes each attempt's marker nonce (IR48).
     """
 
     def __init__(
@@ -800,9 +929,14 @@ class BriefService:
         drafts: BriefPublisherStore,
         clock: Clock,
         *,
+        viewer: Callable[[], Awaitable[str]],
         on_rate_limit: Callable[[datetime | None], None] | None = None,
         blocked_until: Callable[[], datetime | None] | None = None,
+        new_nonce: Callable[[], str] = _new_id,
     ) -> None:
+        self._viewer = viewer
+        self._login: str | None = None
+        self._new_nonce = new_nonce
         self._github = github
         self._cache = cache
         self._briefs = briefs
@@ -834,6 +968,8 @@ class BriefService:
             GitHubRateLimitedError: GitHub is rate limiting (nothing was sent then, or the
                 write was refused).
             GitHubError: GitHub refused the write (the cause is kept).
+            BriefRecoveryIncompleteError: a cut-off post couldn't be looked for among all the
+                epic's comments; nothing was posted.
         """
         found = self._cache.cached_issue(validate_repo(repo), n)
         if found is None:
@@ -842,14 +978,15 @@ class BriefService:
         schema = _schema(self._cache, issue.repo)
         if not (is_epic(issue, schema) or is_initiative(issue, schema)):
             raise NotAnEpicError(f"{issue.repo}#{n} is not an epic, so it has no brief")
-        body = brief_comment(text)
+        nonce = self._new_nonce()
+        body = brief_comment(text, nonce)
         draft = self._draft(suggestion_id, issue.repo, n)
         until = self._blocked_until()
         if until is not None and self._clock() < until:
             raise GitHubRateLimitedError(429, "the brief wasn't sent", until)
         async with self._lock:
             try:
-                ref = await self._publish(issue.repo, n, body)
+                ref = await self._publish(issue.repo, n, body, nonce)
             except GitHubRateLimitedError as exc:
                 if self._on_rate_limit is not None:
                     self._on_rate_limit(exc.reset_at)
@@ -859,12 +996,12 @@ class BriefService:
             self._settle(draft)
         return posted
 
-    async def _publish(self, repo: str, n: int, body: str) -> CommentRef:
+    async def _publish(self, repo: str, n: int, body: str, nonce: str) -> CommentRef:
         stored = self._briefs.brief(repo, n)
         comment_id = None if stored is None else stored.comment_id
         if comment_id is None and stored is not None and stored.state == "in_flight":
-            # A post was cut off: it may have reached GitHub. Find it by its marker.
-            comment_id = await self._recover(repo, n, stored.attempt_at or stored.updated_at)
+            # A post was cut off: it may have reached GitHub. Find it by its attempt's nonce.
+            comment_id = await self._recover(repo, n, stored)
         if comment_id is not None:
             try:
                 return await self._github.edit_comment(repo, comment_id, body)
@@ -875,23 +1012,44 @@ class BriefService:
                     "issues: %s#%d's brief comment %d is gone; posting anew", repo, n, comment_id
                 )
         # The checkpoint before the irreversible write: if it can't be saved, nothing is sent.
-        self._briefs.mark_in_flight(repo, n, body, self._clock())
+        self._briefs.mark_in_flight(repo, n, body, self._clock(), nonce)
         return await self._github.comment(repo, n, body)
 
-    async def _recover(self, repo: str, n: int, attempt: datetime) -> int | None:
-        """The newest brief comment posted since ``attempt`` (less some slack), if any."""
-        since = attempt - RECOVERY_SLACK
-        found: int | None = None
+    async def _who(self) -> str:
+        if self._login is None:
+            self._login = (await self._viewer()).casefold()
+        return self._login
+
+    async def _recover(self, repo: str, n: int, stored: StoredBrief) -> int | None:
+        """The cut-off attempt's comment: the earliest one by the signed-in gh user carrying the
+        attempt's exact nonce (IR48); ``None`` when every comment was read and none does.
+
+        Raises:
+            BriefRecoveryIncompleteError: ``RECOVERY_PAGES`` were read and more remain.
+        """
+        nonce = stored.nonce
+        assert nonce is not None, "mark_in_flight always stores the attempt's nonce"
+        login = await self._who()
+        # Only narrows the listing: the slack absorbs clock skew between this Mac and GitHub;
+        # the author and the nonce are what match.
+        since = (stored.attempt_at or stored.updated_at) - RECOVERY_SLACK
         token: str | None = None
         for _ in range(RECOVERY_PAGES):
             page = await self._github.comments(repo, n, since, token)
-            for comment in page.items:
-                if comment.created_at >= since and is_brief_comment(comment.body):
-                    found = comment.id
+            matches = [
+                c
+                for c in page.items
+                if c.author.casefold() == login and carries_marker(c.body, nonce)
+            ]
+            if matches:
+                return min(matches, key=lambda c: (c.created_at, c.id)).id
             token = page.next_token
             if token is None:
-                break
-        return found
+                return None
+        raise BriefRecoveryIncompleteError(
+            f"{repo}#{n}'s brief post was cut off, and its comments couldn't all be read to "
+            "find it; nothing was posted; check GitHub, then approve again"
+        )
 
     def _record(self, repo: str, n: int, ref: CommentRef, body: str) -> StoredBrief:
         """Store the posted brief; best effort: the comment is on GitHub either way, and a

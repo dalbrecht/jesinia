@@ -4,7 +4,9 @@
 -- Each epic's delivery brief, stored on GitHub as the comment marked `<!-- jesinia:brief -->`
 -- (spec §4). `comment_id` is that comment, so an approved brief is edited in place. `state` is
 -- `in_flight` from right before a new comment is posted until its id is stored: a post a stop or
--- crash cut off is found again by its marker (from `attempt_at` on) rather than posted twice.
+-- crash cut off is found again rather than posted twice. Each attempt's marker carries `nonce`
+-- (`<!-- jesinia:brief:<nonce> -->`), and recovery adopts only a comment by the signed-in gh
+-- user carrying that exact nonce (ruling IR48).
 CREATE TABLE epic_briefs (
     repo TEXT NOT NULL COLLATE NOCASE,
     n INTEGER NOT NULL,
@@ -13,9 +15,35 @@ CREATE TABLE epic_briefs (
     body TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('in_flight', 'posted')),
     attempt_at TEXT,
+    nonce TEXT,
     posted_at TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (repo, n)
+);
+
+-- Each approved checklist conversion: its batch and epic. A conversion batch still `running`
+-- refuses another for the same epic.
+CREATE TABLE epic_conversions (
+    batch_id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL COLLATE NOCASE,
+    n INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX epic_conversions_by_epic ON epic_conversions (repo, n);
+
+-- Each unlinked checklist item a conversion created an issue for, keyed by a hash of its
+-- normalised text (and its occurrence), with the batch's temp id and, once known, the issue it
+-- became. The checklist stays in the body, so a later preview matches the item to that issue
+-- instead of creating it again.
+CREATE TABLE converted_items (
+    repo TEXT NOT NULL COLLATE NOCASE,
+    n INTEGER NOT NULL,
+    item_hash TEXT NOT NULL,
+    batch_id TEXT NOT NULL,
+    temp_id TEXT NOT NULL,
+    created_repo TEXT COLLATE NOCASE,
+    created_n INTEGER,
+    PRIMARY KEY (repo, n, item_hash)
 );
 
 -- A checklist conversion is a batch of its own (`epic`), beside the tray's and approvals'.

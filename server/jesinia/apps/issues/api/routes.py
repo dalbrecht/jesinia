@@ -39,8 +39,8 @@ from jesinia.apps.issues.api.schemas import (
     EpicOut,
     EpicsOut,
     GroupAskIn,
+    IssueAskRunOut,
     IssueDetailOut,
-    IssuePriorityRunOut,
     IssueRefIn,
     IssuesErrorOut,
     IssuesRepoIn,
@@ -81,7 +81,9 @@ from jesinia.apps.issues.domain.changes import (
     PendingNotFoundError,
 )
 from jesinia.apps.issues.domain.epics import (
+    BriefRecoveryIncompleteError,
     ConversionOutdatedError,
+    ConversionRunningError,
     EpicDomainError,
     NotAnEpicError,
     NothingToConvertError,
@@ -184,6 +186,8 @@ _STATUS: dict[type[Exception], int] = {
     NotAnEpicError: status.HTTP_404_NOT_FOUND,
     ConversionOutdatedError: status.HTTP_409_CONFLICT,
     NothingToConvertError: status.HTTP_409_CONFLICT,
+    ConversionRunningError: status.HTTP_409_CONFLICT,
+    BriefRecoveryIncompleteError: status.HTTP_409_CONFLICT,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -415,14 +419,12 @@ def build_router(host: IssuesHost) -> APIRouter:
                 found = host.suggest.run_state(repo, n)
                 latest = None if found is None else IssueSuggestionRunOut.of(found)
             asked = None if scope is None else host.suggest.ask_run(scope)
-            shown = None if asked is None else IssuePriorityRunOut.of(asked)
             return IssueSuggestionsOut(
                 suggestions=[
                     IssueSuggestionOut.of(s) for s in host.suggest.suggestions(filters, limit)
                 ],
                 run=latest,
-                priority_run=shown,
-                ask_run=shown,
+                ask_run=None if asked is None else IssueAskRunOut.of(asked),
             )
 
         return await _respond(run, host.clock)
@@ -446,7 +448,7 @@ def build_router(host: IssuesHost) -> APIRouter:
 
     @r.post(
         "/suggestions/priority",
-        response_model=IssuePriorityRunOut,
+        response_model=IssueAskRunOut,
         status_code=status.HTTP_202_ACCEPTED,
     )
     async def suggest_priority(
@@ -454,14 +456,14 @@ def build_router(host: IssuesHost) -> APIRouter:
     ) -> Response:
         """Ask the agent to prioritise these cached open issues. The ask runs in the background
         (the request never waits for the agent); poll ``GET /suggestions?scope=`` with the
-        answer's ``scope`` (its ``priority_run``). When it is ``done`` there is one draft
+        answer's ``scope`` (its ``ask_run``). When it is ``done`` there is one draft
         (``kind`` ``priority``, ``scope`` the batch) with a priority, a rank and a reason per
         issue; approving it (``/suggestions/{id}/approve``) sets the priorities. Asking for a
         batch that is already being asked returns that run."""
 
         async def run() -> Response:
             started = await host.suggest.start_priority([(r.repo, r.n) for r in body.refs])
-            out = IssuePriorityRunOut.of(started)
+            out = IssueAskRunOut.of(started)
             return JSONResponse(jsonable_encoder(out), status_code=status.HTTP_202_ACCEPTED)
 
         return await idem.run(lambda: _respond(run, host.clock))
@@ -613,7 +615,7 @@ def build_router(host: IssuesHost) -> APIRouter:
     epic_path = "/epics/{owner}/{repo}/{n}"
 
     def _ask_started(run: PriorityRun) -> Response:
-        out = IssuePriorityRunOut.of(run)
+        out = IssueAskRunOut.of(run)
         return JSONResponse(jsonable_encoder(out), status_code=status.HTTP_202_ACCEPTED)
 
     @r.get("/epics", response_model=EpicsOut)
@@ -684,14 +686,14 @@ def build_router(host: IssuesHost) -> APIRouter:
         """Approve the conversion previewed with ``digest``: one batch (create the new issues,
         then link every child in order) applied in the background, a 202 with the batch and
         ``Location`` to poll. A 409 when the plan changed since (preview again) or has nothing
-        to do. The checklist stays in the body."""
+        to do, or while another conversion of this epic is still running. The checklist stays in the
+        body, and the items converted are recorded, so converting it again never creates them
+        twice."""
 
         async def run() -> Response:
             name = _repo(owner, repo)
-            started = host.apply.start_batch(
-                lambda: host.epics.conversion(name, n, body.digest).changes,
-                "epic",
-                _request_key("convert", idem),
+            started = host.epics.start_conversion(
+                name, n, body.digest, _request_key("convert", idem), host.apply
             )
             return _started(started.id, ApplyBatchOut.of(started))
 
@@ -699,7 +701,7 @@ def build_router(host: IssuesHost) -> APIRouter:
 
     @r.post(
         f"{epic_path}/brief/draft",
-        response_model=IssuePriorityRunOut,
+        response_model=IssueAskRunOut,
         status_code=status.HTTP_202_ACCEPTED,
     )
     async def draft_brief(
@@ -735,7 +737,7 @@ def build_router(host: IssuesHost) -> APIRouter:
 
     @r.post(
         "/epics/proposals",
-        response_model=IssuePriorityRunOut,
+        response_model=IssueAskRunOut,
         status_code=status.HTTP_202_ACCEPTED,
     )
     async def propose_groups(body: GroupAskIn, idem: IdempotentCall = keyed) -> Response:
@@ -750,7 +752,7 @@ def build_router(host: IssuesHost) -> APIRouter:
 
     @r.post(
         "/suggestions/split",
-        response_model=IssuePriorityRunOut,
+        response_model=IssueAskRunOut,
         status_code=status.HTTP_202_ACCEPTED,
     )
     async def propose_split(body: IssueRefIn, idem: IdempotentCall = keyed) -> Response:

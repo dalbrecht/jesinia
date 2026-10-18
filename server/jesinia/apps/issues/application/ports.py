@@ -496,7 +496,8 @@ class StoredBrief:
     """An epic's delivery brief as stored on GitHub: ``comment_id`` and ``url`` of the comment
     (``None`` until one is known), the ``body`` posted (marker included), and ``state``:
     ``in_flight`` from right before a new comment is posted until its id is stored, ``posted``
-    after. ``attempt_at`` is when that post started (a cut-off one is looked for from then on)."""
+    after. ``attempt_at`` is when that post started and ``nonce`` the one its marker carries
+    (a cut-off post is looked for by both, IR48)."""
 
     repo: str
     n: int
@@ -507,6 +508,7 @@ class StoredBrief:
     attempt_at: datetime | None
     posted_at: datetime | None
     updated_at: datetime
+    nonce: str | None = None
 
     @property
     def text(self) -> str:
@@ -519,9 +521,10 @@ class BriefStore(Protocol):
 
     def brief(self, repo: str, n: int) -> StoredBrief | None: ...
 
-    def mark_in_flight(self, repo: str, n: int, body: str, now: datetime) -> None:
-        """Record that a new brief comment is about to be posted (the checkpoint before an
-        irreversible write); a stored comment id is forgotten (it is gone on GitHub)."""
+    def mark_in_flight(self, repo: str, n: int, body: str, now: datetime, nonce: str) -> None:
+        """Record that a new brief comment carrying ``nonce`` is about to be posted (the
+        checkpoint before an irreversible write); a stored comment id is forgotten (it is gone
+        on GitHub)."""
 
     def mark_posted(
         self, repo: str, n: int, comment_id: int, url: str, body: str, now: datetime
@@ -556,3 +559,45 @@ class EpicCache(SuggestionCache, Protocol):
 
     def milestone_issues(self, repo: str, title: str) -> list[CachedIssue]:
         """The issues (open and closed) of the milestone titled ``title``, by number."""
+
+
+@dataclass(frozen=True)
+class ConvertedRow:
+    """An unlinked checklist item a conversion batch created an issue for: its ``item_hash``,
+    the batch and temp id, and the issue it became once known."""
+
+    item_hash: str
+    batch_id: str
+    temp_id: str
+    created_repo: str | None
+    created_n: int | None
+
+
+class ConversionStore(Protocol):
+    """``epic_conversions`` and ``converted_items`` in ``issues.sqlite``."""
+
+    def record(
+        self,
+        batch_id: str,
+        repo: str,
+        n: int,
+        items: Sequence[tuple[str, str]],
+        now: datetime,
+    ) -> None:
+        """Keep a started conversion and its new items (``(item_hash, temp_id)``); an item
+        recorded before keeps its first record."""
+
+    def converted(self, repo: str, n: int) -> list[ConvertedRow]: ...
+
+    def set_created(
+        self, repo: str, n: int, item_hash: str, created_repo: str, created_n: int
+    ) -> None: ...
+
+    def running_conversion(self, repo: str, n: int) -> str | None:
+        """The id of a conversion batch of this epic still ``running``, if any."""
+
+
+class BatchReads(Protocol):
+    """Stored batches (``SqliteApplyStore`` has it)."""
+
+    def batch(self, batch_id: str) -> AppliedBatch | None: ...

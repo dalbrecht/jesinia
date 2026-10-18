@@ -1238,7 +1238,7 @@ export interface paths {
          * Suggest Priority
          * @description Ask the agent to prioritise these cached open issues. The ask runs in the background
          *     (the request never waits for the agent); poll ``GET /suggestions?scope=`` with the
-         *     answer's ``scope`` (its ``priority_run``). When it is ``done`` there is one draft
+         *     answer's ``scope`` (its ``ask_run``). When it is ``done`` there is one draft
          *     (``kind`` ``priority``, ``scope`` the batch) with a priority, a rank and a reason per
          *     issue; approving it (``/suggestions/{id}/approve``) sets the priorities. Asking for a
          *     batch that is already being asked returns that run.
@@ -1518,7 +1518,9 @@ export interface paths {
          * @description Approve the conversion previewed with ``digest``: one batch (create the new issues,
          *     then link every child in order) applied in the background, a 202 with the batch and
          *     ``Location`` to poll. A 409 when the plan changed since (preview again) or has nothing
-         *     to do. The checklist stays in the body.
+         *     to do, or while another conversion of this epic is still running. The checklist stays in the
+         *     body, and the items converted are recorded, so converting it again never creates them
+         *     twice.
          */
         post: operations["convert_api_issues_epics__owner___repo___n__conversion_post"];
         delete?: never;
@@ -2533,6 +2535,32 @@ export interface components {
             /** Failed */
             failed: components["schemas"]["ImportFailureOut"][];
         };
+        /**
+         * IssueAskRunOut
+         * @description A background ask of the agent (ruling IR50): a priority ask for a batch of issues, a
+         *     grouping ask, a split ask or an epic's brief. ``scope`` names it (its drafts carry it);
+         *     ``status`` is ``running``, ``done`` (``suggestion_id`` is the draft, ``null`` when the reply
+         *     proposed nothing), ``waiting`` (no agent runner; ask again) or ``failed`` (``cause``, "inputs
+         *     changed, ask again" included).
+         */
+        IssueAskRunOut: {
+            /** Scope */
+            scope: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "done" | "waiting" | "failed";
+            /** Cause */
+            cause: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Suggestion Id */
+            suggestion_id: string | null;
+        };
         /** IssueCommentOut */
         IssueCommentOut: {
             /** Id */
@@ -2638,30 +2666,6 @@ export interface components {
             source: string | null;
             /** Commit Id */
             commit_id: string | null;
-        };
-        /**
-         * IssuePriorityRunOut
-         * @description A priority ask for a batch of issues: ``scope`` names the batch, ``status`` is
-         *     ``running``, ``done`` (``suggestion_id`` is the draft), ``waiting`` (no agent runner; ask
-         *     again) or ``failed`` (``cause``).
-         */
-        IssuePriorityRunOut: {
-            /** Scope */
-            scope: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "running" | "done" | "waiting" | "failed";
-            /** Cause */
-            cause: string | null;
-            /**
-             * Updated At
-             * Format: date-time
-             */
-            updated_at: string;
-            /** Suggestion Id */
-            suggestion_id: string | null;
         };
         /** IssueRefIn */
         IssueRefIn: {
@@ -2844,15 +2848,13 @@ export interface components {
          * IssueSuggestionsOut
          * @description Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked
          *     for. When a ``scope`` was, ``ask_run`` is the latest background ask about it (a priority,
-         *     groups, split or brief ask); ``priority_run`` is the same run, kept for the priority
-         *     clients.
+         *     groups, split or brief ask).
          */
         IssueSuggestionsOut: {
             /** Suggestions */
             suggestions: components["schemas"]["IssueSuggestionOut"][];
             run: components["schemas"]["IssueSuggestionRunOut"] | null;
-            priority_run?: components["schemas"]["IssuePriorityRunOut"] | null;
-            ask_run?: components["schemas"]["IssuePriorityRunOut"] | null;
+            ask_run?: components["schemas"]["IssueAskRunOut"] | null;
         };
         /**
          * IssueTargetBody
@@ -8247,7 +8249,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IssuePriorityRunOut"];
+                    "application/json": components["schemas"]["IssueAskRunOut"];
                 };
             };
             /** @description Bad Request */
@@ -9501,7 +9503,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IssuePriorityRunOut"];
+                    "application/json": components["schemas"]["IssueAskRunOut"];
                 };
             };
             /** @description Bad Request */
@@ -9667,7 +9669,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IssuePriorityRunOut"];
+                    "application/json": components["schemas"]["IssueAskRunOut"];
                 };
             };
             /** @description Bad Request */
@@ -9748,7 +9750,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IssuePriorityRunOut"];
+                    "application/json": components["schemas"]["IssueAskRunOut"];
                 };
             };
             /** @description Bad Request */

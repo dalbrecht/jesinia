@@ -25,6 +25,7 @@ from jesinia.apps.issues.domain.epics import (
     BriefReply,
     ChecklistItem,
     ContainmentRefusedError,
+    Converted,
     Facts,
     GroupingReply,
     InvalidBriefError,
@@ -32,8 +33,10 @@ from jesinia.apps.issues.domain.epics import (
     Node,
     Readiness,
     brief_comment,
+    brief_marker,
     brief_scope,
     can_contain,
+    carries_marker,
     checklist,
     compose_brief,
     default_scope,
@@ -46,7 +49,9 @@ from jesinia.apps.issues.domain.epics import (
     is_epic,
     is_initiative,
     issue_readiness,
+    item_hash,
     lacks_epic_label,
+    neutralise_mentions,
     new_epic_plan,
     plan_conversion,
     proposal_batch,
@@ -559,3 +564,119 @@ def test_a_brief_reply_reads_its_scope_and_criteria() -> None:
 
 def test_a_triage_without_cache_stays_a_triage_type() -> None:
     assert isinstance(member(1).triage, Triage)
+
+
+# --- fix round 1 -------------------------------------------------------------------------------
+
+
+def test_mentions_in_untrusted_text_are_rendered_as_code() -> None:
+    text = "hi @dana, `@kept` a@b.com @org/team-x and @@x"
+    assert neutralise_mentions(text) == "hi `@dana`, `@kept` a@b.com `@org/team-x` and @`@x`"
+    brief = compose_brief(
+        "Ping @boss",
+        REPO,
+        1,
+        "u",
+        "Scope for @dana",
+        [BriefLine(REPO, 2, "Fix @carol's bug", "u2", True, None)],
+        ["@erin approves"],
+        cross_repo=False,
+    )
+    assert "@boss" not in brief.replace("`@boss`", "")
+    for name in ("dana", "carol", "erin"):
+        assert f"`@{name}`" in brief and f" @{name}" not in brief
+
+
+def test_a_brief_can_name_its_subject_other_than_an_issue() -> None:
+    text = compose_brief(
+        "Milestone: Launch",
+        REPO,
+        3,
+        "u",
+        "s",
+        [],
+        [],
+        cross_repo=False,
+        subject="milestone 3 of acme/web",
+    )
+    assert "acme/web#3" not in text and "milestone 3 of acme/web" in text
+
+
+def test_a_brief_comment_carries_its_attempt_nonce() -> None:
+    comment = brief_comment("Hello", "abc-123")
+    assert comment == f"{brief_marker('abc-123')}\nHello" and comment.startswith(
+        "<!-- jesinia:brief:abc-123 -->"
+    )
+    assert is_brief_comment(comment) and carries_marker(f" {comment}", "abc-123")
+    assert not carries_marker(comment, "other") and not carries_marker(f"x{comment}", "abc-123")
+    assert strip_marker(f"{comment}\n{brief_marker('zz')}") == "Hello"
+    assert brief_comment(f"{brief_marker('old')}\nHi") == f"{BRIEF_MARKER}\nHi"
+    with pytest.raises(InvalidBriefError):
+        brief_marker("not a nonce!")
+
+
+def test_an_item_hash_ignores_case_and_spacing_but_counts_repeats() -> None:
+    assert item_hash(" Write   the DOCS ", 0) == item_hash("write the docs", 0)
+    assert item_hash("write the docs", 0) != item_hash("write the docs", 1)
+
+
+def test_a_converted_item_is_matched_to_its_issue_not_created_again() -> None:
+    items = [
+        ChecklistItem("Write the docs", False, None),
+        ChecklistItem("Write the docs", False, None),
+        ChecklistItem("Ship it", False, None),
+        ChecklistItem("Pending", False, None),
+        ChecklistItem("Linkable", False, None),
+    ]
+    converted = {
+        item_hash("Write the docs", 0): Converted((REPO, 40), None),
+        item_hash("Ship it", 0): Converted(None, "an earlier conversion didn't create it"),
+        item_hash("Linkable", 0): Converted((REPO, 42), None),
+    }
+    known = {(REPO.casefold(), 40): facts(40), (REPO.casefold(), 42): facts(42)}
+    plan = plan_conversion(facts(1), (), items, known, {(REPO.casefold(), 40)}, converted)
+    assert [(s.item, s.reason) for s in plan.skipped] == [
+        ("Write the docs", f"already converted ({REPO}#40)"),
+        ("Ship it", "an earlier conversion didn't create it"),
+    ]
+    assert [(c.target, c.item_hash) for c in plan.children] == [
+        (New("item-2"), item_hash("Write the docs", 1)),
+        (New("item-4"), item_hash("Pending", 0)),
+        (Existing(REPO, 42), None),
+    ]
+
+
+def test_an_approved_proposal_needs_its_minimum_shape_and_pings_nobody() -> None:
+    known = {(REPO.casefold(), n): facts(n) for n in (2, 3)}
+    lonely: dict[str, object] = {
+        "repo": REPO, "title": "T", "scope": "s", "issues": [{"repo": REPO, "n": 2}],
+        "cross_repo": False,
+    }  # fmt: skip
+    with pytest.raises(InvalidChangeError, match="at least 2"):
+        proposal_batch(suggestion("group", lonely), known, {})
+    one_part: dict[str, object] = {
+        "issue": {"repo": REPO, "n": 2},
+        "parts": [{"title": "a", "body": ""}],
+    }
+    with pytest.raises(InvalidChangeError, match="at least 2"):
+        proposal_batch(suggestion("split", one_part), known, {})
+    no_issue: dict[str, object] = {"epic": {"repo": REPO, "n": 2}, "issues": []}
+    with pytest.raises(InvalidChangeError, match="at least 1"):
+        proposal_batch(suggestion("group", no_issue), known, {})
+    loud: dict[str, object] = {
+        "repo": REPO, "title": "Ask @dana", "scope": "cc @erin",
+        "issues": [{"repo": REPO, "n": 2}, {"repo": REPO, "n": 3}], "cross_repo": False,
+    }  # fmt: skip
+    (create,) = proposal_batch(suggestion("group", loud), known, {}).repo
+    assert isinstance(create, CreateIssue)
+    assert create.title == "Ask `@dana`" and "`@erin`" in create.body
+    parts: dict[str, object] = {
+        "issue": {"repo": REPO, "n": 2},
+        "parts": [{"title": "@a one", "body": "@b"}, {"title": "two", "body": ""}],
+    }
+    first = proposal_batch(suggestion("split", parts), known, {}).repo[0]
+    assert (
+        isinstance(first, CreateIssue)
+        and first.title == "`@a` one"
+        and first.body.startswith("`@b`")
+    )

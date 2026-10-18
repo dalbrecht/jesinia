@@ -537,13 +537,11 @@ class IssueSuggestionRunOut(BaseModel):
 class IssueSuggestionsOut(BaseModel):
     """Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked
     for. When a ``scope`` was, ``ask_run`` is the latest background ask about it (a priority,
-    groups, split or brief ask); ``priority_run`` is the same run, kept for the priority
-    clients."""
+    groups, split or brief ask)."""
 
     suggestions: list[IssueSuggestionOut]
     run: IssueSuggestionRunOut | None
-    priority_run: IssuePriorityRunOut | None = None
-    ask_run: IssuePriorityRunOut | None = None
+    ask_run: IssueAskRunOut | None = None
 
 
 class IssueSuggestionEditIn(BaseModel):
@@ -566,10 +564,12 @@ class IssueSuggestionRunIn(BaseModel):
     refs: list[IssueRefIn] = Field(min_length=1, max_length=MAX_BACKLOG_REFS)
 
 
-class IssuePriorityRunOut(BaseModel):
-    """A priority ask for a batch of issues: ``scope`` names the batch, ``status`` is
-    ``running``, ``done`` (``suggestion_id`` is the draft), ``waiting`` (no agent runner; ask
-    again) or ``failed`` (``cause``)."""
+class IssueAskRunOut(BaseModel):
+    """A background ask of the agent (ruling IR50): a priority ask for a batch of issues, a
+    grouping ask, a split ask or an epic's brief. ``scope`` names it (its drafts carry it);
+    ``status`` is ``running``, ``done`` (``suggestion_id`` is the draft, ``null`` when the reply
+    proposed nothing), ``waiting`` (no agent runner; ask again) or ``failed`` (``cause``, "inputs
+    changed, ask again" included)."""
 
     scope: str
     status: Literal["running", "done", "waiting", "failed"]
@@ -578,7 +578,7 @@ class IssuePriorityRunOut(BaseModel):
     suggestion_id: str | None
 
     @classmethod
-    def of(cls, run: PriorityRun) -> IssuePriorityRunOut:
+    def of(cls, run: PriorityRun) -> IssueAskRunOut:
         return cls(
             scope=run.scope,
             status=run.status,
