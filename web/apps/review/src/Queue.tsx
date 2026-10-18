@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { LoadPr } from "./LoadPr";
 import { visibleText } from "./pr/model";
+import { verdictWords } from "./pr/Recommendation";
 import { Visible } from "./pr/Visible";
 import s from "./review.module.css";
 
@@ -118,7 +119,8 @@ export function RowCard({ row, actions }: { row: QueueRow; actions?: RowActions 
   const ref = refOf(row);
   const ci = CI[row.ci_state];
   const state = stateOf(row);
-  const verdict = row.recommendation ? VERDICT[row.recommendation] : undefined;
+  // Your own PR reads as ready (or not) to request review (spec §3.3), as in the PR view.
+  const verdict = verdictWords(row.recommendation, row.author_kind === "you");
   const coverage = coverageText(row);
   const evidence = evidenceOf(row);
   const author = row.author_kind === "developer" ? row.author : `${row.author} (${row.author_kind})`;

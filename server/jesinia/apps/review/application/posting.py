@@ -35,7 +35,7 @@ import sqlite3
 from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
@@ -92,6 +92,8 @@ from jesinia.services.github.domain.pr import (
 log = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
+# What ``post_unless_posted`` found: posted by this attempt, or already posted another way.
+PostedState = Literal["posted", "already_posted"]
 # How long after an attempt began a missing review may still appear on GitHub (R49).
 POSTING_GRACE = timedelta(minutes=3)
 # The jobs whose findings become drafts.
@@ -521,6 +523,34 @@ class PostingService:
         # One post per round at a time: two clicks with different keys can't both post.
         async with self._round_lock(round_id):
             return await self._post(rnd, event, confirm, key, digest)
+
+    async def post_unless_posted(
+        self,
+        round_id: int,
+        event: ReviewEvent,
+        confirm: Collection[str],
+        *,
+        key: str,
+        digest: str,
+    ) -> tuple[str, PostedState]:
+        """``post``, unless the round is posted already: checked under the round's posting
+        lock, so a post that lands meanwhile (another key, another event) is never followed
+        by a second review. Returns the URL and ``posted`` (now, or by this very attempt
+        before: same key, digest and event) or ``already_posted`` (another way, or another
+        version under this key: nothing was sent).
+
+        Raises:
+            As ``post``.
+        """
+        rnd = self._open_round(round_id)
+        async with self._round_lock(round_id):
+            posted = [p for p in self._store.postings(round_id) if p.state == "posted"]
+            for earlier in posted:
+                if earlier.key == key and earlier.digest == digest and earlier.event == event:
+                    return earlier.review_url or _pr_url(rnd), "posted"
+            if posted:
+                return posted[-1].review_url or _pr_url(rnd), "already_posted"
+            return await self._post(rnd, event, confirm, key, digest), "posted"
 
     async def reconcile_unsettled(self) -> int:
         """Settle every attempt left ``started`` (a crash) or ``uncertain`` (a lost

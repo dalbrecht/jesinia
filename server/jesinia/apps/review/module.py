@@ -305,6 +305,9 @@ class ReviewModule:
                     slots=self._scheduler,
                     bus=ctx.bus,
                 )
+                # Nothing runs yet: a stack job left running was cut short by a stop (R73).
+                if swept := self._stacks.recover():
+                    log.info("marked stack jobs of %d stack reviews interrupted", swept)
 
     async def stop(self) -> None:
         if self._scheduler is not None:

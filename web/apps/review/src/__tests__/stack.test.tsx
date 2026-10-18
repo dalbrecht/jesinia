@@ -52,7 +52,7 @@ function stackView(over: Partial<StackView> = {}): StackView {
         prs: [1, 2, 3].map((n) => ({ number: n, summary: `PR ${n} in one line.` })),
         steps: [
           {
-            title: "Across the stack",
+            title: `Across ${RLO}the stack`,
             body: "From the model up.",
             hunks: [
               { pr: 1, path: "src/app.py", hunk: 0 },
@@ -174,7 +174,8 @@ describe("the stack view", () => {
     expect(screen.getByText("One overview for #1, #2, #3")).toBeInTheDocument();
 
     await userEvent.click(within(tabs).getByRole("tab", { name: "Stack walkthrough" }));
-    expect(await screen.findByRole("heading", { name: "1. Across the stack" })).toBeInTheDocument();
+    // R62: agent step titles show their hidden characters as visible tokens.
+    expect(await screen.findByText(whole("1. Across ⟪U+202E⟫the stack"))).toBeInTheDocument();
     expect(screen.getByText(whole("#3 src/a⟪U+202E⟫b.py · hunk 2"))).toBeInTheDocument();
     expect(screen.getByText(whole("#3 vendor/: vendored"))).toBeInTheDocument();
     expect(screen.getByText("#2 uv.lock · hunk 1: lockfile")).toBeInTheDocument();
@@ -264,7 +265,8 @@ describe("the stack view", () => {
       artifacts: {
         jobs: {
           overview: { state: "running", error: null },
-          background: { state: "failed", error: "the agent fell over" },
+          background: { state: "failed", error: `the agent fell ${RLO}over` },
+          stack_walkthrough: { state: "interrupted", error: "Jesinia stopped during this job; Retry runs it again" },
         },
       },
       cross_findings: [],
@@ -289,19 +291,33 @@ describe("the stack view", () => {
     const tabs = await toStack();
     expect(await screen.findByText(/waits for every PR: #3: CI is running/)).toBeInTheDocument();
     expect(screen.getByText(/The stack's overview is being generated/)).toBeInTheDocument();
+    const opens = () => env.calls.filter((c) => new URL(c.url).pathname === `${STACK}/open`);
+    // Held: once CI passes, the author asks again (M4).
+    await userEvent.click(screen.getByRole("button", { name: "Review the stack" }));
+    await waitFor(() => expect(opens()).toHaveLength(2));
     await userEvent.click(within(tabs).getByRole("tab", { name: "Background" }));
-    expect(await screen.findByText(/The stack's background failed: the agent fell over/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText(/Reviewing the stack: 1 job running/)).toBeInTheDocument();
-    const retried = env.calls.filter((c) => new URL(c.url).pathname === `${STACK}/open`);
-    expect(retried).toHaveLength(2);
+    // R62 on job causes (M7).
+    expect(await screen.findByText("The stack's background failed: the agent fell ⟪U+202E⟫over")).toBeInTheDocument();
     await userEvent.click(within(tabs).getByRole("tab", { name: "Stack walkthrough" }));
-    expect(await screen.findByText(/The stack walkthrough hasn't been generated yet/)).toBeInTheDocument();
+    // R73: cut short by a stop, it waits for Retry.
+    expect(await screen.findByText(/The stack walkthrough was cut short: Jesinia stopped/)).toBeInTheDocument();
+    await userEvent.click(
+      within(screen.getByRole("article", { name: "Stack walkthrough" })).getByRole("button", { name: "Retry" }),
+    );
+    expect(await screen.findByText(/Reviewing the stack: 1 job running/)).toBeInTheDocument();
+    expect(opens()).toHaveLength(3);
+    // (The route answers "started" only to a retry: the body was { retry: true }.)
   });
 
   it("Post all lists each PR and its action, reports a stop, and finishes with the same key", async () => {
     let attempt = 0;
+    const firstPosted = stackView({
+      members: MEMBERS.map((m) =>
+        m.pr.number === 1 ? { ...m, round: { ...(m.round as typeof ROUND), posted_review_url: "https://x/1" } } : m,
+      ),
+    });
     const env = openStackOf({
+      [`GET ${STACK}`]: () => Response.json(attempt === 0 ? stackView() : firstPosted),
       [`POST ${STACK}/post-all`]: () => {
         attempt += 1;
         if (attempt === 1)
@@ -317,7 +333,7 @@ describe("the stack view", () => {
             },
             { status: 502 },
           );
-        return Response.json({ outcomes: [outcome(1, "posted"), outcome(2, "posted"), outcome(3, "posted")] });
+        return Response.json({ outcomes: [outcome(2, "posted"), outcome(3, "posted")] });
       },
     });
     await toStack();
@@ -351,12 +367,14 @@ describe("the stack view", () => {
       [3, "COMMENT", "d3-COMMENT"],
     ]);
 
+    // Check again lists the stack as it is now: #1 is posted, so it is left out, and says so.
     await userEvent.click(within(dialog).getByRole("button", { name: "Check again" }));
-    const again = within(dialog).getByRole("button", { name: "Post all (3)" });
+    const again = await within(dialog).findByRole("button", { name: "Post all (2)" });
+    expect(within(dialog).getByText("#1: posted already")).toBeInTheDocument();
     await waitFor(() => expect(again).toBeEnabled());
     await userEvent.click(again);
     const done = await within(dialog).findByRole("list", { name: "Post all results" });
-    await waitFor(() => expect(within(done).getAllByText(/: posted/)).toHaveLength(3));
+    await waitFor(() => expect(within(done).getAllByText(/: posted/)).toHaveLength(2));
     // The lost answer's retry is the same request: one key, so nothing posts twice.
     expect(posts()).toHaveLength(2);
     expect(posts()[1]?.headers.get("Idempotency-Key")).toBe(first.headers.get("Idempotency-Key"));
@@ -364,10 +382,14 @@ describe("the stack view", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("leaves PRs already posted out of Post all", async () => {
+  it("leaves PRs it can't post out of Post all, saying why", async () => {
     const posted = stackView({
       members: MEMBERS.map((m) =>
-        m.pr.number === 3 ? m : { ...m, round: { ...(m.round as typeof ROUND), posted_review_url: "https://x" } },
+        m.pr.number === 3
+          ? m
+          : m.pr.number === 2
+            ? { ...m, round: null }
+            : { ...m, round: { ...(m.round as typeof ROUND), frozen: true } },
       ),
       artifacts: {},
       cross_findings: [],
@@ -384,6 +406,8 @@ describe("the stack view", () => {
     await userEvent.click(screen.getByRole("button", { name: "Post all…" }));
     const dialog = await screen.findByRole("dialog", { name: "Post all: 1 PR on GitHub" });
     expect(within(dialog).queryByRole("combobox", { name: "Action for #1" })).toBeNull();
+    expect(within(dialog).getByText("#1: moved on since this review; review its new head first")).toBeInTheDocument();
+    expect(within(dialog).getByText("#2: no review yet")).toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -407,18 +431,47 @@ describe("the stack view", () => {
     await userEvent.click(screen.getByRole("button", { name: "Post all…" }));
     const dialog = await screen.findByRole("dialog", { name: "Post all: 3 PRs on GitHub" });
     expect(await within(dialog).findByText(/Couldn't read what would be posted: GitHub is slow/)).toBeInTheDocument();
-    expect(within(dialog).getByText("Confirming also confirms: approve against evidence")).toBeInTheDocument();
+    expect(within(dialog).getByText("#1: Jesinia's verdict isn't Approve")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Post all (3)" })).toBeDisabled();
     await userEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
     expect(await within(dialog).findByText("0 inline comments")).toBeInTheDocument();
+    // I2: every preview is in, but #1's warning isn't confirmed: nothing can be posted yet.
     const post = within(dialog).getByRole("button", { name: "Post all (3)" });
+    expect(post).toBeDisabled();
+    const box = within(dialog).getByRole("checkbox", { name: "Approve #1 anyway" });
+    await userEvent.click(box);
+    await waitFor(() => expect(post).toBeEnabled());
+    await userEvent.click(box); // unticked again: locked again
+    expect(post).toBeDisabled();
+    await userEvent.click(box);
     await waitFor(() => expect(post).toBeEnabled());
     await userEvent.click(post);
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(/Couldn't post: Jesinia didn't answer/);
   });
 });
 
+describe("long titles", () => {
+  it("truncates a stack tab's title and shows all of it on hover", async () => {
+    const long = `Refactor the billing ${RLO}ledger so that proration happens once per change, not per line`;
+    const members = MEMBERS.map((m) => (m.pr.number === 3 ? { ...m, pr: { ...m.pr, title: long } } : m));
+    openStackOf({ [`GET ${STACK}`]: () => Response.json(stackView({ members })) });
+    const tabs = await toStack();
+    const tab = within(tabs).getByRole("tab", { name: /^#3 / });
+    expect(tab.textContent?.endsWith("…")).toBe(true);
+    expect((tab.textContent ?? "").length).toBeLessThanOrEqual(44);
+    expect(tab).toHaveAttribute("title", `#3 ${long.replace(RLO, "⟪U+202E⟫")}`);
+  });
+});
+
 describe("your own PR", () => {
+  it("reads as ready (or not) to request review on its queue row", async () => {
+    const env = fakeClient(routes(queue([row(9, { author_kind: "you", recommendation: "approve" })])));
+    render(<App client={env.client} />);
+    const card = await screen.findByRole("article", { name: /#9/ });
+    expect(within(card).getByText("✓ Ready to request review")).toBeInTheDocument();
+    expect(within(card).queryByText("✓ Approve")).toBeNull();
+  });
+
   it("has its quiz off until asked for, and its background minimised", async () => {
     const own = prView(row(7, { author_kind: "you", depth: "deep", recommendation: "approve" }), {
       round: { ...ROUND, id: 70 },

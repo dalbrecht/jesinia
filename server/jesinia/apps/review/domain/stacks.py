@@ -40,6 +40,11 @@ class NotAStackError(StackError):
     """The PR isn't part of a stack (alone, or in a group the stack rule refuses)."""
 
 
+class StackPreparationError(StackError):
+    """The stack couldn't be read for its jobs: a PR moved on since the stack was read, or
+    GitHub or git failed (``__cause__``)."""
+
+
 class InvalidPostAllError(StackError):
     """A **Post all** request that names nothing, a PR outside the stack, or a PR twice."""
 

@@ -187,7 +187,7 @@ describe("Tabs", () => {
         tabs={[
           { id: "a", label: "All", count: 3 },
           { id: "b", label: "Unread", disabled: true },
-          { id: "c", label: "Saved" },
+          { id: "c", label: "Saved", title: "Saved for later" },
         ]}
       >
         {(id) => <p>panel {id}</p>}
@@ -202,6 +202,7 @@ describe("Tabs", () => {
     await userEvent.keyboard("{ArrowRight}");
     expect(screen.getByRole("tab", { name: "Saved" })).toHaveFocus();
     expect(screen.getByRole("tab", { name: "Saved" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Saved" })).toHaveAttribute("title", "Saved for later");
     expect(screen.getByRole("tabpanel")).toHaveTextContent("panel c");
     await userEvent.keyboard("{ArrowRight}");
     expect(all).toHaveFocus();

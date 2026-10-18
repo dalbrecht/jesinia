@@ -22,6 +22,7 @@ import {
   type PostAllItem,
   type PostOutcome,
   type PostPreview,
+  type PostWarning,
   type PrView,
   type ReviewEvent,
   type StackOpenResult,
@@ -92,6 +93,13 @@ export function proposedEvent(view: PrView): ReviewEvent {
   return "COMMENT";
 }
 
+// The most a PR's tab label shows of its title (the rest on hover).
+const TAB_CHARS = 40;
+const clip = (text: string, most: number) => {
+  const chars = [...text];
+  return chars.length > most ? `${chars.slice(0, most - 1).join("")}…` : text;
+};
+
 const titleOf = (view: PrView) => `#${view.pr.number} ${view.pr.title}`;
 const crossLine = (f: CrossFinding) => `${f.severity} ${f.group} · ${f.note}`;
 
@@ -124,7 +132,10 @@ function StepList({ steps, label }: { steps: StackStep[] | { title: string; body
     <ol className={s.refs} aria-label={label}>
       {steps.map((step, i) => (
         <li key={i} className={s.group}>
-          <h3>{`${i + 1}. ${step.title}`}</h3>
+          <h3>
+            {`${i + 1}. `}
+            <Visible text={step.title} />
+          </h3>
           <div className={s.prose}>
             <SafeMarkdown markdown={step.body} />
           </div>
@@ -166,32 +177,58 @@ function Answered({ answer }: { answer: { preview: PostPreview | null; error: st
     return <span className={s.muted}>{`${n} inline ${n === 1 ? "comment" : "comments"}${body}`}</span>;
   }
   if (answer?.error)
-    return <span className={s.problem} role="alert">{`Couldn't read what would be posted: ${answer.error}`}</span>;
+    return (
+      <span
+        className={s.problem}
+        role="alert"
+      >{`Couldn't read what would be posted: ${visibleText(answer.error)}`}</span>
+    );
   return <span className={s.muted}>Reading what would be posted…</span>;
 }
 
 /** A PR Post all posts: its view (with its round) and the action chosen for it. */
 type Choice = { view: PrView; round: NonNullable<PrView["round"]>; event: ReviewEvent };
 type Answer = { preview: PostPreview | null; error: string | null };
+type LeftOut = { number: number; reason: string };
+
+/** What Post all can post of the stack as it is now, and every PR it leaves out, with why. */
+function plan(members: PrView[]): { choices: Choice[]; leftOut: LeftOut[] } {
+  const choices: Choice[] = [];
+  const leftOut: LeftOut[] = [];
+  for (const view of members) {
+    const round = view.round;
+    const number = view.pr.number;
+    if (!round) leftOut.push({ number, reason: "no review yet" });
+    else if (round.posted_review_url) leftOut.push({ number, reason: "posted already" });
+    else if (round.frozen) leftOut.push({ number, reason: "moved on since this review; review its new head first" });
+    else choices.push({ view, round, event: proposedEvent(view) });
+  }
+  return { choices, leftOut };
+}
+
+// Each warning in Jesinia's words (as the single-PR dialog says it); each is ticked by the author.
+const WARNING: Record<PostWarning, string> = {
+  approve_against_evidence: "Jesinia's verdict isn't Approve",
+  blocking_comment: "You're approving, but the review says BLOCKING",
+  newer_head: "There are newer commits than this review",
+  own_pr_comment_only: "This is your own PR: GitHub only takes a comment",
+};
 
 /**
- * Post all's one confirmation: every PR still to post, its action and what each preview warns
- * about, confirmed once; then one request that posts them bottom-up and stops at the first that
- * can't be posted. A retry while the outcome is unknown reuses the request's key, so nothing is
- * ever posted twice.
+ * Post all's one confirmation: every PR of the stack with its action, or why it is left out,
+ * and every warning a PR's preview raises, each ticked by the author (nothing is confirmed for
+ * them); then one request that posts them bottom-up and stops at the first that can't be
+ * posted. A retry while the outcome is unknown reuses the request's key, so nothing is ever
+ * posted twice.
  */
 export function PostAllDialog({ client, repo, number, members, keys, signature, onClose, onPosted }: PostAllProps) {
   const heading = useId();
   const dialog = useRef<HTMLDivElement>(null);
-  // Fixed when the dialog opens: what the author confirms is what is posted.
-  const [choices, setChoices] = useState<Choice[]>(() =>
-    members.flatMap((view) =>
-      view.round && !view.round.posted_review_url && !view.round.frozen
-        ? [{ view, round: view.round, event: proposedEvent(view) }]
-        : [],
-    ),
-  );
+  // Fixed when the dialog opens (and on Check again): what the author confirms is what posts.
+  const [planned, setPlanned] = useState(() => plan(members));
+  const [choices, setChoices] = useState<Choice[]>(planned.choices);
   const [answers, setAnswers] = useState<Answer[] | null>(null);
+  const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
   const [reads, setReads] = useState(0);
   const [posting, setPosting] = useState(false);
   const [outcomes, setOutcomes] = useState<PostOutcome[] | null>(null);
@@ -200,6 +237,7 @@ export function PostAllDialog({ client, repo, number, members, keys, signature, 
   useEffect(() => {
     let current = true;
     setAnswers(null);
+    setTicked(new Set()); // a new preview's warnings are confirmed afresh
     void Promise.all(
       choices.map((c) =>
         previewPost(client, repo, c.view.pr.number, c.event, c.round.id).then(
@@ -225,11 +263,28 @@ export function PostAllDialog({ client, repo, number, members, keys, signature, 
 
   const choose = (at: number, event: ReviewEvent) =>
     setChoices((prev) => prev.map((c, i) => (i === at ? { ...c, event } : c)));
+  const tickOf = (n: number, w: PostWarning) => `${n}:${w}`;
+  const tick = (id: string, on: boolean) =>
+    setTicked((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const checkAgain = () => {
+    const next = plan(members);
+    setPlanned(next);
+    setChoices(next.choices);
+    setOutcomes(null);
+  };
 
-  // Every preview is in: exactly what each PR posts, with the warnings it confirms.
+  // Every preview is in and every warning it raised is ticked: exactly what each PR posts.
   const previews = answers?.map((a) => a.preview) ?? [];
+  const confirmedAll = choices.every((c, i) =>
+    (previews[i]?.warnings ?? []).every((w) => ticked.has(tickOf(c.view.pr.number, w))),
+  );
   const items: PostAllItem[] | null =
-    choices.length > 0 && previews.length === choices.length && previews.every((p) => p !== null)
+    choices.length > 0 && previews.length === choices.length && previews.every((p) => p !== null) && confirmedAll
       ? choices.map((c, i) => {
           const p = previews[i] as PostPreview;
           return {
@@ -237,7 +292,7 @@ export function PostAllDialog({ client, repo, number, members, keys, signature, 
             round_id: c.round.id,
             event: p.event,
             digest: p.digest,
-            confirm: [...p.warnings],
+            confirm: p.warnings.filter((w) => ticked.has(tickOf(c.view.pr.number, w))),
           };
         })
       : null;
@@ -280,7 +335,14 @@ export function PostAllDialog({ client, repo, number, members, keys, signature, 
           className={s.dialogHead}
         >{`Post all: ${choices.length} ${choices.length === 1 ? "PR" : "PRs"} on GitHub`}</h2>
         <div className={s.dialogBody}>
-          {choices.length === 0 ? <p className={s.muted}>Every PR of the stack is posted already.</p> : null}
+          {choices.length === 0 ? <p className={s.muted}>No PR of the stack can be posted now.</p> : null}
+          {planned.leftOut.length ? (
+            <ul className={s.refs} aria-label="Left out">
+              {planned.leftOut.map((l) => (
+                <li key={l.number} className={s.muted}>{`#${l.number}: ${l.reason}`}</li>
+              ))}
+            </ul>
+          ) : null}
           <ol className={s.refs} aria-label="What will be posted">
             {choices.map((c, i) => {
               const own = c.view.pr.author_kind === "you";
@@ -306,11 +368,28 @@ export function PostAllDialog({ client, repo, number, members, keys, signature, 
                     </select>
                   </label>
                   <Answered answer={answer} />
-                  {warnings.length ? (
-                    <span className={s.warning}>
-                      {`Confirming also confirms: ${warnings.join(", ").replaceAll("_", " ")}`}
-                    </span>
-                  ) : null}
+                  {warnings.map((w) => {
+                    const id = tickOf(c.view.pr.number, w);
+                    return (
+                      <div
+                        key={w}
+                        role="group"
+                        aria-label={`#${c.view.pr.number}: ${WARNING[w]}`}
+                        className={s.warning}
+                      >
+                        <b>{`#${c.view.pr.number}: ${WARNING[w]}`}</b>
+                        <label className={s.row}>
+                          <input
+                            type="checkbox"
+                            checked={ticked.has(id)}
+                            disabled={posting || outcomes !== null}
+                            onChange={(e) => tick(id, e.target.checked)}
+                          />
+                          {`${ACTION[c.event]} #${c.view.pr.number} anyway`}
+                        </label>
+                      </div>
+                    );
+                  })}
                 </li>
               );
             })}
@@ -329,7 +408,7 @@ export function PostAllDialog({ client, repo, number, members, keys, signature, 
                 return (
                   <li key={o.number}>
                     {`#${o.number} ${ACTION[o.event]}: ${STATE[o.state]}`}
-                    {o.error ? <span className={s.muted}>{` (${o.error})`}</span> : null}
+                    {o.error ? <span className={s.muted}>{` (${visibleText(o.error)})`}</span> : null}
                     {url ? (
                       <>
                         {" "}
@@ -345,7 +424,7 @@ export function PostAllDialog({ client, repo, number, members, keys, signature, 
           ) : null}
           {failure ? (
             <p role="alert" className={s.problem}>
-              {failure}
+              {visibleText(failure)}
             </p>
           ) : null}
         </div>
@@ -355,14 +434,7 @@ export function PostAllDialog({ client, repo, number, members, keys, signature, 
             {outcomes ? "Close" : "Cancel"}
           </Button>
           {failure && outcomes ? (
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={() => {
-                setOutcomes(null);
-                setReads((n) => n + 1);
-              }}
-            >
+            <Button size="sm" variant="primary" onClick={checkAgain}>
               Check again
             </Button>
           ) : (
@@ -400,6 +472,7 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
   const [reads, setReads] = useState(0);
   const [tab, setTab] = useState("overview");
   const [notice, setNotice] = useState<string | null>(null);
+  const [held, setHeld] = useState(false);
   const [postingAll, setPostingAll] = useState(false);
   const opened = useRef<string | null>(null);
 
@@ -428,6 +501,7 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
         (r) => {
           keys.current.settle(action);
           setNotice(noticeOf(r));
+          setHeld(r.state === "held");
           setReads((n) => n + 1);
         },
         (e: unknown) => {
@@ -470,17 +544,26 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
   const allOwn = view.members.every((m) => m.pr.author_kind === "you");
   const walk = walkOf(a.stack_walkthrough);
   const numbers = view.members.map((m) => m.pr.number);
-  const failed = Object.entries(STACK_JOBS).filter(([kind]) => record(jobs[kind])?.state === "failed");
+  // Failed or cut short by a stop (R73): either runs again only through Retry.
+  const retryable = Object.entries(STACK_JOBS).flatMap(([kind, what]) => {
+    const state = record(jobs[kind])?.state;
+    if (state === "failed") return [`${what} failed.`];
+    if (state === "interrupted") return [`${what} was cut short by a stop.`];
+    return [];
+  });
+  const generated = Object.keys(STACK_JOBS).some((kind) => kind in a || kind in jobs);
 
   const pending = (kind: StackJob) => {
     const job = record(jobs[kind]);
     const what = STACK_JOBS[kind];
     if (job?.state === "running")
       return <p className={s.muted}>{`${what} is being generated: it shows here when it finishes.`}</p>;
-    if (job?.state === "failed")
+    if (job?.state === "failed" || job?.state === "interrupted")
       return (
         <div className={s.row}>
-          <p>{`${what} failed: ${String(job.error ?? "no cause given")}`}</p>
+          <p>
+            {`${what} ${job.state === "failed" ? "failed" : "was cut short"}: ${visibleText(String(job.error ?? "no cause given"))}`}
+          </p>
           <Button size="sm" variant="secondary" onClick={() => open(true)}>
             Retry
           </Button>
@@ -493,7 +576,11 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
     { id: "overview", label: "Overview" },
     { id: "background", label: allOwn ? "Background · minimised" : "Background" },
     { id: "walk", label: "Stack walkthrough" },
-    ...view.members.map((m) => ({ id: `pr-${m.pr.number}`, label: visibleText(`#${m.pr.number} ${m.pr.title}`) })),
+    ...view.members.map((m) => {
+      // Long titles are shortened to fit the tab strip; the whole title shows on hover (R73).
+      const full = visibleText(`#${m.pr.number} ${m.pr.title}`);
+      return { id: `pr-${m.pr.number}`, label: clip(full, TAB_CHARS), title: full };
+    }),
     { id: "cross", label: "Cross-PR findings", count: view.cross_findings.length },
   ];
 
@@ -507,9 +594,9 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
         <h2>
           <Visible text={titleOf(m)} />
         </h2>
-        <p
-          className={s.meta}
-        >{`${m.pr.author} · ${m.pr.size_lines} lines · ${m.pr.files} files · CI ${m.pr.ci_state}`}</p>
+        <p className={s.meta}>
+          <Visible text={`${m.pr.author} · ${m.pr.size_lines} lines · ${m.pr.files} files · CI ${m.pr.ci_state}`} />
+        </p>
         {words ? (
           <p className={s.verdict} data-tone={words.tone}>
             {words.text}
@@ -620,12 +707,19 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
       <div className={s.notices}>
         {notice ? (
           <p className={s.notice} role="status">
-            {notice}
+            {visibleText(notice)}
           </p>
         ) : null}
-        {failed.length && !notice ? (
+        {held || !generated ? (
+          <span>
+            <Button size="sm" variant="secondary" onClick={() => open(false)}>
+              Review the stack
+            </Button>
+          </span>
+        ) : null}
+        {retryable.length && !notice ? (
           <div className={s.problem} role="status">
-            <span>{`${failed.map(([, what]) => what).join(", ")} failed.`}</span>
+            <span>{retryable.join(" ")}</span>
             <Button size="sm" variant="secondary" onClick={() => open(true)}>
               Retry
             </Button>

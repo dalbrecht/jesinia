@@ -1124,6 +1124,11 @@ class SqliteReviewStore:
         ).fetchone()
         return None if row is None else json.loads(row[0])
 
+    def stack_jobs(self) -> dict[int, object]:
+        """Every stack review's ``jobs`` record, by stack review."""
+        rows = self._conn.execute("SELECT stack_id, json FROM stack_artifacts WHERE kind = 'jobs'")
+        return {int(stack_id): json.loads(data) for stack_id, data in rows}
+
     def put_stack_artifact(self, stack_id: int, kind: str, data: object) -> None:
         self._conn.execute(
             "INSERT INTO stack_artifacts (stack_id, kind, json) VALUES (?, ?, ?) "

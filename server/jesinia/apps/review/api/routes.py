@@ -11,7 +11,7 @@ the response. Typed errors become ``{"error", "detail"}`` JSON with their status
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, Protocol, cast
 
 from fastapi import APIRouter, Depends, Path, Query, status
 from fastapi.encoders import jsonable_encoder
@@ -501,7 +501,8 @@ def build_router(host: ReviewHost) -> APIRouter:
             result = await host.stacks.post_all(
                 _ref(owner, repo, number),
                 [item.item() for item in body.items],
-                key=idem.key or "",
+                # ``idem.run`` refuses a request without a key before this runs.
+                key=cast(str, idem.key),
             )
             return PostAllOut(outcomes=[PostOutcomeOut.of(o) for o in result.outcomes])
 

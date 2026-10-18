@@ -376,7 +376,7 @@ function Badge(props: BadgeProps & HTMLAttributes<HTMLSpanElement>): JSX.Element
 
 **Anatomy:** a tab list (a row of tabs sitting on a 1 px `--jx-border` baseline), with a
 2 px indicator under the selected tab. Each tab has a label and an optional count Badge.
-A tab panel sits below.
+A tab panel sits below. A tab may carry a `title`: its full text on hover, when its label is shortened to fit.
 
 **Variants:** one visual style. When the tabs overflow, the tab list scrolls
 horizontally with edge fades; tabs never wrap onto two lines.
@@ -417,7 +417,7 @@ client-side views)
 
 ```ts
 type TabsProps = {
-  tabs: { id: string; label: string; count?: number; disabled?: boolean }[];
+  tabs: { id: string; label: string; count?: number; disabled?: boolean; title?: string }[];
   selected: string;
   onSelect: (id: string) => void;
   "aria-label": string;

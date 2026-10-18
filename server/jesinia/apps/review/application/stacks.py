@@ -26,6 +26,7 @@ from typing import Final, Literal, Protocol
 
 from jesinia.apps.review.application.errors import JobFailed
 from jesinia.apps.review.application.pipeline import PROGRESS_TOPIC, OpenResult
+from jesinia.apps.review.application.posting import PostedState
 from jesinia.apps.review.application.reviews import FINDING_SOURCES, PrView
 from jesinia.apps.review.domain.coverage import (
     DiffParseError,
@@ -50,8 +51,7 @@ from jesinia.apps.review.domain.stacks import (
     PostAllResult,
     PostAllStopped,
     PostOutcome,
-    PostState,
-    StackError,
+    StackPreparationError,
     agent_cross_findings,
     attempt_key,
     detect_stacks,
@@ -81,11 +81,9 @@ StackOpenState = Literal["started", "running", "up_to_date", "held"]
 _GOING: Final = frozenset({"started", "running", "up_to_date"})
 # Failures a Post all run stops at (the post's typed errors and GitHub's), reported per PR.
 _POST_ERRORS = (ReviewError, GitHubError, PullRequestDomainError)
-
-
-class StackPreparationError(StackError):
-    """The stack couldn't be read for its jobs: a PR moved on since the stack was read, or
-    GitHub or git failed (``__cause__``)."""
+# A stack job's states that run again only when the author asks (Retry, R60, R73).
+_RERUN_ON_RETRY: Final = frozenset({"failed", "interrupted"})
+INTERRUPTED = "Jesinia stopped during this job; Retry runs it again"
 
 
 class StackStore(Protocol):
@@ -111,6 +109,8 @@ class StackStore(Protocol):
 
     def put_stack_artifact(self, stack_id: int, kind: str, data: object) -> None: ...
 
+    def stack_jobs(self) -> dict[int, object]: ...
+
 
 class StackOpener(Protocol):
     """Opening one PR (``Pipeline.open``), under its own gates."""
@@ -119,9 +119,9 @@ class StackOpener(Protocol):
 
 
 class StackPoster(Protocol):
-    """Posting one round's review (``PostingService.post``): the only GitHub write."""
+    """Posting one round's review (``PostingService``): the only GitHub write."""
 
-    async def post(
+    async def post_unless_posted(
         self,
         round_id: int,
         event: ReviewEvent,
@@ -129,7 +129,7 @@ class StackPoster(Protocol):
         *,
         key: str,
         digest: str,
-    ) -> str: ...
+    ) -> tuple[str, PostedState]: ...
 
 
 class StackReads(Protocol):
@@ -202,11 +202,12 @@ class StackOpenResult:
 
 
 def _failed(jobs: object) -> set[str]:
+    """The kinds a stack's ``jobs`` record marks failed or interrupted."""
     entries = jobs.items() if isinstance(jobs, Mapping) else ()
     return {
         str(kind)
         for kind, entry in entries
-        if isinstance(entry, Mapping) and entry.get("state") == "failed"
+        if isinstance(entry, Mapping) and entry.get("state") in _RERUN_ON_RETRY
     }
 
 
@@ -359,9 +360,27 @@ class StackReviews:
             await asyncio.gather(*tasks, return_exceptions=True)
             self._tasks.difference_update(tasks)
 
+    def recover(self) -> int:
+        """At start (R73): stack jobs a stop or crash left ``running`` are marked
+        ``interrupted``; they run again only through Retry. Returns how many stack reviews
+        had one."""
+        swept = 0
+        for stack_id, stored in self._store.stack_jobs().items():
+            jobs = stored if isinstance(stored, Mapping) else {}
+            cut = [
+                k for k, e in jobs.items() if isinstance(e, Mapping) and e.get("state") == "running"
+            ]
+            if not cut:
+                continue
+            record = dict(jobs)
+            for kind in cut:
+                record[kind] = {"state": "interrupted", "error": INTERRUPTED}
+            self._store.put_stack_artifact(stack_id, "jobs", record)
+            swept += 1
+        return swept
+
     async def stop(self) -> None:
-        """Cancel running stack jobs (their state stays ``running``: the next open runs
-        them again)."""
+        """Cancel running stack jobs; the ones cut short are marked ``interrupted`` (R73)."""
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
@@ -376,6 +395,8 @@ class StackReviews:
     async def _run(
         self, stack_id: int, members: Sequence[StoredPr], kinds: tuple[JobKind, ...]
     ) -> None:
+        remaining = list(kinds)
+
         async def work() -> None:
             for kind in kinds:
                 self._record(stack_id, kind, "running", None)
@@ -385,12 +406,18 @@ class StackReviews:
                 log.warning("preparing stack review %d failed: %s", stack_id, exc, exc_info=exc)
                 for kind in kinds:
                     self._record(stack_id, kind, "failed", str(exc) or type(exc).__name__)
+                remaining.clear()
                 return
             for kind in kinds:
                 await self._job(stack, diffs, kind)
+                remaining.remove(kind)
 
         try:
             await self._slots.run_open(work)
+        except asyncio.CancelledError:
+            for kind in remaining:  # cut short by a stop: never left "running" (R73)
+                self._record(stack_id, kind, "interrupted", INTERRUPTED)
+            raise
         finally:
             self._running[stack_id] = self._running.get(stack_id, set()) - set(kinds)
             await self._progress(members, stack_id)
@@ -410,7 +437,13 @@ class StackReviews:
 
             numbers = {member.pr.number for member in stack.members}
             output = known_stack_walkthrough(output, numbers, locate)
-        self._store.put_stack_artifact(stack.id, kind.value, output)
+        try:
+            self._store.put_stack_artifact(stack.id, kind.value, output)
+        except Exception as exc:  # this job fails alone, with its cause; the others go on
+            log.warning("stack review %d %s result not stored: %s", stack.id, kind.value, exc,
+                        exc_info=exc)  # fmt: skip
+            self._record(stack.id, kind, "failed", str(exc) or type(exc).__name__)
+            return
         self._record(stack.id, kind, "done", None)
 
     async def _prepare(
@@ -506,16 +539,21 @@ class StackReviews:
             )
         return found
 
-    def _earlier(self, item: PostAllItem, key: str) -> tuple[PostState, str | None] | None:
-        """``(state, url)`` when the round was posted already: by this request's attempt
-        (``posted``) or another way (``already_posted``)."""
+    def _earlier(self, item: PostAllItem, key: str) -> PostOutcome | None:
+        """The item's outcome when its round was posted already (reporting only; the post
+        itself re-checks under the round's lock): ``posted`` by this request's attempt with
+        this digest and event, else ``already_posted`` with the event that went out (another
+        way, or another version under this key, R47)."""
         mine = attempt_key(key, item.number, item.round_id)
         posted = [p for p in self._store.postings(item.round_id) if p.state == "posted"]
-        for posting in posted:
-            if posting.key == mine:
-                return "posted", posting.review_url
+        for p in posted:
+            if p.key == mine and p.digest == item.digest and p.event == item.event:
+                return PostOutcome(item.number, item.round_id, p.event, "posted", p.review_url)
         if posted:
-            return "already_posted", posted[-1].review_url
+            last = posted[-1]
+            return PostOutcome(
+                item.number, item.round_id, last.event, "already_posted", last.review_url
+            )
         return None
 
     async def post_all(
@@ -523,7 +561,8 @@ class StackReviews:
     ) -> PostAllResult:
         """Post every item's confirmed review, bottom-up, one at a time; stop at the first
         failure. ``key``: the request's idempotency key, from which each PR's attempt key
-        comes, so a replay never posts a PR twice.
+        comes, so a replay never posts a PR twice. Every warning must be in the item's
+        ``confirm``, as the author confirmed it: nothing is confirmed for them.
 
         Raises:
             NotAStackError: as ``members``.
@@ -534,8 +573,11 @@ class StackReviews:
         members = self.members(ref)
         repo = members[0].pr.ref.repo
         ordered = order_post_all(items, [m.pr.ref.number for m in members])
-        # A frozen or stale round anywhere stops the run before anything is posted.
+        # A frozen or stale round anywhere stops the run before anything is posted; a round
+        # posted already (by this request or not) is reported, never checked or sent again.
         for at, item in enumerate(ordered):
+            if self._earlier(item, key) is not None:
+                continue
             try:
                 self._check(PrRef(repo, item.number), item)
             except _POST_ERRORS as exc:
@@ -544,12 +586,11 @@ class StackReviews:
         for at, item in enumerate(ordered):
             earlier = self._earlier(item, key)
             if earlier is not None:
-                state, url = earlier
-                outcomes.append(PostOutcome(item.number, item.round_id, item.event, state, url))
+                outcomes.append(earlier)
                 continue
             try:
                 self._check(PrRef(repo, item.number), item)
-                url = await self._poster.post(
+                url, state = await self._poster.post_unless_posted(
                     item.round_id,
                     item.event,
                     item.confirm,
@@ -559,15 +600,15 @@ class StackReviews:
             except _POST_ERRORS as exc:
                 stopped = [*outcomes, *self._stopped(ordered[at:], 0, exc, key)]
                 raise PostAllStopped(stopped, exc) from exc
-            log.info("review.post_all %s#%d round=%d posted", repo, item.number, item.round_id)
-            outcomes.append(PostOutcome(item.number, item.round_id, item.event, "posted", url))
+            log.info("review.post_all %s#%d round=%d %s", repo, item.number, item.round_id, state)
+            outcomes.append(PostOutcome(item.number, item.round_id, item.event, state, url))
         return PostAllResult(tuple(outcomes))
 
     def _stopped(
         self, items: Sequence[PostAllItem], at: int, cause: Exception, key: str
     ) -> list[PostOutcome]:
-        """Outcomes when the run stops at ``items[at]``: that one failed, the rest not
-        attempted, except those this request posted before (a replay)."""
+        """Outcomes when the run stops at ``items[at]``: that one failed; every other one
+        posted already (by this request or not) says so, and the rest weren't attempted."""
         out: list[PostOutcome] = []
         for index, item in enumerate(items):
             earlier = self._earlier(item, key)
@@ -582,10 +623,8 @@ class StackReviews:
                         error_code=type(cause).__name__,
                     )
                 )
-            elif earlier is not None and earlier[0] == "posted":
-                out.append(
-                    PostOutcome(item.number, item.round_id, item.event, "posted", earlier[1])
-                )
+            elif earlier is not None:
+                out.append(earlier)
             else:
                 out.append(PostOutcome(item.number, item.round_id, item.event, "not_attempted"))
         return out

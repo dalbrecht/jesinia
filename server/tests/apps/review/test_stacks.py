@@ -897,6 +897,129 @@ async def test_stop_cancels_running_stack_jobs(stack: StackEnv) -> None:
     await wait_until(lambda: bool(stack.jobs.ran))
     await stack.service.stop()
     await stack.service.drain()
+    # R73: cut short by a stop, the jobs are interrupted, never left "running".
+    jobs = stack.service.view(stack.ref(1)).artifacts["jobs"]
+    assert isinstance(jobs, Mapping)
+    assert {jobs[k.value]["state"] for k in STACK_JOBS} == {"interrupted"}
+    assert "stopped" in jobs["overview"]["error"]
+    # They run again only when asked.
+    stack.jobs.hold = None
+    assert (await stack.service.open(stack.ref(1))).state == "up_to_date"
+    again = await stack.service.open(stack.ref(1), retry=True)
+    assert again.jobs == STACK_JOBS
+    await stack.service.drain()
+
+
+async def test_jobs_a_crash_left_running_are_interrupted_at_start(stack: StackEnv) -> None:
+    signature = stack_signature([(n, HEADS[n]) for n in (1, 2, 3)])
+    stack_id = stack.store.start_stack_review(REPO, signature, stack.clock())
+    running = {"state": "running", "error": None}
+    stack.store.put_stack_artifact(
+        stack_id, "jobs", {"overview": running, "background": {"state": "done", "error": None}}
+    )
+    stack.store.put_stack_artifact(stack_id, "background", {"sections": []})
+    assert stack.service.recover() == 1
+    jobs = stack.store.stack_artifact(stack_id, "jobs")
+    assert isinstance(jobs, Mapping)
+    assert jobs["overview"]["state"] == "interrupted"
+    assert jobs["background"]["state"] == "done"
+    assert stack.service.recover() == 0  # nothing left to sweep
+    opened = await stack.service.open(stack.ref(1))
+    assert opened.jobs == (JobKind.STACK_WALKTHROUGH,)  # the interrupted one waits for Retry
+    await stack.service.drain()
+
+
+async def test_a_job_whose_result_cant_be_stored_fails_alone(
+    stack: StackEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = stack.store.put_stack_artifact
+
+    def put(stack_id: int, kind: str, data: object) -> None:
+        if kind == "overview":
+            raise sqlite3.OperationalError("disk I/O error")
+        real(stack_id, kind, data)
+
+    monkeypatch.setattr(stack.store, "put_stack_artifact", put)
+    await stack.service.open(stack.ref(1))
+    await stack.service.drain()
+    jobs = stack.service.view(stack.ref(1)).artifacts["jobs"]
+    assert isinstance(jobs, Mapping)
+    assert jobs["overview"]["state"] == "failed" and "disk I/O" in jobs["overview"]["error"]
+    assert jobs["stack_walkthrough"]["state"] == "done"
+
+
+async def test_a_replay_reports_a_pr_it_posted_as_posted_even_once_it_moved_on(
+    stack: StackEnv,
+) -> None:
+    items = [await stack.item(n) for n in (1, 2, 3)]
+    await stack.service.post_all(stack.ref(1), items[:1], key="K")
+    # #1 moved on since: a round on its head froze the round this request posted.
+    stack.store.start_round(stack.ref(1), HEADS[1], BASE_SHA, "quick", stack.clock())
+    result = await stack.service.post_all(stack.ref(1), items, key="K")
+    assert [o.state for o in result.outcomes] == ["posted", "posted", "posted"]
+    assert [p["number"] for p in stack.github.posted] == [1, 2, 3]
+
+
+async def test_a_stop_reports_what_was_posted_another_way(stack: StackEnv) -> None:
+    one = await stack.item(1)
+    await stack.posting.post(one.round_id, "COMMENT", (), key="by-hand", digest=one.digest)
+    stack.store.start_round(stack.ref(1), HEADS[1], BASE_SHA, "quick", stack.clock())
+    stack.github.errors[2] = GitHubRequestError(422, "Unprocessable Entity")
+    items = [one, await stack.item(2), await stack.item(3)]
+    with pytest.raises(PostAllStopped) as stopped:
+        await stack.service.post_all(stack.ref(1), items, key="K")
+    assert [o.state for o in stopped.value.outcomes] == [
+        "already_posted",
+        "failed",
+        "not_attempted",
+    ]
+
+
+async def test_a_replay_that_changes_a_posted_prs_action_reports_what_went_out(
+    stack: StackEnv,
+) -> None:
+    first = await stack.item(1)
+    await stack.service.post_all(stack.ref(1), [first], key="K")
+    changed = await stack.item(1, "REQUEST_CHANGES")
+    result = await stack.service.post_all(stack.ref(1), [changed], key="K")
+    assert result.outcomes[0].state == "already_posted"
+    assert result.outcomes[0].event == "COMMENT"  # what is on GitHub
+    assert len(stack.github.posted) == 1
+
+
+async def test_posting_never_sends_a_round_posted_meanwhile(stack: StackEnv) -> None:
+    one = await stack.item(1)
+    await stack.posting.post(one.round_id, "COMMENT", (), key="by-hand", digest=one.digest)
+    approve = await stack.item(1, "APPROVE")
+    url, state = await stack.posting.post_unless_posted(
+        one.round_id, "APPROVE", approve.confirm, key="other", digest=approve.digest
+    )
+    assert state == "already_posted" and url
+    assert len(stack.github.posted) == 1
+    two = await stack.item(2)
+    first = await stack.posting.post_unless_posted(
+        two.round_id, "COMMENT", (), key="k2", digest=two.digest
+    )
+    again = await stack.posting.post_unless_posted(
+        two.round_id, "COMMENT", (), key="k2", digest=two.digest
+    )
+    assert first == again and again[1] == "posted"
+    assert len(stack.github.posted) == 2
+
+
+async def test_post_all_never_confirms_a_warning_for_the_author(stack: StackEnv) -> None:
+    # #2's verdict isn't approve: approving it needs approve_against_evidence confirmed.
+    stack.store.set_verdict(stack.rounds[2], "needs_closer_look")
+    approve = await stack.item(2, "APPROVE")
+    assert approve.confirm == ("approve_against_evidence",)
+    unconfirmed = replace(approve, confirm=())
+    with pytest.raises(PostAllStopped) as stopped:
+        await stack.service.post_all(stack.ref(1), [unconfirmed], key="K")
+    assert stopped.value.outcomes[0].error_code == "NeedsConfirmation"
+    assert stack.github.posted == []
+    assert (await stack.service.post_all(stack.ref(1), [approve], key="K2")).outcomes[0].state == (
+        "posted"
+    )
 
 
 async def test_queue_rows_name_their_stack(stack: StackEnv) -> None:
