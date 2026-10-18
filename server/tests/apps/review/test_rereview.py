@@ -1343,3 +1343,32 @@ async def test_replan_adds_nothing_where_opening_still_plans_it(
     env.store.settle_posting(attempt.id, "not_posted", "probe")
     assert await env.followups.refresh() == 1
     assert "re-plan failed" in caplog.text
+
+
+async def test_a_replan_joining_an_earlier_preparation_still_runs_the_rereview(
+    env: Env,
+) -> None:
+    """Codex round 2 P1 on PR #63: Review anyway on an unclassified head starts a round whose
+    preparation is still running when the classification lands. The re-plan joins that
+    preparation (made without the follow-up): it is prepared again, and the re-review runs
+    without a Retry."""
+    repo = env.repo
+    env.followups.on_classified = env.pipeline.replan
+    env.sync(repo.head, repo.base)
+    env.posted_round(repo.head, repo.base, "COMMENT", "Notes.", [])
+    env.sync(repo.pushed, repo.base)
+    # The first preparation is held after it read the (missing) follow-up.
+    gate = asyncio.Event()
+    env.jobs.depth_hold = gate
+    started = await env.pipeline.review_anyway(env.ref)
+    assert started.state == "started" and JobKind.REREVIEW not in started.jobs
+    await wait_until(lambda: env.jobs.depth_asked)
+    assert await env.followups.refresh() == 1  # lands mid-preparation; re-plan joins it
+    await asyncio.sleep(0)
+    gate.set()
+    await env.pipeline.drain()
+
+    assert started.round_id is not None
+    jobs = env.store.artifact(started.round_id, "jobs")
+    assert isinstance(jobs, dict) and jobs["rereview"] == {"state": "done", "error": None}
+    assert env.jobs.ran.count(JobKind.REREVIEW) == 1
