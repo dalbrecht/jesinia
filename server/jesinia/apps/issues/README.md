@@ -342,7 +342,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     issue has is a 404; a repo where no cached issue of the theme lacks the label is a 409
     (`NothingToPublishError`).
   - `GET /themes/{tag}/epic?repo&new_epic`: the plan turning the theme into an epic in `repo`,
-    with its `title`, `body`, children, what is skipped and `digest`; nothing is written. `POST`
+    with its `epic` (`{kind: "create", title, body}`, or `{kind: "existing", repo, n}` when it
+    reuses the theme's epic), children, what is skipped and `digest`; nothing is written. `POST`
     the same path with `{repo, digest, new_epic?}` approves it: a 202 with the batch (`origin`
     `epic`) and `Location`. A plan changed since, or with no children, is a 409, and so is an
     approval while an earlier epic batch for the theme is running or didn't finish
@@ -533,7 +534,9 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   (`Close`, or a `SetDimension` of readiness or priority) with `source` `queue`. They apply only
   when the author applies the tray, through the write-ahead engine. A band move is made against
   the priority the cache shows (filling a gap, or replacing that one value), so a change on
-  GitHub since is a conflict at apply time, not an overwrite.
+  GitHub since is a conflict at apply time, not an overwrite. A second band move before the
+  tray is applied replaces the first one's staged priority (keeping its precondition), and a
+  move back to the issue's own band undoes it, so the issue gets one priority change.
 - **Undone from the queue:** the tray refuses to undo a change a queue item's Done holds (409,
   `PendingHeldError`), and "undo all" leaves those; undo the Done in its queue. If the tray's
   apply fails for that change (a conflict, a lost permission), the item still shows Done: undo
@@ -591,8 +594,10 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   key too, so a record the first request couldn't write isn't lost.
 - **Catalog renames and merges (IR54):** every theme call resolves the stored tags through the
   KB catalog's aliases and rewrites the rows to the canonical name, so a renamed or merged tag
-  lists and filters under its new name, and the old name still finds it. Without the catalog
-  (or when it can't be read, logged with the cause) the stored names are used.
+  lists and filters under its new name, and the old name still finds it. A theme's epic history
+  (`theme_epics` and its ledger origins) is renamed too, even after its last issue left it, so a
+  renamed theme reuses the epic it made. Without the catalog (or when it can't be read, logged
+  with the cause) the stored names are used.
 - **Long tags:** a tag whose `theme:<tag>` is longer than GitHub's 50-character label limit is a
   local theme and filter only: `publishable` is false in `GET /themes`, and publishing it is a
   400.

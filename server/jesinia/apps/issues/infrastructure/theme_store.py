@@ -84,6 +84,17 @@ class SqliteThemeStore:
                 (f"theme:{new}:", len(prefix) + 1, len(prefix), prefix),
             )
 
+    def history_tags(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT tag FROM theme_epics UNION "
+            "SELECT substr(origin_key, 7) FROM batch_origins WHERE substr(origin_key, 1, 6) = ?",
+            ("theme:",),
+        )
+        # A ledger origin is ``theme:<tag>:<repo>``: the tag is what precedes the repo.
+        return sorted(
+            {str(tag).rsplit(":", 1)[0] if ":" in str(tag) else str(tag) for (tag,) in rows}
+        )
+
     def record_epic(
         self, tag: str, batch_id: str, now: datetime, epic: tuple[str, int] | None = None
     ) -> None:

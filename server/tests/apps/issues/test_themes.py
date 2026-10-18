@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from jesinia.apps.issues.api.schemas import ThemeEpicPlanOut
 from jesinia.apps.issues.application.ports import AppliedBatch
 from jesinia.apps.issues.application.themes import THEME_ISSUES_MAX, ThemeService
 from jesinia.apps.issues.domain.changes import (
@@ -839,3 +840,36 @@ async def test_a_lost_theme_record_never_hides_a_newer_epic(
     await _cache_epic(env, e2, 2)
     await env.themes.add([(REPO, 3)], "sync")
     assert (await env.themes.to_epic("sync", REPO)).epic == IssueRef(REPO, e2)
+
+
+async def test_a_rename_reaches_a_theme_kept_only_by_its_epic(env: Themes) -> None:
+    await env.synced(issue(1), issue(2))
+    assert env.tags is not None
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    first = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    epic_n = await _epic_of(env, first.id)
+    await _cache_epic(env, epic_n, 1)
+    assert await env.themes.remove([(REPO, 1)], "sync") == 1  # no issue carries it now
+    await env.tags.merge(["sync"], "reliability", {})  # renamed in the catalog
+    await env.themes.add([(REPO, 2)], "reliability")
+    again = await env.themes.to_epic("reliability", REPO)
+    assert again.epic == IssueRef(REPO, epic_n)  # the epic it already made, no second one
+    assert env.world.applied.origin_batches("theme:sync:acme/web") == []
+
+
+async def test_a_theme_epic_plan_that_reuses_its_epic_is_served(env: Themes) -> None:
+    await env.synced(issue(1), issue(2))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    first = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    epic_n = await _epic_of(env, first.id)
+    await _cache_epic(env, epic_n, 1)
+    await env.themes.add([(REPO, 2)], "sync")
+    out = ThemeEpicPlanOut.of("sync", await env.themes.to_epic("sync", REPO))
+    assert out.epic.kind == "existing" and (out.epic.repo, out.epic.n) == (REPO, epic_n)
+    fresh = ThemeEpicPlanOut.of("sync", await env.themes.to_epic("sync", REPO, new_epic=True))
+    assert fresh.epic.kind == "create" and fresh.epic.title == "Theme: `sync`"
+    assert fresh.repo == REPO

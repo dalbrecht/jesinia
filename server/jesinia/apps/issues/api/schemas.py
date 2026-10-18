@@ -1647,27 +1647,50 @@ class ThemePublishOut(BaseModel):
         )
 
 
+class ThemeEpicCreateOut(BaseModel):
+    """A plan's epic that the batch creates: its ``title`` and ``body`` (no labels)."""
+
+    kind: Literal["create"] = "create"
+    title: str
+    body: str
+
+
+class ThemeEpicExistingOut(BaseModel):
+    """A plan's epic that exists already (the theme's latest epic, IR59): the children are
+    linked under ``repo#n``, and nothing is created."""
+
+    kind: Literal["existing"] = "existing"
+    repo: str
+    n: int
+
+
 class ThemeEpicPlanOut(BaseModel):
-    """What turning the theme into an epic would do, from the cache; nothing is written. The
-    epic (``title``, ``body``, no labels) is created in ``repo`` and the ``children`` linked
-    under it; ``skipped`` says why others aren't. Approve it with ``digest``."""
+    """What turning the theme into an epic would do, from the cache; nothing is written.
+    ``epic`` is either one the batch creates in ``repo`` (``kind`` ``create``) or the theme's
+    epic, reused (``kind`` ``existing``); the ``children`` are linked under it, and
+    ``skipped`` says why others aren't. Approve it with ``digest``."""
 
     tag: str
     repo: str
-    title: str
-    body: str
+    epic: Annotated[ThemeEpicCreateOut | ThemeEpicExistingOut, Field(discriminator="kind")]
     digest: str
     children: list[ConversionChildOut]
     skipped: list[SkippedItemOut]
 
     @classmethod
     def of(cls, tag: str, plan: ConversionPlan) -> ThemeEpicPlanOut:
-        epic = cast(CreateIssue, plan.epic)  # a theme's epic is always one the batch creates
+        planned = plan.epic
+        epic: ThemeEpicCreateOut | ThemeEpicExistingOut
+        if isinstance(planned, CreateIssue):
+            repo = planned.repo
+            epic = ThemeEpicCreateOut(title=planned.title, body=planned.body)
+        else:
+            repo = planned.repo
+            epic = ThemeEpicExistingOut(repo=planned.repo, n=planned.number)
         return cls(
             tag=tag,
-            repo=epic.repo,
-            title=epic.title,
-            body=epic.body,
+            repo=repo,
+            epic=epic,
             digest=plan.digest,
             children=[ConversionChildOut.of(c) for c in plan.children],
             skipped=[SkippedItemOut(item=s.item, reason=s.reason) for s in plan.skipped],

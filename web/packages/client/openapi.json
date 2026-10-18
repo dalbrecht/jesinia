@@ -20399,6 +20399,56 @@
         "title": "ThemeAddOut",
         "description": "A theme added: its catalog ``tag`` and the issues that didn't have it yet (an Undo\nremoves those, locally; the catalog entry stays)."
       },
+      "ThemeEpicCreateOut": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "create",
+            "title": "Kind",
+            "default": "create"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "body"
+        ],
+        "title": "ThemeEpicCreateOut",
+        "description": "A plan's epic that the batch creates: its ``title`` and ``body`` (no labels)."
+      },
+      "ThemeEpicExistingOut": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "existing",
+            "title": "Kind",
+            "default": "existing"
+          },
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "n"
+        ],
+        "title": "ThemeEpicExistingOut",
+        "description": "A plan's epic that exists already (the theme's latest epic, IR59): the children are\nlinked under ``repo#n``, and nothing is created."
+      },
       "ThemeEpicIn": {
         "properties": {
           "repo": {
@@ -20436,13 +20486,23 @@
             "type": "string",
             "title": "Repo"
           },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "body": {
-            "type": "string",
-            "title": "Body"
+          "epic": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThemeEpicCreateOut"
+              },
+              {
+                "$ref": "#/components/schemas/ThemeEpicExistingOut"
+              }
+            ],
+            "title": "Epic",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "create": "#/components/schemas/ThemeEpicCreateOut",
+                "existing": "#/components/schemas/ThemeEpicExistingOut"
+              }
+            }
           },
           "digest": {
             "type": "string",
@@ -20467,14 +20527,13 @@
         "required": [
           "tag",
           "repo",
-          "title",
-          "body",
+          "epic",
           "digest",
           "children",
           "skipped"
         ],
         "title": "ThemeEpicPlanOut",
-        "description": "What turning the theme into an epic would do, from the cache; nothing is written. The\nepic (``title``, ``body``, no labels) is created in ``repo`` and the ``children`` linked\nunder it; ``skipped`` says why others aren't. Approve it with ``digest``."
+        "description": "What turning the theme into an epic would do, from the cache; nothing is written.\n``epic`` is either one the batch creates in ``repo`` (``kind`` ``create``) or the theme's\nepic, reused (``kind`` ``existing``); the ``children`` are linked under it, and\n``skipped`` says why others aren't. Approve it with ``digest``."
       },
       "ThemeIssuesIn": {
         "properties": {

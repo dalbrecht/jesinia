@@ -196,12 +196,15 @@ class ThemeService:
 
     async def _reconcile(self) -> dict[str, str]:
         """Rewrite stored themes whose tag the catalog now names otherwise (renamed, or merged
-        into another), and answer the catalog's names."""
+        into another), on issues and in epic history, and answer the catalog's names."""
         names = await self._names()
-        for stored, _ in self._store.themes():
-            canonical = names.get(stored, stored)
-            if canonical != stored:
-                self._store.retag(stored, canonical)
+        # Every stored name: on issues, and in epic history a theme keeps after its last issue
+        # left it (so a renamed theme still finds the epic it made).
+        stored = {tag for tag, _ in self._store.themes()} | set(self._store.history_tags())
+        for tag in sorted(stored):
+            canonical = names.get(tag, tag)
+            if canonical != tag:
+                self._store.retag(tag, canonical)
         return names
 
     async def canonical(self, raw: str) -> str:

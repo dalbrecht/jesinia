@@ -692,6 +692,10 @@ class ThemeStore(Protocol):
         an issue has both, in one transaction; its epic batches (and their ledger origin)
         follow."""
 
+    def history_tags(self) -> list[str]:
+        """Tags kept by a theme's epic history (``theme_epics`` and its ledger origins), with or
+        without issues carrying them now."""
+
     def record_epic(
         self, tag: str, batch_id: str, now: datetime, epic: tuple[str, int] | None = None
     ) -> None:

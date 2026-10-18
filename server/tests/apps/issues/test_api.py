@@ -1671,7 +1671,8 @@ async def test_theme_routes_add_locally_publish_to_the_tray_and_make_an_epic(env
     assert "theme:sync-reliability" in env.github.issues[(REPO, 1)].labels
 
     plan = (await env.client.get(f"{THEMES}/sync-reliability/epic?repo={REPO}")).json()
-    assert plan["repo"] == REPO and plan["title"].startswith("Theme: `sync-reliability`")
+    assert plan["repo"] == REPO and plan["epic"]["kind"] == "create"
+    assert plan["epic"]["title"].startswith("Theme: `sync-reliability`")
     assert [c["n"] for c in plan["children"]] == [1, 2]
     started = await env.client.post(
         f"{THEMES}/sync-reliability/epic",

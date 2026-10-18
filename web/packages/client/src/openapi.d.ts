@@ -4983,6 +4983,37 @@ export interface components {
             added: components["schemas"]["IssueTargetBody"][];
         };
         /**
+         * ThemeEpicCreateOut
+         * @description A plan's epic that the batch creates: its ``title`` and ``body`` (no labels).
+         */
+        ThemeEpicCreateOut: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "create";
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+        };
+        /**
+         * ThemeEpicExistingOut
+         * @description A plan's epic that exists already (the theme's latest epic, IR59): the children are
+         *     linked under ``repo#n``, and nothing is created.
+         */
+        ThemeEpicExistingOut: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "existing";
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+        };
+        /**
          * ThemeEpicIn
          * @description The approval of a previewed theme epic: its repo and ``digest``; ``new_epic`` when the
          *     preview asked for a new epic beside the theme's existing one (ruling IR59).
@@ -5000,19 +5031,18 @@ export interface components {
         };
         /**
          * ThemeEpicPlanOut
-         * @description What turning the theme into an epic would do, from the cache; nothing is written. The
-         *     epic (``title``, ``body``, no labels) is created in ``repo`` and the ``children`` linked
-         *     under it; ``skipped`` says why others aren't. Approve it with ``digest``.
+         * @description What turning the theme into an epic would do, from the cache; nothing is written.
+         *     ``epic`` is either one the batch creates in ``repo`` (``kind`` ``create``) or the theme's
+         *     epic, reused (``kind`` ``existing``); the ``children`` are linked under it, and
+         *     ``skipped`` says why others aren't. Approve it with ``digest``.
          */
         ThemeEpicPlanOut: {
             /** Tag */
             tag: string;
             /** Repo */
             repo: string;
-            /** Title */
-            title: string;
-            /** Body */
-            body: string;
+            /** Epic */
+            epic: components["schemas"]["ThemeEpicCreateOut"] | components["schemas"]["ThemeEpicExistingOut"];
             /** Digest */
             digest: string;
             /** Children */
