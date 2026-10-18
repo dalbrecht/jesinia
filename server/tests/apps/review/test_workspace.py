@@ -1234,3 +1234,16 @@ async def test_commit_log_reads_a_rename_as_delete_plus_add(
     tip = await ws.fetch_default_branch(REPO)
     newest = (await ws.commit_log(REPO, tip, after=None, since=None, limit=1)).commits[0]
     assert dict(newest.files) == {"src/sync/a.py": 3, "src/sync/moved.py": 3, "more.bin": 0}
+
+
+async def test_reviewed_commits_list_a_prs_range(
+    tmp_path: Path, history: tuple[Path, list[str]]
+) -> None:
+    """R87: the commits of a reviewed range (base..head) are the ones exempt from churn."""
+    remote, (first, second, third) = history
+    ws = GitWorkspace(tmp_path / "repos", lambda repo: str(remote))
+    await ws.ensure_mirror(REPO)
+    await ws.fetch_default_branch(REPO)
+    assert await ws.reviewed_commits(REPO, first, third) == [third, second]
+    with pytest.raises(GitCommandError):
+        await ws.reviewed_commits(REPO, first, "f" * 40)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -140,6 +141,8 @@ async def test_the_pipeline_needs_agents_and_github_and_runs_the_pre_reviews(
     await module.start(ctx)
     assert isinstance(module.pipeline, Pipeline)
     assert isinstance(module.posting, PostingService)
+    # M5: a post hands its round on without waiting for the keep.
+    assert module.posting._on_posted == module.keep_in_background
     assert isinstance(module.stacks, StackReviews)
     swept = module.stacks._store.stack_jobs()[stack_id]
     assert isinstance(swept, dict) and swept["overview"]["state"] == "interrupted"
@@ -210,3 +213,74 @@ async def test_the_emails_key_is_made_once_per_install_and_kept_private(cfg: Con
     await module.start(AppContext(cfg, EventBus(), Scheduler()))
     await module.stop()
     assert key.read_bytes() == first
+
+
+@pytest.mark.parametrize("content", [b"", b"short", b"x" * 33])
+async def test_a_corrupt_emails_key_is_made_again_and_said(
+    cfg: Config, caplog: pytest.LogCaptureFixture, content: bytes
+) -> None:
+    """M3: a key of the wrong length is replaced (a full history re-read follows); the log
+    says why, without key material."""
+    key = cfg.data_dir / "review" / "knowledge.key"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_bytes(content)
+    module = ReviewModule()
+    with caplog.at_level(logging.WARNING):
+        await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    await module.stop()
+    made = key.read_bytes()
+    assert len(made) == 32 and made != content
+    assert "knowledge.key" in caplog.text and "re-read" in caplog.text
+    assert made.hex() not in caplog.text and repr(made) not in caplog.text
+
+
+async def test_a_missing_emails_key_is_made_and_said(
+    cfg: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    module = ReviewModule()
+    with caplog.at_level(logging.INFO):
+        await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    await module.stop()
+    assert "made a new knowledge.key" in caplog.text
+
+
+async def test_the_emails_key_is_written_atomically(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3: written to a private temp file, synced, then renamed into place: a crash never
+    leaves a short key behind."""
+    import os
+
+    calls: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd: int) -> None:
+        calls.append("fsync")
+        real_fsync(fd)
+
+    def replace(src: str, dst: str) -> None:
+        calls.append("replace")
+        assert oct(os.stat(src).st_mode & 0o777) == oct(0o600) and os.path.getsize(src) == 32
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    module = ReviewModule()
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    await module.stop()
+    assert calls == ["fsync", "replace"]
+    assert not [p for p in (cfg.data_dir / "review").iterdir() if p.name.startswith(".knowledge")]
+
+
+async def test_an_unreadable_emails_key_never_stops_the_app(
+    cfg: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """M3: a key that can't be read or written (a folder in its place) is logged and an
+    in-memory key used; the review app still starts."""
+    (cfg.data_dir / "review" / "knowledge.key").mkdir(parents=True)
+    module = ReviewModule()
+    with caplog.at_level(logging.WARNING):
+        await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    assert module.health().ok and module.knowledge.view().total == 0
+    assert "knowledge.key" in caplog.text
+    await module.stop()

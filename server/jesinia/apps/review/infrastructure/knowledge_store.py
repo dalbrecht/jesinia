@@ -18,6 +18,7 @@ from jesinia.apps.review.application.knowledge import (
     ExposureRow,
     PendingRound,
     RepoState,
+    ReviewedRange,
 )
 from jesinia.apps.review.domain.knowledge import (
     Exposure,
@@ -256,6 +257,59 @@ class SqliteKnowledgeStore:
             (round_id, right, answered, questions, _time(at)),
         )
         return cursor.rowcount == 1
+
+    # --- reviewed commits (R87) -----------------------------------------------------------
+
+    def unlisted_reviews(self) -> list[ReviewedRange]:
+        rows = self._conn.execute(
+            "SELECT r.id, r.repo, r.number, r.base_sha, r.head_sha FROM rounds r "
+            "WHERE r.done = 1 AND NOT EXISTS ("
+            "SELECT 1 FROM knowledge_reviews k WHERE k.round_id = r.id) ORDER BY r.id"
+        )
+        return [ReviewedRange(*row) for row in rows]
+
+    def record_reviewed(self, rnd: ReviewedRange, shas: Sequence[str]) -> None:
+        with transaction(self._conn):
+            self._keep_reviewed(rnd.repo, shas)
+            self._conn.execute(
+                "INSERT OR IGNORE INTO knowledge_reviews (round_id, listed_at) VALUES (?, ?)",
+                (rnd.round_id, _time(datetime.now(UTC))),
+            )
+
+    def _keep_reviewed(self, repo: str, shas: Sequence[str]) -> None:
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO knowledge_reviewed_commits (repo, sha) VALUES (?, ?)",
+            [(repo, sha) for sha in shas],
+        )
+        # Churn read before the round was counted (the PR landed first) is taken back.
+        self._conn.executemany(
+            "DELETE FROM knowledge_churn WHERE repo = ? AND sha = ?",
+            [(repo, sha) for sha in shas],
+        )
+
+    def awaiting_merge(self, since: datetime) -> list[ReviewedRange]:
+        rows = self._conn.execute(
+            "SELECT r.id, r.repo, r.number, r.base_sha, r.head_sha FROM knowledge_reviews k "
+            "JOIN rounds r ON r.id = k.round_id "
+            "WHERE k.merge_settled = 0 AND k.listed_at >= ? ORDER BY r.id",
+            (_time(since),),
+        )
+        return [ReviewedRange(*row) for row in rows]
+
+    def settle_merge(self, rnd: ReviewedRange, sha: str | None) -> None:
+        with transaction(self._conn):
+            if sha is not None:
+                self._keep_reviewed(rnd.repo, [sha])
+            self._conn.execute(
+                "UPDATE knowledge_reviews SET merge_settled = 1 WHERE round_id = ?",
+                (rnd.round_id,),
+            )
+
+    def reviewed_shas(self, repo: str) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT sha FROM knowledge_reviewed_commits WHERE repo = ?", (repo,)
+        )
+        return {str(sha) for (sha,) in rows}
 
     def prune(self, before: datetime) -> None:
         cutoff = _time(before)

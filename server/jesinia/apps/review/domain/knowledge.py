@@ -297,9 +297,17 @@ def recency(exposures: Iterable[Exposure], now: datetime) -> float:
 
 
 def last_exposure(exposures: Iterable[Exposure]) -> datetime | None:
-    """The newest exposure that carries weight: changes are counted from it."""
+    """The newest exposure that carries weight (any kind): whether a unit has evidence."""
     weighted = [e.at for e in exposures if KIND_WEIGHTS[e.kind] > 0]
     return max(weighted, default=None)
+
+
+def changes_start(exposures: Iterable[Exposure]) -> datetime | None:
+    """Where "changed since" counts from: the newest weighted review or quiz. A commit's
+    date is the commit's to claim (a future date would hide every change), so a commit
+    never sets it (I3)."""
+    looks = [e.at for e in exposures if e.kind != "commit" and KIND_WEIGHTS[e.kind] > 0]
+    return max(looks, default=None)
 
 
 def top_units(scores: Mapping[Unit, float], limit: int = TOP_UNITS) -> tuple[Unit, ...]:

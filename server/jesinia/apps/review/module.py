@@ -39,6 +39,7 @@ from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.queue import SyncStatus
 from jesinia.apps.review.infrastructure.knowledge_store import SqliteKnowledgeStore
+from jesinia.apps.review.infrastructure.merges import GitHubMerges
 from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace, github_remote_url
@@ -89,17 +90,53 @@ def _log_keep_failure(round_id: int, task: asyncio.Task[object]) -> None:
                     exc_info=exc)  # fmt: skip
 
 
+KNOWLEDGE_KEY_BYTES = 32
+
+
 def _knowledge_key(data_dir: Path) -> bytes:
-    """The per-install secret for the emails digest (M3): made once, readable by the user
-    only."""
+    """The per-install secret for the emails digest (M3), readable by the user only. A key
+    that is missing or the wrong length is made again (written atomically: a private temp
+    file, synced, then renamed into place); the new key changes the digest, so the history
+    is read again in full. A key that can't be read or written is replaced by one held in
+    memory, so the app still starts. Nothing about the key itself is logged."""
     path = data_dir / "review" / KNOWLEDGE_KEY_FILE
-    if path.is_file():
-        return path.read_bytes()
+    try:
+        if path.is_file():
+            key = path.read_bytes()
+            if len(key) == KNOWLEDGE_KEY_BYTES:
+                return key
+            log.warning(
+                "review %s is %d bytes, not %d: made a new one; the history will be re-read",
+                KNOWLEDGE_KEY_FILE, len(key), KNOWLEDGE_KEY_BYTES,
+            )  # fmt: skip
+        else:
+            log.info("made a new %s; the history will be re-read", KNOWLEDGE_KEY_FILE)
+        return _write_key(path)
+    except OSError as exc:
+        log.warning(
+            "review %s can't be read or written (%s): using a key held in memory, so the "
+            "history will be re-read after each restart",
+            KNOWLEDGE_KEY_FILE, type(exc).__name__,
+        )  # fmt: skip
+        return secrets.token_bytes(KNOWLEDGE_KEY_BYTES)
+
+
+def _write_key(path: Path) -> bytes:
+    """A fresh key at ``path``, atomically: temp file (0600) in the same folder, fsync,
+    rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    key = secrets.token_bytes(32)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as out:
-        out.write(key)
+    key = secrets.token_bytes(KNOWLEDGE_KEY_BYTES)
+    temporary = path.parent / f".{path.name}.{secrets.token_hex(4)}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as out:
+            out.write(key)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return key
 
 
@@ -255,6 +292,12 @@ class ReviewModule:
             await asyncio.wait_for(asyncio.shield(task), KEEP_WAIT_SECONDS)
         except TimeoutError:
             log.info("review.keep round=%d goes on in the background", round_id)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise  # the caller itself is being cancelled
+            # stop() cancelled the keep this Done waited on: the Done still stands.
+            log.info("review.keep round=%d was cut short by a stop", round_id)
 
     async def ingest_knowledge(self) -> None:
         """Read the knowledge model's signals (the ``review.knowledge-ingest`` job); failures
@@ -355,6 +398,7 @@ class ReviewModule:
             clock=_utc_now,
             workspace=self._workspace,
             identity=PrClient(github) if isinstance(github, GitHubService) else None,
+            merges=GitHubMerges(PrClient(github)) if isinstance(github, GitHubService) else None,
             repos=knowledge_repos,
             email_key=_knowledge_key(ctx.cfg.data_dir),
         )

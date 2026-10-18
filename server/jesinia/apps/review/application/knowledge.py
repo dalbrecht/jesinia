@@ -20,7 +20,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Literal, Protocol
 
 from jesinia.apps.review.application.errors import KnowledgeSourceError
 from jesinia.apps.review.domain.knowledge import (
@@ -34,6 +34,7 @@ from jesinia.apps.review.domain.knowledge import (
     SummaryEntry,
     Unit,
     UnitRecord,
+    changes_start,
     churn_by_prefix,
     distance,
     familiarity,
@@ -61,6 +62,8 @@ COMMIT_LOG_LIMIT = 20_000
 VIEW_LIMIT = 500
 # Pages of ``COMMIT_LOG_LIMIT`` commits one history read goes through (M2).
 LOG_PAGES = 10
+# How long a reviewed PR's landing is watched for (its merge commit is then exempt: R87).
+MERGE_WATCH = timedelta(days=90)
 # Churn rows stored per write, yielding to the event loop between writes (M4).
 CHURN_CHUNK = 5_000
 # A round from before rounds kept their paths, with no cached file list left, is settled
@@ -152,6 +155,24 @@ class KnowledgeStore(Protocol):
         """Keep a round's quiz result; ``False`` when it already has one (the first counts)."""
         ...
 
+    def unlisted_reviews(self) -> list[ReviewedRange]:
+        """Rounds the author posted or marked done whose reviewed commits aren't listed."""
+        ...
+
+    def record_reviewed(self, rnd: ReviewedRange, shas: Sequence[str]) -> None:
+        """Keep the commits the author reviewed (and take back churn stored for them)."""
+        ...
+
+    def awaiting_merge(self, since: datetime) -> list[ReviewedRange]:
+        """Listed rounds since ``since`` whose PR's landing isn't known yet."""
+        ...
+
+    def settle_merge(self, rnd: ReviewedRange, sha: str | None) -> None:
+        """The PR landed as ``sha`` (kept as reviewed), or closed unmerged (``None``)."""
+        ...
+
+    def reviewed_shas(self, repo: str) -> set[str]: ...
+
     def prune(self, before: datetime) -> None:
         """Forget churn and exposures older than ``before`` (their weight is negligible)."""
         ...
@@ -183,11 +204,40 @@ class KnowledgeWorkspace(Protocol):
         """The local git identity's email (``user.email``), if one is set."""
         ...
 
+    async def reviewed_commits(self, repo: str, base: str, head: str) -> list[str]:
+        """The commits of ``base..head``: a reviewed PR's own commits (R87)."""
+        ...
+
 
 class ViewerEmails(Protocol):
     """The signed-in ``gh`` user's emails (``PrClient``)."""
 
     async def viewer_emails(self) -> list[str]: ...
+
+
+@dataclass(frozen=True)
+class MergeState:
+    """Whether a PR is open, merged (with the commit that landed it) or closed unmerged."""
+
+    state: Literal["open", "merged", "closed"]
+    sha: str | None
+
+
+class PrMerges(Protocol):
+    """A PR's merge state (``PrClient``)."""
+
+    async def merge_state(self, repo: str, number: int) -> MergeState: ...
+
+
+@dataclass(frozen=True)
+class ReviewedRange:
+    """A round the author posted or marked done: the PR and the range it reviewed."""
+
+    round_id: int
+    repo: str
+    number: int
+    base_sha: str
+    head_sha: str
 
 
 @dataclass(frozen=True)
@@ -280,8 +330,9 @@ class KnowledgeService:
         clock: Clock,
         workspace: KnowledgeWorkspace | None = None,
         identity: ViewerEmails | None = None,
+        email_key: bytes,
+        merges: PrMerges | None = None,
         repos: Callable[[], Iterable[str]] = _no_repos,
-        email_key: bytes = b"",
     ) -> None:
         self._store = store
         self._clock = clock
@@ -289,6 +340,7 @@ class KnowledgeService:
         self._identity = identity
         self._repos = repos
         self._email_key = email_key
+        self._merges = merges
         self._lock = asyncio.Lock()
 
     # --- ingest ----------------------------------------------------------------------------
@@ -299,6 +351,7 @@ class KnowledgeService:
             errors: list[str] = []
             reviews = self._guard("finished rounds", self._ingest_rounds, errors, 0)
             quizzes = self._guard("quiz results", self._ingest_quizzes, errors, 0)
+            await self._guard_async("reviewed commits", self._ingest_reviewed, errors)
             commits = await self._guard_async("commits", self._ingest_commits_all, errors)
             self._guard("pruning", self._prune, errors, None)
             return IngestReport(commits, reviews, quizzes, tuple(errors))
@@ -344,6 +397,34 @@ class KnowledgeService:
             ]
             added += self._store.add_exposures(f"{prefix}:{item.round_id}", rows)
         return added
+
+    async def _ingest_reviewed(self, errors: list[str]) -> int:
+        """Note the commits the author reviewed, so landing them isn't "changed since" the
+        review (R87): each posted or done round's range, and its PR's merge commit once the
+        PR lands. Only these are exempt from churn; an author email exempts nothing."""
+        workspace = self._workspace
+        noted = 0
+        if workspace is not None:
+            for rnd in self._store.unlisted_reviews():
+                if not workspace.has_mirror(rnd.repo):
+                    continue
+                try:
+                    shas = await workspace.reviewed_commits(rnd.repo, rnd.base_sha, rnd.head_sha)
+                except Exception as exc:  # secondary: tried again on the next ingest
+                    self._failed(f"reviewed commits of round {rnd.round_id}", exc, errors)
+                    continue
+                self._store.record_reviewed(rnd, shas)
+                noted += 1
+        if self._merges is not None:
+            for rnd in self._store.awaiting_merge(self._clock() - MERGE_WATCH):
+                try:
+                    merge = await self._merges.merge_state(rnd.repo, rnd.number)
+                except Exception as exc:  # secondary: asked again on the next ingest
+                    self._failed(f"the merge of {rnd.repo}#{rnd.number}", exc, errors)
+                    continue
+                if merge.state != "open":
+                    self._store.settle_merge(rnd, merge.sha if merge.state == "merged" else None)
+        return noted
 
     async def _emails(self, workspace: KnowledgeWorkspace) -> set[str]:
         """The author's emails, lowercase: the signed-in ``gh`` user's and the local git
@@ -400,18 +481,20 @@ class KnowledgeService:
         churn: list[ChurnRow] = []
         mine: dict[str, list[ExposureRow]] = {}
         read_at = self._clock()
+        reviewed = self._store.reviewed_shas(repo)
         for commit in commits:
             if commit.email.strip().lower() in emails:
-                # The author's own change: an exposure, never "changed since" their look.
                 units = _round_units(repo, (path for path, _ in commit.files))
                 mine[f"commit:{repo}:{commit.sha}"] = [
                     (u, "commit", commit.at, direct) for u, direct in units
                 ]
-                continue
-            # When the code landed counts for "changed since" (M3). Dates are the commit's
-            # to claim (backdated, or a merge's commits keep theirs): a commit read
-            # incrementally landed since the last read, so it counts as of now (I3).
-            changed = commit.changed_at if after is None else max(commit.changed_at, read_at)
+            if commit.sha in reviewed:
+                continue  # the author reviewed it: not a change since their look (R87)
+            # Every other commit is change, whoever it claims to be from (R87). When it
+            # landed counts (M3), but its dates are its own to claim: after the first read,
+            # a commit seen for the first time landed since the last read, so it counts as
+            # of now (I3), on an incremental read and a horizon re-read alike.
+            changed = commit.changed_at if state is None else max(commit.changed_at, read_at)
             churn += [(commit.sha, changed, p, n) for p, n in churn_by_prefix(commit.files).items()]
         for start in range(0, len(churn), CHURN_CHUNK):
             self._store.add_churn(repo, churn[start : start + CHURN_CHUNK])
@@ -485,8 +568,12 @@ class KnowledgeService:
 
     def _view(self, model: _Model, unit: Unit) -> UnitView:
         seen = tuple(model.exposures.get(unit, ()))
-        last = last_exposure(scored_exposures(seen))
-        changes = 0 if last is None else self._store.changes_since(unit, last)
+        scored = scored_exposures(seen)
+        start = changes_start(scored)
+        changes = 0 if start is None else self._store.changes_since(unit, start)
+        last = last_exposure(scored)
+        if last is not None:  # shown only; a commit can claim any date
+            last = min(last, self._clock())
         override = model.override_of(unit)
         # Distance is a prior for a unit with no evidence of its own (R82, I2).
         far, prior = 0.0, 0.0
@@ -589,6 +676,9 @@ class KnowledgeService:
 __all__ = [
     "COMMIT_LOG_LIMIT",
     "LEGACY_ROUND_GRACE",
+    "MergeState",
+    "PrMerges",
+    "ReviewedRange",
     "CommitLog",
     "IngestReport",
     "KnowledgeService",

@@ -544,7 +544,13 @@ function KnowledgePanel() {
     const result = await readPages(knowledge.units.length, KNOWLEDGE_PAGE);
     setLoadingMore(false);
     if (read !== latestRead.current) return; // a newer full read replaced the list
-    if ("units" in result) setKnowledge((k) => k && { ...result, units: [...k.units, ...result.units], offset: 0 });
+    if ("units" in result)
+      setKnowledge((k) => {
+        if (!k) return k;
+        // The set can change between pages (an ingest, a mark): a unit is listed once.
+        const seen = new Set(k.units.map((u) => u.unit));
+        return { ...result, units: [...k.units, ...result.units.filter((u) => !seen.has(u.unit))], offset: 0 };
+      });
     else toast.show({ tone: "danger", message: `Couldn't read more of the knowledge model: ${result.cause}` });
   };
   useEffect(() => {

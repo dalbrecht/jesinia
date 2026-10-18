@@ -22,6 +22,7 @@ from jesinia.apps.review.application.knowledge import (
     LEGACY_ROUND_GRACE,
     CommitLog,
     KnowledgeService,
+    MergeState,
     PendingRound,
 )
 from jesinia.apps.review.application.pipeline import Pipeline
@@ -382,6 +383,7 @@ def test_summary_without_any_record() -> None:
 # --- the service over review.sqlite ---------------------------------------------------------------
 
 ME = "me@example.com"
+KEY = b"k" * 32
 TIP1, TIP2 = "1" * 40, "2" * 40
 
 
@@ -444,6 +446,11 @@ class FakeWorkspace:
     async def identity_email(self) -> str | None:
         return self.email
 
+    reviewed: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+
+    async def reviewed_commits(self, repo: str, base: str, head: str) -> list[str]:
+        return list(self.reviewed.get((base, head), []))
+
 
 @dataclass
 class FakeIdentity:
@@ -454,6 +461,11 @@ class FakeIdentity:
         if self.error is not None:
             raise self.error
         return list(self.emails)
+
+    merges: dict[int, MergeState] = field(default_factory=dict)
+
+    async def merge_state(self, repo: str, number: int) -> MergeState:
+        return self.merges.get(number, MergeState("open", None))
 
 
 @dataclass
@@ -514,7 +526,9 @@ def kenv(kconn: sqlite3.Connection) -> KEnv:
         clock=clock,
         workspace=workspace,
         identity=identity,
+        merges=identity,
         repos=reviews.watched_repos,
+        email_key=KEY,
     )
     return KEnv(kconn, reviews, store, clock, workspace, identity, service)
 
@@ -544,9 +558,10 @@ async def test_ingest_reads_my_commits_once_and_incrementally(kenv: KEnv) -> Non
     view = kenv.service.view()
     assert kinds(view.units, "repo/acme/web/src/sync") == {"commit": 1}
     assert kinds(view.units, "repo/acme/web") == {"commit": 1}
-    # Only what changed after my last exposure counts: the other author's 30 lines.
+    # "Changed since" counts from a review or a quiz, never from a commit (its date is the
+    # commit's to claim: I3): with commits only, nothing counts.
     (sync,) = [u for u in view.units if u.unit.id == "repo/acme/web/src/sync"]
-    assert sync.changes_since_last == 30
+    assert sync.changes_since_last == 0
     # A new tip reads only the new commits, and counts my new commit once.
     kenv.workspace.tips[WEB] = TIP2
     kenv.workspace.log.insert(0, commit(3, 0 * DAY, ME, ("src/sync/b.py", 2)))
@@ -661,7 +676,7 @@ async def test_overrides_win(kenv: KEnv) -> None:
     assert fam(kenv.service, WEB, ["src/a.py"]) == 0.0
     assert fam(kenv.service, WEB, ["docs/x.md"]) == 1.0
     # Overrides persist in review.sqlite, and clearing one goes back to the evidence.
-    again = KnowledgeService(store=SqliteKnowledgeStore(kenv.conn), clock=kenv.clock)
+    again = KnowledgeService(store=SqliteKnowledgeStore(kenv.conn), clock=kenv.clock, email_key=KEY)
     assert fam(again, WEB, ["docs/x.md"]) == 1.0
     cleared = again.set_override(src, None)
     assert cleared.override is None and cleared.familiarity == pytest.approx(1.0)
@@ -670,7 +685,9 @@ async def test_overrides_win(kenv: KEnv) -> None:
 
 
 async def test_changes_since_last_reduce_familiarity(kenv: KEnv) -> None:
-    kenv.workspace.log = [commit(1, 30 * DAY, ME, ("src/a.py", 5))]
+    kenv.clock.now = NOW - 30 * DAY
+    kenv.done_round(1, "deep", ["src/a.py"])
+    kenv.clock.now = NOW
     await kenv.service.ingest()
     scores = [fam(kenv.service, WEB, ["src/a.py"])]
     for n, lines in ((2, 50), (3, 150), (4, 800)):
@@ -682,14 +699,13 @@ async def test_changes_since_last_reduce_familiarity(kenv: KEnv) -> None:
     assert all(isinstance(s, float) for s in scores)
     floats = [float(s or 0.0) for s in scores]
     assert floats == sorted(floats, reverse=True) and floats[0] > floats[-1]
-    base = min(0.8 * 0.5 ** (30 / 90), COMMIT_RECENCY_CAP)  # commits alone are capped (R80)
+    base = 0.5 ** (30 / 90)  # a deep review 30 days ago
     assert floats[0] == pytest.approx(base)
     assert floats[-1] == pytest.approx(base * (1 - 1000 / 1200))
-    # Changes before my last exposure don't count.
-    kenv.workspace.tips[WEB] = sha(200)
-    kenv.workspace.log.insert(0, commit(9, 0 * DAY, ME, ("src/a.py", 1)))
+    # Changes before my last look don't count.
+    kenv.done_round(2, "deep", ["src/a.py"])
     await kenv.service.ingest()
-    assert fam(kenv.service, WEB, ["src/a.py"]) == pytest.approx(COMMIT_RECENCY_CAP)
+    assert fam(kenv.service, WEB, ["src/a.py"]) == pytest.approx(1.0)
 
 
 async def test_depth_uses_min_familiarity_over_touched_paths(kenv: KEnv) -> None:
@@ -881,6 +897,7 @@ async def test_a_vanished_last_tip_reads_the_horizon_again(kconn: sqlite3.Connec
         workspace=workspace,
         identity=FakeIdentity(),
         repos=reviews.watched_repos,
+        email_key=KEY,
     )
     await service.ingest()
     workspace.tips[WEB] = TIP2
@@ -921,7 +938,7 @@ async def test_a_long_read_pages_through_every_commit(kenv: KEnv) -> None:
 
 async def test_without_a_workspace_only_the_rounds_count(kenv: KEnv) -> None:
     kenv.done_round(1, "quick", ["a.py"])
-    service = KnowledgeService(store=kenv.store, clock=kenv.clock)
+    service = KnowledgeService(store=kenv.store, clock=kenv.clock, email_key=KEY)
     report = await service.ingest()
     assert (report.commits, report.reviews, report.errors) == (0, 1, ())
     assert fam(service, "not a repo", ["a.py"]) is None
@@ -969,7 +986,9 @@ async def test_a_kb_page_linked_to_code_never_changes_familiarity(
 
 
 async def test_without_repos_no_history_is_read(kenv: KEnv) -> None:
-    service = KnowledgeService(store=kenv.store, clock=kenv.clock, workspace=kenv.workspace)
+    service = KnowledgeService(
+        store=kenv.store, clock=kenv.clock, workspace=kenv.workspace, email_key=KEY
+    )
     assert (await service.ingest()).errors == () and kenv.workspace.calls == []
 
 
@@ -978,7 +997,7 @@ async def test_a_failing_store_read_is_reported_not_raised(kenv: KEnv) -> None:
         def pending_rounds(self) -> list[PendingRound]:
             raise sqlite3.OperationalError("database is locked")
 
-    service = KnowledgeService(store=BrokenStore(kenv.conn), clock=kenv.clock)
+    service = KnowledgeService(store=BrokenStore(kenv.conn), clock=kenv.clock, email_key=KEY)
     report = await service.ingest()
     assert report.errors == ("finished rounds: OperationalError: database is locked",)
 
@@ -997,7 +1016,11 @@ async def test_without_github_the_local_git_identity_still_matches(kenv: KEnv) -
     kenv.workspace.email = "Local@Example.com"
     kenv.workspace.log = [commit(1, DAY, "local@example.com", ("src/a.py", 1))]
     service = KnowledgeService(
-        store=kenv.store, clock=kenv.clock, workspace=kenv.workspace, repos=lambda: [WEB]
+        store=kenv.store,
+        clock=kenv.clock,
+        workspace=kenv.workspace,
+        repos=lambda: [WEB],
+        email_key=KEY,
     )
     assert (await service.ingest()).commits == 1
 
@@ -1113,7 +1136,7 @@ async def test_a_page_with_no_commit_under_the_cut_is_warned(
 
     service = KnowledgeService(
         store=kenv.store, clock=kenv.clock, workspace=Huge(), identity=FakeIdentity(),
-        repos=lambda: [WEB],
+        repos=lambda: [WEB], email_key=KEY,
     )  # fmt: skip
     await service.ingest()
     assert "is over the read limit" in caplog.text
@@ -1160,11 +1183,12 @@ async def test_backdated_commits_still_count_as_changed_since(kenv: KEnv) -> Non
     backdated = NOW - 30 * DAY
     kenv.workspace.log = [
         LoggedCommit(sha(1), backdated, "x@y.z", (("src/b.py", 100),), backdated),
-        LoggedCommit(sha(2), backdated, ME, (("src/c.py", 50),), backdated),  # mine: no churn
+        # The author's email, but not a commit they reviewed: it counts too (R87).
+        LoggedCommit(sha(2), backdated, ME, (("src/c.py", 50),), backdated),
     ]
     await kenv.service.ingest()
     (src,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src"]
-    assert src.changes_since_last == 100
+    assert src.changes_since_last == 150
 
 
 async def test_the_view_pages_through_every_unit(kenv: KEnv) -> None:
@@ -1214,3 +1238,161 @@ async def test_the_emails_digest_is_keyed_per_install(kenv: KEnv) -> None:
     assert state is not None
     assert state.emails != hashlib.sha256(ME.encode()).hexdigest()
     assert ME not in state.emails
+
+
+# --- R87 and the re-review residuals ---------------------------------------------------------
+
+
+def reviewed_round(kenv: KEnv, number: int, paths: Sequence[str]) -> tuple[str, str]:
+    """A done deep round on ``paths``; returns its (base, head)."""
+    round_id = kenv.done_round(number, "deep", paths)
+    record = kenv.reviews.round(round_id)
+    assert record is not None
+    return record.base_sha, record.head_sha
+
+
+async def test_a_spoofed_author_commit_still_counts_as_change(kenv: KEnv) -> None:
+    """R87: the author email is anyone's to write, so it never exempts a commit from churn."""
+    await kenv.service.ingest()  # the first read
+    kenv.clock.now = NOW + DAY
+    reviewed_round(kenv, 1, ["src/a.py"])
+    kenv.clock.now = NOW + 2 * DAY
+    kenv.workspace.tips[WEB] = TIP2
+    kenv.workspace.log = [commit(1, -DAY, ME, ("src/b.py", 500))]
+    await kenv.service.ingest()
+    (src,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src"]
+    assert src.changes_since_last == 500
+
+
+async def test_an_unreviewed_commit_by_the_author_counts_as_change(kenv: KEnv) -> None:
+    """R87: only the commits the author reviewed are exempt; their own unreviewed commits
+    still change the code since their last look."""
+    await kenv.service.ingest()
+    kenv.clock.now = NOW + DAY
+    reviewed_round(kenv, 1, ["src/a.py"])
+    kenv.clock.now = NOW + 2 * DAY
+    kenv.workspace.tips[WEB] = TIP2
+    kenv.workspace.log = [commit(2, -2 * DAY, ME, ("src/a.py", 40))]
+    await kenv.service.ingest()
+    (src,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src"]
+    assert src.changes_since_last == 40
+
+
+async def test_the_merge_of_a_reviewed_pr_isnt_change_since_its_review(kenv: KEnv) -> None:
+    """R87: the reviewed range's commits, and the PR's merge commit once it lands, aren't
+    "changed since" the review of them."""
+    await kenv.service.ingest()
+    kenv.clock.now = NOW + DAY
+    base, head = reviewed_round(kenv, 1, ["src/a.py"])
+    kenv.workspace.reviewed[(base, head)] = [sha(5), sha(6)]
+    kenv.identity.merges[1] = MergeState("merged", sha(7))
+    kenv.clock.now = NOW + 2 * DAY
+    kenv.workspace.tips[WEB] = TIP2
+    kenv.workspace.log = [
+        commit(7, -DAY, "bot@github.com", ("src/a.py", 300)),  # the squash / merge commit
+        commit(6, -DAY, "x@y.z", ("src/a.py", 100)),
+        commit(5, -DAY, "x@y.z", ("src/a.py", 50)),
+        commit(8, -DAY, "x@y.z", ("src/b.py", 7)),  # unreviewed: counts
+    ]
+    await kenv.service.ingest()
+    (src,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src"]
+    assert src.changes_since_last == 7
+
+
+async def test_a_reviewed_commit_read_before_its_review_is_taken_back(kenv: KEnv) -> None:
+    """R87: churn stored for a commit before the round that reviewed it was counted is
+    removed once it is (the PR landed before the author marked the round done)."""
+    kenv.workspace.log = [commit(5, 0 * DAY, "x@y.z", ("src/a.py", 50))]
+    await kenv.service.ingest()
+    kenv.clock.now = NOW + DAY
+    base, head = reviewed_round(kenv, 1, ["src/a.py"])
+    kenv.workspace.reviewed[(base, head)] = [sha(5)]
+    await kenv.service.ingest()
+    assert kenv.store.changes_since(parse_unit("repo/acme/web/src"), NOW - DAY) == 0
+
+
+async def test_merge_states_are_asked_until_the_pr_lands_or_closes(kenv: KEnv) -> None:
+    await kenv.service.ingest()
+    base, head = reviewed_round(kenv, 1, ["src/a.py"])
+    asked: list[int] = []
+    original = kenv.identity.merge_state
+
+    async def counting(repo: str, number: int) -> MergeState:
+        asked.append(number)
+        return await original(repo, number)
+
+    kenv.identity.merge_state = counting  # type: ignore[method-assign]
+    await kenv.service.ingest()  # still open: asked again next time
+    await kenv.service.ingest()
+    kenv.identity.merges[1] = MergeState("closed", None)
+    await kenv.service.ingest()
+    await kenv.service.ingest()  # closed unmerged: settled, never asked again
+    assert asked == [1, 1, 1]
+
+
+async def test_a_failing_merge_lookup_is_reported_and_retried(kenv: KEnv) -> None:
+    await kenv.service.ingest()
+    reviewed_round(kenv, 1, ["src/a.py"])
+
+    async def broken(repo: str, number: int) -> MergeState:
+        raise RuntimeError("GitHub is down")
+
+    kenv.identity.merge_state = broken  # type: ignore[method-assign]
+    report = await kenv.service.ingest()
+    assert any("GitHub is down" in e for e in report.errors)
+
+
+async def test_a_future_dated_author_commit_doesnt_hide_others_changes(kenv: KEnv) -> None:
+    """I3 (a): a commit exposure's date is the commit's to claim, so it never sets where
+    "changed since" counts from: a review or a quiz does."""
+    await kenv.service.ingest()
+    kenv.clock.now = NOW + DAY
+    reviewed_round(kenv, 1, ["src/a.py"])
+    kenv.clock.now = NOW + 2 * DAY
+    kenv.workspace.tips[WEB] = TIP2
+    future = datetime(2099, 1, 1, tzinfo=UTC)
+    kenv.workspace.log = [
+        LoggedCommit(sha(1), future, ME, (("src/a.py", 1),), future),
+        commit(2, -DAY, "x@y.z", ("src/b.py", 5000)),
+    ]
+    await kenv.service.ingest()
+    score = fam(kenv.service, WEB, ["src/c.py", "src/a.py"])
+    (src,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src"]
+    assert src.changes_since_last == 5001
+    assert score is not None and score < LOW_FAMILIARITY
+
+
+async def test_a_horizon_re_read_never_backdates_commits_it_sees_first(kenv: KEnv) -> None:
+    """I3 (b): after a force-push (or new emails) the horizon is read again; commits seen
+    for the first time then count as of that read, whatever their dates."""
+    await kenv.service.ingest()
+    kenv.clock.now = NOW + DAY
+    reviewed_round(kenv, 1, ["src/a.py"])
+    kenv.clock.now = NOW + 2 * DAY
+    kenv.workspace.tips[WEB] = TIP2
+    kenv.workspace.not_ancestor = True  # a force-push: the horizon again
+    old = NOW - 30 * DAY
+    kenv.workspace.log = [LoggedCommit(sha(3), old, "x@y.z", (("src/b.py", 80),), old)]
+    await kenv.service.ingest()
+    (src,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src"]
+    assert src.changes_since_last == 80
+
+
+async def test_github_merges_reads_the_prs_landing() -> None:
+    from jesinia.apps.review.infrastructure.merges import GitHubMerges
+
+    class Prs:
+        def __init__(self, answer: tuple[str, str | None]) -> None:
+            self.answer = answer
+
+        async def merge_state(self, repo: str, number: int) -> tuple[str, str | None]:
+            return self.answer
+
+    def merges(answer: tuple[str, str | None]) -> GitHubMerges:
+        return GitHubMerges(Prs(answer))  # type: ignore[arg-type]
+
+    assert await merges(("merged", sha(7))).merge_state(WEB, 1) == MergeState("merged", sha(7))
+    assert await merges(("merged", "not-a-sha")).merge_state(WEB, 1) == MergeState("merged", None)
+    assert await merges(("merged", None)).merge_state(WEB, 1) == MergeState("merged", None)
+    assert await merges(("closed", None)).merge_state(WEB, 1) == MergeState("closed", None)
+    assert await merges(("open", None)).merge_state(WEB, 1) == MergeState("open", None)

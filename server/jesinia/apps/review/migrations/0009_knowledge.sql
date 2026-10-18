@@ -41,6 +41,22 @@ CREATE TABLE knowledge_churn (
 );
 CREATE INDEX knowledge_churn_unit ON knowledge_churn (repo, path, at);
 
+-- The commits the author reviewed (R87): each posted or done round's range (merge base to
+-- head) and its PR's merge commit once it landed. Only these are exempt from churn: an
+-- author email is anyone's to write.
+CREATE TABLE knowledge_reviewed_commits (
+    repo TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    PRIMARY KEY (repo, sha)
+);
+
+-- Rounds whose reviewed commits are listed; `merge_settled` once the PR landed or closed.
+CREATE TABLE knowledge_reviews (
+    round_id INTEGER PRIMARY KEY REFERENCES rounds (id) ON DELETE CASCADE,
+    listed_at TEXT NOT NULL,
+    merge_settled INTEGER NOT NULL DEFAULT 0
+);
+
 -- How far each repo's history was read: its default-branch tip, and a digest of the
 -- author's emails then (other emails read the history again).
 CREATE TABLE knowledge_repos (

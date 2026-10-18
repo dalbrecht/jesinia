@@ -1060,7 +1060,9 @@ async def api(
     )
     queue = QueueService(FakePullRequests(), stack.store, stack.clock)
     reads = ReviewReads(stack.store, queue.status)
-    knowledge = KnowledgeService(store=SqliteKnowledgeStore(conn), clock=stack.clock)
+    knowledge = KnowledgeService(
+        store=SqliteKnowledgeStore(conn), clock=stack.clock, email_key=b"k" * 32
+    )
     keeper, kb_conn = keeper_in(tmp_path, stack.store, stack.clock)
     host = Host(
         queue,

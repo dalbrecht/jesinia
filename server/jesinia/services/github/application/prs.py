@@ -291,6 +291,18 @@ class PrClient:
         except (GitHubRequestError, GitHubPayloadError) as exc:
             return _pull_request_from_search(repo, item, str(exc))
 
+    async def merge_state(self, repo: str, number: int) -> tuple[str, str | None]:
+        """Whether the PR is ``open``, ``merged`` (with the commit that landed it, GitHub's
+        ``merge_commit_sha``) or ``closed`` unmerged."""
+        validate_repo(repo)
+        validate_pull_number(number)
+        path = f"/repos/{repo}/pulls/{number}"
+        data = _mapping(await self._get_json(path), path)
+        if data.get("merged_at"):
+            sha = data.get("merge_commit_sha")
+            return "merged", sha if isinstance(sha, str) and sha else None
+        return ("open", None) if _text(data, "state") == "open" else ("closed", None)
+
     async def viewer_emails(self) -> list[str]:
         """The viewer's email addresses, lowercase: the profile's public email, GitHub's
         ``noreply`` addresses for the account, and every verified address ``/user/emails``

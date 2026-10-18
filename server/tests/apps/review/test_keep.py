@@ -703,10 +703,17 @@ class Notes:
         return self.text
 
 
-def _pipeline_env(tmp_path: Path) -> PipelineEnv:
+@pytest.fixture
+def pipeline_db(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    conn = open_db(tmp_path / "pipeline", REVIEW_DB)
+    yield conn
+    conn.close()  # (nit 1: the connection was left open)
+
+
+def _pipeline_env(conn: sqlite3.Connection) -> PipelineEnv:
     """The pipeline tests' environment (their fixture's own body), on a fresh database."""
     build = test_pipeline.env.__wrapped__  # type: ignore[attr-defined]
-    return build(open_db(tmp_path / "pipeline", REVIEW_DB))  # type: ignore[no-any-return]
+    return build(conn)  # type: ignore[no-any-return]
 
 
 def _pipeline(penv: PipelineEnv, notes: Notes) -> Pipeline:
@@ -716,8 +723,8 @@ def _pipeline(penv: PipelineEnv, notes: Notes) -> Pipeline:
     )  # fmt: skip
 
 
-async def test_each_round_carries_the_repos_system_notes(tmp_path: Path) -> None:
-    penv = _pipeline_env(tmp_path)
+async def test_each_round_carries_the_repos_system_notes(pipeline_db: sqlite3.Connection) -> None:
+    penv = _pipeline_env(pipeline_db)
     notes = Notes()
     ref = penv.add()
     await _pipeline(penv, notes).prereview(penv.request(ref, "triage"))
@@ -725,8 +732,8 @@ async def test_each_round_carries_the_repos_system_notes(tmp_path: Path) -> None
     assert {r.system_notes for r in penv.jobs.rounds} == {NOTES}
 
 
-async def test_unreadable_system_notes_are_a_warning(tmp_path: Path) -> None:
-    penv = _pipeline_env(tmp_path)
+async def test_unreadable_system_notes_are_a_warning(pipeline_db: sqlite3.Connection) -> None:
+    penv = _pipeline_env(pipeline_db)
     ref = penv.add()
     request = penv.request(ref, "triage")
     await _pipeline(penv, Notes(error=OSError("disk gone"))).prereview(request)
@@ -1120,5 +1127,36 @@ async def test_posting_starts_the_keep_without_waiting_for_it(
         assert started == [7]
         hang.set()
         await module.stop()
+    finally:
+        kb_conn.close()
+
+
+async def test_a_done_waiting_on_a_keep_cancelled_by_stop_returns_quietly(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nit 5: stop() cancelling the keep a Done is waiting on doesn't fail that Done."""
+    from jesinia.apps.review import module as module_module
+
+    monkeypatch.setattr(module_module, "KEEP_STOP_SECONDS", 0.01)
+    root = tmp_path / "kb"
+    root.mkdir()
+    kb_conn = open_db(tmp_path / "kbdata", KB_DB)
+    module = ReviewModule()
+    try:
+        kb = KbService(LocalFiles(root), SqliteIndex(kb_conn), EventBus())
+        await module.start(
+            AppContext(cfg, EventBus(), Scheduler(), {"kb": kb, "tags": TagService(kb, None)})
+        )
+        hang = asyncio.Event()
+
+        async def hung(round_id: int) -> None:
+            await hang.wait()
+
+        monkeypatch.setattr(module.keeper, "keep_finished", hung)
+        done = asyncio.create_task(module.keep_finished(1))
+        await asyncio.sleep(0)
+        await module.stop()
+        await asyncio.wait_for(done, 1)  # no CancelledError
+        assert done.done() and not done.cancelled()
     finally:
         kb_conn.close()

@@ -198,7 +198,7 @@ async def env(cfg: Config, conn: sqlite3.Connection, tmp_path: Path) -> AsyncIte
         clock=clock,
         bus=EventBus(),
     )
-    knowledge = KnowledgeService(store=SqliteKnowledgeStore(conn), clock=clock)
+    knowledge = KnowledgeService(store=SqliteKnowledgeStore(conn), clock=clock, email_key=b"k" * 32)
     keeper, kb_conn = keeper_in(tmp_path, store, clock)
     host = Host(
         queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks, knowledge, keeper

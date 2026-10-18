@@ -499,6 +499,21 @@ class GitWorkspace:
         commits = await asyncio.to_thread(parse_commit_log, out, complete=not cut)
         return CommitLog(tuple(commits), cut or len(commits) >= limit)
 
+    async def reviewed_commits(self, repo: str, base: str, head: str) -> list[str]:
+        """The commits of ``base..head`` in the mirror: a reviewed PR's own (R87).
+
+        Raises:
+            InvalidShaError: before git runs.
+            GitCommandError, GitTimeoutError: e.g. a commit isn't in the mirror.
+        """
+        out = await self._git(
+            _bare(self._mirror(repo)),
+            "rev-list",
+            "--end-of-options",
+            f"{check_sha(base)}..{check_sha(head)}",
+        )
+        return [check_sha(line) for line in out.split()]
+
     async def identity_email(self) -> str | None:
         """The email of the user's global git identity (``user.email``), if set."""
         argv, out, err, code, _ = await self._execute(

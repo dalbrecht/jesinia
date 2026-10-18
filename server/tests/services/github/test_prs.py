@@ -852,3 +852,22 @@ async def test_viewer_emails_raise_other_github_failures(prs: PrClient) -> None:
     respx.get(f"{API}/user/emails").mock(return_value=Response(500, json={"message": "boom"}))
     with pytest.raises(GitHubRequestError):
         await prs.viewer_emails()
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"state": "closed", "merged_at": "2026-10-18T00:00:00Z", "merge_commit_sha": SHA},
+         ("merged", SHA)),
+        ({"state": "closed", "merged_at": "2026-10-18T00:00:00Z", "merge_commit_sha": None},
+         ("merged", None)),
+        ({"state": "closed", "merged_at": None}, ("closed", None)),
+        ({"state": "open", "merged_at": None}, ("open", None)),
+    ],
+)  # fmt: skip
+async def test_merge_state_reads_the_landing_commit(
+    prs: PrClient, payload: dict[str, object], expected: tuple[str, str | None]
+) -> None:
+    respx.get(f"{API}/repos/acme/web/pulls/3").mock(return_value=Response(200, json=payload))
+    assert await prs.merge_state("acme/web", 3) == expected

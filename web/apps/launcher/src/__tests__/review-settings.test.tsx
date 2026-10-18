@@ -485,6 +485,23 @@ describe("What Jesinia thinks you know", () => {
     expect(await (await knowledge()).findByText("Showing 4 of 900 areas.")).toBeInTheDocument();
   });
 
+  it("lists a unit once when the set shifts between pages", async () => {
+    const units = Array.from({ length: 201 }, (_, i) =>
+      unit({ unit: `repo/acme/api/a${String(i).padStart(3, "0")}`, repo: "acme/api", path: `a${i}` }),
+    );
+    renderReview({
+      "GET /api/review/knowledge": (request: Request) => {
+        const offset = Number(new URL(request.url).searchParams.get("offset") ?? 0);
+        // A unit appeared at the front meanwhile: the second page repeats the first page's last.
+        const page = offset === 0 ? units.slice(0, 200) : units.slice(199, 201);
+        return Response.json({ units: page, total: 202, truncated: offset === 0, offset });
+      },
+    });
+    const known = await knowledge();
+    await userEvent.click(await known.findByRole("button", { name: "Show more" }));
+    await waitFor(() => expect(known.getAllByRole("listitem")).toHaveLength(201));
+  });
+
   it("reaches every unit page by page, and a later page's unit can be corrected (I4)", async () => {
     const all: Unit[] = [
       ...Array.from({ length: 300 }, (_, i) =>
