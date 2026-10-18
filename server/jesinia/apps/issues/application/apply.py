@@ -113,12 +113,23 @@ class _StepSkippedError(Exception):
 
 
 class _BatchStoppedError(Exception):
-    """GitHub stopped the batch (internal): a rate limit or a rejected token."""
+    """The batch must stop (internal): GitHub's rate limit or a rejected token, or a checkpoint
+    that couldn't be saved before an irreversible write (``reason`` names it)."""
 
-    def __init__(self, cause: str, until: datetime | None, is_rate_limited: bool) -> None:
+    def __init__(
+        self,
+        cause: str,
+        until: datetime | None,
+        is_rate_limited: bool,
+        *,
+        reason: str | None = None,
+    ) -> None:
         super().__init__(cause)
         self.until = until
         self.is_rate_limited = is_rate_limited
+        self.reason = reason or (
+            "GitHub's rate limit" if is_rate_limited else "GitHub's unavailability"
+        )
 
     @classmethod
     def of(cls, exc: GitHubError) -> _BatchStoppedError:
@@ -309,9 +320,14 @@ class ApplyEngine:
         *,
         attempting: Step | None = None,
     ) -> None:
-        """Tell ``on_step`` the result so far; best effort (the write already happened). With
-        ``attempting``, that step is recorded ``in flight`` first: a stop or crash during its
-        write leaves it unsure, never "not run"."""
+        """Tell ``on_step`` the result so far; best effort after a step (the write already
+        happened). With ``attempting``, that step is recorded ``in flight`` first, so a stop or
+        crash during its write leaves it unsure, never "not run". That checkpoint is not best
+        effort: if it can't be saved, nothing is sent and the batch stops.
+
+        Raises:
+            _BatchStoppedError: the ``in flight`` checkpoint couldn't be saved.
+        """
         if on_step is None:
             return
         current = [] if attempting is None else [StepResult(attempting, "skipped", IN_FLIGHT)]
@@ -323,13 +339,21 @@ class ApplyEngine:
         ][len(results) + len(current) :]
         try:
             on_step(BatchResult((*results, *current, *rest), dict(run.created)))
-        except Exception:
-            log.exception("issues.apply: recording a step's progress failed")
+        except Exception as exc:
+            if attempting is None:
+                log.exception("issues.apply: recording a step's progress failed")
+                return
+            log.exception("issues.apply: checkpointing a %s step failed", attempting.kind)
+            raise _BatchStoppedError(
+                f"couldn't record progress ({type(exc).__name__}: {exc}); nothing was sent",
+                None,
+                False,
+                reason="a local failure",
+            ) from exc
 
     @staticmethod
     def _not_run(stopped: _BatchStoppedError) -> str:
-        reason = "rate limit" if stopped.is_rate_limited else "unavailability"
-        return f"not run: the batch stopped at GitHub's {reason} ({stopped})"
+        return f"not run: the batch stopped at {stopped.reason} ({stopped})"
 
     async def _step(self, run: _Run, step: Step) -> StepResult:
         target = step.target

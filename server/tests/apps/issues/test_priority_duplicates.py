@@ -35,6 +35,7 @@ from jesinia.apps.issues.domain.suggestions import (
     PriorityReply,
     Suggestion,
     SuggestionFilters,
+    SuggestionInputsChangedError,
     SuggestionJobFailedError,
     SuggestionRunnerUnavailableError,
     priority_draft,
@@ -576,3 +577,54 @@ async def test_priority_approval_never_labels_an_issue_closed_since_the_draft(
     outcome = {i["n"]: i["outcome"] for i in items_of(approval.suggestion)}
     assert outcome[1] == {"state": "unchanged", "cause": CLOSED_SKIP}
     assert approval.suggestion.state == "approved"  # nothing is left to do for a closed issue
+
+
+async def test_a_priority_reply_after_its_inputs_changed_is_discarded(asking: Asking) -> None:
+    world = asking.world
+    await world.synced(issue(1), issue(2))
+    asking.agent.gate = asyncio.Event()
+    asking.agent.replies = [reply((1, "priority: high", 1), (2, "priority: high", 2))]
+    run = await asking.suggest.start_priority([(REPO, 1), (REPO, 2)])
+    await wait_until(lambda: asking.agent.in_flight == 1)
+    # Issue 2 is relabelled on GitHub and synced while the agent ranks the batch.
+    world.clock.now += timedelta(minutes=1)
+    world.github.put(issue(2, labels=("bug", "priority: low"), updated=world.clock.now))
+    await world.sync.sync(REPO)
+    asking.agent.gate.set()
+    await asking.suggest.drain()
+
+    done = asking.suggest.priority_run(run.scope)
+    assert done is not None and done.status == "failed" and done.suggestion_id is None
+    assert "inputs changed, ask again" in (done.cause or "")
+    assert world.drafts.suggestions(SuggestionFilters(kind="priority")) == []
+
+
+async def test_a_priority_reply_after_an_issue_closed_is_discarded(asking: Asking) -> None:
+    world = asking.world
+    await world.synced(issue(1))
+    asking.agent.gate = asyncio.Event()
+    asking.agent.replies = [reply((1, "priority: high", 1))]
+    asked = asyncio.create_task(asking.suggest.suggest_priority([(REPO, 1)]))
+    await wait_until(lambda: asking.agent.in_flight == 1)
+    world.clock.now += timedelta(minutes=1)
+    world.github.put(issue(1, state="closed", updated=world.clock.now))
+    await world.sync.sync(REPO)
+    asking.agent.gate.set()
+    with pytest.raises(SuggestionInputsChangedError):
+        await asked
+    assert world.drafts.suggestions(SuggestionFilters(kind="priority")) == []
+
+
+async def test_a_priority_reply_after_an_issue_left_the_cache_is_discarded(
+    asking: Asking, conn: sqlite3.Connection
+) -> None:
+    world = asking.world
+    await world.synced(issue(1))
+    asking.agent.gate = asyncio.Event()
+    asking.agent.replies = [reply((1, "priority: high", 1))]
+    asked = asyncio.create_task(asking.suggest.suggest_priority([(REPO, 1)]))
+    await wait_until(lambda: asking.agent.in_flight == 1)
+    conn.execute("DELETE FROM issues WHERE repo = ? AND number = 1", (REPO,))
+    asking.agent.gate.set()
+    with pytest.raises(SuggestionInputsChangedError):
+        await asked

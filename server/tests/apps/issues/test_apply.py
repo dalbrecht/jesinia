@@ -28,6 +28,7 @@ from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
 from jesinia.apps.issues.domain.changes import (
     IN_FLIGHT,
     AddArea,
+    BatchResult,
     ChangeBatch,
     Close,
     Comment,
@@ -1344,7 +1345,10 @@ async def test_a_failing_progress_record_never_stops_the_engine(
     def broken(result: object) -> None:
         raise sqlite3.OperationalError("disk full")
 
-    result = await world.engine.apply(one(E1, Comment("x")), on_step=broken)
+    # A save after a step only lags the record: the write already happened, the batch goes on.
+    result = await world.engine.apply(
+        one(E1, SetDimension("priority", "priority: high")), on_step=broken
+    )
     assert result.complete and "recording a step's progress failed" in caplog.text
 
 
@@ -1692,3 +1696,40 @@ async def test_a_duplicate_close_cut_off_after_github_took_it_links_the_original
     assert held.comments_posted == [(1, f"Duplicate of {REPO}#2")]
     found = world.drafts.suggestion(sid)
     assert found is not None and found.state == "approved"
+
+
+# --- Codex round 3 (PR #61): a checkpoint that can't be saved sends nothing --------------------
+
+
+@pytest.mark.parametrize(
+    ("changes", "repo_changes", "write"),
+    [
+        ([Comment("x")], [], "comment"),
+        ([Close("completed")], [], "close"),
+        ([], [CreateIssue("t", REPO, "T", "", ())], "create_issue"),
+    ],
+)
+async def test_an_unsaved_checkpoint_sends_nothing_and_stops_the_batch(
+    world: World,
+    changes: list[Comment | Close],
+    repo_changes: list[CreateIssue],
+    write: str,
+) -> None:
+    await world.synced(issue(1), issue(2))
+    issues: dict[Existing | New, list[object]] = {E1: list(changes)} if changes else {}
+    issues[E2] = [Comment("later")]
+    batch = ChangeBatch.of(issues, repo=repo_changes)  # type: ignore[arg-type]
+
+    def save(result: BatchResult) -> None:
+        if any(r.cause == IN_FLIGHT for r in result.results):
+            raise sqlite3.OperationalError("database is locked")
+
+    result = await world.engine.apply(batch, on_step=save)
+
+    failed = next(r for r in result.results if r.step.kind == write)
+    assert failed.state == "failed" and failed.cause is not None
+    assert "couldn't record progress" in failed.cause and "nothing was sent" in failed.cause
+    assert world.write_names() == []
+    assert result.stopped is not None and not result.is_rate_limited
+    later = result.per_issue[E2].steps[0]
+    assert later.state == "failed" and "not run" in (later.cause or "")

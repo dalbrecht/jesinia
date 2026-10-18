@@ -33,7 +33,9 @@ Task 6 adds the apply engine and the pending-changes tray:
 Task 7 adds the priority and duplicate actions:
 
 - a priority ask over a batch of issues becomes one draft (`kind` `priority`, `scope` the batch)
-  with a priority, a rank and a reason per issue; approving it sets each priority through the
+  with a priority, a rank and a reason per issue (a reply is discarded, and the run says "inputs
+  changed, ask again", when an issue's title, body, labels or open state, or the priority schema,
+  changed during the ask); approving it sets each priority through the
   engine, every change guarded by the label the draft saw. Each item records its outcome (`applied`,
   `failed`, `skipped` or `unchanged`, with the cause); approving again tries only the items not
   applied, and the draft is `approved` once every item is. Turning the order into a queue is
@@ -273,6 +275,11 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   - A comment or a new issue is recorded `in flight` right before its write. If the batch is cut
     off then, the write may have gone out, so the first Retry doesn't send it blindly. It fails
     that step, asking you to check GitHub, and the next Retry sends it.
+  - A close is checkpointed the same way. A close that reached GitHub before the cut-off counts
+    as the batch's own, so its comment still follows.
+  - If that checkpoint can't be saved, nothing is sent and the batch stops ("couldn't record
+    progress; nothing was sent"). A save after a step is best effort: it is logged and the
+    batch goes on.
   - A replay of the key answers the batch as it stands and never runs it again. It resumes only
     a batch still `running` that no task holds.
   - A close's comment withheld because the issue was already closed stays withheld on Retry.

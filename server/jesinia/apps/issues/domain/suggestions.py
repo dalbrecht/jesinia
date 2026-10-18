@@ -131,6 +131,11 @@ class UnknownAgentSchemaError(SuggestionRunError):
     """No agent job schema by that name (a programming error, typed all the same)."""
 
 
+class SuggestionInputsChangedError(SuggestionRunError):
+    """What the agent was asked about changed while it answered (an issue's title, body,
+    labels or open state, or the priority schema): the reply is discarded; ask again."""
+
+
 class SuggestionJobFailedError(SuggestionRunError):
     """The run failed: an invalid reply after its one retry, a timeout, or the runner's own
     error (the message says which)."""

@@ -57,6 +57,7 @@ from jesinia.apps.issues.domain.suggestions import (
     PriorityRunStatus,
     Suggestion,
     SuggestionFilters,
+    SuggestionInputsChangedError,
     SuggestionJobFailedError,
     SuggestionNotFoundError,
     SuggestionRunError,
@@ -536,8 +537,15 @@ class SuggestService:
                 "no agent runner is available; suggestions are waiting"
             )
         issues = {_key(c.issue.repo, c.issue.number): self._priority_issue(c) for c in asked}
+        before = self._priority_inputs(asked)
         pack = self._priority_pack(asked, issues)
         data = await self._ask(asker, runner, pack, schema_for("priority"))
+        if self._priority_inputs(asked) != before:
+            # The ranking was made from inputs the issues no longer have: store nothing.
+            raise SuggestionInputsChangedError(
+                "inputs changed, ask again: an issue's title, body, labels or open state, or the "
+                "priority schema, changed while the agent was answering"
+            )
         drafted = priority_draft(PriorityReply.from_json(data), issues)
         if drafted is None:
             raise SuggestionJobFailedError("the agent's reply ranked none of the issues asked")
@@ -549,6 +557,23 @@ class SuggestService:
         )  # fmt: skip
         self._store.replace_scope_drafts(scope, "priority", [suggestion])
         return suggestion
+
+    def _priority_inputs(self, asked: Sequence[CachedIssue]) -> list[tuple[object, ...]]:
+        """What a ranking depends on, read from the cache now: each issue's content hash and
+        open state, and its repo's priority values (``None`` for an issue gone from the
+        cache)."""
+        inputs: list[tuple[object, ...]] = []
+        for cached in asked:
+            now = self._cache.cached_issue(cached.issue.repo, cached.issue.number)
+            if now is None:
+                inputs.append((cached.issue.repo, cached.issue.number, None))
+                continue
+            issue = now.issue
+            state = self._cache.repo(issue.repo)
+            schema = DEFAULT_SCHEMA if state is None else state.schema
+            content = content_hash(issue.title, issue.body, issue.labels)
+            inputs.append((issue.repo, issue.number, content, issue.state, schema.priority))
+        return inputs
 
     def _priority_issue(self, cached: CachedIssue) -> PriorityIssue:
         issue = cached.issue
