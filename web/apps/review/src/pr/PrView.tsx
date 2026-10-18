@@ -231,9 +231,14 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     }
   }, []);
 
+  // An action's key names what it acts on (Codex P2 on PR #68): the head shown (and, for a
+  // round's writes, the round), so a key kept for a lost answer is never replayed onto a newer
+  // head or round, where its stored success would stand in for a write that never ran.
+  const headShown = useRef("none");
+  headShown.current = view?.pr.head_sha ?? "none";
   const open = useCallback(
     (action: string, request?: OpenRequest) =>
-      keyed(`${action}:${repo}#${number}`, (key) => openPr(client, repo, number, key, request)),
+      keyed(`${action}:${repo}#${number}@${headShown.current}`, (key) => openPr(client, repo, number, key, request)),
     [client, keyed, repo, number],
   );
 
@@ -253,6 +258,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     if (lastReview.current !== null && lastReview.current !== shownReview) {
       setDepth(null);
       setSession(null);
+      keys.current = new ActionKeys(); // keys kept for the old review never act on this one
     }
     lastReview.current = shownReview;
   }, [shownReview]);
@@ -436,7 +442,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   };
 
   const anyway = () => {
-    keyed(`anyway:${repo}#${number}`, (key) => reviewAnyway(client, repo, number, key)).then(
+    keyed(`anyway:${repo}#${number}@${headShown.current}`, (key) => reviewAnyway(client, repo, number, key)).then(
       (r) => {
         setNotice(noticeOf(r));
         reread();
@@ -445,7 +451,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     );
   };
   const retry = () => {
-    keyed(`retry:${repo}#${number}`, (key) => retryPr(client, repo, number, key)).then(
+    keyed(`retry:${repo}#${number}@${headShown.current}`, (key) => retryPr(client, repo, number, key)).then(
       (r) => {
         setNotice(noticeOf(r));
         reread();
@@ -459,7 +465,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
    * its own gates (R60, R66); the same head opens again here, to say it is up to date.
    */
   const reviewNewHead = () => {
-    keyed(`refresh:${repo}#${number}`, (key) => refreshPr(client, repo, number, key)).then(
+    keyed(`refresh:${repo}#${number}@${headShown.current}`, (key) => refreshPr(client, repo, number, key)).then(
       (row) => {
         if (row.head_sha === pr.head_sha) retryOpen(true);
         else {
@@ -489,7 +495,9 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   };
   retryLater.current = () => retryOpen();
   const done = () => {
-    keyed(`done:${repo}#${number}`, (key) => markDone(client, repo, number, key, round?.id ?? null)).then(
+    keyed(`done:${repo}#${number}:${round?.id ?? "none"}`, (key) =>
+      markDone(client, repo, number, key, round?.id ?? null),
+    ).then(
       () => {
         toast.show({ tone: "success", message: `${refOf(pr)} is done; nothing was posted.` });
         reread();
@@ -505,7 +513,9 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
 
   /** Keep the finished round's KB page again (spec §8); a KB failure shows on the round. */
   const keepAgain = () =>
-    keyed(`keep:${repo}#${number}`, (key) => keepReview(client, repo, number, key, round?.id ?? null)).then(
+    keyed(`keep:${repo}#${number}:${round?.id ?? "none"}`, (key) =>
+      keepReview(client, repo, number, key, round?.id ?? null),
+    ).then(
       (kept) => {
         if (kept.state === "kept") toast.show({ tone: "success", message: "The review is kept in your KB." });
         reread();
@@ -517,7 +527,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     );
   /** Write the drafted How it works the author accepted (spec §6.2); never over an edit. */
   const acceptDraft = (roundId: number, draft: SystemDraft) =>
-    keyed(`system:${repo}#${number}`, (key) =>
+    keyed(`system:${repo}#${number}:${roundId}:${draft.kind}:${draft.base_rev ?? "seed"}`, (key) =>
       acceptSystemUpdate(client, repo, number, key, { roundId, baseRev: draft.base_rev }),
     ).then(
       () => {
@@ -534,6 +544,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
               "Jesinia drafted it again against the page as it is now.",
           );
         }
+        reread(); // an answer may be lost: show what is there now
         throw new Error(`Couldn't update How it works: ${errorCause(e)}`);
       },
     );

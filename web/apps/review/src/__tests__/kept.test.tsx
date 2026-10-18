@@ -170,6 +170,61 @@ describe("How it works", () => {
     expect(await second?.json()).toEqual({ round_id: 3, base_rev: "b".repeat(64) });
   });
 
+  it("an accept whose answer was lost never replays onto a newer round's draft (Codex P2)", async () => {
+    const later = { ...SEED, text: "A newer round's seed." };
+    let attempt = 0;
+    const views: [PrView, PrView] = [
+      finished({ kept: KEPT, system_draft: SEED }),
+      finished({ kept: KEPT, system_draft: later }, { id: 4 }),
+    ];
+    const { calls } = setup(views, (next) => ({
+      [`POST ${API}/system/accept`]: () => {
+        attempt += 1;
+        if (attempt === 1) {
+          next(); // a new round started meanwhile; the answer to this accept is lost
+          return error(502, "x", "the answer was lost");
+        }
+        return Response.json({ page_id: "p", path: "x", rev: "c" });
+      },
+    }));
+    await recommendation();
+    const draft = await screen.findByRole("region", { name: "Start How it works" });
+    await userEvent.click(within(draft).getByRole("button", { name: "Accept" }));
+    expect(await screen.findByText("A newer round's seed.")).toBeVisible();
+    await userEvent.click(
+      within(await screen.findByRole("region", { name: "Start How it works" })).getByRole("button", {
+        name: "Accept",
+      }),
+    );
+    await waitFor(() => expect(sent(calls, "POST", `${API}/system/accept`)).toHaveLength(2));
+    const [first, second] = sent(calls, "POST", `${API}/system/accept`);
+    expect(second?.headers.get("Idempotency-Key")).not.toBe(first?.headers.get("Idempotency-Key"));
+    expect(await second?.json()).toEqual({ round_id: 4, base_rev: null });
+  });
+
+  it("Keep it after a lost answer and a new round sends a new key", async () => {
+    let attempt = 0;
+    const views: [PrView, PrView] = [finished({}), finished({}, { id: 4 })];
+    const { calls } = setup(views, (next) => ({
+      [`POST ${API}/keep`]: () => {
+        attempt += 1;
+        if (attempt === 1) {
+          next();
+          return error(502, "x", "the answer was lost");
+        }
+        return Response.json(KEPT);
+      },
+    }));
+    await recommendation();
+    await userEvent.click(within(await kept()).getByRole("button", { name: "Keep it" }));
+    await waitFor(() => expect(sent(calls, "GET", API).length).toBeGreaterThan(1));
+    await userEvent.click(within(await kept()).getByRole("button", { name: "Keep it" }));
+    await waitFor(() => expect(sent(calls, "POST", `${API}/keep`)).toHaveLength(2));
+    const [first, second] = sent(calls, "POST", `${API}/keep`);
+    expect(second?.headers.get("Idempotency-Key")).not.toBe(first?.headers.get("Idempotency-Key"));
+    expect(await second?.json()).toEqual({ round_id: 4 });
+  });
+
   it("Not now hides the draft", async () => {
     const update = { ...SEED, kind: "update", base_rev: "a".repeat(64), page_id: "p" };
     setup([finished({ kept: KEPT, system_draft: update })]);
