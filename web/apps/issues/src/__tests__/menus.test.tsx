@@ -2,7 +2,7 @@
 // The menu equivalents of drops are reachable by keyboard (spec §6.1): arrows move between
 // choices, Escape closes and gives focus back, a refused choice can't be picked. Plus the pure
 // helpers behind epics, queues and themes, and how an ask that fails reads.
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionMenu } from "../ActionMenu";
@@ -91,6 +91,54 @@ describe("ActionMenu", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "Pick one" }));
     await userEvent.click(screen.getByRole("button", { name: "Elsewhere" }));
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+});
+
+describe("ActionMenu while its parent re-renders, and mouse picks (review I1, I2)", () => {
+  it("an open menu neither reloads its choices nor moves focus when the parent re-renders", async () => {
+    const load = vi.fn(() =>
+      Promise.resolve([
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ]),
+    );
+    const menu = () => <ActionMenu label="Pick" name="Pick one" options={() => load()} onPick={() => {}} />;
+    const { rerender } = render(menu());
+    await userEvent.click(screen.getByRole("button", { name: "Pick one" }));
+    await waitFor(() => expect(screen.getAllByRole("menuitem")[0]).toHaveFocus());
+    await userEvent.keyboard("{ArrowDown}");
+    rerender(menu()); // a fresh options function, as every caller passes
+    await waitFor(() => expect(screen.getAllByRole("menuitem")).toHaveLength(2));
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByRole("menuitem")[1]).toHaveFocus();
+    // Opening it again does load afresh.
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByRole("button", { name: "Pick one" }));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  });
+
+  it("a blur with no next focus (Safari's mouse-down on a button) keeps it open so the click picks", async () => {
+    const onPick = vi.fn();
+    render(<ActionMenu label="Pick" name="Pick one" options={[{ id: "a", label: "A" }, { id: "b", label: "B" }]} onPick={onPick} />); // prettier-ignore
+    await userEvent.click(screen.getByRole("button", { name: "Pick one" }));
+    const second = screen.getAllByRole("menuitem")[1] as HTMLElement;
+    fireEvent.pointerDown(second);
+    fireEvent.blur(screen.getAllByRole("menuitem")[0] as HTMLElement, { relatedTarget: null });
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    fireEvent.click(second);
+    expect(onPick).toHaveBeenCalledWith("b");
+  });
+
+  it("a pointer-down outside closes it without taking focus back", async () => {
+    render(
+      <>
+        <ActionMenu label="Pick" name="Pick one" options={[{ id: "a", label: "A" }]} onPick={() => {}} />
+        <p>Outside</p>
+      </>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Pick one" }));
+    fireEvent.pointerDown(screen.getByText("Outside"));
     expect(screen.queryByRole("menu")).toBeNull();
   });
 });

@@ -27,7 +27,7 @@ export type ActionMenuProps = {
   options: Options;
   onPick: (id: string) => void;
   /** A free-text choice (a new theme): its field label and what it does. */
-  create?: { label: string; onCreate: (text: string) => void; submitLabel?: string };
+  create?: { label: string; onCreate: (text: string) => void; submitLabel?: string } | undefined;
   /** Shown when there is nothing to pick. */
   emptyText?: string;
   disabled?: boolean;
@@ -41,29 +41,54 @@ export function ActionMenu({ label, name, options, onPick, create, emptyText, di
   const [draft, setDraft] = useState("");
   const trigger = useRef<HTMLButtonElement | HTMLAnchorElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+
+  // Callers pass a fresh `options` on every render (a poll, an ask's progress, a tray change):
+  // read it through a ref so an open menu loads once, when it opens, and keeps its place.
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const justOpened = useRef(false);
 
   useEffect(() => {
     if (!open) return;
-    if (typeof options !== "function") {
-      setLoaded(options);
+    justOpened.current = true;
+    const current = optionsRef.current;
+    if (typeof current !== "function") {
+      setLoaded(current);
       return;
     }
     let isCurrent = true;
     setLoaded(null);
     setProblem(null);
-    options().then(
+    current().then(
       (found) => isCurrent && setLoaded(found),
       (e: unknown) => isCurrent && setProblem(e instanceof Error ? e.message : String(e)),
     );
     return () => {
       isCurrent = false;
     };
-  }, [open, options]);
+  }, [open]);
 
-  // Focus the first choice once the menu shows its choices.
+  // A static list follows the caller's latest choices while open (a refusal may change).
+  const shown = open && typeof options !== "function" ? options : loaded;
+
+  // Focus the first choice once, when the opened menu first shows its choices.
   useEffect(() => {
-    if (open && loaded !== null) menu.current?.querySelector<HTMLElement>("[role=menuitem], input")?.focus();
-  }, [open, loaded]);
+    if (!open || shown === null || !justOpened.current) return;
+    justOpened.current = false;
+    menu.current?.querySelector<HTMLElement>("[role=menuitem], input")?.focus();
+  }, [open, shown]);
+
+  // A pointer-down outside closes it. Blur alone can't decide: Safari and macOS Firefox don't
+  // focus a clicked button, so a mouse pick blurs with no next focus before its click lands.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!wrap.current?.contains(e.target as Node | null)) close(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
 
   const close = (refocus: boolean) => {
     setOpen(false);
@@ -86,9 +111,10 @@ export function ActionMenu({ label, name, options, onPick, create, emptyText, di
     items[next]?.focus();
   };
 
-  // Clicking or tabbing away closes it.
+  // Tabbing away closes it: focus moved somewhere known, outside the menu.
   const onBlur = (e: FocusEvent<HTMLDivElement>) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) close(false);
+    const next = e.relatedTarget as Node | null;
+    if (next !== null && !e.currentTarget.contains(next)) close(false);
   };
 
   const pick = (option: MenuOption) => {
@@ -105,7 +131,7 @@ export function ActionMenu({ label, name, options, onPick, create, emptyText, di
   };
 
   return (
-    <div className={s.menuWrap} onBlur={onBlur}>
+    <div ref={wrap} className={s.menuWrap} onBlur={onBlur}>
       <Button
         ref={trigger}
         size="sm"
@@ -124,16 +150,16 @@ export function ActionMenu({ label, name, options, onPick, create, emptyText, di
           <ul role="menu" aria-label={name} className={s.menuList}>
             {problem !== null ? (
               <li role="none" className={s.muted}>{`Couldn't load the choices: ${problem}`}</li>
-            ) : loaded === null ? (
+            ) : shown === null ? (
               <li role="none" className={s.muted}>
                 Loading…
               </li>
-            ) : loaded.length === 0 ? (
+            ) : shown.length === 0 ? (
               <li role="none" className={s.muted}>
                 {emptyText ?? "Nothing to pick."}
               </li>
             ) : (
-              loaded.map((option) => (
+              shown.map((option) => (
                 <li key={option.id} role="none">
                   <button
                     type="button"
