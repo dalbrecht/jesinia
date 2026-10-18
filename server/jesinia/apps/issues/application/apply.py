@@ -138,7 +138,7 @@ class _BatchStoppedError(Exception):
         return cls(str(exc), until, limited)
 
 
-def _repo_of(issue: Issue) -> str:
+def repo_of(issue: Issue) -> str:
     """The repo an issue lives in, from its URL (a parent read through a child's path carries
     the child's repo name)."""
     match = _ISSUE_URL.match(issue.url)
@@ -204,6 +204,11 @@ class ApplyEngine:
         self._on_triaged = on_triaged
         self._blocked_until = blocked_until or (lambda: None)
         self._lock = asyncio.Lock()
+
+    @property
+    def github(self) -> IssueWrites:
+        """The GitHub client the engine applies through (a caller's live reads use it too)."""
+        return self._github
 
     async def apply(
         self,
@@ -544,7 +549,7 @@ class ApplyEngine:
         created = await self._write(
             run, lambda: self._github.create_issue(change.repo, change.title, change.body, names)
         )
-        run.created[change.temp_id] = CreatedIssue(_repo_of(created), created.number, created.id)
+        run.created[change.temp_id] = CreatedIssue(repo_of(created), created.number, created.id)
         run.fresh[New(change.temp_id).key] = created
         return None
 
@@ -579,6 +584,10 @@ class ApplyEngine:
         issue = await self._fresh(run, target)
         repo, n = self._where(run, target)
         current = await self._read(lambda: self._github.parent(repo, n))
+        if change.parent is not None and current is not None:
+            if current.id == await self._id(run, change.parent):
+                # Already so on GitHub: nothing changes, so nothing is overwritten either.
+                return "already the parent"
         if change.expects_parent:
             self._check_parent(change.expected_parent, current)
         if change.parent is None:
@@ -586,14 +595,12 @@ class ApplyEngine:
                 return "already has no parent"
             await self._write(
                 run,
-                lambda: self._github.remove_sub_issue(_repo_of(current), current.number, issue.id),
+                lambda: self._github.remove_sub_issue(repo_of(current), current.number, issue.id),
             )
             run.fresh[target.key] = replace(issue, parent=None)
             self._lost_child(run, current)
             return None
         wanted = await self._id(run, change.parent)
-        if current is not None and current.id == wanted:
-            return "already the parent"
         parent_repo, parent_n = self._where(run, change.parent)
         await self._write(
             run,
@@ -614,7 +621,7 @@ class ApplyEngine:
         """The former parent (as just read live) has one child fewer: the cache update then
         stores its count and recomputes its triage (losing its last child, it is no longer an
         epic unless labelled one)."""
-        repo = _repo_of(former)  # read through the child's path, it carries the child's repo
+        repo = repo_of(former)  # read through the child's path, it carries the child's repo
         key = (repo.casefold(), former.number)
         epic = run.fresh.get(key, replace(former, repo=repo))
         run.fresh[key] = replace(epic, sub_issue_count=max(0, epic.sub_issue_count - 1))
@@ -622,10 +629,10 @@ class ApplyEngine:
     @staticmethod
     def _check_parent(expected: Existing | None, current: Issue | None) -> None:
         """Raises: ChangedOnGitHubError: GitHub's parent isn't the one the change expected."""
-        now = None if current is None else (_repo_of(current).casefold(), current.number)
+        now = None if current is None else (repo_of(current).casefold(), current.number)
         if now == (None if expected is None else expected.key):
             return
-        shown = "no parent" if current is None else f"{_repo_of(current)}#{current.number}"
+        shown = "no parent" if current is None else f"{repo_of(current)}#{current.number}"
         before = "no parent" if expected is None else str(expected)
         raise ChangedOnGitHubError(
             f"moved on GitHub since it was staged: it is under {shown} now, not {before}; "
@@ -713,7 +720,7 @@ class ApplyEngine:
         listener = self._on_triaged
         if listener is not None:
             for repo, triaged in by_repo.items():
-                self._guard(f"retiring {repo}'s drafts", lambda: listener(repo, triaged))
+                self._guard(f"the after-apply hooks for {repo}", lambda: listener(repo, triaged))
 
     async def _schema_changed(self, repo: str) -> None:
         if self._on_schema_changed is not None:

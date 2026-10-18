@@ -469,6 +469,18 @@ class IssueClient:
         payload = {"body": validate_comment_body(body)}
         return _comment_ref(await self._github.write("POST", path, payload))
 
+    async def get_comment(self, repo: str, comment_id: int) -> IssueComment | None:
+        """One issue comment read live (its body untrusted, verbatim); ``None`` when it is
+        gone."""
+        path = f"/repos/{validate_repo(repo)}/issues/comments/{validate_database_id(comment_id)}"
+        try:
+            data = await get_json(self._github, path)
+        except GitHubRequestError as exc:
+            if exc.status != 404:
+                raise
+            return None
+        return _comment(mapping(data, path))
+
     async def edit_comment(self, repo: str, comment_id: int, body: str) -> CommentRef:
         """Edit a comment in place (the same id and URL), never posting a new one."""
         path = f"/repos/{validate_repo(repo)}/issues/comments/{validate_database_id(comment_id)}"

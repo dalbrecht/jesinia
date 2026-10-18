@@ -678,6 +678,32 @@ class SqliteIssuesStore:
         text, result, inbox, details = row
         return CachedIssue(_issue(text), _triage(result), bool(inbox), _optional_time(details))
 
+    def _cached_rows(self, where: str, params: Sequence[object], order: str) -> list[CachedIssue]:
+        rows = self._conn.execute(
+            "SELECT issues.json, issues.triage_json, issues.inbox, issues.details_synced_at "
+            f"FROM issues JOIN repos ON repos.repo = issues.repo WHERE {where} ORDER BY {order}",
+            params,
+        )
+        return [
+            CachedIssue(_issue(text), _triage(result), bool(inbox), _optional_time(details))
+            for text, result, inbox, details in rows
+        ]
+
+    def open_issues(self, repo: str | None) -> list[CachedIssue]:
+        """Open issues of watched repos (one repo when given), most recently updated first."""
+        where = "repos.watched = 1 AND issues.state = 'open'"
+        params: list[object] = []
+        if repo is not None:
+            where += " AND issues.repo = ?"
+            params.append(repo)
+        order = "issues.updated_at DESC, issues.repo, issues.number"
+        return self._cached_rows(where, params, order)
+
+    def milestone_issues(self, repo: str, title: str) -> list[CachedIssue]:
+        """The issues (open and closed) of ``repo``'s milestone titled ``title``, by number."""
+        where = "issues.repo = ? AND json_extract(issues.json, '$.milestone') = ?"
+        return self._cached_rows(where, [repo, title], "issues.number")
+
     # Label plans ------------------------------------------------------------------------
 
     def save_plan(self, plan: LabelPlan, now: datetime) -> None:

@@ -5,8 +5,8 @@ stores), ``services/github`` (``IssueClient`` satisfies ``IssueReads``) and ``se
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
@@ -16,7 +16,9 @@ from jesinia.apps.issues.domain.changes import (
     ChangeBatch,
     PendingChange,
 )
+from jesinia.apps.issues.domain.epics import ItemKind
 from jesinia.apps.issues.domain.labels import LabelPlan
+from jesinia.apps.issues.domain.queues import Queue, QueueItem
 from jesinia.apps.issues.domain.schema import LabelSchema, SchemaEntry
 from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionFilters, SuggestionKind
 from jesinia.apps.issues.domain.triage import (
@@ -40,6 +42,7 @@ from jesinia.services.github.domain.issue import (
     Page,
     TimelineEvent,
 )
+from jesinia.services.kb.application.tags import TagCheck, TagInfo
 
 SchemaSource = Literal["default", "repo", "settings"]
 
@@ -387,7 +390,8 @@ class AgentAsker(Protocol):
 
 # The apply engine (Task 6) -------------------------------------------------------------------
 
-ApplyOrigin = Literal["pending", "suggestion"]
+# Where a batch came from: the tray, a suggestion's approval, or an epic's checklist conversion.
+ApplyOrigin = Literal["pending", "suggestion", "epic"]
 
 
 class IssueWrites(LabelWrites, Protocol):
@@ -436,6 +440,21 @@ class ApplyCache(Protocol):
         flag is cleared when it is now complete, never set."""
 
 
+CreationState = Literal["running", "complete", "incomplete", "abandoned"]
+
+
+@dataclass(frozen=True)
+class OriginBatch:
+    """A batch recorded for an origin that may create issues (IR56, IR57): its ``state``, the
+    issues it created by temp id (as of its last save, or as the author confirmed when
+    abandoning it, IR58), and the origin's ``notes`` (a conversion's item hashes to temp ids)."""
+
+    batch_id: str
+    state: CreationState
+    created: Mapping[str, tuple[str, int]]
+    notes: Mapping[str, str] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class AppliedBatch:
     """A batch as applied, kept so Retry can resume it: where it came from (the tray or a
@@ -453,6 +472,14 @@ class AppliedBatch:
     request_key: str | None = None
 
 
+def creation_state(applied: AppliedBatch) -> CreationState:
+    """``running``, ``complete`` (every step done), ``incomplete`` (finished or cut off with a
+    step not done) or ``abandoned``: what an origin's ledger records of the batch (IR56)."""
+    if applied.status in ("running", "abandoned"):
+        return "running" if applied.status == "running" else "abandoned"
+    return "complete" if applied.result.complete else "incomplete"
+
+
 class ApplyStore(Protocol):
     """The pending-changes tray and the applied batches in ``issues.sqlite``."""
 
@@ -463,8 +490,6 @@ class ApplyStore(Protocol):
 
     def delete_pending(self, ids: Sequence[str]) -> int:
         """Remove these staged changes; how many there were."""
-
-    def clear_pending(self) -> None: ...
 
     def save_batch(self, applied: AppliedBatch) -> None:
         """Store (or replace) an applied batch and its result."""
@@ -481,5 +506,212 @@ class ApplyStore(Protocol):
     def interrupt_running(self) -> int:
         """Mark every ``running`` batch ``interrupted`` (at start nothing runs yet)."""
 
+    def begin_batch(self, applied: AppliedBatch, origin_key: str, notes: Mapping[str, str]) -> None:
+        """Store a new batch and its ledger row for ``origin_key`` (with ``notes``) in one
+        transaction (N3); every later ``save_batch`` keeps the row's state and created issues
+        current."""
+
+    def origin_batches(self, origin_key: str) -> list[OriginBatch]:
+        """The batches recorded for ``origin_key``, oldest first (kept after pruning)."""
+
+    def origin_of(self, batch_id: str) -> tuple[str, OriginBatch] | None:
+        """A recorded batch's origin and ledger row (found after the batch is pruned too)."""
+
+    def origins(self, prefix: str) -> list[tuple[str, OriginBatch]]:
+        """Every recorded batch whose origin starts with ``prefix`` (``group:``, say)."""
+
+    def forget_epic(self, batch_id: str) -> None:
+        """Drop the epic a recorded batch made from its ledger row: it is gone on GitHub
+        (deleted or transferred), so it is reused and blocks no more (S4)."""
+
+    def abandon(self, batch_id: str, created: Mapping[str, tuple[str, int]], now: datetime) -> None:
+        """Mark a batch abandoned in the ledger (with ``created``) and in ``apply_batches``
+        when it is still stored, in one transaction (IR58)."""
+
     def prune_batches(self, before: datetime) -> int:
         """Forget batches last updated before ``before``; how many."""
+
+
+# Epics and briefs (Task 8) -------------------------------------------------------------------
+
+BriefState = Literal["in_flight", "posted"]
+
+
+@dataclass(frozen=True)
+class StoredBrief:
+    """An epic's delivery brief as stored on GitHub: ``comment_id`` and ``url`` of the comment
+    (``None`` until one is known), the ``body`` posted (marker included), and ``state``:
+    ``in_flight`` from right before a new comment is posted until its id is stored, ``posted``
+    after. ``attempt_at`` is when that post started and ``nonce`` the one its marker carries
+    (a cut-off post is looked for by both, IR48); ``pending_body`` is the body an edit was on
+    its way with, until it is recorded as posted."""
+
+    repo: str
+    n: int
+    comment_id: int | None
+    url: str | None
+    body: str
+    state: BriefState
+    attempt_at: datetime | None
+    posted_at: datetime | None
+    updated_at: datetime
+    nonce: str | None = None
+    pending_body: str | None = None
+
+    @property
+    def text(self) -> str:
+        """The brief without its marker, as the author wrote it."""
+        return self.body.split("\n", 1)[1] if "\n" in self.body else ""
+
+
+class BriefStore(Protocol):
+    """``epic_briefs`` in ``issues.sqlite``."""
+
+    def brief(self, repo: str, n: int) -> StoredBrief | None: ...
+
+    def mark_in_flight(self, repo: str, n: int, body: str, now: datetime, nonce: str) -> None:
+        """Record that a new brief comment carrying ``nonce`` is about to be posted (the
+        checkpoint before an irreversible write); a stored comment id is forgotten (it is gone
+        on GitHub)."""
+
+    def mark_editing(self, repo: str, n: int, body: str | None, now: datetime) -> None:
+        """Record the body an edit of the stored comment is about to send (the checkpoint
+        before it): an edit GitHub takes whose answer is lost is known as ours next time.
+        ``None`` clears it (GitHub refused the edit for certain)."""
+
+    def mark_posted(
+        self, repo: str, n: int, comment_id: int, url: str, body: str, now: datetime
+    ) -> StoredBrief:
+        """Record the brief comment as posted (or edited) with its id; a pending edit is settled."""
+
+
+class BriefWrites(Protocol):
+    """What publishing a brief asks GitHub (``IssueClient`` satisfies it). Every method may
+    raise ``GitHubError`` (a ``GitHubRateLimitedError`` while limited)."""
+
+    async def comment(self, repo: str, n: int, body: str) -> CommentRef: ...
+
+    async def edit_comment(self, repo: str, comment_id: int, body: str) -> CommentRef: ...
+
+    async def get_comment(self, repo: str, comment_id: int) -> IssueComment | None:
+        """One comment read live; ``None`` when it is gone."""
+
+    async def comments(
+        self, repo: str, n: int, since: datetime | None, page_token: str | None = None
+    ) -> Page[IssueComment]: ...
+
+
+class EpicCache(SuggestionCache, Protocol):
+    """The cache the epic views, plans and asks read (``SqliteIssuesStore`` has it)."""
+
+    def watched_repos(self) -> list[str]: ...
+
+    def sub_issue_links(self, repo: str, parent: int) -> list[IssueRef] | None: ...
+
+    def open_issues(self, repo: str | None) -> list[CachedIssue]:
+        """Open issues of watched repos (one repo when given), most recently updated first."""
+
+    def milestones(self, repo: str) -> list[Milestone]: ...
+
+    def milestone_issues(self, repo: str, title: str) -> list[CachedIssue]:
+        """The issues (open and closed) of the milestone titled ``title``, by number."""
+
+
+class BatchReads(Protocol):
+    """Stored batches and their origins' ledger (``SqliteApplyStore`` has it)."""
+
+    def batch(self, batch_id: str) -> AppliedBatch | None: ...
+
+    def origin_batches(self, origin_key: str) -> list[OriginBatch]: ...
+
+
+class QueueStore(Protocol):
+    """``queues`` and ``queue_items`` in ``issues.sqlite`` (Task 9): local only."""
+
+    def queues(self) -> list[Queue]:
+        """Every queue, in the author's order."""
+
+    def queue(self, queue_id: str) -> Queue | None: ...
+
+    def queue_named(self, name: str) -> Queue | None:
+        """The queue called ``name`` (compared without case)."""
+
+    def save_queue(self, queue: Queue) -> None:
+        """Insert or update a queue (its name, description and position)."""
+
+    def set_queue_order(self, queue_ids: Sequence[str]) -> None:
+        """Number the queues in this order, in one transaction."""
+
+    def delete_queue(self, queue_id: str) -> None:
+        """Delete a queue and its items, in one transaction."""
+
+    def items(self, queue_id: str) -> list[QueueItem]:
+        """The queue's items, open and done, by position."""
+
+    def save_items(self, queue_id: str, items: Sequence[QueueItem]) -> None:
+        """Replace the queue's items with ``items``, in one transaction."""
+
+    def save_many(self, queues: Mapping[str, Sequence[QueueItem]]) -> None:
+        """Replace several queues' items, all in one transaction."""
+
+    def items_with_pending(self, pending_id: str) -> list[tuple[str, QueueItem]]:
+        """Every done item (in any queue) whose Done staged ``pending_id``."""
+
+    def open_items_for(
+        self, kinds: Sequence[ItemKind], refs: Sequence[str]
+    ) -> list[tuple[str, QueueItem]]:
+        """Every queue's open items of these kinds and refs (``owner/repo#n``), with their
+        queue's id."""
+
+    def set_done(self, queue_id: str, item: QueueItem, done_at: datetime) -> None:
+        """Mark one open item done (closed on GitHub: no pending change)."""
+
+
+class ThemeStore(Protocol):
+    """``issue_themes`` and ``theme_epics`` in ``issues.sqlite`` (Task 10): local only."""
+
+    def add(
+        self, refs: Sequence[tuple[str, int]], tag: str, now: datetime
+    ) -> list[tuple[str, int]]:
+        """Give each issue the theme, in one transaction; the refs that didn't have it yet."""
+
+    def remove(self, refs: Sequence[tuple[str, int]], tag: str) -> int:
+        """Take the theme off these issues; how many had it."""
+
+    def themes(self) -> list[tuple[str, int]]:
+        """Every theme with its number of issues, by tag."""
+
+    def issues(self, tag: str) -> list[tuple[str, int]]:
+        """The theme's issues, by repo and number."""
+
+    def of_issue(self, repo: str, n: int) -> list[str]:
+        """The issue's themes, by tag."""
+
+    def retag(self, old: str, new: str) -> None:
+        """Rename a theme on every issue (a catalog rename or merge), merging into ``new`` where
+        an issue has both, in one transaction; its epic batches (and their ledger origin)
+        follow."""
+
+    def history_tags(self) -> list[str]:
+        """Tags kept by a theme's epic history (``theme_epics`` and its ledger origins), with or
+        without issues carrying them now."""
+
+    def record_epic(
+        self, tag: str, batch_id: str, now: datetime, epic: tuple[str, int] | None = None
+    ) -> None:
+        """Keep a batch that turns the theme into an epic (once; recording it again is a
+        no-op), with the epic it links under when that is known already."""
+
+
+class ThemeTags(Protocol):
+    """The KB-wide tag catalog themes use (``services.kb``'s ``TagService`` has it)."""
+
+    async def check(self, raw: str, *, advise: bool = True) -> TagCheck:
+        """Normalise ``raw`` and find it, or near matches, in the catalog; ``advise=False``
+        asks no agent."""
+
+    async def ensure(self, tags: Iterable[str]) -> list[str]:
+        """The canonical catalog names for ``tags``, adding new ones all-or-nothing."""
+
+    async def catalog(self) -> list[TagInfo]:
+        """The approved and retired tags, with their aliases."""
