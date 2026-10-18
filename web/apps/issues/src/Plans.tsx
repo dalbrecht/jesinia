@@ -59,7 +59,7 @@ export function PlanDiff({
             <VisibleText text={child.title} />
             {child.warning ? (
               <Badge tone="warn" icon="⚠">
-                {child.warning}
+                <VisibleText text={child.warning} />
               </Badge>
             ) : null}
           </li>

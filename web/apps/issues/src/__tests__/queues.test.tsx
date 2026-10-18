@@ -470,4 +470,37 @@ describe("fix round 1: kinds, Undo for adds and removes, focus after Done", () =
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(callsTo(calls, "POST", `${ITEM(1)}/done`)).toHaveLength(0);
   });
+
+  it("a readiness note built from label names shows hidden characters as tokens (M1)", async () => {
+    const q = queue("q1", [queueItem(1, { title: "Fix login", readiness: readiness({ note: "held\u200b" }) })]);
+    renderApp(routesFor(q).routes, "/issues/queues");
+    expect(await screen.findByRole("list", { name: "Next up" })).toHaveTextContent("held⟪U+200B⟫");
+  });
+
+  it("an Undo that fails says why: taking an add back out, and putting a removed item back (I5)", async () => {
+    const { routes } = routesFor(TWO, {
+      "GET /api/issues/inbox": view([ROW_1]),
+      "POST /api/issues/queues/q2/items": () => json(queue("q2", []), 201),
+      "DELETE /api/issues/queues/q2/items/issue/acme/app/1": () => json({ error: "X", detail: "locked" }, 503),
+    });
+    renderApp(routes);
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Select acme/app#1" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add the selected issues to a queue" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Mine" }));
+    expect(await toast(/Added 1 item to Mine/)).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await toast(/Couldn't take acme\/app#1 back out of Mine: locked/)).toBe(true);
+  });
+
+  it("putting a removed item back can fail, and says why (I5)", async () => {
+    const { routes } = routesFor(TWO, {
+      "POST /api/issues/queues/q1/items": () => json({ error: "X", detail: "full" }, 409),
+    });
+    renderApp(routes, "/issues/queues");
+    await userEvent.click(await screen.findByRole("button", { name: "More for acme/app#1" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Remove from Next up" }));
+    expect(await toast(/Removed acme\/app#1 from Next up/)).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await toast(/Couldn't put acme\/app#1 back: full/)).toBe(true);
+  });
 });

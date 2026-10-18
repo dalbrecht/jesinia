@@ -18,6 +18,9 @@ import {
   member,
   moveTo,
   pickUp,
+  queue,
+  queueSummary,
+  readiness,
   renderApp,
   settleDrag,
   stagingRoutes,
@@ -158,7 +161,7 @@ describe("the brief", () => {
     });
     const { calls } = renderApp(routes, "/issues/epics");
     await openEpic();
-    const editor = screen.getByRole("textbox", { name: "Brief" });
+    const editor = screen.getByRole("textbox", { name: "Brief text" });
     expect(editor).toHaveValue(epicDetail(10).default_brief);
     await userEvent.clear(editor);
     await userEvent.click(editor);
@@ -190,7 +193,7 @@ describe("the brief", () => {
     const { calls } = renderApp(routes, "/issues/epics");
     await openEpic();
     expect(screen.getByRole("link", { name: "View it on GitHub" })).toHaveAttribute("href", "https://github.com/acme/app/issues/10#c1"); // prettier-ignore
-    expect(screen.getByRole("textbox", { name: "Brief" })).toHaveValue("Old brief");
+    expect(screen.getByRole("textbox", { name: "Brief text" })).toHaveValue("Old brief");
     await userEvent.click(screen.getByRole("button", { name: "Post the edit" }));
     const alert = await screen.findByText(/edited on GitHub since it was posted\. Refresh/);
     expect(await toast(/refresh, or overwrite it/)).toBe(true);
@@ -212,7 +215,7 @@ describe("the brief", () => {
     });
     renderApp(routes, "/issues/epics");
     await openEpic();
-    const editor = screen.getByRole("textbox", { name: "Brief" });
+    const editor = screen.getByRole("textbox", { name: "Brief text" });
     await userEvent.click(editor);
     await userEvent.paste(" more");
     await userEvent.click(screen.getByRole("button", { name: "Post the brief" }));
@@ -268,7 +271,7 @@ describe("the brief", () => {
     done = true;
     await tick(ASK_POLL_MS);
     await userEvent.click(await screen.findByRole("button", { name: "Use Claude's draft" }));
-    expect(screen.getByRole("textbox", { name: "Brief" })).toHaveValue("Claude's brief");
+    expect(screen.getByRole("textbox", { name: "Brief text" })).toHaveValue("Claude's brief");
     await userEvent.click(screen.getByRole("button", { name: "Post the brief" }));
     expect(await bodies(callsTo(calls, "POST", `${EPIC}/brief`))).toEqual([
       { text: "Claude's brief", suggestion_id: "b1", overwrite: false },
@@ -367,5 +370,42 @@ describe("the checklist and proposals", () => {
     expect(await screen.findByText("The ask failed: inputs changed, ask again")).toBeInTheDocument();
     await userEvent.click(within(split).getByRole("button", { name: "Dismiss: Split acme/app#3 into 2 parts" }));
     await waitFor(() => expect(callsTo(calls, "POST", "/api/issues/suggestions/s9/dismiss")).toHaveLength(1));
+  });
+});
+
+describe("fix round 1: hidden characters, names, and queueing an epic", () => {
+  it("readiness, blockers and warnings built from label names show hidden characters as tokens (M1)", async () => {
+    const detail = epicDetail(10, {
+      epic: epic(10, { title: "Onboarding", readiness: readiness({ note: "held​", warning: "odd​" }) }),
+      children: [member(3, { blocker: "conflicting labels: a​", warning: "w​" })],
+    });
+    renderApp(epicRoutes(detail).routes, "/issues/epics");
+    const children = await openEpic();
+    const page = screen.getByRole("heading", { level: 1 }).parentElement as HTMLElement;
+    expect(page).toHaveTextContent("held⟪U+200B⟫");
+    expect(page).toHaveTextContent("odd⟪U+200B⟫");
+    expect(children).toHaveTextContent("Blocks: conflicting labels: a⟪U+200B⟫");
+    expect(children).toHaveTextContent("w⟪U+200B⟫");
+  });
+
+  it("the brief's region and its editor have different names (M11)", async () => {
+    renderApp(epicRoutes().routes, "/issues/epics");
+    await openEpic();
+    expect(screen.getByRole("region", { name: "Delivery brief" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Brief text" })).toBeInTheDocument();
+  });
+
+  it("the open epic can be added to a queue, as an epic (M3)", async () => {
+    const { routes } = epicRoutes(undefined, {
+      "GET /api/issues/queues": { queues: [queueSummary("q1")] },
+      "POST /api/issues/queues/q1/items": () => json(queue("q1", []), 201),
+    });
+    const { calls } = renderApp(routes, "/issues/epics");
+    await openEpic();
+    const bar = screen.getByRole("toolbar", { name: "Epic" });
+    await userEvent.click(within(bar).getByRole("button", { name: "Add acme/app#10 to a queue" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Next up" }));
+    await waitFor(() => expect(callsTo(calls, "POST", "/api/issues/queues/q1/items")).toHaveLength(1));
+    expect(await bodies(callsTo(calls, "POST", "/api/issues/queues/q1/items"))).toEqual([{ kind: "epic", repo: "acme/app", n: 10 }]); // prettier-ignore
   });
 });

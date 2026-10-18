@@ -15,6 +15,8 @@ import {
   json,
   moveTo,
   pickUp,
+  queue,
+  queueSummary,
   readiness,
   renderApp,
   ROW_1,
@@ -102,7 +104,7 @@ describe("the epic list", () => {
       }),
       "/issues/epics",
     );
-    const pool = await screen.findByRole("list", { name: "Issues without an epic" });
+    const pool = await screen.findByRole("list", { name: "Open issues without an epic" });
     expect(within(pool).getAllByRole("listitem")).toHaveLength(2);
     expect(within(pool).getByText("agent-ready")).toBeInTheDocument();
     await userEvent.click(within(pool).getByRole("checkbox", { name: "Select acme/app#1" }));
@@ -128,7 +130,7 @@ describe("Move to epic…", () => {
       }),
       "/issues/epics",
     );
-    const pool = await screen.findByRole("list", { name: "Issues without an epic" });
+    const pool = await screen.findByRole("list", { name: "Open issues without an epic" });
     await userEvent.click(within(pool).getByRole("checkbox", { name: "Select acme/app#1" }));
     await userEvent.click(within(pool).getByRole("checkbox", { name: "Select acme/other#4" }));
     const menu = await menuFor("Move the selected issues to an epic");
@@ -317,5 +319,25 @@ describe("group proposals", () => {
     expect(within(tray).getByRole("button", { name: "Abandon" })).toBeInTheDocument();
     await userEvent.click(within(card).getByRole("button", { name: "Dismiss: A new epic for 2 issues" }));
     await waitFor(() => expect(callsTo(calls, "POST", "/api/issues/suggestions/g1/dismiss")).toHaveLength(1));
+  });
+});
+
+describe("fix round 1", () => {
+  it("an epic in the list can be added to a queue as an epic, and its warning shows tokens (M3, M1)", async () => {
+    const { calls } = renderApp(
+      issuesRoutes({
+        "GET /api/issues/epics": { epics: [epic(10, { title: "Onboarding", readiness: readiness({ warning: "odd​" }) })] }, // prettier-ignore
+        "GET /api/issues/queues": { queues: [queueSummary("q1")] },
+        "POST /api/issues/queues/q1/items": () => json(queue("q1", []), 201),
+      }),
+      "/issues/epics",
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("complementary", { name: "Epic list" })).toHaveTextContent("odd⟪U+200B⟫"),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Add acme/app#10 to a queue" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Next up" }));
+    await waitFor(() => expect(callsTo(calls, "POST", "/api/issues/queues/q1/items")).toHaveLength(1));
+    expect(await callsTo(calls, "POST", "/api/issues/queues/q1/items")[0]?.clone().json()).toEqual({ kind: "epic", repo: "acme/app", n: 10 }); // prettier-ignore
   });
 });

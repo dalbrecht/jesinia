@@ -36,6 +36,7 @@ import type { DropAction } from "./drops";
 import { epicRefusal, MoveToEpicMenu, useLinkUnder, type Linkable } from "./Epics";
 import s from "./issues.module.css";
 import { PlanDiff, ProposalCard } from "./Plans";
+import { AddToQueueMenu } from "./Queues";
 import { useTray } from "./Tray";
 
 type Child = DragItem & { data: Member & { parent: string } };
@@ -173,6 +174,8 @@ export function EpicView({ repo, number, parentOf, onClose, onOpenIssue }: EpicV
       members.map((m) => ({ repo: m.repo, n: m.number, change: setParentChange(null, m.parent), source })),
     );
 
+  // A drop from outside links the issue; GitHub appends a new sub-issue, so the insertion slot
+  // is ignored on purpose. Reorder it afterwards (a drag within the list, or ↑/↓) to place it.
   const outside: DropAction = {
     drop: (items) =>
       void link(
@@ -285,6 +288,7 @@ export function EpicView({ repo, number, parentOf, onClose, onOpenIssue }: EpicV
           <span className={s.repoName}>{repo}</span>
           <span className={s.spacer} />
           <MoveToEpicMenu targets={[{ ...holder, parent: epic.parent }]} name={`Move ${ref} to an epic`} />
+          <AddToQueueMenu targets={[{ repo, number, kind: "epic" }]} name={`Add ${ref} to a queue`} />
           {githubUrl ? (
             <Button size="sm" variant="ghost" href={githubUrl} target="_blank" rel="noopener noreferrer">
               Open on GitHub
@@ -296,8 +300,13 @@ export function EpicView({ repo, number, parentOf, onClose, onOpenIssue }: EpicV
         </h1>
         <p className={s.meta}>
           <span className={s.ref}>{ref}</span> · {`${epic.done} of ${epic.total} done`} ·{" "}
-          {readinessText(epic.readiness)}
-          {epic.readiness.warning ? ` · ${epic.readiness.warning}` : ""}
+          <VisibleText text={readinessText(epic.readiness)} />
+          {epic.readiness.warning ? (
+            <>
+              {" · "}
+              <VisibleText text={epic.readiness.warning} />
+            </>
+          ) : null}
         </p>
 
         <section className={s.section} aria-label="Children">
@@ -347,10 +356,14 @@ export function EpicView({ repo, number, parentOf, onClose, onOpenIssue }: EpicV
                     </Badge>
                   ) : null}
                   {c.readiness ? <Badge>{c.readiness}</Badge> : null}
-                  {c.blocker ? <span className={s.muted}>{`Blocks: ${c.blocker}`}</span> : null}
+                  {c.blocker ? (
+                    <span className={s.muted}>
+                      Blocks: <VisibleText text={c.blocker} />
+                    </span>
+                  ) : null}
                   {c.warning ? (
                     <Badge tone="warn" icon="⚠">
-                      {c.warning}
+                      <VisibleText text={c.warning} />
                     </Badge>
                   ) : null}
                   <span className={s.spacer} />
@@ -450,8 +463,10 @@ export function EpicView({ repo, number, parentOf, onClose, onOpenIssue }: EpicV
           </section>
         ) : null}
 
-        <section id={anchor("brief")} className={s.section} aria-label="Brief">
-          <h2 className={s.kicker}>Delivery brief</h2>
+        <section id={anchor("brief")} className={s.section} aria-labelledby={anchor("brief-heading")}>
+          <h2 id={anchor("brief-heading")} className={s.kicker}>
+            Delivery brief
+          </h2>
           <p className={s.muted}>
             {detail.brief
               ? detail.brief.state === "in_flight"
@@ -469,7 +484,7 @@ export function EpicView({ repo, number, parentOf, onClose, onOpenIssue }: EpicV
           </p>
           <textarea
             className={s.briefEditor}
-            aria-label="Brief"
+            aria-label="Brief text"
             value={brief}
             rows={12}
             onChange={(e) => setText(e.target.value)}

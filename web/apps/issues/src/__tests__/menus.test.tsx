@@ -209,6 +209,9 @@ describe("asks that go wrong", () => {
     await waitFor(() => expect(polls).toBeGreaterThanOrEqual(3));
     expect(await screen.findByText("Claude proposed nothing this time.")).toBeInTheDocument();
     expect(callsTo(calls, "POST", "/api/issues/epics/proposals")).toHaveLength(2);
+    // Another repo is another scope: the last ask's outcome doesn't carry over (M12).
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Repo" }), "acme/app");
+    await waitFor(() => expect(screen.queryByText("Claude proposed nothing this time.")).toBeNull());
   });
 
   it("drafts that can't be read say so", async () => {

@@ -46,7 +46,7 @@ describe("epics", () => {
       }),
       "/issues/epics",
     );
-    const pool = await screen.findByRole("list", { name: "Issues without an epic" });
+    const pool = await screen.findByRole("list", { name: "Open issues without an epic" });
     await userEvent.click(within(pool).getByRole("checkbox", { name: "Select acme/app#1" }));
     await userEvent.click(within(pool).getByRole("checkbox", { name: "Select acme/app#2" }));
     const user = await pickUp("Move acme/app#1 Fix login");

@@ -221,3 +221,46 @@ describe("publishing and To epic", () => {
     expect(screen.queryByRole("region", { name: "#onboarding to an epic" })).toBeNull();
   });
 });
+
+describe("fix round 1", () => {
+  it("while filtered by a theme, an Undo of that theme updates the filtered list (M9)", async () => {
+    let withTwo = false;
+    renderApp(
+      routes({
+        "GET /api/issues/themes/onboarding": () =>
+          json({ tag: "onboarding", issues: [THEME.issues[0], ...(withTwo ? [{ repo: "acme/app", n: 2, title: "Add export", state: "open", url: null }] : [])] }), // prettier-ignore
+        "POST /api/issues/themes/onboarding/issues": () => {
+          withTwo = true;
+          return json({ tag: "onboarding", added: [{ repo: "acme/app", n: 2 }] }, 201);
+        },
+        "POST /api/issues/themes/onboarding/issues/remove": () => {
+          withTwo = false;
+          return json({ tag: "onboarding", removed: [{ repo: "acme/app", n: 2 }] });
+        },
+      }),
+    );
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Select acme/app#2" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add a theme to the selected issues" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "#onboarding" }));
+    expect(await toast(/Added #onboarding to acme\/app#2/)).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Filter by #onboarding" }));
+    expect(await screen.findByText("Showing the issues with #onboarding")).toBeInTheDocument();
+    expect(screen.getByText("Add export")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(screen.queryByText("Add export")).toBeNull());
+    expect(screen.getByText("Fix login")).toBeInTheDocument();
+  });
+
+  it("a plan child's warning shows hidden characters as tokens (M1)", async () => {
+    renderApp(
+      routes({
+        "GET /api/issues/themes/onboarding/epic": () =>
+          json(PLAN({ children: [{ ...PLAN().children[0], warning: "w​" }] })),
+      }),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Turn #onboarding into an epic" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "acme/app" }));
+    const plan = await screen.findByRole("region", { name: "#onboarding to an epic in acme/app" });
+    expect(plan).toHaveTextContent("w⟪U+200B⟫");
+  });
+});

@@ -25,6 +25,7 @@ import {
   type Repo,
   type SavedFilter,
   type ViewName,
+  getTheme,
 } from "./api";
 import { Board, itemOf, type Grouping } from "./Board";
 import { Drops } from "./drops";
@@ -78,7 +79,24 @@ export function IssueList({ view, repos, onOpen, active }: IssueListProps) {
   const [busy, setBusy] = useState<string | null>(null);
   const [themeFilter, setThemeFilter] = useState<{ tag: string; refs: ReadonlySet<string> } | null>(null);
   const { themes, reload: reloadThemes } = useThemes();
-  const addTheme = useAddTheme(() => void reloadThemes());
+  // A theme added or undone while the list is filtered by it changes what the filter shows.
+  const filterTag = useRef<string | null>(null);
+  filterTag.current = themeFilter?.tag ?? null;
+  const refreshFilter = useCallback(async () => {
+    const tag = filterTag.current;
+    if (tag === null) return;
+    try {
+      const found = await getTheme(client, tag);
+      const refs = new Set(found.issues.map((i) => refOf({ repo: i.repo, number: i.n }).toLowerCase()));
+      setThemeFilter((current) => (current?.tag === tag ? { tag, refs } : current));
+    } catch (e) {
+      toast.show({ tone: "danger", message: `Couldn't refresh the filter by #${tag}: ${errorCause(e)}` });
+    }
+  }, [client, toast]);
+  const addTheme = useAddTheme(() => {
+    void reloadThemes();
+    void refreshFilter();
+  });
 
   // A read started earlier (another filter, a poll) may resolve later: only the newest shows.
   const reads = useRef({ issued: 0, shown: 0 });
@@ -112,9 +130,12 @@ export function IssueList({ view, repos, onOpen, active }: IssueListProps) {
     return () => clearTimeout(timer);
   }, [read, pollMs, attempts]);
 
-  const all = data?.rows ?? [];
-  const rows = themeFilter === null ? all : all.filter((row) => themeFilter.refs.has(refOf(row).toLowerCase()));
-  const chosen = rows.filter((row) => selected.has(refOf(row)));
+  const all = useMemo(() => data?.rows ?? [], [data]);
+  const rows = useMemo(
+    () => (themeFilter === null ? all : all.filter((row) => themeFilter.refs.has(refOf(row).toLowerCase()))),
+    [all, themeFilter],
+  );
+  const chosen = useMemo(() => rows.filter((row) => selected.has(refOf(row))), [rows, selected]);
   const targets = chosen.map((row) => ({ repo: row.repo, n: row.number }));
   const group = useMemo(() => chosen.map(itemOf), [chosen]);
   const allSelected = rows.length > 0 && chosen.length === rows.length;

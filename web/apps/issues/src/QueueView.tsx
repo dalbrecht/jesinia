@@ -320,7 +320,7 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
   };
 
   const putBack = async (item: QueueItem, position: number) => {
-    const note = item.note === null ? {} : { note: item.note };
+    const note = item.note ? { note: item.note } : {};
     focusNext.current = idOf(item);
     try {
       await write(
@@ -405,7 +405,7 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
         <span className={s.queueTitle}>{item.title === null ? "Not cached" : <VisibleText text={item.title} />}</span>
         {item.readiness ? (
           <Badge tone={item.readiness.ready ? "success" : "warn"} icon={item.readiness.ready ? "✓" : "!"}>
-            {readinessText(item.readiness)}
+            <VisibleText text={readinessText(item.readiness)} />
           </Badge>
         ) : null}
         {item.pending_priority ? (

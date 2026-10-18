@@ -56,6 +56,12 @@ export function useDrafts(query: Query | null, keep: (draft: Suggestion) => bool
   const key = query === null ? null : JSON.stringify(query);
   const reads = useRef(0);
 
+  // Another scope (another repo, say) starts clean: the last ask's outcome isn't this one's.
+  useEffect(() => {
+    setRun(null);
+    setDrafts([]);
+  }, [key]);
+
   const reload = useCallback(async () => {
     if (key === null) return;
     const id = ++reads.current;

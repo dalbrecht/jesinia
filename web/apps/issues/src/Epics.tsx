@@ -262,13 +262,17 @@ export function Epics({ repos, onOpenIssue }: EpicsProps) {
                             </div>
                             {epic.readiness.warning ? (
                               <Badge tone="warn" icon="⚠">
-                                {epic.readiness.warning}
+                                <VisibleText text={epic.readiness.warning} />
                               </Badge>
                             ) : null}
                             {epic.lacks_label ? (
                               <span className={s.muted}>Has sub-issues but no epic label.</span>
                             ) : null}
                             <MoveToEpicMenu targets={[epic]} name={`Move ${ref} to an epic`} />
+                            <AddToQueueMenu
+                              targets={[{ repo: epic.repo, number: epic.number, kind: "epic" }]}
+                              name={`Add ${ref} to a queue`}
+                            />
                           </>
                         )}
                       </Draggable>
@@ -309,7 +313,7 @@ export function Epics({ repos, onOpenIssue }: EpicsProps) {
                   <p className={s.muted}>Every open issue is in an epic.</p>
                 ) : null}
                 {epics === null ? null : (
-                  <ul className={s.list} aria-label="Issues without an epic">
+                  <ul className={s.list} aria-label="Open issues without an epic">
                     {pool.map((row) => {
                       const ref = refOf(row);
                       const label = `${ref} ${visibleText(row.title)}`;
