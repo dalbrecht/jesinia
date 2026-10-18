@@ -280,10 +280,12 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     - `POST /pending/{batch}/abandon` with `{created?: [{temp_id, repo, n}]}` gives up on an
       unfinished batch of an origin that creates issues, even a pruned one (found through its
       origin's ledger): it never runs again, and the issues it created, plus `created` (issues
-      found on GitHub for a create cut off mid-write: only a create whose result is unknown,
-      or for a pruned batch a temp id of its origin's kind), are reused by the next approval for
+      found on GitHub for a create that was sent but not recorded done: cut off mid-write, or
+      its answer lost to a timeout or a dropped connection; for a pruned batch, a temp id of
+      its origin's kind), are reused by the next approval for
       that origin, which creates only what is missing (ruling IR58). Reused split parts must be
-      the parts the abandoned batch made, in the same places. It answers the origin and those
+      the parts the abandoned batch made, in the same places (the refusal names them, to link
+      by hand). It answers the origin and those
       issues. A running batch is a 409, a complete one a 400.
   - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
     same batch. The batch keeps the key too, so a replay never applies the tray again, even
@@ -478,8 +480,12 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   another draft for the same target is refused ("split already by batch X") and left open. An
   abandoned batch's issues are reused by the next approval, which creates only what is missing.
 - **One epic per group of issues (IR60):** a new group that shares issues with another group
-  whose epic exists and is open is refused (409, `GroupEpicExistsError`: add the issues to that
-  epic), so overlapping members never get a second epic.
+  is refused while that group's batch is running or unfinished (409, `EarlierBatchError`: it may
+  have made an epic; retry or abandon it), and when that group's epic exists and is open (409,
+  `GroupEpicExistsError`: add the issues to that epic), so overlapping members never get a
+  second epic. A blocking epic is read live first: one deleted or transferred on GitHub is
+  forgotten and blocks no more. An abandoned group that made no epic, or whose epic is closed,
+  doesn't block.
 - **Never twice:** the checklist stays in the body, so each item a conversion creates is
   recorded, before any GitHub write. A later preview matches it to the issue it became ("already
   converted"), or holds it back while that is unknown: an earlier batch still running, one that
@@ -575,9 +581,11 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   (409): it may have made the epic, so it is retried or abandoned (an abandon may confirm an epic
   found on GitHub, which is then reused). Once a batch made the epic (recorded in
   `theme_epics` and the ledger, so pruning doesn't forget it), issues added to the theme later
-  link under the theme's latest epic, made by its newest complete or abandoned batch. A new
-  epic is made only when the author asks for one (`new_epic`); a closed latest epic without it
-  is refused, never replaced silently. The batch is recorded for the theme on a replay of the
+  link under the theme's latest epic, made by its newest complete or abandoned batch (read from
+  the ledger, so a lost `theme_epics` record never hides it). A new epic is made only when the
+  author asks for one (`new_epic`); a closed latest epic without it is refused, never replaced
+  silently. Asking `new_epic` again after an abandoned batch made an epic that is still open
+  reuses that epic: only what is missing is created. The batch is recorded for the theme on a replay of the
   key too, so a record the first request couldn't write isn't lost.
 - **Catalog renames and merges (IR54):** every theme call resolves the stored tags through the
   KB catalog's aliases and rewrites the rows to the canonical name, so a renamed or merged tag

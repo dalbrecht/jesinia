@@ -92,20 +92,3 @@ class SqliteThemeStore:
             "VALUES (?, ?, ?, ?, ?)",
             (tag, batch_id, _time(now), *(epic or (None, None))),
         )
-
-    def set_epic(self, tag: str, batch_id: str, repo: str, n: int) -> None:
-        self._conn.execute(
-            "UPDATE theme_epics SET epic_repo = ?, epic_n = ? WHERE tag = ? AND batch_id = ?",
-            (repo, n, tag, batch_id),
-        )
-
-    def epic_rows(self, tag: str) -> list[tuple[str, tuple[str, int] | None]]:
-        rows = self._conn.execute(
-            "SELECT batch_id, epic_repo, epic_n FROM theme_epics WHERE tag = ? "
-            "ORDER BY created_at DESC, rowid DESC",
-            (tag,),
-        )
-        return [
-            (str(batch_id), None if n is None else (str(repo), int(n)))
-            for batch_id, repo, n in rows
-        ]

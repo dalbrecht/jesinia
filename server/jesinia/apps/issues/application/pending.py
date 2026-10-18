@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol, cast
 
-from jesinia.apps.issues.application.apply import ApplyEngine
+from jesinia.apps.issues.application.apply import ApplyEngine, repo_of
 from jesinia.apps.issues.application.epics import ancestors_of, check_parent, facts_of
 from jesinia.apps.issues.application.labels import Clock
 from jesinia.apps.issues.application.ports import (
@@ -93,6 +93,7 @@ from jesinia.apps.issues.domain.suggestions import (
     priority_settled,
 )
 from jesinia.apps.issues.domain.triage import IssueNotCachedError, RepoNotWatchedError
+from jesinia.services.github.application.service import GitHubRequestError
 from jesinia.services.github.domain.repo import validate_repo
 
 log = logging.getLogger(__name__)
@@ -169,8 +170,10 @@ _TEMP_PREFIX = {"split": "part-", "group": "epic", "theme": "epic", "conversion"
 
 
 def _unknown_create(live: AppliedBatch | None, origin_key: str, temp: str) -> bool:
-    """Whether ``temp`` is a create whose result is unknown: cut off while being sent (R4). For
-    a pruned batch, only that the origin's kind creates such a temp id."""
+    """Whether ``temp`` is a create the author may confirm on GitHub (R4, S3): one that was
+    attempted and not recorded done, so it may have gone out (cut off while being sent, or its
+    answer lost to a timeout or a dropped connection). A create that never ran can't have.
+    For a pruned batch, only that the origin's kind creates such a temp id."""
     if live is None:
         prefix = _TEMP_PREFIX.get(origin_key.split(":", 1)[0], "")
         return bool(prefix) and temp.startswith(prefix)
@@ -178,9 +181,14 @@ def _unknown_create(live: AppliedBatch | None, origin_key: str, temp: str) -> bo
         r.step.kind == "create_issue"
         and isinstance(r.step.target, New)
         and r.step.target.temp_id == temp
-        and r.cause in (IN_FLIGHT, UNSURE)
+        and (r.cause in (IN_FLIGHT, UNSURE) or (r.state == "failed" and _attempted(r.cause)))
         for r in live.result.results
     )
+
+
+def _attempted(cause: str | None) -> bool:
+    """A failed step's cause says it was sent (not one the engine never ran)."""
+    return cause is not None and not cause.startswith("not run")
 
 
 def _approval_key(suggestion_id: str, key: str | None) -> str | None:
@@ -548,32 +556,86 @@ class ApplyService:
                     and made is not None
                     and notes.get(f"title:{temp}") != made
                 ):
+                    named = ", ".join(
+                        f"{repo}#{n} {row.notes.get(f'title:{t}', '')}".rstrip()
+                        for t, (repo, n) in sorted(row.created.items())
+                    )
                     raise SuggestionStaleError(
                         f"abandoned batch {row.batch_id} made other parts than suggestion "
-                        f"{found.id} proposes; approve a draft with the same parts, or link them "
-                        "by hand"
+                        f"{found.id} proposes: {named}; approve a draft with the same parts, or "
+                        "link those by hand"
                     )
 
     def _check_overlap(self, found: Suggestion, origin_key: str) -> None:
-        """A new group never gets a second epic for issues another group's open epic was made
-        for (ruling IR60).
+        """A new group never gets a second epic for issues another group was made for (ruling
+        IR60): one still running or unfinished may have made its epic (retry or abandon it), and
+        one whose epic exists and isn't known to be closed takes the issues instead. Only an
+        abandoned group that made no epic, or one whose epic is closed or gone, is passed by.
 
         Raises:
+            EarlierBatchError: an overlapping group's batch is running or didn't finish.
             GroupEpicExistsError: it overlaps a group whose epic exists and is open.
         """
         mine = set(proposal_notes(found)["members"].split(","))
         for other, row in self._store.origins("group:"):
+            shared = mine & set(row.notes.get("members", "").split(",")) - {""}
+            if other == origin_key or not shared:
+                continue
+            names = ", ".join(f"#{ref.rsplit('#', 1)[1]}" for ref in sorted(shared))
+            live = self._store.batch(row.batch_id)
+            state = row.state if live is None else creation_state(live)
+            if state in ("running", "incomplete") or row.batch_id in self._tasks:
+                raise EarlierBatchError(
+                    row.batch_id,
+                    f"retry or abandon batch {row.batch_id} first; it may have made an epic for "
+                    f"{names}",
+                )
             epic = row.created.get("epic")
-            shared = mine & set(row.notes.get("members", "").split(","))
-            if other == origin_key or epic is None or not shared - {""}:
+            if epic is None:
                 continue
             cached = facts_of(self._cache, *epic)
             if cached is not None and not cached.is_open:
                 continue
-            names = ", ".join(f"#{ref.rsplit('#', 1)[1]}" for ref in sorted(shared))
             raise GroupEpicExistsError(
-                f"an epic for {names} already exists ({epic[0]}#{epic[1]}); add the issues to it"
+                row.batch_id,
+                epic,
+                f"an epic for {names} already exists ({epic[0]}#{epic[1]}); add the issues to it",
             )
+
+    async def _epic_gone(self, exc: GroupEpicExistsError) -> bool:
+        """Whether a blocking group epic is gone from GitHub (deleted, or transferred to another
+        repo), read live; if so the ledger forgets it, so it blocks no more (S4)."""
+        repo, n = exc.epic
+        try:
+            found = await self._engine.github.get(repo, n)
+        except GitHubRequestError as error:
+            if error.status not in (404, 410):
+                raise
+            gone = True
+        else:
+            gone = repo_of(found).casefold() != repo.casefold()
+        if gone:
+            self._store.forget_epic(exc.batch_id)
+        return gone
+
+    async def _begin_live(self, suggestion_id: str, key: str | None) -> Approval:
+        """``begin_approval``, after a live read of a group epic that blocks it, which the cache
+        can't tell is gone (GitHub's deletions never reach an incremental sync)."""
+        while True:
+            try:
+                return self.begin_approval(suggestion_id, key)
+            except GroupEpicExistsError as exc:
+                if not await self._epic_gone(exc):
+                    raise
+
+    async def start_approval_live(self, suggestion_id: str, key: str | None) -> Approval:
+        """``start_approval``, with a blocking group epic read live first (see
+        ``_begin_live``)."""
+        if self._approval_by_key(suggestion_id, key) is not None:
+            return self.start_approval(suggestion_id, key)  # a replay answers its approval
+        approval = await self._begin_live(suggestion_id, key)
+        self._spawn(approval.batch, approval.suggestion.id)
+        return approval
 
     @staticmethod
     def reused(settled: Sequence[OriginBatch]) -> dict[str, tuple[str, int]]:
@@ -741,7 +803,7 @@ class ApplyService:
                 contradicts the premise (nothing of it was written).
             Others: as ``begin_approval``.
         """
-        approval = self.begin_approval(suggestion_id, None)
+        approval = await self._begin_live(suggestion_id, None)
         found = approval.suggestion
         applied = await self._run(approval.batch, found.id)
         settled = self._suggestions.suggestion(found.id) or found

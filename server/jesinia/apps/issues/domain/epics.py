@@ -114,7 +114,13 @@ class InvalidBriefError(EpicDomainError):
 
 class GroupEpicExistsError(EpicDomainError):
     """A new group overlaps a group whose epic exists and is open: its issues go under that
-    epic, never under a second one (ruling IR60)."""
+    epic, never under a second one (ruling IR60). ``epic`` is that epic, made by
+    ``batch_id``."""
+
+    def __init__(self, batch_id: str, epic: tuple[str, int], message: str) -> None:
+        self.batch_id = batch_id
+        self.epic = epic
+        super().__init__(message)
 
 
 class BriefEditedOnGitHubError(EpicDomainError):

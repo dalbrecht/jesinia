@@ -785,3 +785,57 @@ async def test_new_epic_creates_exactly_one_even_beside_an_open_epic(env: Themes
     await env.world.service.drain()
     assert env.world.pending.batch(started.id).result.complete
     assert len([w for w in env.github.writes if w[0] == "create_issue"]) == 2
+
+
+async def test_new_epic_after_an_abandoned_new_epic_reuses_it(env: Themes) -> None:
+    await env.synced(issue(1), issue(2))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    first = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    e1 = await _epic_of(env, first.id)
+    await _cache_epic(env, e1, 1)
+    await _close(env, e1)
+    await env.themes.add([(REPO, 2)], "sync")
+    plan = await env.themes.to_epic("sync", REPO, new_epic=True)
+    env.github.fail["get:2"] = GitHubRequestError(500, "boom")
+    second = await env.themes.start_epic(
+        "sync", REPO, plan.digest, None, env.world.service, new_epic=True
+    )
+    await env.world.service.drain()
+    env.world.service.abandon(second.id, {})
+    del env.github.fail["get:2"]
+    e2 = await _epic_of(env, second.id)
+    again = await env.themes.to_epic("sync", REPO, new_epic=True)  # the same toggle again
+    assert again.epic == IssueRef(REPO, e2)
+    third = await env.themes.start_epic(
+        "sync", REPO, again.digest, None, env.world.service, new_epic=True
+    )
+    await env.world.service.drain()
+    assert env.world.pending.batch(third.id).result.complete
+    assert len([w for w in env.github.writes if w[0] == "create_issue"]) == 2
+
+
+async def test_a_lost_theme_record_never_hides_a_newer_epic(
+    env: Themes, conn: sqlite3.Connection
+) -> None:
+    await env.synced(issue(1), issue(2), issue(3))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    first = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    e1 = await _epic_of(env, first.id)
+    await _cache_epic(env, e1, 1)
+    await env.themes.to_epic("sync", REPO)  # records E1 in theme_epics
+    await _close(env, e1)
+    await env.themes.add([(REPO, 2)], "sync")
+    plan = await env.themes.to_epic("sync", REPO, new_epic=True)
+    second = await env.themes.start_epic(
+        "sync", REPO, plan.digest, None, env.world.service, new_epic=True
+    )
+    await env.world.service.drain()
+    conn.execute("DELETE FROM theme_epics WHERE batch_id = ?", (second.id,))  # its record lost
+    e2 = await _epic_of(env, second.id)
+    await _cache_epic(env, e2, 2)
+    await env.themes.add([(REPO, 3)], "sync")
+    assert (await env.themes.to_epic("sync", REPO)).epic == IssueRef(REPO, e2)

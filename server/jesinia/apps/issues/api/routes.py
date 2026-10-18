@@ -594,7 +594,9 @@ def build_router(host: IssuesHost) -> APIRouter:
         or is being approved, or for a duplicate whose original isn't cached."""
 
         async def run() -> Response:
-            approval = host.apply.start_approval(suggestion_id, _request_key("approve", idem))
+            approval = await host.apply.start_approval_live(
+                suggestion_id, _request_key("approve", idem)
+            )
             out = SuggestionApproveOut(
                 suggestion=IssueSuggestionOut.of(approval.suggestion),
                 batch=ApplyBatchOut.of(approval.batch),

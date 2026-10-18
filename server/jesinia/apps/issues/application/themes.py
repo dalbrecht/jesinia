@@ -458,7 +458,7 @@ class ThemeService:
                 uncached.append(ref)
             else:
                 members.append(found)
-        existing, ancestors = (None, ()) if new_epic else self._reusable_epic(tag, home)
+        existing, ancestors = self._reusable_epic(tag, home, new_epic)
         plan = theme_epic_plan(tag, home, members, uncached, existing, ancestors)
         if digest is not None:
             if plan.digest != digest:
@@ -470,21 +470,28 @@ class ThemeService:
                 raise NothingToConvertError(f"the theme #{tag} has no issue left to link")
         return plan
 
-    def _reusable_epic(self, tag: str, home: str) -> tuple[Node | None, tuple[Key, ...]]:
-        """The theme's latest epic in ``home``, with its ancestors, or ``None`` when it has
-        none yet (ruling IR59): the epic its newest settled batch (complete, or abandoned,
-        IR58) made, or linked under, kept in ``theme_epics`` and the ledger after the batch is
-        pruned. Issues added later link under it, never under a new epic, unless the author
-        asks for one.
+    def _reusable_epic(
+        self, tag: str, home: str, new_epic: bool
+    ) -> tuple[Node | None, tuple[Key, ...]]:
+        """The theme's latest epic in ``home``, with its ancestors, or ``None`` for a new epic
+        (ruling IR59): the epic its newest settled batch (complete, or abandoned, IR58) made,
+        kept in the ledger after the batch is pruned. Issues added later link under it.
+        ``new_epic`` asks for a new epic beside it, except beside one an abandoned batch made
+        that is still open: approving again reuses that (IR58 "create only what is missing",
+        S2).
 
         Raises:
-            ThemeEpicClosedError: that epic is closed (reopen it, or ask for a new epic).
+            ThemeEpicClosedError: that epic is closed and ``new_epic`` isn't asked.
         """
-        epic = self._latest_epic(tag, home)
-        if epic is None:
+        latest = self._latest_epic(tag, home)
+        if latest is None:
             return None, ()
+        epic, state = latest
         found = facts_of(self._cache, *epic)
-        if found is not None and not found.is_open:
+        is_open = found is None or found.is_open
+        if new_epic and not (state == "abandoned" and is_open):
+            return None, ()
+        if not is_open:
             raise ThemeEpicClosedError(
                 f"the theme #{tag}'s epic {epic[0]}#{epic[1]} is closed; reopen it or ask for a "
                 "new epic"
@@ -492,23 +499,15 @@ class ThemeService:
         node = Node(*epic) if found is None else found.node
         return node, ancestors_of(self._cache, *epic)
 
-    def _latest_epic(self, tag: str, home: str) -> tuple[str, int] | None:
-        """The epic of the theme's newest batch in ``home`` that has one: recorded with the
-        batch (an existing epic linked under), or made by it once settled (from the ledger)."""
-        ledger = {row.batch_id: row for row in self._batches.origin_batches(_origin(tag, home))}
-        for batch_id, epic in self._store.epic_rows(tag):
-            if epic is not None and epic[0].casefold() == home.casefold():
-                return epic
-            row = ledger.get(batch_id)
-            made = None if row is None else row.created.get("epic")
-            if row is not None and made is not None and row.state in ("complete", "abandoned"):
-                self._store.set_epic(tag, batch_id, *made)
-                return made
-        # A settled batch the theme's own record missed: the ledger still knows its epic.
-        for row in reversed(list(ledger.values())):
+    def _latest_epic(self, tag: str, home: str) -> tuple[tuple[str, int], str] | None:
+        """The theme's latest epic in ``home`` and its batch's ledger state: the newest
+        settled batch that made one. The ledger row is written with the batch and outlives it,
+        so a lost ``theme_epics`` record never hides a newer epic (S5); a batch that only linked
+        under an epic made none, so the epic stays the one an earlier batch made."""
+        for row in reversed(self._batches.origin_batches(_origin(tag, home))):
             made = row.created.get("epic")
             if made is not None and row.state in ("complete", "abandoned"):
-                return made
+                return made, row.state
         return None
 
     async def start_epic(

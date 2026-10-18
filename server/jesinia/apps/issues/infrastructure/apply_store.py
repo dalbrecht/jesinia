@@ -253,6 +253,13 @@ class SqliteApplyStore:
         ).fetchone()
         return None if row is None else (str(row[0]), _origin(*row[1:]))
 
+    def forget_epic(self, batch_id: str) -> None:
+        self._conn.execute(
+            "UPDATE batch_origins SET created_json = json_remove(created_json, '$.epic') "
+            "WHERE batch_id = ?",
+            (batch_id,),
+        )
+
     def origins(self, prefix: str) -> list[tuple[str, OriginBatch]]:
         rows = self._conn.execute(
             "SELECT origin_key, batch_id, state, created_json, notes_json FROM batch_origins "

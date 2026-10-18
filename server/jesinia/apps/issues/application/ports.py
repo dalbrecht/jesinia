@@ -520,6 +520,10 @@ class ApplyStore(Protocol):
     def origins(self, prefix: str) -> list[tuple[str, OriginBatch]]:
         """Every recorded batch whose origin starts with ``prefix`` (``group:``, say)."""
 
+    def forget_epic(self, batch_id: str) -> None:
+        """Drop the epic a recorded batch made from its ledger row: it is gone on GitHub
+        (deleted or transferred), so it is reused and blocks no more (S4)."""
+
     def abandon(self, batch_id: str, created: Mapping[str, tuple[str, int]], now: datetime) -> None:
         """Mark a batch abandoned in the ledger (with ``created``) and in ``apply_batches``
         when it is still stored, in one transaction (IR58)."""
@@ -686,13 +690,6 @@ class ThemeStore(Protocol):
     ) -> None:
         """Keep a batch that turns the theme into an epic (once; recording it again is a
         no-op), with the epic it links under when that is known already."""
-
-    def set_epic(self, tag: str, batch_id: str, repo: str, n: int) -> None:
-        """Record the epic a theme's batch made."""
-
-    def epic_rows(self, tag: str) -> list[tuple[str, tuple[str, int] | None]]:
-        """The theme's epic batches, newest first, each with the epic it recorded (or
-        ``None``: it planned a new one, which the ledger knows once made)."""
 
 
 class ThemeTags(Protocol):
