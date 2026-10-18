@@ -501,3 +501,31 @@ describe("your own PR", () => {
     expect(screen.getAllByText("? Not ready to request review: it needs a closer look").length).toBeGreaterThan(0);
   });
 });
+
+describe("a member leaving the stack (Codex round 2 P2 on PR #63)", () => {
+  it("falls back to the Overview when the selected PR's tab goes away", async () => {
+    let reads = 0;
+    const twoLeft = stackView({ members: MEMBERS.slice(0, 2), signature: "1@1,2@2" });
+    openStackOf({
+      [`GET ${STACK}`]: () => {
+        reads += 1;
+        return Response.json(reads < 3 ? stackView() : twoLeft);
+      },
+      [`POST ${STACK}/open`]: () =>
+        Response.json({ state: "held", reason: "waiting for CI on #3", stack_id: 4, jobs: [], members: [] }),
+    });
+    const tabs = await toStack();
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(2)); // read, opened, read again
+    await userEvent.click(within(tabs).getByRole("tab", { name: /^#3/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Review the stack" })); // reads again
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("tablist", { name: "Stack review" })).queryByRole("tab", { name: /^#3/ }),
+      ).toBeNull(),
+    );
+    expect(
+      within(screen.getByRole("tablist", { name: "Stack review" })).getByRole("tab", { name: "Overview" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { level: 2, name: "Overview" })).toBeInTheDocument();
+  });
+});

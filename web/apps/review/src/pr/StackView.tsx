@@ -8,7 +8,7 @@
 import type { JesiniaClient } from "@jesinia/client";
 import { Button, Tabs } from "@jesinia/design";
 import { SafeMarkdown, useClient } from "@jesinia/shell";
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ActionKeys,
   errorCause,
@@ -513,6 +513,12 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
     [client, repo, number],
   );
 
+  // A selected PR that left the stack (a restack, a merge) takes the view back to the
+  // Overview (Codex round 2 P2 on PR #63).
+  useEffect(() => {
+    if (view && tab.startsWith("pr-") && !view.members.some((m) => `pr-${m.pr.number}` === tab)) setTab("overview");
+  }, [view, tab]);
+
   // Once per stack review (its PRs at their heads), like a PR's open (R60).
   const signature = view?.signature ?? null;
   useEffect(() => {
@@ -584,6 +590,8 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
     { id: "cross", label: "Cross-PR findings", count: view.cross_findings.length },
   ];
 
+  const shownTab = tabs.some((t) => t.id === tab) ? tab : "overview";
+
   const memberPage = (m: PrView) => {
     const art = readArtifacts(m);
     const own = m.pr.author_kind === "you";
@@ -619,7 +627,7 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
     );
   };
 
-  const page = (id: string) => {
+  const page = (id: string): ReactNode => {
     if (id === "overview")
       return a.overview ? (
         <Overview overview={a.overview as OverviewData} context={`One overview for #${numbers.join(", #")}`} />
@@ -686,8 +694,10 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
           <CrossList findings={view.cross_findings} />
         </article>
       );
-    // Every other tab is a PR's (`pr-<n>`, from the members themselves).
-    return memberPage(view.members.find((m) => `pr-${m.pr.number}` === id) as PrView);
+    // Every other tab is a PR's (`pr-<n>`, from the members themselves); one that left the
+    // stack shows the Overview until the selection follows.
+    const found = view.members.find((m) => `pr-${m.pr.number}` === id);
+    return found ? memberPage(found) : page("overview");
   };
 
   return (
@@ -727,7 +737,7 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
         ) : null}
       </div>
       <div className={s.scroll}>
-        <Tabs aria-label="Stack review" tabs={tabs} selected={tab} onSelect={setTab}>
+        <Tabs aria-label="Stack review" tabs={tabs} selected={shownTab} onSelect={setTab}>
           {page}
         </Tabs>
       </div>
