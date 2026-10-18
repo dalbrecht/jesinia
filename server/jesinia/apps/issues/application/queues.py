@@ -519,7 +519,9 @@ class QueueService:
 
     def _release(self, pending_id: str) -> None:
         """Take a change Done staged out of the tray, unless a done item (in any queue) still
-        holds it; one that already left the tray (applied, or undone there) is fine."""
+        holds it; one that already left the tray (applied, or undone there) is fine. A done
+        item only ever holds a change a queue staged (``_staged_done`` shares nothing else), so
+        the author's own tray changes are never taken back."""
         if self._store.items_with_pending(pending_id):
             return
         try:
@@ -660,19 +662,25 @@ class QueueService:
         return QueueAction(self._view_of(queue, marked), staged)
 
     def _staged_done(self, ref: ItemRef, then: DoneThen, text: str | None) -> PendingChange | None:
-        """The change Done already staged for this issue (from another queue, say), which this
-        Done shares: the engine applies one close (and one comment) per issue, so a second close
-        would silently replace the first one's comment.
+        """The change a queue's Done already staged for this issue (from another queue), which
+        this Done shares: the engine applies one close (and one comment) per issue, so a second
+        close would silently replace the first one's comment. Only changes a queue staged
+        (``source`` ``queue``) are shared, so a queue's Undo never takes back the author's own.
 
         Raises:
-            QueueItemStateError: a close with another comment is staged already.
+            QueueItemStateError: a close is staged already from the tray, or by another queue
+                with another comment.
         """
         key = (ref.repo.casefold(), ref.n)
         for found in self._pending.pending():
+            change = found.change
             if found.target.key != key:
                 continue
-            change = found.change
             if then == "close" and isinstance(change, Close):
+                if found.source != "queue":
+                    raise QueueItemStateError(
+                        f"closing {ref} is already staged from the tray; apply or undo it there"
+                    )
                 if text is not None and change.comment != text:
                     raise QueueItemStateError(
                         f"closing {ref} is staged already with another comment; edit or undo "
@@ -681,6 +689,7 @@ class QueueService:
                 return found
             if (
                 then == "agent_ready"
+                and found.source == "queue"
                 and isinstance(change, SetDimension)
                 and change.dimension == "readiness"
                 and label_key(change.value) == label_key(AGENT_READY)

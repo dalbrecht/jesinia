@@ -449,8 +449,10 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
 - **One action:** Done (and a band move) stages first and keeps the change only if the queue
   is saved; if it can't be, the change is unstaged.
 - **One close per issue:** the engine applies one close and one comment per issue, so Done in a
-  second queue shares the close already staged for that issue (and agent-ready likewise). A
-  second, different comment is refused (409) rather than silently replacing the first.
+  second queue shares the close another queue already staged for that issue (and agent-ready
+  likewise). A second, different comment is refused (409) rather than silently replacing the
+  first, and so is Done on an issue whose close the author staged from the tray. A queue only
+  ever shares or unstages changes a queue staged (`source` `queue`).
 - **Guards:** agent-ready is staged against the readiness the cache shows, like a band move's
   priority: a change on GitHub since is a conflict at apply time, not an overwrite.
 - **Staged changes follow their items:** Undo, removing a done item and deleting a queue take the

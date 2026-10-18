@@ -947,3 +947,23 @@ async def test_suggest_next_needs_a_candidate_when_it_runs(env: Queues) -> None:
     env.queues.add(q, "issue", REPO, 1)
     with pytest.raises(InvalidSuggestionFilterError):
         await env.queues.suggest_next(q)
+
+
+async def test_queues_never_share_or_unstage_a_close_staged_from_the_tray(env: Queues) -> None:
+    await env.synced(issue(1), issue(2))
+    mine = env.world.pending.stage(REPO, 1, Close("completed", comment="by hand"), "menu")
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+    with pytest.raises(QueueItemStateError, match="from the tray"):
+        env.queues.done(q, "issue", REPO, 1, "close")
+    assert [i.item.ref.n for i in env.queues.queue(q).items] == [1]
+    # agent-ready doesn't share a tray change either: the queue stages, and undoes, its own.
+    env.world.pending.stage(REPO, 2, SetDimension("readiness", "agent-ready"), "picker")
+    env.queues.add(q, "issue", REPO, 2)
+    own = env.queues.done(q, "issue", REPO, 2, "agent_ready")
+    assert own.staged is not None and own.staged.source == "queue"
+    env.queues.undo_done(q, "issue", REPO, 2)
+    env.queues.remove(q, "issue", REPO, 1)
+    sources = sorted((p.target.n, p.source) for p in env.world.pending.pending())
+    assert sources == [(1, "menu"), (2, "picker")]
+    assert mine.id in {p.id for p in env.world.pending.pending()}
