@@ -31,7 +31,7 @@ from jesinia.apps.review.domain.coverage import (
 )
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.followup import LineMaps, reanchor
-from jesinia.apps.review.domain.posting import Draft, InvalidDraftError
+from jesinia.apps.review.domain.posting import Draft, InvalidDraftError, strip_posting_markers
 from jesinia.services.github.domain.pr import ReviewSide, ReviewThread
 
 RequestStatus = Literal["addressed", "partly", "not_addressed"]
@@ -45,7 +45,7 @@ REREVIEW_KINDS: Final = frozenset({"rereview", "changed_hunks_only"})
 NEW_CHANGES_CHARS: Final = 120_000
 COMMENTS_CHARS: Final = 60_000
 _SIDES: Final = ("LEFT", "RIGHT")
-_POSTING_MARKER: Final = re.compile(r"\s*<!--\s*jesinia-posting:\d+\s*-->\s*\Z")
+_BLANK_LINES: Final = re.compile(r"\n{3,}")
 
 
 class RereviewError(ReviewError):
@@ -88,6 +88,10 @@ class PreviousComment:
     now_line: int | None = None
     now_start_line: int | None = None
     outdated: bool = False
+    # The commit it was written on (its line and side are that commit's), and why it couldn't
+    # be placed on the head under review when it couldn't (not "changed": unknown).
+    commit_sha: str | None = None
+    unplaced: str | None = None
 
     def __post_init__(self) -> None:
         _check(bool(self.ref), "a previous comment needs a ref")
@@ -118,6 +122,8 @@ class PreviousComment:
             "now_line": self.now_line,
             "now_start_line": self.now_start_line,
             "outdated": self.outdated,
+            "commit_sha": self.commit_sha,
+            "unplaced": self.unplaced,
         }
 
 
@@ -131,6 +137,7 @@ class PreviousStep:
     body: str
     now_hunks: tuple[HunkRef, ...]
     changed: int
+    unplaced: str | None = None  # why its hunks couldn't be matched to this head's
 
     def as_json(self) -> dict[str, object]:
         return {
@@ -138,6 +145,7 @@ class PreviousStep:
             "body": self.body,
             "now_hunks": [{"path": h.path, "hunk": h.hunk} for h in self.now_hunks],
             "changed": self.changed,
+            "unplaced": self.unplaced,
         }
 
 
@@ -156,6 +164,7 @@ class PreviousFinding:
     now_start_line: int | None = None
     now_end_line: int | None = None
     outdated: bool = False
+    unplaced: str | None = None
 
     def as_json(self) -> dict[str, object]:
         return {
@@ -169,6 +178,7 @@ class PreviousFinding:
             "now_start_line": self.now_start_line,
             "now_end_line": self.now_end_line,
             "outdated": self.outdated,
+            "unplaced": self.unplaced,
         }
 
 
@@ -184,9 +194,12 @@ class PreviousReview:
     round_id: int | None = None
     steps: tuple[PreviousStep, ...] = ()
     findings: tuple[PreviousFinding, ...] = ()
+    # Why some of it couldn't be placed on the head under review (the causes, joined).
+    placement_error: str | None = None
 
     def as_json(self) -> dict[str, object]:
         return {
+            "placement_error": self.placement_error,
             "source": self.source,
             "head_sha": self.head_sha,
             "round_id": self.round_id,
@@ -244,27 +257,39 @@ def comments_from_posting(body: str, comments: Sequence[object]) -> list[Previou
 
 
 def comments_from_threads(
-    threads: Sequence[ReviewThread], viewer: str, review_body: str = ""
+    threads: Sequence[ReviewThread],
+    viewer: str,
+    review_body: str = "",
+    review_commit: str | None = None,
 ) -> list[PreviousComment]:
     """The author's comments on GitHub: their review's body first, then each review thread
-    they started (resolved ones flagged), in GitHub's order."""
+    they started (resolved ones flagged), in GitHub's order. Each thread is where it was
+    written (N1): its original commit, line, range and side; a thread GitHub gives no original
+    commit for is taken at ``review_commit`` (the review's), with its reported line."""
     found: list[PreviousComment] = []
-    # A review Jesinia posted (whose round is gone) ends in its posting marker: not a comment.
-    body = _POSTING_MARKER.sub("", review_body).strip()
+    # A review Jesinia posted (whose round is gone) carries its posting marker: not text.
+    body = _BLANK_LINES.sub("\n\n", strip_posting_markers(review_body)).strip()
     if body:
-        found.append(PreviousComment(f"c{len(found) + 1}", body))
+        found.append(PreviousComment(f"c{len(found) + 1}", body, commit_sha=review_commit))
     me = viewer.lower()
     for thread in threads:
         if thread.author.lower() != me or not thread.body.strip() or not thread.path:
             continue
+        written = thread.original_commit_sha is not None
+        line = _int(thread.original_line if written else thread.line)
+        start = _int(thread.original_start_line) if written else None
         found.append(
             PreviousComment(
                 f"c{len(found) + 1}",
                 thread.body,
                 path=thread.path,
-                line=_int(thread.line),
-                side="RIGHT" if _int(thread.line) is not None else None,
+                line=line,
+                side=(thread.side or "RIGHT") if line is not None else None,
+                start_line=start
+                if line is not None and start is not None and start < line
+                else None,
                 resolved=thread.resolved,
+                commit_sha=thread.original_commit_sha if written else review_commit,
             )
         )
     return found
@@ -367,10 +392,13 @@ def previous_findings(
     artifacts: Sequence[object],
     maps: LineMaps,
     renamed: Mapping[tuple[str, ReviewSide], str],
+    *,
+    unplaced: str | None = None,
 ) -> tuple[PreviousFinding, ...]:
     """The previous round's findings (its ``correctness`` and ``findings`` artifacts, each
     finding once), placed on the head under review by their new-file lines; outdated where
-    those lines changed. Malformed entries are skipped."""
+    those lines changed; ``unplaced`` (the cause) when nothing could be mapped. Malformed
+    entries are skipped."""
     found: list[PreviousFinding] = []
     seen: set[tuple[object, ...]] = set()
     for artifact in artifacts:
@@ -386,6 +414,14 @@ def previous_findings(
                 continue
             seen.add(key)
             path, explanation = str(path), str(explanation)
+            if unplaced is not None:
+                found.append(
+                    PreviousFinding(
+                        str(group), str(severity), path, start, end, explanation,
+                        now_path=path, unplaced=unplaced,
+                    )
+                )  # fmt: skip
+                continue
             moved = _moved(path, end, "RIGHT", start if start < end else None, maps, renamed)
             found.append(
                 PreviousFinding(
@@ -405,7 +441,7 @@ def previous_findings(
 
 
 def previous_steps(
-    walkthrough: object, matches: Mapping[HunkRef, HunkRef]
+    walkthrough: object, matches: Mapping[HunkRef, HunkRef], *, unplaced: str | None = None
 ) -> tuple[PreviousStep, ...]:
     """The previous round's walkthrough steps on the head under review: each hunk they cite
     (previous numbering) as the unchanged hunk it is now (``matches``: previous to current);
@@ -416,11 +452,9 @@ def previous_steps(
     for item, step in zip(items, steps_from_json(walkthrough), strict=True):
         body = item.get("body")
         now = tuple(matches[ref] for ref in step.hunks if ref in matches)
-        steps.append(
-            PreviousStep(
-                step.title, body if isinstance(body, str) else "", now, len(step.hunks) - len(now)
-            )
-        )
+        changed = 0 if unplaced is not None else len(step.hunks) - len(now)
+        text = body if isinstance(body, str) else ""
+        steps.append(PreviousStep(step.title, text, now, changed, unplaced))
     return tuple(steps)
 
 

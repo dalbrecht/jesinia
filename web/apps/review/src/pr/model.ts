@@ -56,15 +56,24 @@ export type PreviousComment = {
   now_start_line: number | null;
   /** Its text changed since: shown as outdated, never placed by its old line. */
   outdated: boolean;
+  /** Why it couldn't be placed on this head at all (unknown, not changed), when it couldn't. */
+  unplaced?: string | null;
 };
 /** A step of the previous round's walkthrough, on this head's unchanged hunks. */
-export type PreviousStep = { title: string; body: string; now_hunks: HunkRef[]; changed: number };
+export type PreviousStep = {
+  title: string;
+  body: string;
+  now_hunks: HunkRef[];
+  changed: number;
+  unplaced?: string | null;
+};
 /** A finding of the previous round, placed on this head's lines (or outdated). */
 export type PreviousFinding = Finding & {
   now_path: string | null;
   now_start_line: number | null;
   now_end_line: number | null;
   outdated: boolean;
+  unplaced?: string | null;
 };
 export type PreviousReview = {
   source: "round" | "github";
@@ -73,6 +82,8 @@ export type PreviousReview = {
   comments: PreviousComment[];
   steps: PreviousStep[];
   findings: PreviousFinding[];
+  /** What couldn't be placed on this head, and why (Jesinia's words). */
+  placement_error: string | null;
 };
 export type RequestStatus = "addressed" | "partly" | "not_addressed";
 export type Request = { comment_ref: string; status: RequestStatus; explanation: string; hunks: HunkRef[] };
@@ -174,6 +185,7 @@ function previousOf(x: unknown): PreviousReview | null {
     comments: list<PreviousComment>(p.comments) ?? [],
     steps: list<PreviousStep>(p.steps) ?? [],
     findings: list<PreviousFinding>(p.findings) ?? [],
+    placement_error: typeof p.placement_error === "string" ? p.placement_error : null,
   };
 }
 

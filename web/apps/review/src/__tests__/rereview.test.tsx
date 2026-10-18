@@ -47,11 +47,30 @@ const PREVIOUS = {
       now_line: null,
       outdated: true,
     },
+    // Written on a commit git can't read any more: unknown, which isn't "changed" (N2).
+    {
+      ...AT,
+      ref: "c6",
+      body: "On a lost commit.",
+      path: PRORATION,
+      line: 2,
+      now_path: PRORATION,
+      now_line: null,
+      unplaced: "commit dddddddddddd couldn't be read: bad object",
+    },
   ],
+  placement_error: "commit dddddddddddd couldn't be read: bad object; the previous review's diff couldn't be rebuilt",
   // The previous round's walkthrough and findings, placed on this head (I1).
   steps: [
     { title: "Posting, last time", body: "It posted twice.", now_hunks: [{ path: PRORATION, hunk: 1 }], changed: 0 },
     { title: "A step on code since rewritten", body: "Gone.", now_hunks: [], changed: 2 },
+    {
+      title: "A step Jesinia couldn't match",
+      body: "?",
+      now_hunks: [],
+      changed: 0,
+      unplaced: "the previous review's diff couldn't be rebuilt",
+    },
   ],
   findings: [
     {
@@ -91,7 +110,7 @@ const REREVIEW = {
     },
     { comment_ref: "c3", status: "not_addressed", explanation: "Still the old name.", hunks: [] },
   ],
-  unanswered: ["c1", "c4", "c5"],
+  unanswered: ["c1", "c4", "c5", "c6"],
   dropped_requests: 0,
   previous_round_id: 2,
   new_hunks: [{ path: PRORATION, hunk: 1 }],
@@ -169,8 +188,8 @@ describe("a re-review", () => {
   it("counts comments without a status as open in the outline (M1)", async () => {
     openPr(rereviewed());
     await ready();
-    // c3 isn't addressed, and c1, c4 and c5 have no status: none of them is known to be done.
-    expect(within(outline()).getByRole("link", { name: /Your requests.*4 open/ })).toBeInTheDocument();
+    // c3 isn't addressed, and c1, c4, c5 and c6 have no status: none of them is known to be done.
+    expect(within(outline()).getByRole("link", { name: /Your requests.*5 open/ })).toBeInTheDocument();
   });
 
   it("gives each of your requests its status, explanation and new hunks", async () => {
@@ -179,7 +198,7 @@ describe("a re-review", () => {
     await go(/Your requests/);
     const list = screen.getByRole("list", { name: "Your requests" });
     const items = within(list).getAllByRole("listitem");
-    expect(items).toHaveLength(5);
+    expect(items).toHaveLength(6);
     const [general, offByOne, rename] = items as [HTMLElement, HTMLElement, HTMLElement];
     expect(within(general).getByText("No status given")).toBeInTheDocument();
     expect(within(general).getByText("A few notes.")).toBeInTheDocument();
@@ -218,6 +237,20 @@ describe("a re-review", () => {
     const rewritten = within(aligned).getByRole("group", { name: "Steps on code that changed since" });
     expect(within(rewritten).getByText("A step on code since rewritten")).toBeInTheDocument();
     expect(within(rewritten).getByText("2 of its hunks changed")).toBeInTheDocument();
+    // What couldn't be placed says why, apart from what changed (N2).
+    expect(within(changed).queryByText("On a lost commit.")).toBeNull();
+    const unplaced = within(file).getByRole("row", { name: /couldn't place on this head/ });
+    expect(within(unplaced).getByText("On a lost commit.")).toBeInTheDocument();
+    expect(
+      within(unplaced).getByText(/Couldn't place this on this head: commit dddddddddddd couldn't be read/),
+    ).toBeInTheDocument();
+    expect(within(changed).getAllByText("Outdated: its lines changed").length).toBeGreaterThan(0);
+    const unmatched = within(aligned).getByRole("group", { name: "Steps Jesinia couldn't place" });
+    expect(within(unmatched).getByText("A step Jesinia couldn't match")).toBeInTheDocument();
+    expect(within(unmatched).getByText("the previous review's diff couldn't be rebuilt")).toBeInTheDocument();
+    expect(within(aligned).getByRole("status")).toHaveTextContent(
+      "Some of your last review couldn't be placed on this head: commit dddddddddddd",
+    );
     // A comment on a file this head no longer changes still has its row.
     const odd = within(aligned).getByRole("group", { name: `src/a⟪U+202E⟫b.py` });
     expect(within(odd).getByText(/Rename it\./)).toBeInTheDocument();
@@ -345,6 +378,7 @@ describe("the re-review's own rules", () => {
     ],
     steps: [],
     findings: [],
+    placement_error: null,
   };
   const result: RereviewData = {
     requests: [

@@ -37,7 +37,12 @@ from jesinia.apps.review.domain.coverage import (
 from jesinia.apps.review.domain.followup import FollowUp
 from jesinia.apps.review.domain.gates import CiState
 from jesinia.apps.review.domain.jobs import JobKind
-from jesinia.apps.review.domain.posting import Draft
+from jesinia.apps.review.domain.posting import (
+    Draft,
+    marked_body,
+    posting_marker,
+    strip_posting_markers,
+)
 from jesinia.apps.review.domain.queue import (
     PrNotInQueueError,
     PrNotOpenError,
@@ -107,6 +112,8 @@ class Repo:
     # On ``head``: two lines inserted after line 15 (line 30 is now 32, its hunk unchanged)
     # and lib.py renamed to pkg_lib.py, unchanged.
     shifted: str
+    # On ``shifted``: line 5 changed again (nothing moves).
+    shifted2: str
 
 
 def _app(five: str, thirty: str) -> str:
@@ -142,9 +149,11 @@ def repo(tmp_path: Path) -> Repo:
     moved[15:15] = ["inserted 1", "inserted 2"]
     (work / "lib.py").rename(work / "pkg_lib.py")
     shifted = commit(work, {"app.py": text(moved)}, "shift")
+    moved[4] = "line five, again"
+    shifted2 = commit(work, {"app.py": text(moved)}, "again")
     for branch in ("main", "feature", "main2", "rebased", "shifted"):
         git(work, "push", "-q", "origin", branch)
-    return Repo(remote, base, head, pushed, rebased_base, rebased, shifted)
+    return Repo(remote, base, head, pushed, rebased_base, rebased, shifted, shifted2)
 
 
 @pytest.fixture
@@ -397,6 +406,7 @@ async def test_commented_only_prs_get_incremental_rereview(env: Env) -> None:
         "side": "RIGHT", "start_line": None, "resolved": False,
         # Line 30's text changed in the new commits: outdated in place, never misplaced (I2).
         "now_path": "app.py", "now_line": None, "now_start_line": None, "outdated": True,
+        "commit_sha": repo.head, "unplaced": None,
     }  # fmt: skip
     rereview = artifacts["rereview"]
     assert isinstance(rereview, dict)
@@ -1029,7 +1039,7 @@ def test_placing_follows_carried_draft_rules_and_never_guesses() -> None:
     assert [(f.now_path, f.now_start_line, f.now_end_line) for f in found] == [("b.py", 3, 5)]
 
 
-async def test_a_previous_review_git_cant_place_stays_outdated(
+async def test_a_previous_review_git_cant_place_says_why(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = env.repo
@@ -1045,13 +1055,138 @@ async def test_a_previous_review_git_cant_place_stays_outdated(
     assert stored is not None
     followup = replace(await env.followups.classify(stored), prev_merge_base=None)
     diff = parse_unified_diff(await stored_diff(env, repo.base, repo.shifted))
-    # No previous merge base: the old side can't be mapped, the new side still can.
+    # No previous merge base: the old side can't be mapped (and says so), the new side can.
     previous = await env.rereviews.previous_review(env.ref, followup, repo.shifted, repo.base, diff)
-    assert [(c.now_line, c.outdated) for c in previous.comments] == [(None, True), (5, False)]
+    assert [(c.now_line, c.outdated, c.unplaced) for c in previous.comments] == [
+        (None, False, "the base it was written against isn't known"),
+        (5, False, None),
+    ]
 
     async def broken(*args: object) -> dict[str, str]:
         raise GitCommandError(("git", "diff"), 128, "bad object")
 
     monkeypatch.setattr(env.workspace, "renames", broken)
     previous = await env.rereviews.previous_review(env.ref, followup, repo.shifted, repo.base, diff)
-    assert all(c.outdated for c in previous.comments)
+    assert all(
+        not c.outdated and c.unplaced and "bad object" in c.unplaced for c in previous.comments
+    )
+
+
+# --- fix round 2: each GitHub comment mapped from the commit it was written on ----------------
+
+
+async def test_github_comments_are_placed_from_the_commit_each_was_written_on(env: Env) -> None:
+    """N1: the author reviewed ``shifted`` on GitHub; their threads were written on several
+    commits (one older than the review), and the head is now ``shifted2``."""
+    repo = env.repo
+    env.github.reviews_of[(REPO, 1)] = [
+        ReviewSummary("me", False, "CHANGES_REQUESTED", repo.shifted, START, 4, "Please fix."),
+    ]
+    env.github.threads_of[(REPO, 1)] = [
+        # Written on ``head``, older than the review: line 30 there is line 32 now.
+        ReviewThread("app.py", None, "Older.", "me", False, None,
+                     original_commit_sha=repo.head, original_line=30),
+        # The base side at ``head``: base line 30 is still line 30 of the base.
+        ReviewThread("app.py", None, "Old side.", "me", False, None,
+                     original_commit_sha=repo.head, original_line=30, side="LEFT"),
+        # Written on the head under review: as it is.
+        ReviewThread("app.py", 32, "Current.", "me", False, repo.shifted2,
+                     original_commit_sha=repo.shifted2, original_line=32),
+        # Its commit is gone (force-pushed away): couldn't be placed, never guessed.
+        ReviewThread("app.py", None, "Gone.", "me", False, None,
+                     original_commit_sha="d" * 40, original_line=30),
+        # No original commit: the review's commit (``shifted``), where line 32 is line 32.
+        ReviewThread("app.py", 32, "From the review.", "me", False, None),
+    ]  # fmt: skip
+    env.sync(repo.shifted2, repo.base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    followup = await env.followups.classify(stored)
+    assert followup.prev_head == repo.shifted and followup.prev_source == "github"
+    diff = parse_unified_diff(await stored_diff(env, repo.base, repo.shifted2))
+
+    previous = await env.rereviews.previous_review(
+        env.ref, followup, repo.shifted2, repo.base, diff
+    )
+
+    placed = [
+        (c.body, c.side, c.now_line, c.outdated, c.unplaced is None) for c in previous.comments
+    ]
+    assert placed == [
+        ("Please fix.", None, None, False, True),
+        ("Older.", "RIGHT", 32, False, True),
+        ("Old side.", "LEFT", 30, False, True),
+        ("Current.", "RIGHT", 32, False, True),
+        ("Gone.", "RIGHT", None, False, False),
+        ("From the review.", "RIGHT", 32, False, True),
+    ]
+    gone = previous.comments[4]
+    assert gone.unplaced is not None and "dddddddddddd" in gone.unplaced
+    assert [c.commit_sha for c in previous.comments[1:]] == [
+        repo.head, repo.head, repo.shifted2, "d" * 40, repo.shifted
+    ]  # fmt: skip
+    assert previous.placement_error is not None and "dddddddddddd" in previous.placement_error
+
+
+async def test_what_couldnt_be_placed_says_why_apart_from_what_changed(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N2: "couldn't place it (cause)" is not "its lines changed"."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    comments = _comments_json(("app.py", 30, "Off by one here."))
+    previous_round = env.posted_round(repo.head, repo.base, "COMMENT", "", comments)
+    env.store.put_artifact(previous_round, "walkthrough", PREVIOUS_WALK)
+    env.store.put_artifact(previous_round, "findings", PREVIOUS_FINDINGS)
+    env.sync(repo.shifted, repo.base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    followup = await env.followups.classify(stored)
+    diff = parse_unified_diff(await stored_diff(env, repo.base, repo.shifted))
+
+    async def broken(*args: object) -> dict[str, str]:
+        raise GitCommandError(("git", "diff"), 128, "bad object")
+
+    monkeypatch.setattr(env.workspace, "renames", broken)
+    previous = await env.rereviews.previous_review(env.ref, followup, repo.shifted, repo.base, diff)
+
+    (comment,) = previous.comments
+    assert not comment.outdated and comment.unplaced is not None
+    assert "bad object" in comment.unplaced
+    assert all(not f.outdated and f.unplaced is not None for f in previous.findings)
+    assert all(s.unplaced is not None and "bad object" in s.unplaced for s in previous.steps)
+    payload = previous.as_json()
+    assert (
+        isinstance(payload["placement_error"], str) and "bad object" in payload["placement_error"]
+    )
+    assert _list(payload["comments"])[0]["unplaced"] == comment.unplaced
+    # With no previous diff to match against, the steps can't be placed: said, with why.
+    monkeypatch.undo()
+    no_diff = replace(followup, prev_merge_base=None)
+    unmatched = await env.rereviews.previous_review(env.ref, no_diff, repo.shifted, repo.base, diff)
+    assert all(s.unplaced and "rebuilt" in s.unplaced for s in unmatched.steps)
+    assert unmatched.comments[0].now_line == 32  # the new side needs no merge base
+
+
+def test_posting_markers_are_removed_wherever_they_are() -> None:
+    """N3: the posting code's own marker, anywhere in a body Jesinia posted."""
+    body = marked_body("Please fix.", 7) + "\n\nEdited on GitHub after posting."
+    (comment,) = comments_from_threads([], "me", body)
+    assert comment.body == "Please fix.\n\nEdited on GitHub after posting."
+    assert strip_posting_markers(f"a {posting_marker(3)} b {posting_marker(12)}") == "a  b "
+    assert strip_posting_markers("no marker") == "no marker"
+
+
+async def test_a_comment_with_no_known_commit_is_unplaced_with_the_reason(env: Env) -> None:
+    repo = env.repo
+    env.github.threads_of[(REPO, 1)] = [ReviewThread("app.py", 30, "Where?", "me", False, None)]
+    env.sync(repo.shifted2, repo.base)
+    nowhere = FollowUp("rereview", [], "n", None, "github")  # the reviewed head isn't known
+    diff = parse_unified_diff(await stored_diff(env, repo.base, repo.shifted2))
+    previous = await env.rereviews.previous_review(env.ref, nowhere, repo.shifted2, repo.base, diff)
+    (comment,) = previous.comments
+    assert comment.unplaced == "the commit it was written on isn't known"
+    assert previous.placement_error == comment.unplaced
+    # The pure rule: a general comment has nowhere to go and stays as it is.
+    general = PreviousComment("c1", "x")
+    assert place(general, {}, {}) is general

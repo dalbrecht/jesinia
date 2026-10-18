@@ -90,6 +90,8 @@ type Row = {
 type Group = { name: string; rows: Row[] };
 
 const CHANGED = "changed since your last review";
+const UNPLACED = "couldn't place on this head";
+type Place = number | "changed" | "unplaced" | null;
 
 /** Which hunk of this head holds new-file lines `start`–`end` (old-file lines on the left). */
 function hunkAt(hunks: Hunk[], start: number, end: number, left = false): number | null {
@@ -104,7 +106,8 @@ function hunkAt(hunks: Hunk[], start: number, end: number, left = false): number
  * cites on its current path, else the hunk holding the line its text is on now, else elsewhere in
  * the file. Never by the line it had at the previous head.
  */
-function placeOf(comment: PreviousComment, request: Request | undefined, hunks: Hunk[]): number | "changed" | null {
+function placeOf(comment: PreviousComment, request: Request | undefined, hunks: Hunk[]): Place {
+  if (comment.unplaced) return "unplaced";
   if (comment.outdated) return "changed";
   const path = comment.now_path ?? comment.path;
   const cited = request?.hunks.find((h) => h.path === path);
@@ -113,13 +116,16 @@ function placeOf(comment: PreviousComment, request: Request | undefined, hunks: 
   return hunkAt(hunks, comment.now_start_line ?? comment.now_line, comment.now_line, comment.side === "LEFT");
 }
 
-function findingPlace(finding: PreviousFinding, hunks: Hunk[]): number | "changed" | null {
+function findingPlace(finding: PreviousFinding, hunks: Hunk[]): Place {
+  if (finding.unplaced) return "unplaced";
   if (finding.outdated || finding.now_start_line === null || finding.now_end_line === null) return "changed";
   return hunkAt(hunks, finding.now_start_line, finding.now_end_line);
 }
 
 /** Steps whose every hunk changed since: they have no place on this head. */
 export const REWRITTEN_STEPS = "Steps on code that changed since";
+/** Steps whose hunks couldn't be matched to this head's (why is said with each). */
+export const UNPLACED_STEPS = "Steps Jesinia couldn't place";
 
 /**
  * The previous round beside this head, grouped by file (this head's paths, after renames) and
@@ -152,7 +158,7 @@ export function alignPrevious(
       ]
     : [];
   const pathOf = (c: { path: string | null; now_path: string | null }) => c.now_path ?? c.path;
-  const placedSteps = previous.steps.filter((st) => st.now_hunks.length > 0);
+  const placedSteps = previous.steps.filter((st) => st.now_hunks.length > 0 && !st.unplaced);
   const paths = [
     ...new Set([
       ...previous.comments.flatMap((c) => (c.path === null ? [] : [pathOf(c) as string])),
@@ -165,16 +171,18 @@ export function alignPrevious(
     const patch = fileOf(files, path)?.patch;
     const hunks = patch ? hunksOf(patch) : [];
     const fresh = new Set((rereview?.new_hunks ?? []).filter((h) => h.path === path).map((h) => h.hunk));
-    const rows = new Map<number | "changed" | null, Row>();
-    const row = (at: number | "changed" | null): Row => {
+    const rows = new Map<Place, Row>();
+    const row = (at: Place): Row => {
       let found = rows.get(at);
       if (!found) {
         const [key, label] =
           at === "changed"
             ? ["changed", CHANGED]
-            : at === null
-              ? ["elsewhere", "elsewhere in the file"]
-              : [`hunk-${at}`, `hunk ${at + 1}`];
+            : at === "unplaced"
+              ? ["unplaced", UNPLACED]
+              : at === null
+                ? ["elsewhere", "elsewhere in the file"]
+                : [`hunk-${at}`, `hunk ${at + 1}`];
         found = {
           key,
           label,
@@ -198,11 +206,17 @@ export function alignPrevious(
       ))
         row(at).steps.push(step);
     for (const at of fresh) if (at < hunks.length) row(at);
-    const order = (at: number | "changed" | null) => (typeof at === "number" ? at : at === null ? 1e9 : 1e9 + 1);
+    const order = (at: Place) =>
+      typeof at === "number" ? at : at === null ? 1e9 : at === "changed" ? 1e9 + 1 : 1e9 + 2;
     groups.push({ name: path, rows: [...rows.entries()].sort(([x], [y]) => order(x) - order(y)).map(([, r]) => r) });
   }
   return groups;
 }
+
+/** The distinct reasons a row's comments and findings couldn't be placed (N2). */
+const unplacedCauses = (row: Row): string[] => [
+  ...new Set([...row.comments, ...row.findings].flatMap((x) => (x.unplaced ? [x.unplaced] : []))),
+];
 
 function Aligned({
   previous,
@@ -215,12 +229,18 @@ function Aligned({
 }) {
   const requests = byRef(rereview);
   const groups = alignPrevious(previous, rereview, files);
-  const rewritten = previous.steps.filter((st) => st.now_hunks.length === 0);
-  const empty = groups.length === 0 && rewritten.length === 0;
+  const rewritten = previous.steps.filter((st) => st.now_hunks.length === 0 && !st.unplaced);
+  const unmatched = previous.steps.filter((st) => st.unplaced);
+  const empty = groups.length === 0 && rewritten.length === 0 && unmatched.length === 0;
   return (
     <section className={s.group} role="region" aria-label="Previous review, aligned by file and hunk">
       <h3>Previous review, aligned by file and hunk</h3>
       {empty ? <p className={s.muted}>Your previous review left no comments.</p> : null}
+      {previous.placement_error ? (
+        <p className={s.notice} role="status">
+          {`Some of your last review couldn't be placed on this head: ${previous.placement_error}`}
+        </p>
+      ) : null}
       {groups.map((group) => (
         <div key={group.name} role="group" aria-label={visibleText(group.name)} className={s.alignedFile}>
           <p className={s.loc}>{group.name === "The review" ? "The review" : <Visible text={group.name} />}</p>
@@ -275,11 +295,16 @@ function Aligned({
                         Outdated: its lines changed
                       </Badge>
                     ) : null}
+                    {unplacedCauses(row).map((why) => (
+                      <p key={why} className={s.muted}>
+                        {`Couldn't place this on this head: ${why}`}
+                      </p>
+                    ))}
                     {row.isNew ? <Badge>New since your last look</Badge> : null}
                     {row.comments.map((c) => (
                       <StatusBadge key={c.ref} request={requests.get(c.ref)} />
                     ))}
-                    {!row.hunk && !row.isNew && row.key !== "changed" && row.comments.length === 0 ? (
+                    {!row.hunk && !row.isNew && row.key === "elsewhere" && row.comments.length === 0 ? (
                       <span className={s.muted}>Not on a changed hunk of this head.</span>
                     ) : null}
                   </td>
@@ -289,6 +314,21 @@ function Aligned({
           </table>
         </div>
       ))}
+      {unmatched.length ? (
+        <div role="group" aria-label={UNPLACED_STEPS} className={s.alignedFile}>
+          <p className={s.loc}>{UNPLACED_STEPS}</p>
+          <ul className={s.refs}>
+            {unmatched.map((st, i) => (
+              <li key={i}>
+                <strong>
+                  <Visible text={st.title} />
+                </strong>
+                <span className={s.muted}>{st.unplaced}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {rewritten.length ? (
         <div role="group" aria-label={REWRITTEN_STEPS} className={s.alignedFile}>
           <p className={s.loc}>{REWRITTEN_STEPS}</p>

@@ -442,7 +442,17 @@ def review_digest(round_id: int, head_sha: str, event: ReviewEvent, review: Revi
 def posting_marker(posting_id: int) -> str:
     """The invisible tag ending every body Jesinia posts: how a review is recognised as
     that attempt's (and never a review the author posted by hand)."""
-    return f"<!-- jesinia-posting:{posting_id} -->"
+    return f"<!-- {_MARKER_NAME}:{posting_id} -->"
+
+
+# ``posting_marker``'s shape, for any posting id.
+_POSTING_MARKER: Final = re.compile(rf"<!-- {re.escape(_MARKER_NAME)}:\d+ -->")
+
+
+def strip_posting_markers(text: str) -> str:
+    """``text`` without any posting marker, wherever it is (a body edited on GitHub after
+    Jesinia posted it may have text after its marker)."""
+    return _POSTING_MARKER.sub("", text)
 
 
 def marked_body(body: str, posting_id: int) -> str:

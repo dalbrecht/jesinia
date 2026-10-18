@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Collection, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from jesinia.apps.review.application.followup import line_maps
@@ -29,10 +29,12 @@ from jesinia.apps.review.domain.coverage import (
     ParsedDiff,
     parse_unified_diff,
 )
-from jesinia.apps.review.domain.followup import FollowUp
+from jesinia.apps.review.domain.followup import FollowUp, LineMaps
 from jesinia.apps.review.domain.posting import Posting
 from jesinia.apps.review.domain.queue import PrRef, RoundRecord
 from jesinia.apps.review.domain.rereview import (
+    PreviousComment,
+    PreviousFinding,
     PreviousReview,
     RereviewInputError,
     changed_hunks,
@@ -75,6 +77,8 @@ class RereviewWorkspace(Protocol):
 
     async def renames(self, repo: str, old_sha: str, new_sha: str) -> dict[str, str]: ...
 
+    async def merge_base(self, repo: str, a: str, b: str) -> str: ...
+
     async def show_file(self, repo: str, sha: str, path: str, *, limit: int) -> bytes | None: ...
 
 
@@ -88,6 +92,16 @@ class RereviewStore(Protocol):
     def posting_comments(self, posting_id: int) -> list[object]: ...
 
     def artifact(self, round_id: int, kind: str) -> object: ...
+
+
+@dataclass(frozen=True)
+class _Placement:
+    """Line maps from one commit to the head under review; ``left_known``: the left side
+    could be mapped (the commit's merge base is known)."""
+
+    maps: LineMaps
+    moved: dict[tuple[str, ReviewSide], str]
+    left_known: bool
 
 
 def _every_hunk(diff: ParsedDiff) -> frozenset[HunkRef]:
@@ -154,8 +168,10 @@ class Rereviews:
     ) -> PreviousReview:
         """The previous review on the head under review (spec §4.2 "Previous review in
         context"): its comments, and for a stored round its walkthrough steps and findings,
-        each placed by this head's paths, lines and hunks (renames followed, I2). What can't
-        be placed (its text changed, or git can't say) is outdated, never misplaced.
+        each placed by this head's paths, lines and hunks (renames followed, I2). Each comment
+        is mapped from the commit it was written on, on its own side (N1). What changed since
+        is outdated; what can't be mapped carries why (``unplaced``, N2): neither is ever
+        placed by its old line.
 
         Raises:
             RereviewInputError: the comments couldn't be read from GitHub.
@@ -167,38 +183,118 @@ class Rereviews:
             walkthrough = self._store.artifact(previous.round_id, "walkthrough")
             kinds = ("correctness", "findings")
             findings = [self._store.artifact(previous.round_id, kind) for kind in kinds]
-        keys = {(c.path, c.side or "RIGHT") for c in previous.comments if c.path is not None}
-        keys |= {
+        keys: dict[str, set[tuple[str, ReviewSide]]] = {}
+        for comment in previous.comments:
+            if comment.path is not None and comment.commit_sha is not None:
+                keys.setdefault(comment.commit_sha, set()).add(
+                    (comment.path, comment.side or "RIGHT")
+                )
+        finding_keys: set[tuple[str, ReviewSide]] = {
             (str(item["path"]), "RIGHT")
             for artifact in findings
             if isinstance(artifact, Mapping) and isinstance(artifact.get("findings"), list)
             for item in artifact["findings"]
             if isinstance(item, Mapping) and isinstance(item.get("path"), str)
         }
-        right = None if followup.prev_head is None else (followup.prev_head, head_sha)
-        left = None if followup.prev_merge_base is None else (followup.prev_merge_base, merge_base)
-        moved: dict[tuple[str, ReviewSide], str] = {}
-        matches: dict[HunkRef, HunkRef] = {}
+        if followup.prev_head is not None and finding_keys:
+            keys.setdefault(followup.prev_head, set()).update(finding_keys)
+        causes: list[str] = []
+        placements = {
+            commit: await self._map_from(ref, commit, wanted, head_sha, merge_base, followup)
+            for commit, wanted in keys.items()
+            if commit != head_sha
+        }
+        comments = tuple(self._placed(c, head_sha, placements, causes) for c in previous.comments)
+        found: tuple[PreviousFinding, ...] = ()
+        if followup.prev_head is not None and followup.prev_head in placements:
+            at = placements[followup.prev_head]
+            if isinstance(at, str):
+                causes.append(at)
+                found = previous_findings(findings, {}, {}, unplaced=at)
+            else:
+                found = previous_findings(findings, at.maps, at.moved)
+        steps = previous_steps(walkthrough, {})
+        if walkthrough is not None:
+            matches, why = await self._matches(ref, followup, head_sha, diff)
+            if why is not None:
+                causes.append(why)
+            steps = previous_steps(walkthrough, matches, unplaced=why)
+        error = "; ".join(dict.fromkeys(causes)) or None
+        return replace(
+            previous, comments=comments, steps=steps, findings=found, placement_error=error
+        )
+
+    async def _map_from(
+        self,
+        ref: PrRef,
+        commit: str,
+        keys: set[tuple[str, ReviewSide]],
+        head_sha: str,
+        merge_base: str,
+        followup: FollowUp,
+    ) -> _Placement | str:
+        """Line maps from ``commit`` to ``head_sha`` for ``keys``: the right side between the
+        two commits, the left side between their merge bases (``None`` when ``commit``'s isn't
+        known). The cause, in words, when git can't read ``commit``."""
         try:
             await self._workspace.ensure_mirror(ref.repo)
-            await self._fetch(ref.repo, [sha for pair in (right, left) if pair for sha in pair])
+            await self._fetch(ref.repo, [commit, head_sha])
+            if commit == followup.prev_head:
+                old_base = followup.prev_merge_base
+            else:
+                old_base = await self._workspace.merge_base(ref.repo, merge_base, commit)
+            left = None if old_base is None else (old_base, merge_base)
+            moved: dict[tuple[str, ReviewSide], str] = {}
             maps = await line_maps(
-                self._workspace, ref.repo, {"RIGHT": right, "LEFT": left}, keys, moved
+                self._workspace, ref.repo, {"RIGHT": (commit, head_sha), "LEFT": left}, keys, moved
             )
-            old_diff = await self._previous_diff(ref.repo, followup) if walkthrough else None
-            if old_diff is not None and right is not None:
-                renames = await self._workspace.renames(ref.repo, right[0], head_sha)
-                matched = match_hunks(old_diff, diff, renames)
-                matches = {old: new for new, old in matched.items()}
-        except WorkspaceError as exc:  # secondary: everything stays outdated, with the cause
-            log.warning("review.rereview %s: previous review not placed: %s", ref, exc)
-            maps, moved = {}, {}
-        return replace(
-            previous,
-            comments=tuple(place(c, maps, moved) for c in previous.comments),
-            steps=previous_steps(walkthrough, matches),
-            findings=previous_findings(findings, maps, moved),
-        )
+        except WorkspaceError as exc:  # secondary: unplaced, with the cause kept
+            log.warning("review.rereview %s: nothing from %s placed: %s", ref, commit[:12], exc)
+            return f"commit {commit[:12]} couldn't be read: {exc}"
+        return _Placement(maps, moved, left is not None)
+
+    @staticmethod
+    def _placed(
+        comment: PreviousComment,
+        head_sha: str,
+        placements: Mapping[str, _Placement | str],
+        causes: list[str],
+    ) -> PreviousComment:
+        if comment.path is None:
+            return comment
+        if comment.commit_sha is None:
+            why = "the commit it was written on isn't known"
+        elif comment.commit_sha == head_sha:  # written on this very head: it is where it is
+            return replace(
+                comment,
+                now_path=comment.path,
+                now_line=comment.line,
+                now_start_line=comment.start_line,
+            )
+        else:
+            at = placements[comment.commit_sha]
+            if isinstance(at, _Placement) and (comment.side != "LEFT" or at.left_known):
+                return place(comment, at.maps, at.moved)
+            why = at if isinstance(at, str) else "the base it was written against isn't known"
+        causes.append(why)
+        return replace(comment, now_path=comment.path, unplaced=why)
+
+    async def _matches(
+        self, ref: PrRef, followup: FollowUp, head_sha: str, diff: ParsedDiff
+    ) -> tuple[dict[HunkRef, HunkRef], str | None]:
+        """The previous review's hunks as this head's (previous to current), or why they
+        can't be matched."""
+        try:
+            await self._workspace.ensure_mirror(ref.repo)
+            old_diff = await self._previous_diff(ref.repo, followup)
+            if old_diff is None or followup.prev_head is None:
+                return {}, "the previous review's diff couldn't be rebuilt"
+            renames = await self._workspace.renames(ref.repo, followup.prev_head, head_sha)
+        except WorkspaceError as exc:  # secondary: unplaced, with the cause kept
+            log.warning("review.rereview %s: previous hunks not matched: %s", ref, exc)
+            return {}, f"the previous review's hunks couldn't be matched: {exc}"
+        matched = match_hunks(old_diff, diff, renames)
+        return {old: new for new, old in matched.items()}, None
 
     async def _fetch(self, repo: str, shas: list[str]) -> None:
         """Fetch commits that may already be in the mirror; a failure is left to the reads
@@ -222,7 +318,9 @@ class Rereviews:
                     comments = comments_from_posting(
                         posting.body, self._store.posting_comments(posting.id)
                     )
-                    return PreviousReview("round", rnd.head_sha, tuple(comments), rnd.id)
+                    # Posted on the round's head: its lines are that commit's.
+                    written = tuple(replace(c, commit_sha=rnd.head_sha) for c in comments)
+                    return PreviousReview("round", rnd.head_sha, written, rnd.id)
             log.info(
                 "review.rereview %s: round %d is gone, reading GitHub", ref, followup.prev_round_id
             )
@@ -240,7 +338,8 @@ class Rereviews:
             if review.author.lower() == viewer.lower() and review.commit_sha == head
         ]
         body = mine[-1].body if mine else ""
-        return PreviousReview("github", head, tuple(comments_from_threads(threads, viewer, body)))
+        comments = comments_from_threads(threads, viewer, body, review_commit=head or None)
+        return PreviousReview("github", head, tuple(comments))
 
     async def new_changes(
         self, ref: PrRef, merge_base: str, head_sha: str, refs: Collection[HunkRef]
