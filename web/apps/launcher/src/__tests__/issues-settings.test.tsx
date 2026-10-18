@@ -38,6 +38,7 @@ function repo(over: Partial<Repo> = {}): Repo {
     migrated: false,
     synced_at: "2026-10-18T10:00:00Z",
     sync_error: null,
+    unmapped_labels: [],
     ...over,
   };
 }
@@ -206,16 +207,66 @@ describe("Settings → Issues: the label schema and its aliases", () => {
     expect(body.settings_schema.areas).toEqual([value("area:wiki")]);
   });
 
-  it("goes back to the default by clearing the Settings schema", async () => {
-    const calls = renderIssues({ "PATCH /api/issues/repos/acme/web": () => json(repo()) }, [
-      repo({ schema_source: "settings", settings_schema: SCHEMA }),
-    ]);
+  it("goes back to the default only after a confirm, and Undo puts the Settings schema back", async () => {
+    const calls = renderIssues(
+      {
+        "PATCH /api/issues/repos/acme/web": async (req: Request) => {
+          const body = (await req.clone().json()) as { settings_schema: Schema | null };
+          return body.settings_schema === null
+            ? json(repo())
+            : json(repo({ schema_source: "settings", settings_schema: body.settings_schema }));
+        },
+      },
+      [repo({ schema_source: "settings", settings_schema: SCHEMA })],
+    );
     const web = await repoGroup();
     await userEvent.click(web.getByRole("button", { name: "Use the default for acme/web" }));
+    // Nothing is sent until the author confirms; Cancel keeps everything.
+    const confirm = await screen.findByRole("alertdialog", { name: "Use the default for acme/web?" });
+    expect(confirm).toHaveTextContent("Your aliases and areas will be removed.");
+    await userEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(sent(calls, "PATCH", "/api/issues/repos/acme/web")).toHaveLength(0);
+
+    await userEvent.click(web.getByRole("button", { name: "Use the default for acme/web" }));
+    const again = await screen.findByRole("alertdialog", { name: "Use the default for acme/web?" });
+    await userEvent.click(within(again).getByRole("button", { name: "Use the default" }));
     await waitFor(() => expect(sent(calls, "PATCH", "/api/issues/repos/acme/web")).toHaveLength(1));
     expect(await bodyOf(sent(calls, "PATCH", "/api/issues/repos/acme/web")[0] as Request)).toEqual({
       settings_schema: null,
     });
+    const undo = (await screen.findAllByRole("button", { name: "Undo" }))[0] as HTMLElement;
+    await userEvent.click(undo);
+    await waitFor(() => expect(sent(calls, "PATCH", "/api/issues/repos/acme/web")).toHaveLength(2));
+    expect(await bodyOf(sent(calls, "PATCH", "/api/issues/repos/acme/web")[1] as Request)).toEqual({
+      settings_schema: SCHEMA,
+    });
+  });
+
+  it("lists the repo's labels the schema doesn't map, and picks one as an alias by its exact name", async () => {
+    const calls = renderIssues({ "PATCH /api/issues/repos/acme/web": () => json(repo()) }, [
+      repo({ unmapped_labels: ["wontfix", "Needs Design", `x${String.fromCodePoint(0x202e)}y`] }),
+    ]);
+    const web = await repoGroup();
+    const unmapped = web.getByRole("list", { name: "Labels on GitHub not in the schema" });
+    expect(within(unmapped).getAllByRole("listitem")).toHaveLength(3);
+    expect(within(unmapped).getByText("⟪U+202E⟫")).toBeInTheDocument();
+    await userEvent.selectOptions(web.getByRole("combobox", { name: "Alias of… for Needs Design" }), "design-needed");
+    expect(web.getByRole("textbox", { name: "Aliases of design-needed" })).toHaveValue("design needed\nNeeds Design");
+    expect(within(unmapped).getAllByRole("listitem")).toHaveLength(2);
+    await userEvent.click(web.getByRole("button", { name: "Save labels for acme/web" }));
+    await waitFor(() => expect(sent(calls, "PATCH", "/api/issues/repos/acme/web")).toHaveLength(1));
+    const body = (await bodyOf(sent(calls, "PATCH", "/api/issues/repos/acme/web")[0] as Request)) as {
+      settings_schema: Schema;
+    };
+    expect(body.settings_schema.readiness[1]).toEqual(value("design-needed", ["design needed", "Needs Design"]));
+  });
+
+  it("shows a labels.yml repo's unmapped labels without offering to map them here", async () => {
+    renderIssues({}, [repo({ schema_source: "repo", unmapped_labels: ["wontfix"] })]);
+    const web = await repoGroup();
+    expect(web.getByRole("list", { name: "Labels on GitHub not in the schema" })).toHaveTextContent("wontfix");
+    expect(web.queryByRole("combobox", { name: "Alias of… for wontfix" })).toBeNull();
+    expect(web.getByText(/add them as aliases in .jesinia\/labels.yml/)).toBeInTheDocument();
   });
 
   it("shows a labels.yml schema read-only", async () => {
@@ -387,7 +438,10 @@ describe("Settings → Issues: the edges", () => {
   it("keeps the aliases typed for an area, says a migrated repo is, and lists a plain delete", async () => {
     const calls = renderIssues(
       {
-        "PATCH /api/issues/repos/acme/web": () => json(repo()),
+        "PATCH /api/issues/repos/acme/web": async (req: Request) => {
+          const body = (await req.clone().json()) as { settings_schema: Schema };
+          return json(repo({ migrated: true, schema_source: "settings", settings_schema: body.settings_schema }));
+        },
         "POST /api/issues/labels/acme/web/preview": () =>
           json({
             ...PLAN,
@@ -418,8 +472,9 @@ describe("Settings → Issues: the edges", () => {
       settings_schema: Schema;
     };
     expect(body.settings_schema.areas).toEqual([value("area:cli", ["cli", "command line"])]);
-    await userEvent.click(web.getByRole("button", { name: "Preview migration for acme/web" }));
-    const plan = await web.findByRole("region", { name: "Migration for acme/web" });
+    const saved = await repoGroup(); // the saved schema starts the form again
+    await userEvent.click(saved.getByRole("button", { name: "Preview migration for acme/web" }));
+    const plan = await saved.findByRole("region", { name: "Migration for acme/web" });
     expect(within(plan).getByRole("listitem")).toHaveTextContent("Delete old");
   });
 
@@ -459,5 +514,119 @@ describe("Settings → Issues: the suggestion runner", () => {
     await userEvent.selectOptions(picker, "");
     await waitFor(() => expect(sent(calls, "PATCH", "/api/issues/settings")).toHaveLength(2));
     expect(await bodyOf(sent(calls, "PATCH", "/api/issues/settings")[1] as Request)).toEqual({ runner: null });
+  });
+});
+
+describe("Settings → Issues: final review minors", () => {
+  it("M1: names hidden characters in accessible names and in untrusted causes", async () => {
+    const rlo = String.fromCodePoint(0x202e);
+    const sneaky = { ...SCHEMA, areas: [value(`area:a${rlo}b`)] };
+    renderIssues({}, [
+      repo({
+        schema_source: "settings",
+        settings_schema: sneaky,
+        label_schema: sneaky,
+        sync_error: `bad${rlo}sync`,
+        schema_errors: [`areas[1]: x${rlo}y`],
+      }),
+    ]);
+    const web = await repoGroup();
+    expect(web.getByRole("textbox", { name: "Aliases of area:a⟪U+202E⟫b" })).toBeInTheDocument();
+    expect(web.getByRole("button", { name: "Remove area:a⟪U+202E⟫b" })).toBeInTheDocument();
+    const group = screen.getByRole("group", { name: "acme/web" });
+    expect(group).toHaveTextContent("Last sync failed: bad⟪U+202E⟫sync");
+    expect(group).toHaveTextContent("areas[1]: x⟪U+202E⟫y");
+  });
+
+  it("M2: a failed settings read is a load error, never a wrong Automatic; the option says Claude Code", async () => {
+    let fail = true;
+    renderIssues({
+      "GET /api/issues/settings": () =>
+        fail ? json({ error: "x", detail: "settings unreadable" }, 500) : json({ runner: "codex" }),
+    });
+    const issues = await section();
+    expect(await issues.findByText(/Couldn't load the Issues settings: settings unreadable/)).toBeInTheDocument();
+    fail = false;
+    await userEvent.click(issues.getByRole("button", { name: "Try again" }));
+    const picker = await issues.findByRole("combobox", { name: "Suggestions runner" });
+    expect(picker).toHaveValue("codex");
+    expect(within(picker).getByRole("option", { name: "Automatic (Claude Code when available)" })).toBeInTheDocument();
+  });
+
+  it("M3: a refused apply offers Preview again instead of replaying the refusal", async () => {
+    const calls = renderIssues({
+      "POST /api/issues/labels/acme/web/preview": () => json(PLAN),
+      "POST /api/issues/labels/acme/web/apply": () =>
+        json({ error: "LabelPlanExpiredError", detail: "the plan expired; preview again" }, 409),
+    });
+    const web = await repoGroup();
+    await userEvent.click(web.getByRole("button", { name: "Preview setup for acme/web" }));
+    const plan = await web.findByRole("region", { name: "Setup for acme/web" });
+    await userEvent.click(within(plan).getByRole("button", { name: "Apply setup" }));
+    expect(await within(plan).findByRole("alert")).toHaveTextContent("the plan expired; preview again");
+    expect(within(plan).queryByRole("button", { name: "Apply setup" })).toBeNull();
+    await userEvent.click(within(plan).getByRole("button", { name: "Preview again" }));
+    await waitFor(() => expect(sent(calls, "POST", "/api/issues/labels/acme/web/preview")).toHaveLength(2));
+  });
+
+  it("M3: an apply that got no answer keeps Apply, with the same key, to retry", async () => {
+    let attempt = 0;
+    const calls = renderIssues({
+      "POST /api/issues/labels/acme/web/preview": () => json(PLAN),
+      "POST /api/issues/labels/acme/web/apply": () =>
+        attempt++ === 0
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : json({ repo: "acme/web", kind: "setup", complete: true, steps: [], note: null, stopped: null, rate_limited: false, rate_limited_until: null }), // prettier-ignore
+    });
+    const web = await repoGroup();
+    await userEvent.click(web.getByRole("button", { name: "Preview setup for acme/web" }));
+    const plan = await web.findByRole("region", { name: "Setup for acme/web" });
+    await userEvent.click(within(plan).getByRole("button", { name: "Apply setup" }));
+    expect(await within(plan).findByRole("alert")).toHaveTextContent("Failed to fetch");
+    await userEvent.click(within(plan).getByRole("button", { name: "Apply setup" }));
+    await within(plan).findByText("Setup applied: every step done.");
+    const keys = sent(calls, "POST", "/api/issues/labels/acme/web/apply").map((r) => r.headers.get("Idempotency-Key"));
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  it("M4: the watched box and the runner wait for their save", async () => {
+    let release: (r: Response) => void = () => undefined;
+    renderIssues({
+      "PATCH /api/issues/repos/acme/web": () => new Promise<Response>((resolve) => (release = resolve)),
+      "PATCH /api/issues/settings": () => new Promise<Response>(() => undefined),
+    });
+    const web = await repoGroup();
+    const box = web.getByRole("checkbox", { name: "Watched" });
+    await userEvent.click(box);
+    expect(box).toBeDisabled();
+    release(json(repo({ watched: false })));
+    await waitFor(() => expect(web.getByRole("checkbox", { name: "Watched" })).not.toBeDisabled());
+    const picker = (await section()).getByRole("combobox", { name: "Suggestions runner" });
+    await userEvent.selectOptions(picker, "codex");
+    expect(picker).toBeDisabled();
+  });
+
+  it("M5: Add area refuses a name without area: and a duplicate", async () => {
+    renderIssues();
+    const web = await repoGroup();
+    const field = web.getByRole("textbox", { name: "New area" });
+    await userEvent.type(field, "wiki");
+    await userEvent.click(web.getByRole("button", { name: "Add area" }));
+    expect(await web.findByText("An area starts with area:.")).toBeInTheDocument();
+    await userEvent.clear(field);
+    await userEvent.type(field, "AREA:CLI");
+    await userEvent.click(web.getByRole("button", { name: "Add area" }));
+    expect(await web.findByText("area:cli is already an area.")).toBeInTheDocument();
+    expect(web.getAllByRole("button", { name: /^Remove area:/ })).toHaveLength(1);
+  });
+
+  it("M6: the previews wait while alias edits are unsaved", async () => {
+    renderIssues();
+    const web = await repoGroup();
+    await userEvent.type(web.getByRole("textbox", { name: "Aliases of agent-ready" }), "ready");
+    expect(web.getByRole("button", { name: "Preview migration for acme/web" })).toBeDisabled();
+    expect(web.getByRole("button", { name: "Preview setup for acme/web" })).toBeDisabled();
+    expect(web.getByText("Save labels first: the previews plan from the saved schema.")).toBeInTheDocument();
   });
 });

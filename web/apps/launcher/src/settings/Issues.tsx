@@ -7,8 +7,8 @@
 // hidden and direction-changing characters as visible tokens (R62).
 import { errorText, withIdempotency, type components } from "@jesinia/client";
 import { Badge, Button, Input, Panel, useToast } from "@jesinia/design";
-import { RUNNER_NAMES, useClient, VisibleText, type ServerStatus } from "@jesinia/shell";
-import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
+import { RUNNER_NAMES, useClient, VisibleText, visibleText, type ServerStatus } from "@jesinia/shell";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import s from "../settings.module.css";
 import { sentence, unreachable } from "./unreachable";
 
@@ -94,13 +94,17 @@ function OpText({ op }: { op: Op }) {
 }
 
 /** A previewed batch: its steps, then Apply (an approval) and each step's outcome. */
-function PlanView({ repo, plan }: { repo: string; plan: Plan }) {
+function PlanView({ repo, plan, onPreviewAgain }: { repo: string; plan: Plan; onPreviewAgain: () => void }) {
   const client = useClient();
-  // One key per plan: a retry after no answer is the same approval, never a second batch.
+  // One key per plan: a retry after no answer (or a 5xx, never stored under it) is the same
+  // approval, never a second batch.
   const [key] = useState(() => withIdempotency());
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<Applied | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // A 4xx (the plan expired, changed or is gone) is stored under the key: replaying it only
+  // repeats the refusal, so the plan is spent and only a fresh preview helps.
+  const [spent, setSpent] = useState(false);
   const kind = KIND[plan.kind];
 
   const apply = async () => {
@@ -114,7 +118,10 @@ function PlanView({ repo, plan }: { repo: string; plan: Plan }) {
       // A 503 still carries the steps so far (GitHub stopped the batch).
       const body = (r.data ?? r.error) as Applied | { detail?: unknown } | undefined;
       if (body && "steps" in body) setResult(body);
-      else setProblem(errorText(r.error, `HTTP ${r.response.status}`));
+      else {
+        setProblem(errorText(r.error, `HTTP ${r.response.status}`));
+        if (r.response.status >= 400 && r.response.status < 500) setSpent(true);
+      }
     } catch (e) {
       setProblem(unreachable(e));
     } finally {
@@ -147,11 +154,13 @@ function PlanView({ repo, plan }: { repo: string; plan: Plan }) {
                   <OpText op={op} />
                 </span>
                 {op.skip_cause && !done ? (
-                  <span className={s.error}>{`Skipped: ${sentence(op.skip_cause)}`}</span>
+                  <span className={s.error}>
+                    <VisibleText text={`Skipped: ${sentence(op.skip_cause)}`} />
+                  </span>
                 ) : null}
                 {done ? (
                   <span className={done.state === "done" ? s.muted : s.error}>
-                    {done.cause ? `${STEP[done.state]}: ${done.cause}` : STEP[done.state]}
+                    <VisibleText text={done.cause ? `${STEP[done.state]}: ${done.cause}` : STEP[done.state]} />
                   </span>
                 ) : null}
               </li>
@@ -171,10 +180,17 @@ function PlanView({ repo, plan }: { repo: string; plan: Plan }) {
           {problem}
         </p>
       ) : null}
-      {plan.ops.length > 0 && result === null ? (
+      {plan.ops.length > 0 && result === null && !spent ? (
         <div className={s.actions}>
           <Button size="sm" variant="primary" loading={applying} onClick={() => void apply()}>
             {`Apply ${kind.toLowerCase()}`}
+          </Button>
+        </div>
+      ) : null}
+      {spent || (result !== null && !result.complete) ? (
+        <div className={s.actions}>
+          <Button size="sm" onClick={onPreviewAgain}>
+            Preview again
           </Button>
         </div>
       ) : null}
@@ -209,7 +225,7 @@ function CanonicalRow({
       </strong>
       {editable ? (
         <Input
-          label={`Aliases of ${value.name}`}
+          label={`Aliases of ${visibleText(value.name)}`}
           hideLabel
           multiline
           value={text}
@@ -232,7 +248,7 @@ function CanonicalRow({
         </span>
       )}
       {editable && onRemove ? (
-        <Button size="sm" variant="ghost" aria-label={`Remove ${value.name}`} onClick={onRemove}>
+        <Button size="sm" variant="ghost" aria-label={`Remove ${visibleText(value.name)}`} onClick={onRemove}>
           Remove
         </Button>
       ) : null}
@@ -240,34 +256,69 @@ function CanonicalRow({
   );
 }
 
-/** One repo: watched, its schema and aliases, and the label batches. */
+/** How label names compare (as the server's `label_key`, near enough): NFC, trimmed, no case. */
+const labelKey = (name: string) => name.normalize("NFC").trim().toLowerCase();
+const AREA_PREFIX = "area:";
+
+/** One repo: watched, its schema and aliases, the labels it doesn't map, and the label batches. */
 function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) => Promise<boolean> }) {
   const client = useClient();
+  const toast = useToast();
   const editable = config.schema_source !== "repo";
   const base = config.settings_schema ?? config.label_schema;
   const [draft, setDraft] = useState<Draft>(() => draftOf(base));
+  // Bumped when an alias is picked from the repo's labels, so the alias editors start again
+  // from the draft (they keep their own text while typed in).
+  const [picked, setPicked] = useState(0);
   const [newArea, setNewArea] = useState("");
+  const [areaError, setAreaError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [watching, setWatching] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   // Each preview is a fresh plan view, even when the server answers the same plan again.
   const [plan, setPlan] = useState<{ plan: Plan; n: number } | null>(null);
   const [previewing, setPreviewing] = useState<Kind | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const cancelRef = useRef<HTMLButtonElement | HTMLAnchorElement>(null);
+  useEffect(() => {
+    if (confirming) cancelRef.current?.focus();
+  }, [confirming]);
 
-  const setAliases = (dimension: keyof Draft["dimensions"], index: number, aliases: string[]) =>
-    setDraft((d) => ({
-      ...d,
-      dimensions: {
-        ...d.dimensions,
-        [dimension]: d.dimensions[dimension].map((v, i) => (i === index ? { ...v, aliases } : v)),
-      },
-    }));
-  const setAreaAliases = (index: number, aliases: string[]) =>
-    setDraft((d) => ({ ...d, areas: d.areas.map((v, i) => (i === index ? { ...v, aliases } : v)) }));
+  const values = (d: Draft) => [...DIMENSIONS.flatMap(([dim]) => d.dimensions[dim]), ...d.areas];
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(draftOf(base));
+  const mapped = new Set(values(draft).flatMap((v) => [v.name, ...(v.aliases ?? [])].map(labelKey)));
+  const unmapped = config.unmapped_labels.filter((name) => !mapped.has(labelKey(name)));
+
+  const mapValue = (d: Draft, name: string, change: (v: Canonical) => Canonical): Draft => ({
+    dimensions: {
+      readiness: d.dimensions.readiness.map((v) => (v.name === name ? change(v) : v)),
+      priority: d.dimensions.priority.map((v) => (v.name === name ? change(v) : v)),
+      type: d.dimensions.type.map((v) => (v.name === name ? change(v) : v)),
+    },
+    areas: d.areas.map((v) => (v.name === name ? change(v) : v)),
+  });
+  const setAliases = (name: string, aliases: string[]) =>
+    setDraft((d) => mapValue(d, name, (v) => ({ ...v, aliases })));
+  /** The repo's label, by its exact GitHub spelling, as an alias of `canonical`. */
+  const pickAlias = (label: string, canonical: string) => {
+    setDraft((d) => mapValue(d, canonical, (v) => ({ ...v, aliases: [...(v.aliases ?? []), label] })));
+    setPicked((n) => n + 1);
+  };
 
   const addArea = (e: FormEvent) => {
     e.preventDefault();
     const name = newArea.trim();
     if (!name) return;
+    if (!labelKey(name).startsWith(AREA_PREFIX) || labelKey(name) === AREA_PREFIX) {
+      setAreaError(`An area starts with ${AREA_PREFIX}.`);
+      return;
+    }
+    const taken = draft.areas.find((v) => labelKey(v.name) === labelKey(name));
+    if (taken) {
+      setAreaError(`${visibleText(taken.name)} is already an area.`);
+      return;
+    }
+    setAreaError(null);
     setDraft((d) => ({ ...d, areas: [...d.areas, { name, aliases: [] }] }));
     setNewArea("");
   };
@@ -277,6 +328,24 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
     const schema: Schema = { ...base, ...draft.dimensions, areas: draft.areas };
     await save({ settings_schema: schema });
     setSaving(false);
+  };
+
+  const toggleWatched = async (watched: boolean) => {
+    setWatching(true);
+    await save({ watched });
+    setWatching(false);
+  };
+
+  /** After the confirm: clear the Settings schema, with Undo putting it back as it was. */
+  const useDefault = async () => {
+    setConfirming(false);
+    const previous = config.settings_schema;
+    if (!(await save({ settings_schema: null })) || previous === null) return;
+    toast.show({
+      tone: "info",
+      message: `${config.repo} uses the default label convention now.`,
+      action: { label: "Undo", onAction: () => void save({ settings_schema: previous }) },
+    });
   };
 
   const preview = async (kind: Kind) => {
@@ -294,14 +363,33 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
     else setProblem(outcome.error);
   };
 
+  const row = (v: Canonical, onRemove?: () => void) => (
+    <CanonicalRow
+      key={`${v.name}|${picked}`}
+      value={v}
+      editable={editable}
+      onAliases={(aliases) => setAliases(v.name, aliases)}
+      {...(onRemove ? { onRemove } : {})}
+    />
+  );
+
   return (
     <fieldset className={s.repo}>
       <legend className={s.repoName}>{config.repo}</legend>
       <label className={s.check}>
-        <input type="checkbox" checked={config.watched} onChange={(e) => void save({ watched: e.target.checked })} />
+        <input
+          type="checkbox"
+          checked={config.watched}
+          disabled={watching}
+          onChange={(e) => void toggleWatched(e.target.checked)}
+        />
         Watched
       </label>
-      {config.sync_error ? <p className={s.error}>{`Last sync failed: ${config.sync_error}`}</p> : null}
+      {config.sync_error ? (
+        <p className={s.error}>
+          <VisibleText text={`Last sync failed: ${config.sync_error}`} />
+        </p>
+      ) : null}
       <div>
         <h3 className={s.settingTitle}>Label schema</h3>
         <p className={s.muted}>{SOURCE[config.schema_source]}</p>
@@ -309,7 +397,7 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
           <ul className={s.plainList}>
             {config.schema_errors.map((error) => (
               <li key={error} className={s.error}>
-                {error}
+                <VisibleText text={error} />
               </li>
             ))}
           </ul>
@@ -318,30 +406,15 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
       {DIMENSIONS.map(([dimension, title]) => (
         <div key={dimension}>
           <h4 className={s.settingTitle}>{title}</h4>
-          <ul className={s.list}>
-            {draft.dimensions[dimension].map((v, i) => (
-              <CanonicalRow
-                key={v.name}
-                value={v}
-                editable={editable}
-                onAliases={(aliases) => setAliases(dimension, i, aliases)}
-              />
-            ))}
-          </ul>
+          <ul className={s.list}>{draft.dimensions[dimension].map((v) => row(v))}</ul>
         </div>
       ))}
       <div>
         <h4 className={s.settingTitle}>Areas</h4>
         <ul className={s.list}>
-          {draft.areas.map((v, i) => (
-            <CanonicalRow
-              key={v.name}
-              value={v}
-              editable={editable}
-              onAliases={(aliases) => setAreaAliases(i, aliases)}
-              onRemove={() => setDraft((d) => ({ ...d, areas: d.areas.filter((_, j) => j !== i) }))}
-            />
-          ))}
+          {draft.areas.map((v) =>
+            row(v, () => setDraft((d) => ({ ...d, areas: d.areas.filter((a) => a.name !== v.name) }))),
+          )}
         </ul>
         {editable ? (
           <form className={s.actions} onSubmit={addArea}>
@@ -350,6 +423,7 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
               hideLabel
               placeholder="area:name"
               value={newArea}
+              error={areaError ?? undefined}
               onChange={(e) => setNewArea(e.target.value)}
             />
             <Button size="sm" type="submit">
@@ -358,16 +432,70 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
           </form>
         ) : null}
       </div>
+      {unmapped.length > 0 ? (
+        <div>
+          <h4 className={s.settingTitle}>Labels on GitHub not in the schema</h4>
+          <p className={s.muted}>
+            {editable
+              ? "Pick what each one means to keep its exact name as an alias, then save."
+              : "To count them, add them as aliases in .jesinia/labels.yml."}
+          </p>
+          <ul className={s.list} aria-label="Labels on GitHub not in the schema">
+            {unmapped.map((label) => (
+              <li key={label} className={s.item}>
+                <span className={s.mono}>
+                  <VisibleText text={label} />
+                </span>
+                {editable ? (
+                  <select
+                    className={s.select}
+                    aria-label={`Alias of… for ${visibleText(label)}`}
+                    value=""
+                    onChange={(e) => pickAlias(label, e.target.value)}
+                  >
+                    <option value="">Alias of…</option>
+                    {values(draft).map((v) => (
+                      <option key={v.name} value={v.name}>
+                        {visibleText(v.name)}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {editable ? (
         <div className={s.actions}>
           <Button size="sm" loading={saving} onClick={() => void saveSchema()}>
             {`Save labels for ${config.repo}`}
           </Button>
           {config.settings_schema !== null ? (
-            <Button size="sm" variant="ghost" onClick={() => void save({ settings_schema: null })}>
+            <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>
               {`Use the default for ${config.repo}`}
             </Button>
           ) : null}
+        </div>
+      ) : null}
+      {confirming ? (
+        <div
+          className={s.form}
+          role="alertdialog"
+          aria-label={`Use the default for ${config.repo}?`}
+          aria-describedby={`${config.repo}-default-why`}
+        >
+          <p id={`${config.repo}-default-why`}>
+            {`Use the default label convention for ${config.repo}? Your aliases and areas will be removed.`}
+          </p>
+          <div className={s.actions}>
+            <Button size="sm" variant="primary" onClick={() => void useDefault()}>
+              Use the default
+            </Button>
+            <Button ref={cancelRef} size="sm" variant="ghost" onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+          </div>
         </div>
       ) : null}
       <div>
@@ -378,11 +506,12 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
           {config.migrated ? " This repo has been migrated." : ""}
         </p>
       </div>
+      {isDirty ? <p className={s.muted}>Save labels first: the previews plan from the saved schema.</p> : null}
       <div className={s.actions}>
-        <Button size="sm" loading={previewing === "setup"} onClick={() => void preview("setup")}>
+        <Button size="sm" disabled={isDirty} loading={previewing === "setup"} onClick={() => void preview("setup")}>
           {`Preview setup for ${config.repo}`}
         </Button>
-        <Button size="sm" loading={previewing === "migrate"} onClick={() => void preview("migrate")}>
+        <Button size="sm" disabled={isDirty} loading={previewing === "migrate"} onClick={() => void preview("migrate")}>
           {`Preview migration for ${config.repo}`}
         </Button>
       </div>
@@ -391,7 +520,14 @@ function RepoForm({ config, save }: { config: Repo; save: (change: RepoPatch) =>
           {problem}
         </p>
       ) : null}
-      {plan ? <PlanView key={plan.n} repo={config.repo} plan={plan.plan} /> : null}
+      {plan ? (
+        <PlanView
+          key={plan.n}
+          repo={config.repo}
+          plan={plan.plan}
+          onPreviewAgain={() => void preview(plan.plan.kind)}
+        />
+      ) : null}
     </fieldset>
   );
 }
@@ -410,18 +546,23 @@ export function IssuesSection({ status }: { status: ServerStatus }) {
   const [adding, setAdding] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [choosing, setChoosing] = useState(false);
 
   useEffect(() => {
     setLoadError(null);
     void (async () => {
       try {
         const [r, settings] = await Promise.all([client.GET("/api/issues/repos"), client.GET("/api/issues/settings")]);
-        if (!r.data) {
-          setLoadError({ cause: errorText(r.error, `HTTP ${r.response.status}`), answered: true });
+        // Either read failing is a load error: a runner shown as "Automatic" while another is
+        // stored would mislead.
+        const failed = !r.data ? r : !settings.data ? settings : null;
+        if (failed || !r.data || !settings.data) {
+          const answer = failed ?? r;
+          setLoadError({ cause: errorText(answer.error, `HTTP ${answer.response.status}`), answered: true });
           return;
         }
         setRepos(r.data.repos);
-        setRunner(settings.data ? settings.data.runner : null);
+        setRunner(settings.data.runner);
       } catch (e) {
         setLoadError({ cause: unreachable(e), answered: false });
       }
@@ -480,6 +621,7 @@ export function IssuesSection({ status }: { status: ServerStatus }) {
   };
 
   const chooseRunner = async (picked: string) => {
+    setChoosing(true);
     const outcome = await attempt(() =>
       client.PATCH("/api/issues/settings", {
         params: { header: withIdempotency() },
@@ -491,6 +633,7 @@ export function IssuesSection({ status }: { status: ServerStatus }) {
       const name = outcome.data.runner;
       toast.show({ tone: "success", message: `Suggestions: ${name ? (RUNNER_NAMES[name] ?? name) : "automatic"}.` });
     } else toast.show({ tone: "danger", message: `Couldn't save the runner: ${outcome.error}` });
+    setChoosing(false);
   };
 
   const runners = [...new Set([...Object.keys(status.runners ?? {}), ...(runner ? [runner] : [])])];
@@ -534,9 +677,10 @@ export function IssuesSection({ status }: { status: ServerStatus }) {
               id={runnerId}
               className={s.select}
               value={runner ?? ""}
+              disabled={choosing}
               onChange={(e) => void chooseRunner(e.target.value)}
             >
-              <option value="">Automatic (the first available)</option>
+              <option value="">Automatic (Claude Code when available)</option>
               {runners.map((id) => (
                 <option key={id} value={id}>
                   {RUNNER_NAMES[id] ?? id}
