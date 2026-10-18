@@ -17,7 +17,8 @@ Pure: exposures, the clock and counts in, a score out.
   - a unit with no weighted exposure of its own gets a prior instead (R82, spec §3.1 "how
     novel or distant"): the recency of its nearest top unit (one of the author's
     ``TOP_UNITS`` best-known units) times ``1 - distance``, the share of the unit's path not
-    shared with it. A unit with evidence of its own is scored on that alone;
+    shared with it, capped at ``NOVEL_PRIOR_CAP`` so a novel area never proposes quick
+    (R83). A unit with evidence of its own is scored on that alone;
   - times ``1 - c / (c + CHANGE_SCALE)``, ``c`` the lines changed in the unit since the
     author's last exposure;
   - an override wins: ``known`` is 1.0, ``unknown`` 0.0; an override on a folder covers
@@ -65,6 +66,9 @@ KIND_WEIGHTS: Mapping[ExposureKind, float] = {
 CHANGE_SCALE = 200
 # What commits alone can add up to: below the quick threshold (R80).
 COMMIT_RECENCY_CAP = LOW_FAMILIARITY - 0.05
+# What a novel area's prior can reach: below the quick threshold, so code new to the author
+# never looks familiar on its own (R83, spec §3.1).
+NOVEL_PRIOR_CAP = 0.3
 MAX_UNIT_DEPTH = 3
 TOP_UNITS = 10
 # A quiz passes with at least this share of the answered questions right (builder's call).
@@ -367,7 +371,7 @@ def familiarity(
 ) -> float:
     """The author's familiarity with ``record.unit`` in [0, 1] (see the module docstring).
     ``distance`` and ``prior`` (the nearest top unit's recency) apply only to a unit with no
-    weighted exposure of its own (R82).
+    weighted exposure of its own (R82), capped at ``NOVEL_PRIOR_CAP`` (R83).
 
     Raises:
         KnowledgeInputError: negative changes, a distance or prior outside 0 to 1, a naive
@@ -386,7 +390,7 @@ def familiarity(
     if has_evidence(record.exposures):
         base = recency(record.exposures, now)
     else:
-        base = prior * (1.0 - distance)
+        base = min(prior * (1.0 - distance), NOVEL_PRIOR_CAP)
     return base * (1.0 - changed)
 
 

@@ -33,6 +33,7 @@ from jesinia.apps.review.domain.knowledge import (
     HALF_LIFE,
     KIND_WEIGHTS,
     MAX_UNIT_DEPTH,
+    NOVEL_PRIOR_CAP,
     SUMMARY_CHARS,
     Exposure,
     ExposureKind,
@@ -84,6 +85,7 @@ def exposures(*items: tuple[ExposureKind, timedelta]) -> tuple[Exposure, ...]:
 
 
 CAP = COMMIT_RECENCY_CAP
+PRIOR_CAP = NOVEL_PRIOR_CAP
 
 
 @pytest.mark.parametrize(
@@ -116,8 +118,10 @@ CAP = COMMIT_RECENCY_CAP
         pytest.param((("commit", 0 * DAY),), 600, 0.5, 0.0, None, CAP * 0.25, id="changes"),
         # R82: distance is a prior for units with no weighted exposure of their own.
         pytest.param((("review_deep", 0 * DAY),), 0, 1.0, 0.0, None, 1.0, id="own evidence"),
-        pytest.param((), 0, 0.25, 0.8, None, 0.6, id="prior, a quarter distant"),
-        pytest.param((("quiz_fail", 0 * DAY),), 0, 0.5, 0.8, None, 0.4, id="prior, quiz fail"),
+        # R83: a novel area's prior is capped below the quick threshold.
+        pytest.param((), 0, 0.25, 0.8, None, PRIOR_CAP, id="prior, a quarter distant"),
+        pytest.param((), 0, 0.75, 0.8, None, 0.2, id="prior below the cap"),
+        pytest.param((("quiz_fail", 0 * DAY),), 0, 0.5, 0.8, None, PRIOR_CAP, id="quiz fail"),
         pytest.param((), 0, 1.0, 0.9, None, 0.0, id="prior, fully distant"),
         pytest.param((), 0, 1.0, 0.0, "known", 1.0, id="known wins over no record"),
         pytest.param((("review_deep", 0 * DAY),), 0, 0.0, 0.0, "unknown", 0.0, id="unknown"),
@@ -706,8 +710,8 @@ async def test_overrides_win(kenv: KEnv) -> None:
     await kenv.service.ingest()
     src, docs = parse_unit("repo/acme/web/src"), parse_unit("repo/acme/web/docs")
     assert kenv.service.familiarity(WEB, ["src/a.py"]) == pytest.approx(1.0)
-    # docs has no record: its prior is the root's (well known) halved by distance (R82).
-    assert kenv.service.familiarity(WEB, ["docs/x.md"]) == pytest.approx(0.5)
+    # docs has no record: its prior (R82), capped below quick for a novel area (R83).
+    assert kenv.service.familiarity(WEB, ["docs/x.md"]) == pytest.approx(NOVEL_PRIOR_CAP)
     assert kenv.service.set_override(src, "unknown").familiarity == 0.0
     assert kenv.service.set_override(docs, "known").familiarity == 1.0
     assert kenv.service.familiarity(WEB, ["src/a.py"]) == 0.0
@@ -751,8 +755,8 @@ async def test_depth_uses_min_familiarity_over_touched_paths(kenv: KEnv) -> None
     assert kenv.service.familiarity(WEB, ["src/a.py", "src/b/c.py"]) == pytest.approx(1.0)
     # A folder with no record of its own gets the prior: its nearest top unit (the root),
     # less its distance (R82); the minimum over the touched paths wins.
-    assert kenv.service.familiarity(WEB, ["src/a.py", "new/x.py"]) == pytest.approx(0.5)
-    assert kenv.service.familiarity(WEB, ["src/a.py", "src/new/deep/x.py"]) == pytest.approx(0.5)
+    assert kenv.service.familiarity(WEB, ["src/a.py", "new/x.py"]) == pytest.approx(0.3)
+    assert kenv.service.familiarity(WEB, ["src/a.py", "src/new/deep/x.py"]) == pytest.approx(0.3)
     assert kenv.service.familiarity(WEB, []) is None
 
 
@@ -1148,3 +1152,16 @@ async def test_changes_count_from_when_code_landed(kenv: KEnv) -> None:
     await kenv.service.ingest()
     (src,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src"]
     assert src.changes_since_last == 100
+
+
+async def test_a_new_folder_in_a_well_known_repo_still_proposes_deep(kenv: KEnv) -> None:
+    """R83: code new to the author needs a closer look (spec §3.1); well-known code alone
+    can still be quick."""
+    kenv.done_round(1, "deep", ["src/a.py", "src/b.py"])
+    kenv.done_round(2, "deep", ["src/c.py"])
+    await kenv.service.ingest()
+    known = kenv.service.familiarity(WEB, ["src/a.py"])
+    assert known is not None and propose_depth(10, 1, known) == "quick"
+    novel = kenv.service.familiarity(WEB, ["src/a.py", "src/brand_new/x.py"])
+    assert novel is not None and novel < LOW_FAMILIARITY
+    assert propose_depth(10, 1, novel) == "deep"
