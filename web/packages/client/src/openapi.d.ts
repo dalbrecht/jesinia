@@ -549,6 +549,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Settings */
+        get: operations["get_settings_api_agents_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Settings
+         * @description Save Settings → Agents. Applies from each runner's next turn, no restart needed.
+         */
+        patch: operations["patch_settings_api_agents_settings_patch"];
+        trace?: never;
+    };
     "/api/agents/runners": {
         parameters: {
             query?: never;
@@ -2766,6 +2787,27 @@ export interface components {
             name: string;
         };
         /**
+         * AgentSettingsOut
+         * @description Settings → Agents: each runner's model and where it comes from.
+         */
+        AgentSettingsOut: {
+            /** Models */
+            models: {
+                [key: string]: components["schemas"]["RunnerModelOut"];
+            };
+        };
+        /**
+         * AgentSettingsPatch
+         * @description A partial update: a runner left out keeps its model; ``null`` clears it (back to the
+         *     environment variable, else the CLI's default).
+         */
+        AgentSettingsPatch: {
+            /** Codex */
+            codex?: string | null;
+            /** Claude-Code */
+            "claude-code"?: string | null;
+        };
+        /**
          * ApplyBatchOut
          * @description A batch and its result. ``status``: ``running`` (poll ``GET /pending/{id}``; steps not
          *     reached yet are ``skipped``, ``not run yet``), ``finished`` (the result is final) or
@@ -3853,7 +3895,7 @@ export interface components {
         /**
          * IssuesSettingsPatch
          * @description A partial save: a field left out keeps its value. ``runner: null`` follows the agents
-         *     service's preferred runner again.
+         *     service's preferred runner again. Like ``IssuesRepoPatch``, an empty body is refused.
          */
         IssuesSettingsPatch: {
             /** Runner */
@@ -5037,6 +5079,22 @@ export interface components {
              * @description For NearDuplicate: the existing tags it is close to
              */
             near?: string[] | null;
+        };
+        /** RunnerModelOut */
+        RunnerModelOut: {
+            /** Setting */
+            setting: string | null;
+            /** Environment */
+            environment: string | null;
+            /** Variable */
+            variable: string;
+            /** Effective */
+            effective: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "setting" | "environment" | "default";
         };
         /** SaveIn */
         SaveIn: {
@@ -7306,6 +7364,62 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    get_settings_api_agents_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsOut"];
+                };
+            };
+        };
+    };
+    patch_settings_api_agents_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentSettingsPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

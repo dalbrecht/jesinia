@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { errorText } from "@jesinia/client";
 import { Badge, Button, Input, Panel, useToast } from "@jesinia/design";
-import { RUNNER_NAMES, useClient, type KbPathInfo, type ServerStatus, type SyncStatus } from "@jesinia/shell";
+import { useClient, type KbPathInfo, type ServerStatus, type SyncStatus } from "@jesinia/shell";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { clock, MODE_LABEL } from "./format";
+import { AgentsSection } from "./settings/Agents";
 import { IssuesSection } from "./settings/Issues";
 import { ReviewSection } from "./settings/Review";
 import { RssSection } from "./settings/Rss";
@@ -203,47 +204,6 @@ function SyncSection({ status }: { status: ServerStatus }) {
         </div>
       ) : (
         <p className={s.muted}>Loading…</p>
-      )}
-    </Panel>
-  );
-}
-
-function AgentsSection({ status }: { status: ServerStatus }) {
-  return (
-    <Panel
-      title="Agents"
-      id="agents"
-      actions={
-        <Button size="sm" onClick={() => void status.refresh()}>
-          Check again
-        </Button>
-      }
-    >
-      {status.runners ? (
-        <ul className={s.list}>
-          {Object.entries(status.runners).map(([id, r]) => (
-            <li key={id} className={s.item}>
-              <strong>{RUNNER_NAMES[id] ?? id}</strong>
-              {r.available ? (
-                <span>
-                  <Badge tone="success" icon="✓">
-                    Available
-                  </Badge>{" "}
-                  <span className={s.muted}>{r.version ?? ""}</span>
-                </span>
-              ) : (
-                <span>
-                  <Badge tone="warn" icon="!">
-                    Unavailable
-                  </Badge>{" "}
-                  <span className={s.muted}>{r.detail}</span>
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className={s.muted}>Checking…</p>
       )}
     </Panel>
   );

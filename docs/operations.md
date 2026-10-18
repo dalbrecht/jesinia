@@ -335,6 +335,20 @@ Sessions that Jesinia launches itself don't use these registrations. Each gets i
 token through `--mcp-config` (Claude Code) or `-c mcp_servers.jesinia.*` (Codex), with
 a tool allowlist ([agents](conventions/agents.md)).
 
+### Choosing the model
+
+Settings → Agents has a **Model** field for Claude Code and for Codex. Each runner uses:
+
+1. The model saved in that field, if there is one.
+2. Otherwise `JESINIA_CLAUDE_MODEL` or `JESINIA_CODEX_MODEL` from the server's environment.
+3. Otherwise the CLI's own default.
+
+The field's note says which of these is in effect. Leave the field empty and choose
+**Save** to go back to the environment variable or the default. A change applies from
+each agent's next turn, with no restart. A model name is 1 to 100 of `A-Z a-z 0-9 . _ : -`
+and can't start with `-`. The setting is stored in `sessions.sqlite`
+(`GET` / `PATCH /api/agents/settings`).
+
 After registering, try it in a terminal: ask Claude Code or Codex to "search my Jesinia
 KB for …" (`kb_search`). In Claude Code, `/jesinia-note <topic>` drafts a note.
 

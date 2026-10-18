@@ -44,3 +44,15 @@ class SessionStore(Protocol):
         """Move a write from ``pending`` to ``state`` atomically; False if it already left
         ``pending`` (a repeated or racing approve/reject)."""
         ...
+
+
+class ModelSettingsStore(Protocol):
+    """Each runner's saved model (Settings → Agents)."""
+
+    def models(self) -> dict[str, str]:
+        """Saved models by runner; a runner with none saved is absent."""
+        ...
+
+    def set_model(self, runner: str, model: str | None) -> None:
+        """Save ``model`` for ``runner``; None clears it."""
+        ...
