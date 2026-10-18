@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
+from jesinia.apps.review.domain.followup import FollowUp
 from jesinia.apps.review.domain.gates import Depth
 from jesinia.apps.review.domain.queue import (
     PreReviewMode,
@@ -62,8 +63,9 @@ class Workspace(Protocol):
         """The best common ancestor of two commits."""
 
     async def patch_ids(self, repo: str, base_sha: str, head_sha: str) -> dict[str, str]:
-        """Each changed path mapped to the ``git patch-id --stable`` of its own diff, so a
-        pure rebase compares equal file by file and a conflict resolution does not."""
+        """Each changed path mapped to the ``git patch-id --verbatim`` of its own diff
+        (whitespace counts), so a pure rebase compares equal file by file and a conflict
+        resolution, even a whitespace-only one, does not."""
 
     async def prune(self, keep: KeepProvider) -> int:
         """Remove every worktree (and kept commit) whose SHA ``keep(repo)`` doesn't name,
@@ -168,6 +170,9 @@ class QueueStore(Protocol):
 
     def suggested_repos(self) -> list[str]: ...
 
+    def restacks(self) -> dict[tuple[str, str], str]:
+        """Sets of heads whose stack needs a restack, with the reason (R77)."""
+
     def confirm_repo(self, repo: str) -> None:
         """The author accepts ``repo``: watched, no longer suggested."""
 
@@ -251,6 +256,9 @@ class QueueStore(Protocol):
 
     def latest_rounds(self) -> dict[PrRef, RoundSummary]:
         """Each PR's latest successfully finished round."""
+
+    def current_followups(self) -> dict[PrRef, FollowUp]:
+        """Each queued PR's follow-up for its current head, where it is classified."""
 
     def put_artifact(self, round_id: int, kind: str, data: object) -> None: ...
 

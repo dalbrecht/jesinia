@@ -28,7 +28,9 @@
                     }
                   }
                 ]
-              }
+              },
+              "diffSide": "LEFT",
+              "originalStartLine": 9
             }
           ]
         }

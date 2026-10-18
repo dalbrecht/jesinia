@@ -50,6 +50,7 @@ from jesinia.apps.review.application.scheduler import (
 from jesinia.apps.review.domain.coverage import (
     Coverage,
     DiffParseError,
+    HunkRef,
     ParsedDiff,
     checked_coverage,
     coverage,
@@ -60,8 +61,9 @@ from jesinia.apps.review.domain.coverage import (
     steps_from_json,
     verified_ranges,
 )
+from jesinia.apps.review.domain.followup import FollowUp, restrict_diff
 from jesinia.apps.review.domain.gates import Depth, GateState, propose_depth
-from jesinia.apps.review.domain.jobs import JobKind, Round, recommend
+from jesinia.apps.review.domain.jobs import JobKind, Round, on_open_jobs, recommend
 from jesinia.apps.review.domain.queue import (
     PreReviewMode,
     PrHeadMovedError,
@@ -70,6 +72,15 @@ from jesinia.apps.review.domain.queue import (
     QueueDomainError,
     ReviewNotAllowedError,
     StoredPr,
+    author_kind,
+)
+from jesinia.apps.review.domain.rereview import (
+    REREVIEW_KINDS,
+    PreviousReview,
+    RereviewError,
+    RereviewInput,
+    only_hunks,
+    rereview_artifact,
 )
 from jesinia.apps.review.domain.workspace import DiffTooLargeError, WorkspaceError
 from jesinia.core.events import Event, EventBus
@@ -107,7 +118,9 @@ TRIAGE_JOBS: Final[tuple[JobKind, ...]] = (
     JobKind.RECOMMENDATION,
 )
 # What opening adds, per depth (spec §3.1): a quick review is an explanation and a guided
-# walk; a deep one has every tab. Stack walkthroughs and re-reviews come with plan Tasks 12/13.
+# walk; a deep one has every tab. A re-review adds its own job (spec §4.2, ``REREVIEW_JOBS``);
+# on the author's own PR the quiz is off unless asked for (spec §3.3, ``on_open_jobs``). A
+# stack's walkthrough runs once for the stack (``application.stacks``).
 ON_OPEN_JOBS: Final[Mapping[Depth, tuple[JobKind, ...]]] = {
     "quick": (JobKind.OVERVIEW, JobKind.WALKTHROUGH),
     "deep": (
@@ -118,6 +131,8 @@ ON_OPEN_JOBS: Final[Mapping[Depth, tuple[JobKind, ...]]] = {
         JobKind.QUIZ,
     ),
 }
+# What opening a re-review's head adds (spec §4.2): Your requests and New since your last look.
+REREVIEW_JOBS: Final[tuple[JobKind, ...]] = (JobKind.REREVIEW,)
 _GITHUB_ERRORS = (GitHubError, GitHubPayloadError, PullRequestDomainError)
 
 
@@ -139,7 +154,10 @@ Clock = Callable[[], datetime]
 # The author's knowledge of a repo, from the knowledge model (plan Task 14). Trusted
 # context for the agents, so it is built from Jesinia's own records only, never PR text.
 KnowledgeSource = Callable[[str], str]
-OpenState = Literal["started", "running", "up_to_date", "failed"] | GateState
+OpenState = Literal["started", "running", "up_to_date", "failed", "checking"] | GateState
+# Why an open waits (Codex P1 on PR #63): planning a round before its head is classified would
+# leave out the re-review for good.
+CHECKING = "checking this head against your previous review first"
 ProgressState = Literal["started", "job_started", "job_done", "job_failed", "finished", "failed"]
 
 
@@ -207,6 +225,36 @@ class PipelineJobs(Protocol):
     async def correctness_depth(self, round: Round) -> Depth: ...
 
 
+class RoundFollowUps(Protocol):
+    """Head changes (``FollowUps``): carried drafts to re-anchor, and what the head needs
+    after the author's previous review."""
+
+    async def reanchor(self, round_id: int, head_sha: str, merge_base: str) -> int: ...
+
+    def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None: ...
+
+    async def check(self, ref: PrRef) -> None:
+        """Classify ``ref``'s current head now if it isn't (a failure is recorded unchecked,
+        never raised)."""
+
+
+class RoundRereviews(Protocol):
+    """Incremental re-reviews (``Rereviews``): what the new head changed since the previous
+    review, the author's previous comments, and the new hunks' text."""
+
+    async def changed_hunks(
+        self, ref: PrRef, followup: FollowUp, head_sha: str, diff: ParsedDiff
+    ) -> frozenset[HunkRef]: ...
+
+    async def previous_review(
+        self, ref: PrRef, followup: FollowUp, head_sha: str, merge_base: str, diff: ParsedDiff
+    ) -> PreviousReview: ...
+
+    async def new_changes(
+        self, ref: PrRef, merge_base: str, head_sha: str, refs: frozenset[HunkRef]
+    ) -> tuple[str, int]: ...
+
+
 class RoundSlots(Protocol):
     """The scheduler's slots, which opened rounds share with pre-reviews (R52)."""
 
@@ -241,6 +289,9 @@ class _Prepared:
     ci: CheckState | None
     correctness_depth: Depth
     warnings: tuple[str, ...]
+    # A re-review's follow-up and the hunks new since the previous review (spec §4.2).
+    followup: FollowUp | None = None
+    new_hunks: frozenset[HunkRef] = frozenset()
 
 
 class _SingleFlight[K, T]:
@@ -294,6 +345,10 @@ class Pipeline:
         knowledge: the author's familiarity with a repo, from the knowledge model.
         slots: the scheduler, whose round slots opens wait for; without it opens run at
             once.
+        followups: head changes: a round re-anchors the drafts it carried over, and a
+            re-review of a changed rebase reviews only the files that differ (spec §4.1).
+        rereviews: incremental re-reviews (spec §4.2): a re-review's head also runs the
+            ``rereview`` job, and a changed rebase marks its unchanged hunks (R69).
     """
 
     def __init__(
@@ -308,8 +363,12 @@ class Pipeline:
         clock: Clock,
         knowledge: KnowledgeSource = _nothing_known,
         slots: RoundSlots | None = None,
+        followups: RoundFollowUps | None = None,
+        rereviews: RoundRereviews | None = None,
     ) -> None:
         self._slots: RoundSlots = _Unlimited() if slots is None else slots
+        self._followups = followups
+        self._rereviews = rereviews
         self._github = github
         self._files = files
         self._workspace = workspace
@@ -345,12 +404,13 @@ class Pipeline:
         self._runners[round_id] = self._runners.get(round_id, 0) + 1
         # Planned at once, so an open meanwhile knows these are coming (the deep ones
         # once the depth is known).
-        planned = background_jobs(request.mode, request.depth, loaded=request.loaded)
+        own = self._is_own(ref)
+        planned = self._background(request, request.depth, own)
         self._plan(round_id, planned, +1)
         try:
             await self._progress(ref, round_id, head, "started")
             prepared = await self._prepare_or_report(ref, head, round_id)
-            kinds = background_jobs(request.mode, prepared.round.depth, loaded=request.loaded)
+            kinds = self._background(request, prepared.round.depth, own)
             self._plan(round_id, kinds, +1)
             self._plan(round_id, planned, -1)
             planned = kinds
@@ -359,16 +419,35 @@ class Pipeline:
             self._plan(round_id, planned, -1)
             self._leave(round_id)
 
+    @staticmethod
+    def _background(request: PreReviewRequest, depth: Depth, own: bool) -> tuple[JobKind, ...]:
+        kinds = background_jobs(request.mode, depth, loaded=request.loaded)
+        return on_open_jobs(kinds, own=own, quiz=False)
+
+    def _is_own(self, ref: PrRef) -> bool:
+        """Whether the signed-in ``gh`` user wrote the PR, decided as the queue does."""
+        stored = self._store.pr(ref)
+        if stored is None:
+            return False
+        pr = stored.pr
+        return author_kind(pr.author, pr.author_is_bot, self._store.viewer()) == "you"
+
     # --- opening a PR --------------------------------------------------------------------
 
     async def open(
-        self, ref: PrRef, *, depth: Depth | None = None, walk_everything: bool = False
+        self,
+        ref: PrRef,
+        *,
+        depth: Depth | None = None,
+        walk_everything: bool = False,
+        quiz: bool = False,
     ) -> OpenResult:
         """The author opens ``ref``: gate it, then start what its round is missing.
 
         ``depth``: the author's choice (spec §3.1, switch either way), kept on the round and
         the queue row in place of Jesinia's proposal; its jobs are what opening runs.
         ``walk_everything``: run the walkthrough again, leaving nothing out (spec §3.1).
+        ``quiz``: the author asks for the quiz, which is off on their own PR (spec §3.3).
 
         Raises:
             PrNotInQueueError: the PR isn't cached (load it first).
@@ -383,7 +462,9 @@ class Pipeline:
         result = gate_for(stored, config, self._clock(), immediate=True)
         if result.state != "ready" and not self._gate_passed(stored):
             return OpenResult(result.state, result.reason)
-        return self._start_open(stored, depth=depth, walk_everything=walk_everything)
+        if (waiting := await self._classified(stored)) is not None:
+            return waiting
+        return self._start_open(stored, depth=depth, walk_everything=walk_everything, quiz=quiz)
 
     async def retry(self, ref: PrRef) -> OpenResult:
         """The author's **Retry**: ``open``, but a failed round on the head is replaced by a
@@ -397,7 +478,52 @@ class Pipeline:
         result = gate_for(stored, config, self._clock(), immediate=True)
         if result.state != "ready" and not self._gate_passed(stored):
             return OpenResult(result.state, result.reason)
+        if (waiting := await self._classified(stored)) is not None:
+            return waiting
         return self._start_open(stored, rerun_failed=True)
+
+    async def _classified(self, stored: StoredPr) -> OpenResult | None:
+        """``None`` once the head's follow-up is known; the head is classified now when it
+        isn't (bounded by the workspace's and GitHub's own time limits). When it can't be
+        (GitHub or git failed, a posting is still being confirmed), a retryable
+        ``checking`` result: the view opens again shortly (Codex P1 on PR #63). **Review
+        anyway** doesn't wait: a classification landing later adds the re-review
+        (``replan``)."""
+        if self._followups is None:
+            return None
+        pr = stored.pr
+        found = self._followups.followup(pr.ref, pr.head_sha)
+        if found is None or found.error is not None:  # not classified, or not yet able to
+            await self._followups.check(pr.ref)
+            found = self._followups.followup(pr.ref, pr.head_sha)
+        if found is not None and found.error is None:
+            return None
+        why = "not checked yet" if found is None else found.error
+        return OpenResult("checking", f"{CHECKING} ({why}); it opens again shortly")
+
+    async def replan(self, ref: PrRef, head: str) -> OpenResult | None:
+        """A classification landed for ``head`` after its round was planned without it
+        (Codex P1 on PR #63): add the re-review to that round, if the round was opened (the
+        job is open-only, R70) and it is neither done, failed, planned nor running. Nothing
+        that ran runs again. Returns what started, or ``None``."""
+        stored = self._store.pr(ref)
+        if stored is None or stored.pr.head_sha != head or not self._is_rereview(ref, head):
+            return None
+        latest = self._store.latest_round_on_head(ref, head)
+        if latest is None:
+            return None
+        round_id = latest[0]
+        done = self._store.artifact_kinds(round_id)
+        coming = self._planned.get(round_id, Counter())
+        on_open = {kind for kinds in ON_OPEN_JOBS.values() for kind in kinds}
+        if not any(kind.value in done or coming[kind] for kind in on_open):
+            return None  # never opened: opening plans the re-review itself
+        failed = _failed_jobs(self._store.artifact(round_id, "jobs"))
+        kind = JobKind.REREVIEW
+        if kind.value in done or kind.value in failed or coming[kind]:
+            return None  # a running re-review is planned until it ends: counted in coming
+        log.info("review replan %s@%s: adding the re-review", ref, head[:12])
+        return self._launch(ref, head, round_id, REREVIEW_JOBS, owned=False)
 
     async def review_anyway(self, ref: PrRef) -> OpenResult:
         """``open`` without the CI and automated-review gates (the author's **Review
@@ -414,6 +540,16 @@ class Pipeline:
             )
         self._store.override_gates(ref, stored.pr.head_sha)
         return self._start_open(stored, rerun_failed=True)
+
+    def _rereview_of(self, ref: PrRef, head: str) -> FollowUp | None:
+        """``head``'s follow-up when it is a re-review Jesinia can build (spec §4.2)."""
+        if self._followups is None or self._rereviews is None:
+            return None
+        followup = self._followups.followup(ref, head)
+        return followup if followup is not None and followup.kind in REREVIEW_KINDS else None
+
+    def _is_rereview(self, ref: PrRef, head: str) -> bool:
+        return self._rereview_of(ref, head) is not None
 
     def _gate_passed(self, stored: StoredPr) -> bool:
         """Whether the author chose **Review anyway** for this head (R66): only then do later
@@ -441,6 +577,7 @@ class Pipeline:
         depth: Depth | None = None,
         walk_everything: bool = False,
         rerun_failed: bool = False,
+        quiz: bool = False,
     ) -> OpenResult:
         pr = stored.pr
         ref, head = pr.ref, pr.head_sha
@@ -463,7 +600,9 @@ class Pipeline:
             self._store.set_depth(ref, head, round_id, depth)
 
         done = self._store.artifact_kinds(round_id)
-        wanted = (*TRIAGE_JOBS, *ON_OPEN_JOBS[depth or pr.depth])
+        rereview = REREVIEW_JOBS if self._is_rereview(ref, head) else ()
+        on_open = on_open_jobs(ON_OPEN_JOBS[depth or pr.depth], own=self._is_own(ref), quiz=quiz)
+        wanted = (*TRIAGE_JOBS, *on_open, *rereview)
         missing = tuple(kind for kind in wanted if kind.value not in done)
         if not rerun_failed:
             # A failed job reruns only through Retry, like a failed round (R60, final M1).
@@ -484,13 +623,26 @@ class Pipeline:
             return OpenResult("up_to_date", "this head's review is complete", round_id)
         if not rerun and all(coming[kind] for kind in missing):
             return OpenResult("running", "this head is being reviewed", round_id)
+        return self._launch(ref, head, round_id, missing, owned=owned, rerun=frozenset(rerun))
+
+    def _launch(
+        self,
+        ref: PrRef,
+        head: str,
+        round_id: int,
+        missing: tuple[JobKind, ...],
+        *,
+        owned: bool,
+        rerun: frozenset[JobKind] = frozenset(),
+    ) -> OpenResult:
+        """Start ``missing`` on the round in the background (an open's runner)."""
         self._plan(round_id, missing, +1)
         if owned:
             self._store.set_state(ref, head, "running", "reviewing (opened)")
         # Counted now, so a runner finishing meanwhile can't drop the shared preparation.
         self._runners[round_id] = self._runners.get(round_id, 0) + 1
         task = asyncio.create_task(
-            self._run_open(ref, head, round_id, missing, owned, frozenset(rerun)),
+            self._run_open(ref, head, round_id, missing, owned, rerun),
             name=f"review-open:{ref}",
         )
         self._opens.add(task)
@@ -562,10 +714,18 @@ class Pipeline:
         published as ``failed`` before it is raised."""
         try:
             prepared = self._prepared.get(round_id)
-            if prepared is None:
+            # A preparation (cached, or a flight joined while it ran) made before the head was
+            # classified has no follow-up (final I1, Codex round 2 P1 on PR #63): the
+            # re-review needs its narrowing and new hunks, so it is prepared again. A joined
+            # flight may itself predate the classification: then one more, which can't.
+            if prepared is None or self._stale_for_rereview(prepared, ref, head):
                 prepared = await self._prepare_flights.run(
                     round_id, lambda: self._prepare(ref, head, round_id)
                 )
+                if self._stale_for_rereview(prepared, ref, head):
+                    prepared = await self._prepare_flights.run(
+                        round_id, lambda: self._prepare(ref, head, round_id)
+                    )
                 self._prepared[round_id] = prepared
             # A preparation (cached, or joined while in flight) may have read the depth before
             # the author switched it: each runner's jobs see the depth stored now (Codex rounds
@@ -578,6 +738,10 @@ class Pipeline:
         except Exception:
             await self._progress(ref, round_id, head, "failed")
             raise
+
+    def _stale_for_rereview(self, prepared: _Prepared, ref: PrRef, head: str) -> bool:
+        """Whether ``prepared`` was made before ``head`` became a re-review."""
+        return prepared.followup is None and self._rereview_of(ref, head) is not None
 
     def _plan(self, round_id: int, kinds: tuple[JobKind, ...], step: int) -> None:
         planned = self._planned.setdefault(round_id, Counter())
@@ -622,7 +786,9 @@ class Pipeline:
                 "the default branch couldn't be refreshed, so the repo's review standards "
                 f"may be out of date: {exc}"
             )
-        diff = await self._diff(ref, pull, base, warnings)
+        diff, followup, new_hunks = await self._follow_up(
+            ref, head, round_id, base, await self._diff(ref, pull, base, warnings), warnings
+        )
         try:
             ci: CheckState | None = await self._github.checks(repo, head)
         except _GITHUB_ERRORS as exc:
@@ -641,6 +807,7 @@ class Pipeline:
             knowledge=self._knowledge(repo),
             merge_base=base,
             hunk_index=index,
+            own_pr=self._is_own(ref),
         )
         correctness_depth = await self._jobs.correctness_depth(round)
         self._store.set_depth(ref, head, round_id, depth)
@@ -655,7 +822,86 @@ class Pipeline:
             },
         )
         self._store.put_artifact(round_id, "warnings", warnings)
-        return _Prepared(ref, round, diff, ci, correctness_depth, tuple(warnings))
+        return _Prepared(
+            ref, round, diff, ci, correctness_depth, tuple(warnings), followup, new_hunks
+        )
+
+    async def _follow_up(
+        self,
+        ref: PrRef,
+        head: str,
+        round_id: int,
+        base: str,
+        diff: ParsedDiff,
+        warnings: list[str],
+    ) -> tuple[ParsedDiff, FollowUp | None, frozenset[HunkRef]]:
+        """Re-anchor the drafts the round carried over (best effort: a failure leaves them
+        outdated, with a warning) and, for a rebase that changed some files since the
+        author's approval, keep only those files in the diff the round reviews, with their
+        hunks that didn't change marked (R69). For a re-review, also work out the hunks new
+        since the previous review (best effort: unknown means every hunk is new)."""
+        if self._followups is None:
+            return diff, None, frozenset()
+        try:
+            await self._followups.reanchor(round_id, head, base)
+        except Exception as exc:  # secondary: the drafts stay outdated, the round goes on
+            log.warning("re-anchoring the drafts of %s failed: %s", ref, exc, exc_info=exc)
+            warnings.append(f"drafts from the earlier head couldn't be re-anchored: {exc}")
+        followup = self._followups.followup(ref, head)
+        if followup is None or followup.kind == "new":
+            return diff, None, frozenset()
+        self._store.put_artifact(
+            round_id,
+            "followup",
+            {
+                "kind": followup.kind,
+                "differing_paths": followup.differing_paths,
+                "note": followup.note,
+                "prev_head": followup.prev_head,
+            },
+        )
+        rereview = self._rereview_of(ref, head)
+        new_hunks = await self._new_hunks(ref, head, rereview, diff, warnings)
+        if followup.kind != "changed_hunks_only" or not diff.complete:
+            return diff, rereview, new_hunks
+        count = len(followup.differing_paths)
+        restricted = restrict_diff(diff, followup.differing_paths)
+        hunks = sum(len(f.hunks) for f in restricted.files)
+        kept = {h for h in new_hunks if restricted.has_path(h.path)}
+        marked = only_hunks(restricted, kept) if self._rereviews is not None else restricted
+        changed = f", {len(kept)} of {hunks} hunks changed" if self._rereviews is not None else ""
+        warnings.append(
+            f"a re-review of what changed since your approval: {count} "
+            f"file{'s' if count != 1 else ''} reviewed{changed}; the rest matches the "
+            "approved diff"
+        )
+        return marked, rereview, frozenset(kept)
+
+    async def _new_hunks(
+        self,
+        ref: PrRef,
+        head: str,
+        followup: FollowUp | None,
+        diff: ParsedDiff,
+        warnings: list[str],
+    ) -> frozenset[HunkRef]:
+        """The hunks new since the previous review; every hunk when that can't be worked
+        out (secondary: the cause becomes a warning, the round goes on)."""
+        if followup is None or self._rereviews is None:
+            return frozenset()
+        try:
+            return await self._rereviews.changed_hunks(ref, followup, head, diff)
+        except Exception as exc:  # secondary: every hunk counts as new, never hidden
+            log.warning("finding what changed in %s failed: %s", ref, exc, exc_info=exc)
+            warnings.append(
+                "the hunks that changed since your last review couldn't be worked out, so "
+                f"every hunk counts as new: {exc}"
+            )
+            return frozenset(
+                HunkRef(f.path, diff.cited_index(position, h))
+                for position, f in enumerate(diff.files)
+                for h in range(len(f.hunks))
+            )
 
     async def _files_truncated(self, ref: PrRef, pull: PullRequest, warnings: list[str]) -> bool:
         """Read (and cache) GitHub's file list for the head, and say whether it is short of
@@ -768,6 +1014,8 @@ class Pipeline:
         self._record_job(round_id, kind, "running", None)
         try:
             round = replace(prepared.round, walk_everything=walk_everything)
+            if kind is JobKind.REREVIEW:
+                round = replace(round, rereview=await self._rereview_input(prepared))
             output = await self._jobs.run(kind, round)
         except JobFailed as exc:
             log.warning("review %s job failed on %s: %s", kind.value, prepared.ref, exc)
@@ -776,10 +1024,42 @@ class Pipeline:
         if kind is JobKind.WALKTHROUGH:
             # Filtered at once, before anything else runs, so no reader sees invented hunks.
             self._store.put_artifact(round_id, kind.value, _known_steps(prepared.diff, output))
+        if kind is JobKind.REREVIEW and round.rereview is not None:
+            # The same for a re-review: only known comments, known hunks and new steps.
+            given = round.rereview
+            artifact = await asyncio.to_thread(
+                rereview_artifact, output, given.previous, prepared.diff, given.new_hunks
+            )
+            self._store.put_artifact(round_id, kind.value, artifact)
         self._record_job(round_id, kind, "done", None)
         if kind is JobKind.WALKTHROUGH:
             await self._walkthrough(prepared, output)
         return output
+
+    async def _rereview_input(self, prepared: _Prepared) -> RereviewInput:
+        """What the ``rereview`` job builds on; the previous review is also kept with the
+        round (``previous_review``), for the view to show beside the new one.
+
+        Raises:
+            JobFailed: no previous review to build on, or it couldn't be read (the cause).
+        """
+        followup, rereviews = prepared.followup, self._rereviews
+        try:
+            if followup is None or rereviews is None:
+                raise RereviewError("this head has no previous review to build on")
+            round = prepared.round
+            previous = await rereviews.previous_review(
+                prepared.ref, followup, round.pr.head_sha, round.merge_base, prepared.diff
+            )
+            self._store.put_artifact(round.id, "previous_review", previous.as_json())
+            text, cut = await rereviews.new_changes(
+                prepared.ref, round.merge_base, round.pr.head_sha, prepared.new_hunks
+            )
+        except RereviewError as exc:
+            raise JobFailed(JobKind.REREVIEW, exc) from exc
+        notes = (f"{cut} new hunks left out of new-changes.md: they don't fit",) if cut else ()
+        ordered = tuple(sorted(prepared.new_hunks, key=lambda ref: (ref.path, ref.hunk)))
+        return RereviewInput(previous, ordered, text, notes)
 
     def _record_job(self, round_id: int, kind: JobKind, state: str, error: str | None) -> None:
         jobs = self._store.artifact(round_id, "jobs")

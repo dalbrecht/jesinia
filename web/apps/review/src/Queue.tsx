@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { LoadPr } from "./LoadPr";
 import { visibleText } from "./pr/model";
+import { verdictWords } from "./pr/Recommendation";
 import { Visible } from "./pr/Visible";
 import s from "./review.module.css";
 
@@ -118,11 +119,13 @@ export function RowCard({ row, actions }: { row: QueueRow; actions?: RowActions 
   const ref = refOf(row);
   const ci = CI[row.ci_state];
   const state = stateOf(row);
-  const verdict = row.recommendation ? VERDICT[row.recommendation] : undefined;
+  // Your own PR reads as ready (or not) to request review (spec §3.3), as in the PR view.
+  const verdict = verdictWords(row.recommendation, row.author_kind === "you");
   const coverage = coverageText(row);
   const evidence = evidenceOf(row);
   const author = row.author_kind === "developer" ? row.author : `${row.author} (${row.author_kind})`;
   const reason = row.prereview_reason.trim();
+  const paths = row.differing_paths ?? [];
   const showReason = (row.prereview_state === "ci_failing" || row.prereview_state === "failed") && reason !== "";
   return (
     <article className={s.card} aria-labelledby={titleId}>
@@ -184,6 +187,25 @@ export function RowCard({ row, actions }: { row: QueueRow; actions?: RowActions 
         ) : null}
       </div>
       {showReason ? <p className={s.reason}>{reason}</p> : null}
+      {row.followup_note ? (
+        <p className={s.reason}>
+          {row.followup_note}
+          {paths.length ? (
+            <>
+              {": "}
+              {paths.slice(0, 5).map((path, i) => (
+                <span key={path}>
+                  {i ? ", " : ""}
+                  <code>
+                    <Visible text={path} />
+                  </code>
+                </span>
+              ))}
+              {paths.length > 5 ? ` +${paths.length - 5} more` : ""}
+            </>
+          ) : null}
+        </p>
+      ) : null}
       {actions ? (
         <div className={s.cardActions}>
           {offersReviewAnyway(row) ? (
@@ -248,7 +270,7 @@ function summaryOf(id: SectionId, rows: QueueRow[]): string {
     const shown = rows.slice(0, 2).map(refOf).join(", ");
     return rows.length > 2 ? `${shown} +${rows.length - 2} more` : shown;
   }
-  if (id === "approved") return "Rebased, unchanged, CI green";
+  if (id === "approved") return "Rebased, unchanged, CI not failing";
   const counts = new Map<string, number>();
   for (const r of rows) {
     const what = r.suggested

@@ -41,6 +41,61 @@ export type Evidence = {
 };
 export type JobState = { state: string; error: string | null };
 
+/** One of the author's comments in their previous review (spec §4.2), as Jesinia stored it. */
+export type PreviousComment = {
+  ref: string;
+  body: string;
+  path: string | null;
+  line: number | null;
+  side: "LEFT" | "RIGHT" | null;
+  start_line: number | null;
+  resolved: boolean;
+  /** Where it sits on this head (I2): the path after any rename, the line its text is on now. */
+  now_path: string | null;
+  now_line: number | null;
+  now_start_line: number | null;
+  /** Its text changed since: shown as outdated, never placed by its old line. */
+  outdated: boolean;
+  /** Why it couldn't be placed on this head at all (unknown, not changed), when it couldn't. */
+  unplaced?: string | null;
+};
+/** A step of the previous round's walkthrough, on this head's unchanged hunks. */
+export type PreviousStep = {
+  title: string;
+  body: string;
+  now_hunks: HunkRef[];
+  changed: number;
+  unplaced?: string | null;
+};
+/** A finding of the previous round, placed on this head's lines (or outdated). */
+export type PreviousFinding = Finding & {
+  now_path: string | null;
+  now_start_line: number | null;
+  now_end_line: number | null;
+  outdated: boolean;
+  unplaced?: string | null;
+};
+export type PreviousReview = {
+  source: "round" | "github";
+  head_sha: string;
+  round_id: number | null;
+  comments: PreviousComment[];
+  steps: PreviousStep[];
+  findings: PreviousFinding[];
+  /** What couldn't be placed on this head, and why (Jesinia's words). */
+  placement_error: string | null;
+};
+export type RequestStatus = "addressed" | "partly" | "not_addressed";
+export type Request = { comment_ref: string; status: RequestStatus; explanation: string; hunks: HunkRef[] };
+/** The re-review job's result as Jesinia kept it: known comments, known hunks, new steps only. */
+export type Rereview = {
+  requests: Request[];
+  unanswered: string[];
+  new_hunks: HunkRef[];
+  steps: Step[];
+  coverage: WalkCoverage | null;
+};
+
 /** A round's artifacts, by what the PR view shows; null where a job hasn't stored one. */
 export type Artifacts = {
   overview: Overview | null;
@@ -57,7 +112,13 @@ export type Artifacts = {
   evidence: Evidence | null;
   jobs: Record<string, JobState>;
   nothingToWalk: boolean;
+  /** A re-review's head (spec §4.2): the previous review it builds on, and the job's result. */
+  isRereview: boolean;
+  previous: PreviousReview | null;
+  rereview: Rereview | null;
 };
+
+const REREVIEW_KINDS = new Set(["rereview", "changed_hunks_only"]);
 
 type Json = Record<string, unknown>;
 const record = (x: unknown): Json | null =>
@@ -107,6 +168,36 @@ export function readArtifacts(view: PrView): Artifacts {
     evidence: (record(a.evidence) as Evidence | null) ?? null,
     jobs,
     nothingToWalk: view.nothing_to_walk || coverage?.nothing_to_walk === true,
+    isRereview:
+      REREVIEW_KINDS.has(String(record(a.followup)?.kind)) || "rereview" in jobs || record(a.previous_review) !== null,
+    previous: previousOf(a.previous_review),
+    rereview: rereviewOf(a.rereview),
+  };
+}
+
+function previousOf(x: unknown): PreviousReview | null {
+  const p = record(x);
+  if (!p) return null;
+  return {
+    source: p.source === "round" ? "round" : "github",
+    head_sha: String(p.head_sha ?? ""),
+    round_id: typeof p.round_id === "number" ? p.round_id : null,
+    comments: list<PreviousComment>(p.comments) ?? [],
+    steps: list<PreviousStep>(p.steps) ?? [],
+    findings: list<PreviousFinding>(p.findings) ?? [],
+    placement_error: typeof p.placement_error === "string" ? p.placement_error : null,
+  };
+}
+
+function rereviewOf(x: unknown): Rereview | null {
+  const r = record(x);
+  if (!r) return null;
+  return {
+    requests: list<Request>(r.requests) ?? [],
+    unanswered: list<string>(r.unanswered) ?? [],
+    new_hunks: list<HunkRef>(r.new_hunks) ?? [],
+    steps: list<Step>(record(r.new_changes_walkthrough)?.steps) ?? [],
+    coverage: coverageOf(r.coverage),
   };
 }
 
@@ -150,8 +241,12 @@ function readHeader(raw: string): { oldStart: number; oldCount: number; newStart
   };
 }
 
-/** How many patches were parsed: the guard that big PRs parse once per round (N3). */
-export const parseStats = { parses: 0 };
+/**
+ * Work counters, the guards that big PRs stay cheap without timing anything: how many patches
+ * were parsed (once per round, N3), and how many hunk checks and step lookups building the
+ * outline did (linear in the PR's size).
+ */
+export const parseStats = { parses: 0, hunkChecks: 0, lookups: 0 };
 
 /** A GitHub patch's hunks, numbered as Jesinia cites them (0-based, in order), with line numbers. */
 export function parsePatch(patch: string): Hunk[] {
@@ -228,6 +323,7 @@ export function findingsByStep(steps: Step[], findings: Finding[], files: PrFile
     if (!file?.patch) continue;
     const removed = file.status === "removed";
     hunksOf(file.patch).forEach((h, i) => {
+      parseStats.hunkChecks += 1;
       const [start, end] = removed ? [h.oldStart, h.oldEnd] : [h.newStart, h.newEnd];
       if (f.start_line > end || f.end_line < start) return;
       const key = `${f.path}\u0000${i}`;
@@ -236,7 +332,10 @@ export function findingsByStep(steps: Step[], findings: Finding[], files: PrFile
   }
   return steps.map((step) => {
     const mine = new Set<Finding>();
-    for (const ref of step.hunks) for (const f of byHunk.get(`${ref.path}\u0000${ref.hunk}`) ?? []) mine.add(f);
+    for (const ref of step.hunks) {
+      parseStats.lookups += 1;
+      for (const f of byHunk.get(`${ref.path}\u0000${ref.hunk}`) ?? []) mine.add(f);
+    }
     return [...mine];
   });
 }
@@ -330,6 +429,7 @@ export const REASONS: Record<string, string> = {
   judged_mechanical: "judged mechanical by the agent",
   metadata_only: "metadata only",
   omitted: "left out without a reason",
+  unchanged: "unchanged since your last review",
 };
 
 export const SEVERITY: Record<string, string> = { critical: "Critical", important: "Important", minor: "Minor" };
@@ -379,7 +479,9 @@ export type EntryKind =
   | "metrics"
   | "quiz"
   | "comments"
-  | "recommendation";
+  | "recommendation"
+  | "requests"
+  | "newchanges";
 
 export type Entry = {
   id: string;
@@ -402,6 +504,8 @@ export const JOB_OF: Partial<Record<EntryKind, string>> = {
   metrics: "metrics",
   quiz: "quiz",
   recommendation: "recommendation",
+  requests: "rereview",
+  newchanges: "rereview",
 };
 
 const has = (a: Artifacts, kind: EntryKind): boolean => {
@@ -419,6 +523,9 @@ const has = (a: Artifacts, kind: EntryKind): boolean => {
       return a.findings !== null;
     case "recommendation":
       return a.verdict !== null || a.suggestion !== null;
+    case "requests":
+    case "newchanges":
+      return a.rereview !== null;
     default:
       return true;
   }
@@ -452,6 +559,7 @@ export function outlineOf(
   a: Artifacts,
   files: PrFile[] | null | undefined,
   draftCount: number | null,
+  own = false,
 ): Entry[] {
   const out: Entry[] = [];
   const add = (e: Entry) => {
@@ -472,13 +580,32 @@ export function outlineOf(
       : "Walkthrough";
   if (depth === "deep") {
     add({ id: "overview", kind: "overview", part: "Before you read", label: "Overview" });
-    add({ id: "background", kind: "background", part: "Before you read", label: "Background" });
+    // Your own PR (spec §3.3): you wrote it, so its background is minimised.
+    const label = own ? "Background · minimised" : "Background";
+    add({ id: "background", kind: "background", part: "Before you read", label });
   } else {
     add({ id: "explanation", kind: "explanation", part: "Before you read", label: "Explanation" });
+  }
+  if (a.isRereview) {
+    // Spec §4.2: what happened to your requests, then what is new, before the full walk.
+    const since = "Since your last review";
+    // Open: not addressed, or given no status (unknown is never counted as done, M1).
+    const open = a.rereview
+      ? a.rereview.requests.filter((r) => r.status !== "addressed").length + a.rereview.unanswered.length
+      : 0;
+    add({
+      id: "requests",
+      kind: "requests",
+      part: since,
+      label: "Your requests",
+      ...(a.rereview ? { note: `${open} open`, bad: open > 0 } : {}),
+    });
+    add({ id: "newchanges", kind: "newchanges", part: since, label: "New since your last look" });
   }
   const perStep = findingsByStep(a.steps ?? [], a.findings ?? [], files);
   const ids = new Set<string>();
   (a.steps ?? []).forEach((step, i) => {
+    parseStats.lookups += 1; // the outline's own per-step work is counted too (re-review N2)
     let id = stepId(step);
     if (ids.has(id)) id = `${id}-${i}`; // two identical steps still get their own entries
     ids.add(id);
@@ -527,7 +654,10 @@ export function outlineOf(
   if (depth === "deep") {
     add({ id: "metrics", kind: "metrics", part: after, label: "Metrics" });
     const n = a.quiz?.length ?? 0;
-    add({ id: "quiz", kind: "quiz", part: after, label: "Quiz", note: `${n} questions` });
+    if (own && a.quiz === null && !a.jobs.quiz) {
+      // Off by default on your own PR (spec §3.3, Task 9 M10): never "not generated yet".
+      out.push({ id: "quiz", kind: "quiz", part: after, label: "Quiz", note: "off for your own PR" });
+    } else add({ id: "quiz", kind: "quiz", part: after, label: "Quiz", note: `${n} questions` });
     const drafts = draftCount === null ? undefined : `${draftCount} ${draftCount === 1 ? "draft" : "drafts"}`;
     add({ id: "comments", kind: "comments", part: after, label: "Your comments", ...(drafts ? { note: drafts } : {}) });
   }

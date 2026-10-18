@@ -35,7 +35,7 @@ import sqlite3
 from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
@@ -60,6 +60,7 @@ from jesinia.apps.review.domain.posting import (
     PreviewOutdated,
     Review,
     ReviewedHeadGone,
+    RoundFrozen,
     check_body_length,
     check_review_text,
     commentable_lines,
@@ -91,6 +92,8 @@ from jesinia.services.github.domain.pr import (
 log = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
+# What ``post_unless_posted`` found: posted by this attempt, or already posted another way.
+PostedState = Literal["posted", "already_posted"]
 # How long after an attempt began a missing review may still appear on GitHub (R49).
 POSTING_GRACE = timedelta(minutes=3)
 # The jobs whose findings become drafts.
@@ -174,6 +177,8 @@ class PostingStore(Protocol):
     def postings(self, round_id: int) -> builtins.list[Posting]: ...
 
     def unsettled_posting_rounds(self) -> builtins.list[int]: ...
+
+    def unsettled_rounds_of(self, ref: PrRef) -> builtins.list[int]: ...
 
     def start_posting(
         self,
@@ -276,6 +281,18 @@ class PostingService:
             raise NoReviewRound(f"no review round {round_id}")
         return found
 
+    def _open_round(self, round_id: int) -> RoundRecord:
+        """The round, if it can still be edited and posted.
+
+        Raises:
+            NoReviewRound: no such round.
+            RoundFrozen: a round on the PR's new head took it over (spec §7).
+        """
+        found = self._round(round_id)
+        if found.frozen_at is not None:
+            raise RoundFrozen(round_id, found.successor_id)
+        return found
+
     # --- drafts ---------------------------------------------------------------------------
 
     async def drafts(self, round_id: int) -> DraftSet:
@@ -293,8 +310,9 @@ class PostingService:
         Raises:
             NoReviewRound: no such round.
             InvalidDraftError: too many drafts, or a summary over the body limit.
+            RoundFrozen: a newer round took it over.
         """
-        rnd = self._round(round_id)
+        rnd = self._open_round(round_id)
         if len(drafts) > DRAFTS_MAX:
             raise InvalidDraftError(f"a review takes at most {DRAFTS_MAX} drafts")
         if len(summary) > BODY_MAX:
@@ -383,9 +401,10 @@ class PostingService:
             NoReviewRound: no such round.
             ReviewBodyTooLong: the composed body would be over GitHub's limit.
             ReviewedHeadGone: the reviewed commit is no longer on the PR.
+            RoundFrozen: a newer round took it over: nothing can be posted from it.
             GitHubError: GitHub couldn't be read.
         """
-        rnd = self._round(round_id)
+        rnd = self._open_round(round_id)
         settled = self._seed(rnd)
         commentable, notes = await self._commentable(rnd)
         if not settled:
@@ -397,9 +416,14 @@ class PostingService:
         newer_head = await self._newer_head(rnd, live)
         viewer = self._store.viewer() or await self._github.viewer()
         own_pr = live.author.lower() == viewer.lower()
-        review = compose_review(
-            self._store.review_summary(round_id), self._store.drafts(round_id), commentable
-        )
+        drafts = self._store.drafts(round_id)
+        review = compose_review(self._store.review_summary(round_id), drafts, commentable)
+        if outdated := sum(draft.outdated for draft in drafts):
+            notes.append(
+                f"{outdated} outdated draft{'s' if outdated != 1 else ''} (written on an earlier "
+                "head, whose lines changed since) post in the review body, not inline: edit "
+                "or delete them first if that isn't what you want"
+            )
         check_body_length(review)
         if needs_body(event, review):
             what = event.lower().replace("_", " ")
@@ -407,6 +431,12 @@ class PostingService:
         against = self._against_evidence(rnd)
         if event == "APPROVE" and against is not None:
             notes.append(against)
+        for earlier in self._store.postings(round_id):
+            if earlier.state == "posted":  # Post all, or another tab (final M2)
+                notes.append(
+                    f"This round's review was already posted ({earlier.event}, "
+                    f"{earlier.review_url or _pr_url(rnd)}); posting again adds a second review"
+                )
         notes.append(MARKER_NOTE)
         return PostPreview(
             round_id=round_id,
@@ -488,15 +518,45 @@ class PostingService:
             EmptyReview: GitHub needs a body for this event.
             ReviewBodyTooLong: the composed body would be over GitHub's limit.
             EarlierReviewPosted: an earlier attempt turned out to be on GitHub and it isn't
-                this digest and event; nothing was sent.
+                this digest and event, or it was an attempt of an earlier round of the PR
+                (frozen by a head change); nothing was sent.
             ReviewedHeadGone: the reviewed commit is no longer on the PR.
             PostingFailed: GitHub didn't confirm the review (with ``maybe_posted``).
+            RoundFrozen: a newer round took it over: nothing is posted from it.
             GitHubError: GitHub couldn't be read.
         """
-        rnd = self._round(round_id)
+        rnd = self._open_round(round_id)
         # One post per round at a time: two clicks with different keys can't both post.
         async with self._round_lock(round_id):
             return await self._post(rnd, event, confirm, key, digest)
+
+    async def post_unless_posted(
+        self,
+        round_id: int,
+        event: ReviewEvent,
+        confirm: Collection[str],
+        *,
+        key: str,
+        digest: str,
+    ) -> tuple[str, PostedState]:
+        """``post``, unless the round is posted already: checked under the round's posting
+        lock, so a post that lands meanwhile (another key, another event) is never followed
+        by a second review. Returns the URL and ``posted`` (now, or by this very attempt
+        before: same key, digest and event) or ``already_posted`` (another way, or another
+        version under this key: nothing was sent).
+
+        Raises:
+            As ``post``.
+        """
+        rnd = self._open_round(round_id)
+        async with self._round_lock(round_id):
+            posted = [p for p in self._store.postings(round_id) if p.state == "posted"]
+            for earlier in posted:
+                if earlier.key == key and earlier.digest == digest and earlier.event == event:
+                    return earlier.review_url or _pr_url(rnd), "posted"
+            if posted:
+                return posted[-1].review_url or _pr_url(rnd), "already_posted"
+            return await self._post(rnd, event, confirm, key, digest), "posted"
 
     async def reconcile_unsettled(self) -> int:
         """Settle every attempt left ``started`` (a crash) or ``uncertain`` (a lost
@@ -536,6 +596,7 @@ class PostingService:
     async def _post(
         self, rnd: RoundRecord, event: ReviewEvent, confirm: Collection[str], key: str, digest: str
     ) -> str:
+        await self._reconcile_earlier_rounds(rnd)
         adopted = await self._reconcile(rnd)
         if adopted is not None:
             # The earlier attempt is on GitHub: never a second review in this call, and
@@ -576,6 +637,25 @@ class PostingService:
         if attempt.state == "posted":  # the key of a posted attempt: never sent again
             return attempt.review_url or _pr_url(rnd)
         return await self._send(rnd, attempt, preview)
+
+    async def _reconcile_earlier_rounds(self, rnd: RoundRecord) -> None:
+        """Settle the unsettled attempts of the PR's other rounds first (I2): a round frozen
+        by a head change may hold a lost-response attempt that is on GitHub, and nothing is
+        posted while it might be.
+
+        Raises:
+            EarlierReviewPosted: that attempt is on GitHub; nothing was sent.
+            PostingStillUncertain: it may still appear (within its grace); retry later.
+            GitHubError: the reviews couldn't be listed.
+        """
+        for other_id in self._store.unsettled_rounds_of(rnd.ref):
+            if other_id == rnd.id:
+                continue
+            other = self._round(other_id)
+            async with self._round_lock(other_id):
+                adopted = await self._reconcile(other)
+            if adopted is not None:
+                raise EarlierReviewPosted(adopted.review_url or _pr_url(other), adopted.event)
 
     async def _send(self, rnd: RoundRecord, attempt: Posting, preview: PostPreview) -> str:
         try:

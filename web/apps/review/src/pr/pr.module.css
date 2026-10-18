@@ -321,6 +321,47 @@
   gap: var(--jx-space-2);
 }
 
+/* --- re-reviews: your requests, and the previous review beside the new one ----------------- */
+.requests {
+  display: grid;
+  gap: var(--jx-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.previousComment {
+  margin: 0;
+  padding-left: var(--jx-space-3);
+  border-left: 2px solid var(--jx-border);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.alignedFile {
+  display: grid;
+  gap: var(--jx-space-1);
+}
+.aligned {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--jx-text-sm);
+}
+.aligned th {
+  padding: 4px var(--jx-space-2);
+  color: var(--jx-fg-muted);
+  font-weight: var(--jx-weight-semibold);
+  text-align: left;
+}
+.aligned td {
+  padding: var(--jx-space-2);
+  border-top: 1px solid var(--jx-border);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.aligned td > * + * {
+  margin-top: 6px;
+}
+
 /* --- diffs: each line a monospace pre of text, never markup -------------------------------- */
 .diff {
   position: relative;
@@ -702,6 +743,17 @@
   }
 }
 @media (max-width: 767px) {
+  /* Narrow screens stack the previous review above what changed. */
+  .aligned,
+  .aligned tbody,
+  .aligned tr,
+  .aligned td {
+    display: block;
+  }
+  .aligned thead {
+    display: none;
+  }
+
   .book,
   .book[data-chat="open"] {
     grid-template-columns: minmax(0, 1fr);

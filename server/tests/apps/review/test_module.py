@@ -69,6 +69,15 @@ async def test_jobs_need_the_agents_service(cfg: Config, tmp_path: Path) -> None
         _ = module.jobs
     await module.stop()
 
+    # A stack job a stop cut short is marked interrupted at start (R73).
+    from jesinia.apps.review.infrastructure.store import SqliteReviewStore
+
+    review_db = open_db(cfg.data_dir, REVIEW_DB)
+    review_store = SqliteReviewStore(review_db)
+    stack_id = review_store.start_stack_review("acme/web", "1@a,2@b", datetime.now(UTC))
+    review_store.put_stack_artifact(stack_id, "jobs", {"overview": {"state": "running"}})
+    review_db.close()
+
     conn = open_db(tmp_path / "agents", SESSIONS_DB)
     agents = SessionService(SqliteSessionStore(conn), {}, tmp_path / "s", "http://x/mcp", dict)
     ctx = AppContext(cfg, EventBus(), Scheduler())
@@ -86,6 +95,7 @@ async def test_the_pipeline_needs_agents_and_github_and_runs_the_pre_reviews(
 ) -> None:
     from jesinia.apps.review.application.pipeline import Pipeline
     from jesinia.apps.review.application.posting import PostingService
+    from jesinia.apps.review.application.stacks import StackReviews
     from jesinia.services.github.application.service import GitHubService
 
     async def no_token() -> str | None:
@@ -104,10 +114,23 @@ async def test_the_pipeline_needs_agents_and_github_and_runs_the_pre_reviews(
     module = ReviewModule()
     with pytest.raises(HTTPException, match="not started"):
         _ = module.pipeline
+    with pytest.raises(HTTPException, match="not started"):
+        _ = module.stacks
     await module.start(AppContext(cfg, EventBus(), Scheduler()))
     with pytest.raises(HTTPException, match="agents service and the github service"):
         _ = module.pipeline
+    with pytest.raises(HTTPException, match="agents service and the github service"):
+        _ = module.stacks
     await module.stop()
+
+    # A stack job a stop cut short is marked interrupted at start (R73).
+    from jesinia.apps.review.infrastructure.store import SqliteReviewStore
+
+    review_db = open_db(cfg.data_dir, REVIEW_DB)
+    review_store = SqliteReviewStore(review_db)
+    stack_id = review_store.start_stack_review("acme/web", "1@a,2@b", datetime.now(UTC))
+    review_store.put_stack_artifact(stack_id, "jobs", {"overview": {"state": "running"}})
+    review_db.close()
 
     conn = open_db(tmp_path / "agents", SESSIONS_DB)
     agents = SessionService(SqliteSessionStore(conn), {}, tmp_path / "s", "http://x/mcp", dict)
@@ -117,6 +140,9 @@ async def test_the_pipeline_needs_agents_and_github_and_runs_the_pre_reviews(
     await module.start(ctx)
     assert isinstance(module.pipeline, Pipeline)
     assert isinstance(module.posting, PostingService)
+    assert isinstance(module.stacks, StackReviews)
+    swept = module.stacks._store.stack_jobs()[stack_id]
+    assert isinstance(swept, dict) and swept["overview"]["state"] == "interrupted"
     assert module.scheduler.runs_pre_reviews
     await module.stop()
     conn.close()

@@ -15,11 +15,13 @@ from fastapi import APIRouter, HTTPException, status
 
 from jesinia.apps.review.api.routes import build_router
 from jesinia.apps.review.api.tools import build_review_tools, build_tools
+from jesinia.apps.review.application.followup import FollowUps
 from jesinia.apps.review.application.jobs import JobRunner
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
 from jesinia.apps.review.application.repo_tools import RepoTools
+from jesinia.apps.review.application.rereview import Rereviews
 from jesinia.apps.review.application.reviews import ReviewReads
 from jesinia.apps.review.application.scheduler import (
     PRUNE_INTERVAL,
@@ -28,6 +30,7 @@ from jesinia.apps.review.application.scheduler import (
     WorkspacePruner,
 )
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
+from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.queue import SyncStatus
 from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
@@ -78,6 +81,8 @@ class ReviewModule:
         self._posting: PostingService | None = None
         self._reviews: ReviewReads | None = None
         self._idempotency: SqliteIdempotencyStore | None = None
+        self._followups: FollowUps | None = None
+        self._stacks: StackReviews | None = None
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -139,6 +144,18 @@ class ReviewModule:
                 )
             raise _not_started()
         return self._posting
+
+    @property
+    def stacks(self) -> StackReviews:
+        """Stack reviews and Post all (needs the agents and github services)."""
+        if self._stacks is None:
+            if self._workspace is not None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "stack reviews require the agents service and the github service",
+                )
+            raise _not_started()
+        return self._stacks
 
     @property
     def reviews(self) -> ReviewReads:
@@ -226,7 +243,13 @@ class ReviewModule:
         reviews = isinstance(agents, SessionService) and isinstance(github, GitHubService)
         # The review pipeline runs the pre-reviews; without agents and GitHub the gates are
         # still applied and ready PRs show as queued.
-        self._scheduler = Scheduler(store, _utc_now, run=self._prereview if reviews else None)
+        # The follow-ups run with GitHub: a loaded PR's new head then waits for its check.
+        self._scheduler = Scheduler(
+            store,
+            _utc_now,
+            run=self._prereview if reviews else None,
+            hold_unchecked=isinstance(github, GitHubService),
+        )
         if interrupted := self._scheduler.recover():
             log.info("re-queued %d review rounds left running by a stop", interrupted)
         self._pruner = WorkspacePruner(store, self._workspace, self.sessions.bound_trees)
@@ -241,7 +264,24 @@ class ReviewModule:
             )
         if isinstance(github, GitHubService):
             prs = PrClient(github)
-            self._queue = QueueService(prs, store, _utc_now, on_change=self._scheduler.tick)
+            scheduler = self._scheduler
+            followups = FollowUps(
+                github=prs, workspace=self._workspace, store=store, after=scheduler.tick
+            )
+            self._followups = followups
+
+            async def changed() -> None:
+                await scheduler.tick()
+                # New heads are classified in the background (git work), then it ticks again.
+                followups.start_refresh()
+                # And each stack's heads are checked (R77), so the queue files a stack needing
+                # a restack before anyone opens it.
+                if self._stacks is not None:
+                    self._stacks.start_verify()
+
+            self._queue = QueueService(
+                prs, store, _utc_now, on_change=changed, on_refresh=followups.check
+            )
             self._reviews = ReviewReads(store, self._queue.status)
             self._posting = PostingService(
                 github=prs, writer=github, files=self._queue, store=store, clock=_utc_now
@@ -260,16 +300,42 @@ class ReviewModule:
                     bus=ctx.bus,
                     clock=_utc_now,
                     slots=self._scheduler,
+                    followups=followups,
+                    rereviews=Rereviews(github=prs, workspace=self._workspace, store=store),
                 )
+                # A head classified after its round was planned gets its re-review then.
+                followups.on_classified = self._pipeline.replan
+                self._stacks = StackReviews(
+                    store=store,
+                    reads=self._reviews,
+                    opener=self._pipeline,
+                    poster=self._posting,
+                    jobs=self._jobs,
+                    github=prs,
+                    workspace=self._workspace,
+                    clock=_utc_now,
+                    slots=self._scheduler,
+                    bus=ctx.bus,
+                )
+                # Nothing runs yet: a stack job left running was cut short by a stop (R73).
+                if swept := self._stacks.recover():
+                    log.info("marked stack jobs of %d stack reviews interrupted", swept)
 
     async def stop(self) -> None:
         if self._scheduler is not None:
             self._scheduler.pause()  # cancelling an open frees a slot: nothing may take it
+        if self._stacks is not None:
+            await self._stacks.stop_verify()
+            await self._stacks.stop()
         if self._pipeline is not None:
             await self._pipeline.stop()
         if self._scheduler is not None:
             await self._scheduler.stop()
+        if self._followups is not None:
+            await self._followups.stop()
+            self._followups = None
         self._pipeline = None
+        self._stacks = None
         self._posting = None
         self._reviews = None
         self._idempotency = None

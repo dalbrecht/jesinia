@@ -45,3 +45,6 @@ web/playwright-report/
 
 # Brainstorming companion scratch files
 .superpowers/
+
+# TypeScript incremental build state (every workspace)
+*.tsbuildinfo

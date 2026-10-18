@@ -18,6 +18,7 @@ from typing import Literal
 from jesinia.apps.review.domain.coverage import Coverage, HunkIndex
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import Depth
+from jesinia.apps.review.domain.rereview import RereviewInput
 from jesinia.apps.review.domain.workspace import canonical_repo
 from jesinia.services.github.domain.pr import CheckState, PrCommit, PullRequest
 
@@ -100,10 +101,50 @@ class Round:
     hunk_index: HunkIndex | None = None
     # The author asked to walk everything (spec §3.1): the walkthrough leaves nothing out.
     walk_everything: bool = False
+    # A re-review (spec §4.2): the previous review and the hunks new since, for its job.
+    rereview: RereviewInput | None = None
+    # The author wrote this PR (spec §3.3): Background is minimised, the verdict reads as
+    # ready (or not) to request review.
+    own_pr: bool = False
 
     @property
     def repo(self) -> str:
         return canonical_repo(self.pr.repo)
+
+
+# The jobs a stack review runs once for the whole stack (spec §4.3); each PR keeps its own
+# round, walkthrough, findings and recommendation.
+STACK_JOBS: tuple[JobKind, ...] = (
+    JobKind.OVERVIEW,
+    JobKind.BACKGROUND,
+    JobKind.STACK_WALKTHROUGH,
+)
+
+
+@dataclass(frozen=True)
+class StackRound:
+    """A stack review's agent input: the stack review's id, its repo, and one prepared
+    ``Round`` per PR, bottom-up (each with its own merge base and hunk index). ``own_pr``:
+    the author wrote every PR of the stack."""
+
+    id: int
+    repo: str
+    members: tuple[Round, ...]
+    knowledge: str = ""
+    own_pr: bool = False
+
+    @property
+    def top(self) -> Round:
+        """The top of the stack, whose head holds every PR's code."""
+        return self.members[-1]
+
+
+def on_open_jobs(jobs: Sequence[JobKind], *, own: bool, quiz: bool) -> tuple[JobKind, ...]:
+    """What opening runs of ``jobs``: on the author's own PR the quiz is off unless they ask
+    for it (spec §3.3)."""
+    if own and not quiz:
+        return tuple(job for job in jobs if job is not JobKind.QUIZ)
+    return tuple(jobs)
 
 
 def has_agent_trailer(message: str) -> bool:

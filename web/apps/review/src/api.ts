@@ -10,7 +10,8 @@ export type QueueRow = components["schemas"]["QueueRowOut"];
 export type Queue = components["schemas"]["QueueOut"];
 export type PrView = components["schemas"]["PrOut"];
 export type OpenResult = components["schemas"]["OpenOut"];
-export type OpenRequest = components["schemas"]["OpenIn"];
+/** What the author asks of opening; anything left out is the server's default. */
+export type OpenRequest = Partial<components["schemas"]["OpenIn"]>;
 export type PrFile = components["schemas"]["PrFileOut"];
 export type DraftSet = components["schemas"]["DraftsOut"];
 export type Draft = components["schemas"]["DraftBody"];
@@ -19,6 +20,11 @@ export type PostPreview = components["schemas"]["PreviewOut"];
 export type ReviewEvent = PostPreview["event"];
 export type PostWarning = PostPreview["warnings"][number];
 export type Round = components["schemas"]["RoundOut"];
+export type StackView = components["schemas"]["StackOut"];
+export type StackOpenResult = components["schemas"]["StackOpenOut"];
+export type CrossFinding = components["schemas"]["CrossFindingOut"];
+export type PostOutcome = components["schemas"]["PostOutcomeOut"];
+export type PostAllItem = components["schemas"]["PostAllItemIn"];
 
 /** The queue's sections (design pass pattern 2), in tab order. */
 export type SectionId = "ready" | "waiting" | "loaded" | "approved";
@@ -32,7 +38,10 @@ const SECTION_INFO: Record<SectionId, { label: string; intro: string }> = {
     intro: "CI or an automated reviewer hasn't finished, or the pre-review hasn't run yet.",
   },
   loaded: { label: "Loaded", intro: "PRs you loaded: they jump the queue until closed or dismissed." },
-  approved: { label: "Still approved", intro: "Rebased since you approved, unchanged, CI green." },
+  approved: {
+    label: "Still approved",
+    intro: "Rebased since you approved, unchanged, CI green or still running (or no CI).",
+  },
 };
 const SECTION_ORDER: SectionId[] = ["ready", "waiting", "loaded", "approved"];
 export const SECTIONS: { id: SectionId; label: string; intro: string }[] = SECTION_ORDER.map((id) => ({
@@ -158,9 +167,18 @@ export type ErrorFacts = {
   warnings: PostWarning[] | null;
   /** InvalidDraftContent: the refused draft (0-based), or null for the summary. */
   draftIndex: number | null;
+  /** A Post all that stopped: what was and wasn't posted, per PR. */
+  stackOutcomes: PostOutcome[] | null;
 };
 
-const NO_FACTS: ErrorFacts = { code: null, retryAfter: null, reviewUrl: null, warnings: null, draftIndex: null };
+const NO_FACTS: ErrorFacts = {
+  code: null,
+  retryAfter: null,
+  reviewUrl: null,
+  warnings: null,
+  draftIndex: null,
+  stackOutcomes: null,
+};
 
 /** A failed review request, carrying the server's cause (`detail`) as its message. */
 export class ReviewRequestError extends Error {
@@ -178,6 +196,14 @@ export class ReviewRequestError extends Error {
 
   get code(): string | null {
     return this.facts.code;
+  }
+
+  /**
+   * A newer round is current: the round shown changed (`RoundChanged`), or it was frozen when a
+   * round on the PR's new head took over its drafts (`RoundFrozen`). Nothing was saved or posted.
+   */
+  get roundChanged(): boolean {
+    return this.facts.code === "RoundChanged" || this.facts.code === "RoundFrozen";
   }
 
   /**
@@ -199,6 +225,7 @@ function factsOf(error: unknown, response: Response): Partial<ErrorFacts> {
     reviewUrl: typeof body.review_url === "string" ? body.review_url : null,
     warnings: Array.isArray(body.warnings) ? (body.warnings as PostWarning[]) : null,
     draftIndex: typeof body.draft_index === "number" ? body.draft_index : null,
+    stackOutcomes: Array.isArray(body.stack_outcomes) ? (body.stack_outcomes as PostOutcome[]) : null,
   };
 }
 
@@ -295,6 +322,18 @@ export async function reviewAnyway(
   );
 }
 
+/**
+ * Fetch the PR from GitHub now (its new head, CI and reviews), checking the new head against
+ * the author's previous review (Task 11 M7); opening it afterwards applies its own gates.
+ */
+export async function refreshPr(client: JesiniaClient, repo: string, number: number, key: string): Promise<QueueRow> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/refresh", {
+      params: { path: { ...split(repo), number }, header: withIdempotency(key) },
+    }),
+  );
+}
+
 /** Run again what failed. */
 export async function retryPr(client: JesiniaClient, repo: string, number: number, key: string): Promise<OpenResult> {
   return unwrap(
@@ -328,8 +367,9 @@ export async function openPr(
   request?: OpenRequest,
 ): Promise<OpenResult> {
   const params = { ...prParams(repo, number), header: withIdempotency(key) };
+  const body = request ? { walk_everything: false, quiz: false, ...request } : undefined;
   return unwrap(
-    await client.POST("/api/review/prs/{owner}/{repo}/{number}/open", request ? { params, body: request } : { params }),
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/open", body ? { params, body } : { params }),
   );
 }
 
@@ -401,4 +441,45 @@ export async function markDone(
       body: { round_id: roundId },
     }),
   );
+}
+
+/** The stack holding a PR (spec §4.3), from the cache: each PR's view, the stack review, cross-PR findings. */
+export async function getStack(client: JesiniaClient, repo: string, number: number): Promise<StackView> {
+  return unwrap(await client.GET("/api/review/stacks/{owner}/{repo}/{number}", { params: prParams(repo, number) }));
+}
+
+/** Open the stack: each PR under its own gates, then the stack's Overview, Background and walkthrough. */
+export async function openStack(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  retry = false,
+): Promise<StackOpenResult> {
+  return unwrap(
+    await client.POST("/api/review/stacks/{owner}/{repo}/{number}/open", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { retry },
+    }),
+  );
+}
+
+/**
+ * Post every PR's confirmed review, bottom-up; the server stops at the first that can't be posted
+ * (a `ReviewRequestError` whose `facts.stackOutcomes` say what was posted). A retry reuses the key.
+ */
+export async function postAll(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  items: PostAllItem[],
+): Promise<PostOutcome[]> {
+  const done = unwrap(
+    await client.POST("/api/review/stacks/{owner}/{repo}/{number}/post-all", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { items },
+    }),
+  );
+  return done.outcomes;
 }

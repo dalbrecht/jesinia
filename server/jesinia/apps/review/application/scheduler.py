@@ -22,6 +22,7 @@ from pathlib import Path
 from jesinia.apps.review.application.errors import RoundInterruptedError
 from jesinia.apps.review.application.ports import PrunableWorkspace, QueueStore
 from jesinia.apps.review.domain.errors import ReviewError
+from jesinia.apps.review.domain.followup import effective_followup
 from jesinia.apps.review.domain.gates import (
     DEFAULT_GATES,
     Depth,
@@ -51,6 +52,10 @@ MAX_INTERRUPTIONS = 3
 # Loaded PRs are reviewed at once: no debounce, but CI and automated reviews still gate them.
 _LOADED_GATES = GateSettings(debounce=timedelta(0))
 _STOPPED = "Jesinia stopped during this pre-review"
+# A loaded PR's new head waits for its follow-up (final I1); the refresh ticks after it.
+CHECKING = "checking this head against your previous review first"
+# Spec §4.1: a rebase of an approved PR with the same changes needs no action.
+STILL_APPROVED = "still approved: a rebase with the same changes; nothing to review"
 _INTERRUPTED = "Jesinia stopped during this pre-review (it was restarted or crashed)"
 
 
@@ -101,6 +106,9 @@ class Scheduler:
         run: the pre-review itself (the review pipeline). Without one, the gates are still
             applied and ready PRs show as queued, but nothing runs.
         concurrency: pre-reviews running at once.
+        hold_unchecked: hold a loaded PR (which has no debounce) until its head's follow-up
+            is recorded, so its pre-review is prepared knowing whether it is a re-review or
+            still approved (final I1). Set when the follow-ups run (the module).
     """
 
     def __init__(
@@ -110,6 +118,7 @@ class Scheduler:
         *,
         run: PreReviewRunner | None = None,
         concurrency: int = CONCURRENCY,
+        hold_unchecked: bool = False,
     ) -> None:
         if concurrency < 1:
             raise SchedulerConfigError(f"concurrency must be at least 1, got {concurrency}")
@@ -117,6 +126,7 @@ class Scheduler:
         self._clock = clock
         self._run = run
         self._concurrency = concurrency
+        self._hold_unchecked = hold_unchecked
         self._pending: dict[PrRef, tuple[StoredPr, PreReviewMode]] = {}
         self._running: dict[PrRef, asyncio.Task[None]] = {}
         # Rounds the author opened share the slots (R52), ahead of queued pre-reviews.
@@ -141,6 +151,7 @@ class Scheduler:
         configs = self._store.repo_configs()
         default_mode = self._store.prereview_default()
         rounds = self._store.rounds_for_heads()
+        followups = self._store.current_followups()
         self._pending = {}
         with self._store.atomic():  # one write per tick, and none for unchanged states
             for stored in self._store.prs():
@@ -148,7 +159,21 @@ class Scheduler:
                 if ref in self._running:
                     continue
                 status = rounds.get((ref, head))
-                if status is None or _retryable(status):
+                followup = followups.get(ref)
+                if followup is not None:  # under CI as it is now (C2)
+                    followup = effective_followup(followup, stored.pr.ci_state)
+                if (
+                    status is None
+                    and not stored.loaded
+                    and followup is not None
+                    and followup.error is None
+                    and followup.kind == "still_approved"
+                ):
+                    # A loaded PR is the author asking for a review now: it still runs.
+                    self._store.set_state(ref, head, "not_started", STILL_APPROVED)
+                elif self._hold_unchecked and stored.loaded and status is None and not followup:
+                    self._store.set_state(ref, head, "queued", CHECKING)
+                elif status is None or _retryable(status):
                     self._consider(stored, now, configs.get(ref.repo), default_mode)
                 elif status.finished:
                     # This head had its pre-review; show how it ended.

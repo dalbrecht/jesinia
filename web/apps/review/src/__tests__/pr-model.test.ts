@@ -204,21 +204,22 @@ describe("big PRs (I4, R61)", () => {
     expect(entries.filter((e) => e.bad).length).toBeGreaterThan(20); // findings landed on steps
   });
 
-  it("builds the outline in about linear time: k builds per sample, n vs 4n, generous ratio", () => {
-    const sample = (n: number) => {
+  it("builds the outline in linear work: n vs 4n counts hunk checks and lookups, not time", () => {
+    // Counted, not timed: a wall-clock ratio flaked on loaded CI runners ("ratio 14 > 10").
+    const work = (n: number) => {
       const view = big(n);
       const a = readArtifacts(view);
-      outlineOf("deep", a, view.files, 1); // warm (and parse) once
+      outlineOf("deep", a, view.files, 1); // parse once
+      const before = parseStats.hunkChecks + parseStats.lookups;
       const start = performance.now();
-      for (let k = 0; k < 20; k += 1) outlineOf("deep", a, view.files, k);
-      return performance.now() - start;
+      outlineOf("deep", a, view.files, 2);
+      return { units: parseStats.hunkChecks + parseStats.lookups - before, ms: performance.now() - start };
     };
-    sample(100); // warm up
-    const runs = (n: number) => [sample(n), sample(n), sample(n)].sort((x, y) => x - y)[1] as number;
-    const small = runs(500);
-    const large = runs(2000);
-    expect(large).toBeLessThan(5000);
-    expect(large / Math.max(small, 1)).toBeLessThan(10);
+    const small = work(500);
+    const large = work(2000);
+    expect(small.units).toBeGreaterThan(0);
+    expect(large.units / small.units).toBeLessThanOrEqual(4); // exactly linear: 4n is 4x the work
+    expect(large.ms).toBeLessThan(5000); // a ceiling for a pathological slowdown only
   });
 });
 

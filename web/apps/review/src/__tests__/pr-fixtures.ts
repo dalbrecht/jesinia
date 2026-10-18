@@ -208,6 +208,7 @@ export const ROUND = {
   error: null,
   posted_review_url: null,
   done: false,
+  frozen: false,
 };
 
 export function reviewed(over: Partial<PrView> = {}, rowOver: Partial<QueueRow> = {}): PrView {

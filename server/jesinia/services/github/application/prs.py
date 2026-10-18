@@ -72,7 +72,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          isResolved path line originalLine
+          isResolved path line originalLine originalStartLine diffSide
           comments(first: 1) {
             nodes { body author { login } commit { oid } originalCommit { oid } }
           }
@@ -211,6 +211,8 @@ def _thread(node: Mapping[str, object]) -> ReviewThread:
     if line is None:
         line = _optional_number(node, "originalLine")
         commit = _optional_mapping(first, "originalCommit")
+    original = _optional_mapping(first, "originalCommit")
+    side = node.get("diffSide")
     return ReviewThread(
         path=_text(node, "path"),
         line=line,
@@ -218,6 +220,10 @@ def _thread(node: Mapping[str, object]) -> ReviewThread:
         author=_GHOST if author is None else _text(author, "login"),
         resolved=_flag(node, "isResolved"),
         commit_sha=None if commit is None else _text(commit, "oid"),
+        original_commit_sha=None if original is None else _text(original, "oid"),
+        original_line=_optional_number(node, "originalLine"),
+        original_start_line=_optional_number(node, "originalStartLine"),
+        side="LEFT" if side == "LEFT" else "RIGHT" if side == "RIGHT" else None,
     )
 
 

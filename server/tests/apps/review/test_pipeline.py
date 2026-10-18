@@ -176,6 +176,9 @@ class FakeWorkspace:
         self.diff_error: WorkspaceError | None = None
         self.diffs: list[tuple[str, str]] = []
         self.fetch_hold: asyncio.Event | None = None
+        self.not_contained: set[tuple[str, str]] = set()
+        self.ancestry_checks: list[tuple[str, str]] = []
+        self.ancestry_error: WorkspaceError | None = None
 
     async def ensure_mirror(self, repo: str) -> None:
         return None
@@ -195,6 +198,13 @@ class FakeWorkspace:
 
     async def merge_base(self, repo: str, a: str, b: str) -> str:
         return MERGE_BASE
+
+    async def is_ancestor(self, repo: str, ancestor: str, descendant: str) -> bool:
+        """Every commit is in every head, except the pairs a test lists (R77)."""
+        self.ancestry_checks.append((ancestor, descendant))
+        if self.ancestry_error is not None:
+            raise self.ancestry_error
+        return (ancestor, descendant) not in self.not_contained
 
     async def diff(self, repo: str, base_sha: str, head_sha: str) -> str:
         self.diffs.append((base_sha, head_sha))

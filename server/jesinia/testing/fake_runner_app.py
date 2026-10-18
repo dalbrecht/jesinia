@@ -113,6 +113,26 @@ REVIEW_JOB_OUTPUTS: dict[str, dict[str, object]] = {
         "tests": [{"path": _GREETER_TEST, "name": "test_greet_handles_an_empty_name"}],
     },
     "findings": {"findings": [_FINDING]},
+    "rereview": {
+        "requests": [
+            {
+                "comment_ref": "c1",
+                "status": "addressed",
+                "explanation": "greet() now guards the empty name, as asked.",
+                "hunks": [{"path": _GREETER, "hunk": 0}],
+            }
+        ],
+        "new_changes_walkthrough": {
+            "steps": [
+                {
+                    "title": "Guard the empty name",
+                    "body": "greet() answers an empty name with a stranger greeting.",
+                    "hunks": [{"path": _GREETER, "hunk": 0}],
+                }
+            ],
+            "skipped": [],
+        },
+    },
     "recommendation": {"verdict": "approve", "reasoning": "A small, tested fix."},
     "metrics": {
         "scores": [

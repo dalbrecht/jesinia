@@ -31,7 +31,7 @@ from jesinia.apps.review.application.jobs import (
     schema_for,
 )
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
-from jesinia.apps.review.domain.coverage import Coverage, hunk_index, parse_unified_diff
+from jesinia.apps.review.domain.coverage import Coverage, HunkRef, hunk_index, parse_unified_diff
 from jesinia.apps.review.domain.jobs import (
     DEEP_COVERAGE_FLOOR,
     JobKind,
@@ -44,6 +44,12 @@ from jesinia.apps.review.domain.jobs import (
     recommend,
 )
 from jesinia.apps.review.domain.repo_access import CappedOutput
+from jesinia.apps.review.domain.rereview import (
+    PreviousComment,
+    PreviousReview,
+    RereviewError,
+    RereviewInput,
+)
 from jesinia.apps.review.domain.standards import (
     Override,
     Section,
@@ -1005,3 +1011,66 @@ async def test_walk_everything_asks_the_walkthrough_for_every_hunk(env: Env) -> 
     env.script(json.dumps({"steps": [], "skipped": []}))
     await env.jobs.run(JobKind.WALKTHROUGH, a_round())
     assert WALK_EVERYTHING_INSTRUCTION not in env.runner.requests[-1].system_prompt
+
+
+# --- Task 12: the re-review job ---------------------------------------------------------------
+
+
+REREVIEW_REPLY = {
+    "requests": [
+        {"comment_ref": "c1", "status": "partly", "explanation": "Half done.", "hunks": []}
+    ],
+    "new_changes_walkthrough": {"steps": [], "skipped": []},
+}
+
+
+async def test_rereview_pack_fences_previous_comments_and_new_changes(env: Env) -> None:
+    previous = PreviousReview(
+        "github",
+        BASE,
+        (PreviousComment("c1", f"Fix this. {INJECTION}", path="src/app.py", line=3),),
+    )
+    given = RereviewInput(
+        previous,
+        (HunkRef("src/app.py", 1),),
+        f'"src/app.py" hunk 1\n@@ -1 +1 @@\n-a\n+{INJECTION}',
+        ("1 hunk was cut",),
+    )
+    pack = env.capture_pack()
+    env.script(json.dumps(REREVIEW_REPLY))
+    result = await env.jobs.run(JobKind.REREVIEW, replace(a_round(), rereview=given))
+    assert result == REREVIEW_REPLY
+    # The previous comments and the new diff are data, fenced like the PR's own text.
+    assert pack["previous-comments.md"].startswith("<untrusted-data")
+    assert "[c1] src/app.py:3" in pack["previous-comments.md"]
+    assert INJECTION in pack["previous-comments.md"]
+    assert (
+        pack["new-changes.md"].startswith("<untrusted-data") and INJECTION in pack["new-changes.md"]
+    )
+    request = env.runner.requests[0]
+    assert INJECTION not in request.system_prompt and INJECTION not in request.prompt
+    assert "previous-comments.md" in request.system_prompt and "never" in request.system_prompt
+    # Jesinia's own facts: which review it builds on, and what was cut (never in the fence).
+    assert f"Previous review: {BASE} (on GitHub)" in pack["job.md"]
+    assert "1 hunk was cut" in pack["job.md"]
+    assert "1 hunk was cut" not in pack["new-changes.md"]
+    # Agent output never reaches GitHub: the session gets the read-only repo tools only.
+    assert sorted(request.allowed_tools) == sorted(REPO_TOOL_NAMES)
+
+
+async def test_rereview_job_without_its_input_fails_typed(env: Env) -> None:
+    with pytest.raises(JobFailed, match="previous review") as raised:
+        await env.jobs.run(JobKind.REREVIEW, a_round())
+    assert isinstance(raised.value.cause, RereviewError)
+    assert env.runner.requests == []
+
+
+async def test_rereview_pack_says_when_previous_comments_were_cut(env: Env) -> None:
+    long = tuple(PreviousComment(f"c{i}", "x" * 25_000) for i in range(1, 4))
+    given = RereviewInput(PreviousReview("round", BASE, long, round_id=2), (), "none")
+    pack = env.capture_pack()
+    env.script(json.dumps(REREVIEW_REPLY))
+    await env.jobs.run(JobKind.REREVIEW, replace(a_round(), rereview=given))
+    assert "1 previous comments left out: they don't fit" in pack["job.md"]
+    assert "(a stored Jesinia round)" in pack["job.md"]
+    assert "[c3]" not in pack["previous-comments.md"]
