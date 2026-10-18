@@ -1409,3 +1409,25 @@ async def test_a_refresh_asked_for_mid_run_runs_once_more(env: Env) -> None:
     gate.set()
     await env.followups.drain()
     assert env.followups.followup(env.ref, repo.conflict) is not None
+
+
+async def test_an_edited_posted_review_still_counts_as_listed(env: Env) -> None:
+    """Codex round 3 P1 on PR #63: the author edited the review Jesinia posted on GitHub and
+    added text after its marker. It is listed (not lagging), so the head is classified."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    r1 = env.store.start_round(env.ref, repo.head, repo.base, "quick", env.clock())
+    attempt = env.store.start_posting(r1, "REQUEST_CHANGES", "k", "d", "No", [], env.clock())
+    env.store.finish_posting(attempt.id, "https://github.com/acme/web/pull/1#r9")
+    marker = MARKER_REVIEW.format(attempt.id)[len("Looks good.") :]
+    env.github.reviews_of[(REPO, 1)] = [
+        ReviewSummary(
+            "me", False, "CHANGES_REQUESTED", repo.head, START, 0,
+            f"No{marker}\n\nEdited later: also see the tests.", "u-no",
+        )
+    ]  # fmt: skip
+    env.sync(repo.rebased, repo.rebased_base)
+    assert await env.followups.refresh() == 1
+    found = env.followups.followup(env.ref, repo.rebased)
+    assert found is not None and found.error is None and found.kind == "rereview"
+    assert found.prev_source == "round" and found.prev_round_id == r1

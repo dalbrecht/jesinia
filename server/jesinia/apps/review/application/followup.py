@@ -37,7 +37,7 @@ from jesinia.apps.review.domain.followup import (
     verdict_of_event,
     verdict_of_review_state,
 )
-from jesinia.apps.review.domain.posting import Draft, Posting, posting_marker
+from jesinia.apps.review.domain.posting import Draft, Posting, has_posting_marker
 from jesinia.apps.review.domain.queue import (
     PrRef,
     PrSnapshot,
@@ -235,9 +235,11 @@ class FollowUps:
         viewer = (self._store.viewer() or await self._github.viewer()).lower()
         reviews = await self._github.reviews(ref.repo, ref.number)
         key = latest_review_key(reviews, viewer)
-        bodies = [r.body.rstrip() for r in reviews if r.author.lower() == viewer]
+        bodies = [r.body for r in reviews if r.author.lower() == viewer]
+        # A marker anywhere counts: the author may have edited the review after it was
+        # posted, adding text after the marker (Codex round 3 P1 on PR #63).
         lagging = any(
-            not any(body.endswith(posting_marker(posting.id)) for body in bodies)
+            not any(has_posting_marker(body, posting.id) for body in bodies)
             for _, posting in posted
         )
         return await self._prev_of(pr, reviews, viewer, posted), key, lagging
@@ -250,12 +252,15 @@ class FollowUps:
         posted: list[tuple[RoundRecord, Posting]],
     ) -> PrevReview | None:
         ref = pr.ref
-        marked = {posting_marker(posting.id): (rnd, posting) for rnd, posting in posted}
+        marked = {posting.id: (rnd, posting) for rnd, posting in posted}
         for review in reversed(reviews):
             if review.author.lower() != viewer or review.commit_sha is None:
                 continue
-            body = review.body.rstrip()
-            ours = next((found for mark, found in marked.items() if body.endswith(mark)), None)
+            # Jesinia's own round, edited on GitHub or not (its marker anywhere, Codex round 3).
+            ours = next(
+                (found for pid, found in marked.items() if has_posting_marker(review.body, pid)),
+                None,
+            )
             if ours is not None:
                 return await self._from_round(*ours)
             verdict = verdict_of_review_state(review.state)

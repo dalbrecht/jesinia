@@ -20,7 +20,7 @@ import asyncio
 import logging
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Final, Protocol
 
 from jesinia.apps.review.application.followup import line_maps
 from jesinia.apps.review.domain.coverage import (
@@ -30,7 +30,7 @@ from jesinia.apps.review.domain.coverage import (
     parse_unified_diff,
 )
 from jesinia.apps.review.domain.followup import FollowUp, LineMaps
-from jesinia.apps.review.domain.posting import Posting
+from jesinia.apps.review.domain.posting import SUBMITTED_STATES, Posting
 from jesinia.apps.review.domain.queue import PrRef, RoundRecord
 from jesinia.apps.review.domain.rereview import (
     PreviousComment,
@@ -52,6 +52,9 @@ from jesinia.services.github.application.service import GitHubError
 from jesinia.services.github.domain.pr import ReviewSide, ReviewSummary, ReviewThread
 
 log = logging.getLogger(__name__)
+# The review states that can be the previous review's body: submitted or dismissed, never
+# PENDING (an unsubmitted draft only its author sees).
+_PREVIOUS_STATES: Final = SUBMITTED_STATES | {"DISMISSED"}
 
 _GITHUB_ERRORS = (GitHubError, GitHubPayloadError)
 
@@ -332,10 +335,14 @@ class Rereviews:
             raise RereviewInputError(
                 f"your previous review's comments couldn't be read from GitHub: {exc}"
             ) from exc
+        # Submitted reviews only, as classification reads them (a dismissed one included):
+        # a pending review is invisible to everyone else (Codex round 3 P2 on PR #63).
         mine = [
             review
             for review in reviews
-            if review.author.lower() == viewer.lower() and review.commit_sha == head
+            if review.author.lower() == viewer.lower()
+            and review.commit_sha == head
+            and review.state in _PREVIOUS_STATES
         ]
         body = mine[-1].body if mine else ""
         comments = comments_from_threads(threads, viewer, body, review_commit=head or None)

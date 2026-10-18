@@ -1372,3 +1372,19 @@ async def test_a_replan_joining_an_earlier_preparation_still_runs_the_rereview(
     jobs = env.store.artifact(started.round_id, "jobs")
     assert isinstance(jobs, dict) and jobs["rereview"] == {"state": "done", "error": None}
     assert env.jobs.ran.count(JobKind.REREVIEW) == 1
+
+
+async def test_a_pending_review_is_never_the_previous_review_body(env: Env) -> None:
+    """Codex round 3 P2 on PR #63: a pending (unsubmitted) review on the previous head is
+    invisible to everyone else and isn't the author's verdict: the submitted one is used."""
+    repo = env.repo
+    env.github.reviews_of[(REPO, 1)] = [
+        ReviewSummary("me", False, "CHANGES_REQUESTED", repo.head, START, 0, "Please fix these."),
+        ReviewSummary("me", False, "PENDING", repo.head, START, 0, "Half-written draft."),
+    ]
+    env.sync(repo.pushed, repo.base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    followup = await env.followups.classify(stored)
+    previous = await env.rereviews.previous_comments(env.ref, followup)
+    assert [c.body for c in previous.comments] == ["Please fix these."]

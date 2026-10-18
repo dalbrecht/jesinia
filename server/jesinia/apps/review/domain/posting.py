@@ -449,6 +449,13 @@ def posting_marker(posting_id: int) -> str:
 _POSTING_MARKER: Final = re.compile(rf"<!-- {re.escape(_MARKER_NAME)}:\d+ -->")
 
 
+def has_posting_marker(text: str, posting_id: int) -> bool:
+    """Whether ``text`` carries attempt ``posting_id``'s exact marker anywhere (a body
+    edited on GitHub after Jesinia posted it may have text after its marker). For telling a
+    listed review apart, never for adopting one: adoption needs the marker at the end."""
+    return posting_marker(posting_id) in text
+
+
 def strip_posting_markers(text: str) -> str:
     """``text`` without any posting marker, wherever it is (a body edited on GitHub after
     Jesinia posted it may have text after its marker)."""
