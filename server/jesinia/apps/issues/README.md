@@ -46,7 +46,8 @@ Task 7 adds the priority and duplicate actions:
 PR 3 (Tasks 8–10) adds epics, work queues and themes. Task 8 adds epics:
 
 - the Epics list and an epic's page, from the cache: progress (closed children of all),
-  readiness from the direct children with what blocks each, a "won't fit one PR" warning for
+  readiness from the direct children with what blocks each (a child that is itself an epic counts
+  by its own children, ruling IR51), a "won't fit one PR" warning for
   children in another repo, and a suggestion to add the `epic` label to an issue that has
   children without it;
 - drop checks: an issue can't contain itself or one of its ancestors, another owner's issue, or
@@ -359,8 +360,11 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   a plan that changed since (an edited checklist, a linked issue moved) is refused. A group or
   split draft is re-checked against the cache when approved: an issue closed, gone or under a
   parent since makes it stale (409), and nothing is applied.
-- **No pings (IR49):** text taken from issues or written by the agent renders every @mention as
-  code (`` `@name` ``): in briefs, and in the epics and parts an approved group or split creates.
+- **No pings (IR49):** in text taken from issues or written by the agent, the @ of every mention
+  is written as the entity `&#64;`: GitHub shows "@" but mentions no one. That applies to briefs,
+  and to the epics and parts an approved group or split creates. An entity rather than a code
+  span, because backticks or backslashes in the text could close a span. An address like
+  `a@b.com` stays as it is.
 - **Drop checks see the cached chain:** when an ancestor isn't cached (or the chain is deeper than
   8), the drop check warns "ancestors beyond … aren't cached; GitHub will check".
 - **Agent asks (IR37):** grouping, splitting and briefs ask through `SuggestService`'s one-shot

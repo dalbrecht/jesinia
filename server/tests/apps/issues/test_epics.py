@@ -921,3 +921,21 @@ async def test_a_failure_to_record_a_converted_issue_is_logged(
     monkeypatch.setattr(env.conversions, "set_created", broken)
     assert env.epics.conversion(REPO, 1).skipped[0].reason.startswith("already converted")
     assert "recording acme/web#1's converted item failed" in caplog.text
+
+
+async def test_an_initiative_is_ready_by_its_epics_children(env: Epics) -> None:
+    env.github.put(
+        issue(1, labels=("initiative", "priority: high"), sub_issue_count=1),
+        epic(2, count=2),
+        issue(3, labels=READY),
+        issue(4),
+    )
+    env.children(1, 2)
+    env.children(2, 3, 4)
+    await env.synced()
+    blocked = env.epics.readiness("epic", REPO, 1)
+    assert [b.n for b in blocked.blockers] == [4]
+    env.github.put(later(issue(4, labels=READY)))
+    env.world.clock.now += timedelta(minutes=1)
+    await env.world.sync.sync(REPO)
+    assert env.epics.readiness("epic", REPO, 1).ready

@@ -4,6 +4,8 @@ contain, when it is ready, checklist conversion plans, proposals and delivery br
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -569,9 +571,19 @@ def test_a_triage_without_cache_stays_a_triage_type() -> None:
 # --- fix round 1 -------------------------------------------------------------------------------
 
 
-def test_mentions_in_untrusted_text_are_rendered_as_code() -> None:
-    text = "hi @dana, `@kept` a@b.com @org/team-x and @@x"
-    assert neutralise_mentions(text) == "hi `@dana`, `@kept` a@b.com `@org/team-x` and @`@x`"
+def test_mentions_in_untrusted_text_are_neutralised() -> None:
+    text = "hi @dana, a@b.com @org/team-x and @@x _@y"
+    assert neutralise_mentions(text) == (
+        "hi &#64;dana, a@b.com &#64;org/team-x and @&#64;x _&#64;y"
+    )
+    # Backticks and backslashes in the untrusted text can't re-arm a mention: no @ is left
+    # before a name anywhere, inside a code span or out. Addresses (a@b.com) stay as they are:
+    # GitHub doesn't mention them.
+    for tricky in ("``@x``", "x`@y`", "`` `@x` ``", "\\@x", "\\`@x\\`", "\\\\@x", "@x\\"):
+        made = neutralise_mentions(tricky)
+        assert re.search(r"(?<![A-Za-z0-9])@[A-Za-z0-9]", made) is None, made
+        assert "&#64;" in made and made.count("`") == tricky.count("`")  # no span is added
+    assert neutralise_mentions("mail a@b.com or x.y@z.org") == "mail a@b.com or x.y@z.org"
     brief = compose_brief(
         "Ping @boss",
         REPO,
@@ -582,9 +594,8 @@ def test_mentions_in_untrusted_text_are_rendered_as_code() -> None:
         ["@erin approves"],
         cross_repo=False,
     )
-    assert "@boss" not in brief.replace("`@boss`", "")
-    for name in ("dana", "carol", "erin"):
-        assert f"`@{name}`" in brief and f" @{name}" not in brief
+    for name in ("boss", "dana", "carol", "erin"):
+        assert f"&#64;{name}" in brief and f"@{name}" not in brief
 
 
 def test_a_brief_can_name_its_subject_other_than_an_issue() -> None:
@@ -669,7 +680,7 @@ def test_an_approved_proposal_needs_its_minimum_shape_and_pings_nobody() -> None
     }  # fmt: skip
     (create,) = proposal_batch(suggestion("group", loud), known, {}).repo
     assert isinstance(create, CreateIssue)
-    assert create.title == "Ask `@dana`" and "`@erin`" in create.body
+    assert create.title == "Ask &#64;dana" and "&#64;erin" in create.body
     parts: dict[str, object] = {
         "issue": {"repo": REPO, "n": 2},
         "parts": [{"title": "@a one", "body": "@b"}, {"title": "two", "body": ""}],
@@ -677,6 +688,51 @@ def test_an_approved_proposal_needs_its_minimum_shape_and_pings_nobody() -> None
     first = proposal_batch(suggestion("split", parts), known, {}).repo[0]
     assert (
         isinstance(first, CreateIssue)
-        and first.title == "`@a` one"
-        and first.body.startswith("`@b`")
+        and first.title == "&#64;a one"
+        and first.body.startswith("&#64;b")
     )
+
+
+# --- IR51: a child epic counts by its own children ---------------------------------------------
+
+
+def parent_member(n: int, *, initiative: bool = False, is_open: bool = True) -> Member:
+    labels = ("initiative", "priority: high") if initiative else ("epic", "priority: high")
+    return Member(REPO, n, f"Epic {n}", is_open, triage(labels, 1, DEFAULT_SCHEMA), initiative)
+
+
+def tree(children: dict[int, list[Member] | None]) -> Callable[[Member], Sequence[Member] | None]:
+    return lambda found: children.get(found.n)
+
+
+def test_an_initiative_over_a_ready_epic_is_ready() -> None:
+    initiative = parent_member(1, initiative=True)
+    lookup = tree({2: [member(3), member(4, is_open=False, labels=("bug",))]})
+    assert epic_readiness(initiative, [parent_member(2)], lookup) == Readiness(True, (), False)
+
+
+def test_an_initiative_over_an_epic_with_a_blocked_child_names_the_grandchild() -> None:
+    lookup = tree(
+        {2: [member(3), member(4, ("bug",))], 5: None, 6: [], 7: [member(8, is_open=False)]}
+    )
+    found = epic_readiness(
+        parent_member(1, initiative=True),
+        [parent_member(2), parent_member(5), parent_member(6), parent_member(7)],
+        lookup,
+    )
+    assert not found.ready
+    assert [(b.n, b.reason) for b in found.blockers] == [
+        (4, "missing readiness, priority, area"),
+        (5, "children not fetched yet"),
+        (6, "it has no children yet"),
+    ]
+
+
+def test_a_cycle_or_a_deep_chain_of_epics_terminates() -> None:
+    looped = epic_readiness(parent_member(1), [parent_member(2)], tree({2: [parent_member(1)]}))
+    assert [(b.n, b.reason) for b in looped.blockers] == [(1, "part of a sub-issue cycle")]
+    deep = epic_readiness(parent_member(1), [parent_member(2)], lambda m: [parent_member(m.n + 1)])
+    assert len(deep.blockers) == 1 and "nested deeper than" in deep.blockers[0].reason
+    conflicted = Member(REPO, 2, "E", True, triage(("epic", "initiative"), 1, DEFAULT_SCHEMA))
+    blocked = epic_readiness(parent_member(1, initiative=True), [conflicted], tree({}))
+    assert blocked.blockers[0].reason.startswith("conflicting labels")

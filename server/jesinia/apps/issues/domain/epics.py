@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
@@ -84,8 +84,11 @@ _FULL_REF = re.compile(r"(?<![\w/])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d{1,9})\b
 _SHORT_REF = re.compile(r"(?<![\w/#])#(\d{1,9})\b")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*)$")
 _BULLET = re.compile(r"^\s{0,3}[-*+]\s+(?:\[[ xX]\]\s+)?(.*\S)\s*$")
-# A GitHub @mention (a user, or an org's team) not already inside code.
-_MENTION = re.compile(r"(?<![\w`])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:/[A-Za-z0-9_.-]+)?)")
+# The @ of a GitHub mention (a user, or an org's team): not after a letter or digit (so an
+# address like a@b.com stays as it is; GitHub doesn't mention those).
+_MENTION = re.compile(r"(?<![A-Za-z0-9])@(?=[A-Za-z0-9])")
+# How deep the readiness of nested epics is followed (GitHub nests sub-issues 8 deep).
+MAX_NESTING = 8
 _ANY_MARKER = re.compile(r"<!-- jesinia:brief(?::[A-Za-z0-9-]{1,64})? -->")
 _NONCE = re.compile(r"[A-Za-z0-9-]{1,64}")
 
@@ -219,6 +222,20 @@ class Member:
     title: str
     is_open: bool
     triage: Triage | None
+    is_initiative: bool = False
+
+    @property
+    def key(self) -> Key:
+        return issue_key(self.repo, self.n)
+
+    @property
+    def is_parent(self) -> bool:
+        """An epic or an initiative: its readiness comes from its own children (IR51)."""
+        return self.triage is not None and (self.triage.is_epic or self.is_initiative)
+
+
+# The children of an epic member as the cache knows them (``None``: never fetched).
+ChildLookup = Callable[[Member], Sequence[Member] | None]
 
 
 @dataclass(frozen=True)
@@ -258,9 +275,45 @@ def member_blocker(member: Member) -> str | None:
     return None
 
 
-def _blockers(members: Iterable[Member]) -> tuple[Blocker, ...]:
-    found = ((m, member_blocker(m)) for m in members if m.is_open)
-    return tuple(Blocker(m.repo, m.n, reason) for m, reason in found if reason is not None)
+def _blockers(
+    members: Iterable[Member], lookup: ChildLookup | None = None, path: tuple[Key, ...] = ()
+) -> tuple[Blocker, ...]:
+    """The open members' blockers. With ``lookup``, a member that is itself an epic (or an
+    initiative) counts by its own children's readiness, followed down to ``MAX_NESTING`` and
+    never round a cycle (``path`` is the epics above, IR51)."""
+    found: list[Blocker] = []
+    for member in members:
+        if not member.is_open:
+            continue
+        if lookup is not None and member.is_parent:
+            found += _rolled(member, lookup, path)
+            continue
+        reason = member_blocker(member)
+        if reason is not None:
+            found.append(Blocker(member.repo, member.n, reason))
+    return tuple(found)
+
+
+def _rolled(epic: Member, lookup: ChildLookup, path: tuple[Key, ...]) -> list[Blocker]:
+    """A child epic's blockers: its labels' gaps (it needs priority), else its own children's
+    (a closed child, or all of them closed, never blocks)."""
+
+    def blocked(reason: str) -> list[Blocker]:
+        return [Blocker(epic.repo, epic.n, reason)]
+
+    if epic.key in path:
+        return blocked("part of a sub-issue cycle")
+    if len(path) >= MAX_NESTING:
+        return blocked(f"nested deeper than {MAX_NESTING} levels, so it isn't checked")
+    found = cast(Triage, epic.triage)  # a parent member always has its triage
+    if found.conflicts or found.missing:
+        return blocked(cast(str, member_blocker(epic)))
+    children = lookup(epic)
+    if children is None:
+        return blocked("children not fetched yet")
+    if not children:
+        return blocked("it has no children yet")
+    return list(_blockers(children, lookup, (*path, epic.key)))
 
 
 def issue_readiness(member: Member) -> Readiness:
@@ -271,9 +324,13 @@ def issue_readiness(member: Member) -> Readiness:
     return Readiness(not blockers, blockers, False)
 
 
-def epic_readiness(epic: Member, children: Sequence[Member] | None) -> Readiness:
+def epic_readiness(
+    epic: Member, children: Sequence[Member] | None, lookup: ChildLookup | None = None
+) -> Readiness:
     """Ready when every *direct* open child is ready (spec §6.2); a closed child never blocks.
-    ``children`` is ``None`` while they were never fetched."""
+    ``children`` is ``None`` while they were never fetched. With ``lookup`` (ruling IR51), a
+    child that is itself an epic is ready only when its own children are, and its blockers are
+    theirs; without it, every child counts by its own labels."""
     if children is None:
         return Readiness(False, (), False, "its children haven't been fetched yet; refresh it")
     crossing = any(child.repo.casefold() != epic.repo.casefold() for child in children)
@@ -281,7 +338,7 @@ def epic_readiness(epic: Member, children: Sequence[Member] | None) -> Readiness
         return Readiness(False, (), False, "it has no children yet")
     if not any(child.is_open for child in children):
         return Readiness(False, (), crossing, "every child is closed")
-    blockers = _blockers(children)
+    blockers = _blockers(children, lookup, (epic.key,))
     return Readiness(not blockers, blockers, crossing)
 
 
@@ -883,9 +940,12 @@ def derived_acceptance(bodies: Sequence[tuple[str, int, str]]) -> list[str]:
 
 
 def neutralise_mentions(text: str) -> str:
-    """``text`` with every @mention rendered as code (`` `@name` ``), so text taken from issues
-    or an agent never pings anyone once it is posted (ruling IR49)."""
-    return _MENTION.sub(lambda m: f"`@{m.group(1)}`", text)
+    """``text`` with the @ of every mention written as the entity ``&#64;``, so text taken from
+    issues or an agent never pings anyone once it is posted (ruling IR49): GitHub shows "@"
+    but mentions no one. An entity, not a code span, because backticks or backslashes in the
+    untrusted text could close a span and re-arm the mention; no zero-width characters, which
+    read as hidden text."""
+    return _MENTION.sub("&#64;", text)
 
 
 def compose_brief(
@@ -903,7 +963,7 @@ def compose_brief(
     """The delivery brief (spec §4: one epic, one PR): scope, the children in order,
     acceptance criteria drawn from them, and links. ``subject`` names what it is about (the
     epic's ``repo#n`` by default; a milestone is named, so it never reads as an issue). Every
-    @mention in the issues' and agent's text is rendered as code (IR49). Without the marker;
+    @mention in the issues' and agent's text is neutralised (IR49). Without the marker;
     ``brief_comment`` adds it when it is stored."""
     about = subject or f"{repo}#{n}"
     title, scope = neutralise_mentions(title), neutralise_mentions(scope)

@@ -31,9 +31,9 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Protocol, cast
 
 from jesinia.apps.issues.application.ports import (
     AppliedBatch,
@@ -367,14 +367,23 @@ class EpicService:
             for ref in links
         )
 
-    @staticmethod
-    def _members(children: Sequence[EpicChild]) -> list[Member]:
+    def _members(self, children: Sequence[EpicChild]) -> list[Member]:
         return [
             Member(c.ref.repo, c.ref.number, "", True, None)
             if c.cached is None
-            else _member(c.cached)
+            else replace(
+                _member(c.cached),
+                is_initiative=is_initiative(c.cached.issue, _schema(self._cache, c.ref.repo)),
+            )
             for c in children
         ]
+
+    def _lookup(self, member: Member) -> list[Member] | None:
+        """A child epic's own children, for its rolled-up readiness (IR51); ``None`` while
+        never fetched. Only a cached member (one with its triage) is asked about."""
+        cached = cast(CachedIssue, self._cache.cached_issue(member.repo, member.n))
+        children = self._children(cached)
+        return None if children is None else self._members(children)
 
     def _summary(self, cached: CachedIssue, children: tuple[EpicChild, ...] | None) -> EpicSummary:
         issue = cached.issue
@@ -388,7 +397,7 @@ class EpicService:
             lacks_epic_label(issue, schema),
             done,
             issue.sub_issue_count if members is None else len(members),
-            epic_readiness(_member(cached), members),
+            epic_readiness(_member(cached), members, self._lookup),
         )
 
     def _is_epic(self, cached: CachedIssue) -> bool:
