@@ -8,7 +8,17 @@ import s from "./pr.module.css";
 
 type Outcome = "right" | "wrong" | "skipped";
 
-export function Quiz({ questions }: { questions: Question[] }) {
+/**
+ * `onFinish` hears how many of the answered questions were right once the last question is done
+ * (skipped ones aren't answered); a quiz with nothing answered never calls it.
+ */
+export function Quiz({
+  questions,
+  onFinish,
+}: {
+  questions: Question[];
+  onFinish?: (right: number, answered: number) => void;
+}) {
   const [at, setAt] = useState(0);
   const [picked, setPicked] = useState<number | null>(null);
   const [checked, setChecked] = useState(false);
@@ -16,8 +26,13 @@ export function Quiz({ questions }: { questions: Question[] }) {
   const question = questions[at];
 
   const advance = (outcome: Outcome) => {
-    setOutcomes((o) => [...o, outcome]);
+    const done = [...outcomes, outcome];
+    setOutcomes(done);
     setAt((n) => n + 1);
+    const answered = done.filter((o) => o !== "skipped").length;
+    if (done.length === questions.length && answered > 0) {
+      onFinish?.(done.filter((o) => o === "right").length, answered);
+    }
     setPicked(null);
     setChecked(false);
   };

@@ -47,3 +47,9 @@ class HeadMovedOnError(RoundInterruptedError):
 class GitHubBusyError(RoundInterruptedError):
     """GitHub was briefly unavailable (rate limited, a 5xx, a timeout) while the round was
     prepared (M2); ``cause`` is GitHub's error. The round is retried later, never failed."""
+
+
+class KnowledgeSourceError(ReviewError):
+    """A source of the knowledge model's signals (the signed-in user's emails, the KB, a
+    repo's history) couldn't be read. Ingest is best-effort: the cause is logged and
+    reported, and nothing else stops."""

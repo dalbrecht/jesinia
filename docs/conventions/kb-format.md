@@ -35,7 +35,7 @@ id: 0199e000-0000-7000-8000-000000000001
 title: Some Post Title
 aliases: [sp]          # foreign keys are kept as they are
 jesinia:
-  kind: note           # note | source/rss | review/pr | …
+  kind: note           # note | source/rss | review/pr | review/system | …
   captured: 2026-10-16T09:12:00-07:00
 ---
 ```

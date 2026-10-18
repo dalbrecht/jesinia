@@ -780,25 +780,6 @@
   }
 }
 
-/* Hidden and direction-changing characters, made visible (I6). */
-.hiddenChar {
-  display: inline-block;
-  margin-inline: 1px;
-  padding: 0 3px;
-  border: 1px solid var(--jx-warn);
-  border-radius: var(--jx-radius-sm);
-  background: var(--jx-warn-bg);
-  color: var(--jx-warn);
-  font-family: var(--jx-font-mono);
-  font-size: 0.85em;
-  line-height: 1.2;
-}
-.hiddenChar[data-kind="bidi"] {
-  border-color: var(--jx-danger);
-  background: var(--jx-danger-bg);
-  color: var(--jx-danger);
-}
-
 /* The outline's parts (M11) and the windowed walkthrough list (I4). */
 .partList {
   margin: 0;
@@ -824,4 +805,61 @@
 }
 .entryLabel {
   min-width: 0;
+}
+
+/* The metrics trend (spec §5.2): plain SVG in the tokens, a table of the numbers beside it. */
+.trend {
+  margin: var(--jx-space-6) 0 0;
+}
+.trendTitle {
+  margin-bottom: var(--jx-space-2);
+  font-family: var(--jx-font-ui);
+  font-size: var(--jx-text-base);
+  font-weight: var(--jx-weight-semibold);
+}
+.trendChart {
+  display: block;
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+  margin-bottom: var(--jx-space-3);
+}
+.trendGrid {
+  stroke: var(--jx-border);
+  stroke-width: 1;
+}
+.trendAxis {
+  fill: var(--jx-fg-muted);
+  font-family: var(--jx-font-ui);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.trendLine {
+  fill: none;
+  stroke: var(--jx-accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.trendPoint {
+  fill: var(--jx-accent);
+  stroke: var(--jx-surface);
+  stroke-width: 1.5;
+}
+.trendScores {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--jx-text-sm);
+}
+.trendEdit {
+  margin: var(--jx-space-3) 0 0;
+  font-size: var(--jx-text-sm);
+}
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

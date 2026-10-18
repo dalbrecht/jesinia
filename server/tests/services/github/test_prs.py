@@ -808,3 +808,66 @@ async def test_viewer_orgs_follow_pages_and_lowercase(prs: PrClient) -> None:
 
     assert len(orgs) == 101 and orgs[0] == "org0" and orgs[-1] == "acme"
     assert [c.request.url.params["page"] for c in route.calls] == ["1", "2"]
+
+
+@respx.mock
+async def test_viewer_emails_add_noreply_and_verified_addresses(prs: PrClient) -> None:
+    respx.get(f"{API}/user").mock(
+        return_value=Response(200, json={"login": "Me", "id": 42, "email": "Me@Example.com"})
+    )
+    respx.get(f"{API}/user/emails").mock(
+        return_value=Response(
+            200,
+            json=[
+                {"email": "work@example.com", "verified": True},
+                {"email": "me@example.com", "verified": True},
+                {"email": "unverified@example.com", "verified": False},
+                {"verified": True},
+            ],
+        )
+    )
+    assert await prs.viewer_emails() == [
+        "me@users.noreply.github.com",
+        "42+me@users.noreply.github.com",
+        "me@example.com",
+        "work@example.com",
+    ]
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [403, 404])
+async def test_viewer_emails_without_the_email_scope_keep_the_public_ones(
+    prs: PrClient, status: int
+) -> None:
+    respx.get(f"{API}/user").mock(return_value=Response(200, json={"login": "me", "email": None}))
+    respx.get(f"{API}/user/emails").mock(
+        return_value=Response(status, json={"message": "Resource not accessible"})
+    )
+    assert await prs.viewer_emails() == ["me@users.noreply.github.com"]
+
+
+@respx.mock
+async def test_viewer_emails_raise_other_github_failures(prs: PrClient) -> None:
+    respx.get(f"{API}/user").mock(return_value=Response(200, json={"login": "me", "id": 1}))
+    respx.get(f"{API}/user/emails").mock(return_value=Response(500, json={"message": "boom"}))
+    with pytest.raises(GitHubRequestError):
+        await prs.viewer_emails()
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"state": "closed", "merged_at": "2026-10-18T00:00:00Z", "merge_commit_sha": SHA,
+          "head": {"sha": "b" * 40}}, ("merged", SHA, "b" * 40)),
+        ({"state": "closed", "merged_at": "2026-10-18T00:00:00Z", "merge_commit_sha": None,
+          "head": {}}, ("merged", None, None)),
+        ({"state": "closed", "merged_at": None}, ("closed", None, None)),
+        ({"state": "open", "merged_at": None}, ("open", None, None)),
+    ],
+)  # fmt: skip
+async def test_merge_state_reads_the_landing_commit_and_the_head_merged(
+    prs: PrClient, payload: dict[str, object], expected: tuple[str, str | None, str | None]
+) -> None:
+    respx.get(f"{API}/repos/acme/web/pulls/3").mock(return_value=Response(200, json=payload))
+    assert await prs.merge_state("acme/web", 3) == expected

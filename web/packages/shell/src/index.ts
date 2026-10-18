@@ -31,6 +31,7 @@ export {
 } from "./safe-markdown";
 export { TagPicker, type TagPickerHandle, type TagPickerProps } from "./TagPicker";
 export { useServerStatus, type ServerStatus } from "./status";
+export { hasHidden, revealHidden, VisibleText, visibleText, type HiddenKind, type HiddenRun } from "./visible";
 export { applyTheme, cycleTheme, readTheme, type ThemeChoice } from "./theme";
 export type * from "./types";
 export { baseRoutes, fakeClient, HEALTHY, syncStatus, type Routes } from "./testing";

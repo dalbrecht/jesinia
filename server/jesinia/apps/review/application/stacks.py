@@ -25,7 +25,12 @@ from datetime import datetime
 from typing import Final, Literal, Protocol
 
 from jesinia.apps.review.application.errors import JobFailed
-from jesinia.apps.review.application.pipeline import PROGRESS_TOPIC, OpenResult
+from jesinia.apps.review.application.pipeline import (
+    PROGRESS_TOPIC,
+    KnowledgeSource,
+    NothingKnown,
+    OpenResult,
+)
 from jesinia.apps.review.application.posting import PostedState
 from jesinia.apps.review.application.reviews import FINDING_SOURCES, PrView
 from jesinia.apps.review.domain.coverage import (
@@ -181,10 +186,6 @@ class _Unlimited:
         return await work()
 
 
-def _nothing_known(repo: str) -> str:
-    return ""
-
-
 @dataclass(frozen=True)
 class StackView:
     """A stack as cached: its PRs bottom-up (each PR's own view), the stack review for their
@@ -244,7 +245,7 @@ class StackReviews:
         clock: the current UTC time.
         slots: the scheduler, whose round slots the stack's jobs wait for.
         bus: where a ``review.progress`` event goes when the stack's jobs end.
-        knowledge: the author's familiarity with a repo, from the knowledge model.
+        knowledge: the knowledge model, for the stack's knowledge summary.
     """
 
     def __init__(
@@ -260,7 +261,7 @@ class StackReviews:
         clock: Clock,
         bus: EventBus,
         slots: StackSlots | None = None,
-        knowledge: Callable[[str], str] = _nothing_known,
+        knowledge: KnowledgeSource | None = None,
     ) -> None:
         self._store = store
         self._reads = reads
@@ -272,7 +273,7 @@ class StackReviews:
         self._clock = clock
         self._slots: StackSlots = _Unlimited() if slots is None else slots
         self._bus = bus
-        self._knowledge = knowledge
+        self._knowledge: KnowledgeSource = knowledge or NothingKnown()
         self._running: dict[int, set[JobKind]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._verify_task: asyncio.Task[int] | None = None
@@ -575,8 +576,18 @@ class StackReviews:
                 )
             )
         own = all(r.own_pr for r in rounds)
-        stack = StackRound(stack_id, repo, tuple(rounds), self._knowledge(repo), own)
+        paths = list(dict.fromkeys(f.path for diff in diffs.values() for f in diff.files))
+        stack = StackRound(stack_id, repo, tuple(rounds), self._summary(repo, paths), own)
         return stack, diffs
+
+    def _summary(self, repo: str, paths: Sequence[str]) -> str:
+        """The knowledge summary over every PR's paths; the model is secondary, so a failure
+        leaves it out (logged with its cause)."""
+        try:
+            return self._knowledge.summary(repo, paths)
+        except Exception as exc:  # secondary: the stack review goes on without it
+            log.warning("reading the knowledge model for %s failed: %s", repo, exc, exc_info=exc)
+            return ""
 
     async def _progress(self, members: Sequence[StoredPr], stack_id: int) -> None:
         """One ``review.progress`` event (ids only) so open views read the stack again."""

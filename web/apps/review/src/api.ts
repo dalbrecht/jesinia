@@ -25,6 +25,10 @@ export type StackOpenResult = components["schemas"]["StackOpenOut"];
 export type CrossFinding = components["schemas"]["CrossFindingOut"];
 export type PostOutcome = components["schemas"]["PostOutcomeOut"];
 export type PostAllItem = components["schemas"]["PostAllItemIn"];
+export type MetricsHistory = components["schemas"]["MetricsHistoryOut"];
+export type TrendPoint = components["schemas"]["PointOut"];
+export type Kept = components["schemas"]["KeptReviewOut"];
+export type SystemPage = components["schemas"]["SystemPageOut"];
 
 /** The queue's sections (design pass pattern 2), in tab order. */
 export type SectionId = "ready" | "waiting" | "loaded" | "approved";
@@ -295,6 +299,11 @@ export async function getPr(client: JesiniaClient, repo: string, number: number)
   );
 }
 
+/** A repo's metrics over time (spec §5.2): its latest scored rounds, oldest first. */
+export async function getMetricsHistory(client: JesiniaClient, repo: string): Promise<MetricsHistory> {
+  return unwrap(await client.GET("/api/review/metrics", { params: { query: { repo } } }));
+}
+
 /** Load a PR for review now, from a URL, `owner/repo#n` or a review route. */
 export async function loadPr(client: JesiniaClient, ref: string, key: string): Promise<QueueRow> {
   return unwrap(await client.POST("/api/review/load", { params: { header: withIdempotency(key) }, body: { ref } }));
@@ -441,6 +450,61 @@ export async function markDone(
       body: { round_id: roundId },
     }),
   );
+}
+
+/** Keep the round's review page in the KB again (Retry); a KB failure is the answer's `error`. */
+export async function keepReview(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  roundId: number | null = null,
+): Promise<Kept> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/keep", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { round_id: roundId },
+    }),
+  );
+}
+
+/**
+ * Write the round's drafted How it works (spec §6.2). `baseRev` is the page revision of the draft
+ * the author was shown (null for a seed): a page changed since is refused (409 SystemPageChanged).
+ */
+export async function acceptSystemUpdate(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  draft: { roundId: number; baseRev: string | null },
+): Promise<SystemPage> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/system/accept", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { round_id: draft.roundId, base_rev: draft.baseRev },
+    }),
+  );
+}
+
+/**
+ * Record a finished quiz for the knowledge model (spec §3.1): how many of the answered questions
+ * were right. The first result of a round counts; `recorded` is false for a later one.
+ */
+export async function recordQuiz(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  result: { roundId: number; right: number; answered: number },
+): Promise<boolean> {
+  const out = unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/quiz", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { round_id: result.roundId, right: result.right, answered: result.answered },
+    }),
+  );
+  return out.recorded;
 }
 
 /** The stack holding a PR (spec §4.3), from the cache: each PR's view, the stack review, cross-PR findings. */

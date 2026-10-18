@@ -5,16 +5,26 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import cast
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 
+from jesinia.apps.review.application.knowledge import KnowledgeView, UnitView
 from jesinia.apps.review.application.pipeline import OpenResult
 from jesinia.apps.review.application.posting import DraftSet, PostPreview
 from jesinia.apps.review.application.reviews import PrView, ReviewSettings
 from jesinia.apps.review.application.stacks import StackOpenResult, StackView
 from jesinia.apps.review.domain.followup import FollowUpKind
 from jesinia.apps.review.domain.gates import CiState, Depth
+from jesinia.apps.review.domain.jobs import DEFAULT_RUNNER
+from jesinia.apps.review.domain.kept import KeptState
+from jesinia.apps.review.domain.knowledge import (
+    QUIZ_MAX_QUESTIONS,
+    ExposureKind,
+    Override,
+    UnitKind,
+)
+from jesinia.apps.review.domain.metrics import Point
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
     DRAFTS_MAX,
@@ -23,6 +33,7 @@ from jesinia.apps.review.domain.posting import (
     PostWarning,
 )
 from jesinia.apps.review.domain.queue import (
+    DEFAULT_PREREVIEW,
     AuthorKind,
     AutoReviewState,
     EvidenceSummary,
@@ -43,11 +54,16 @@ from jesinia.apps.review.domain.stacks import (
     PostState,
 )
 from jesinia.services.github.domain.pr import DraftComment, PrFile, ReviewEvent, ReviewSide
+from jesinia.services.kb.application.service import PageWithRev
 
 REF_MAX = 500
 REPO_MAX = 140
 RUNNER_MAX = 64
 REVIEWER_MAX = 100
+# Generous bounds on what a request may carry; the domain checks the real limits (400).
+METRICS_MAX_SENT = 200
+METRIC_MAX_SENT = 1000
+FOLDER_MAX_SENT = 4096
 
 
 class EvidenceOut(BaseModel):
@@ -501,11 +517,20 @@ class PostedOut(BaseModel):
 
 
 class ReviewRepoSettingBody(BaseModel):
+    """One repo's settings. In a PUT, every field left out keeps its value (a repo not yet
+    known gets the defaults), so a save never puts back what changed elsewhere."""
+
     repo: str = Field(min_length=3, max_length=REPO_MAX)
-    watched: bool
+    watched: bool = False
     suggested: bool = False
     prereview: PreReviewMode | None = None
     automated_reviewer: str | None = Field(default=None, min_length=1, max_length=REVIEWER_MAX)
+    metrics: list[Annotated[str, Field(max_length=METRIC_MAX_SENT)]] | None = Field(
+        default=None,
+        max_length=METRICS_MAX_SENT,
+        description="The criteria this repo's reviews are scored on, from the next round on; "
+        "null or empty: the standards decide. Left out of a PUT: kept",
+    )
 
     @classmethod
     def of(cls, config: RepoConfig) -> ReviewRepoSettingBody:
@@ -515,25 +540,54 @@ class ReviewRepoSettingBody(BaseModel):
             suggested=config.suggested,
             prereview=config.prereview,
             automated_reviewer=config.automated_reviewer,
+            metrics=None if config.metrics is None else list(config.metrics),
         )
 
-    def config(self) -> RepoConfig:
-        """Raises: InvalidPrRefError: ``repo`` isn't ``owner/name``."""
+    def config(self, current: RepoConfig | None = None) -> RepoConfig:
+        """The repo's settings: each field sent, the rest kept from ``current`` (or the
+        defaults for a repo not yet known).
+
+        Raises:
+            InvalidPrRefError: ``repo`` isn't ``owner/name``.
+            InvalidSettingError: a metric that isn't one short line of visible text.
+        """
+        base = current or RepoConfig(self.repo)
+        sent = self.model_fields_set
+        metrics = self.metrics if "metrics" in sent else base.metrics
         return RepoConfig(
             self.repo,
-            watched=self.watched,
-            automated_reviewer=self.automated_reviewer,
-            prereview=self.prereview,
-            suggested=self.suggested,
+            watched=self.watched if "watched" in sent else base.watched,
+            automated_reviewer=self.automated_reviewer
+            if "automated_reviewer" in sent
+            else base.automated_reviewer,
+            prereview=self.prereview if "prereview" in sent else base.prereview,
+            suggested=self.suggested if "suggested" in sent else base.suggested,
+            metrics=None if metrics is None else tuple(metrics),
         )
 
 
 class ReviewSettingsBody(BaseModel):
-    """Settings → Review."""
+    """Settings → Review. In a PUT every field left out keeps its value (the pre-review
+    default, the runner, each folder, each repo's fields); a folder's null or "" clears it."""
 
-    prereview: PreReviewMode
-    runner: str = Field(min_length=1, max_length=RUNNER_MAX, description="The agent runner")
+    prereview: PreReviewMode = DEFAULT_PREREVIEW
+    runner: str = Field(
+        default=DEFAULT_RUNNER,
+        min_length=1,
+        max_length=RUNNER_MAX,
+        description="The agent runner",
+    )
     repos: list[ReviewRepoSettingBody] = Field(default_factory=list, max_length=500)
+    standards_dir: str | None = Field(
+        default=None,
+        max_length=FOLDER_MAX_SENT,
+        description="The coding-standards checkout (the base layer): absolute, or ~/…",
+    )
+    standards_user_dir: str | None = Field(
+        default=None,
+        max_length=FOLDER_MAX_SENT,
+        description="The folder of your own standards documents (the user layer)",
+    )
 
     @classmethod
     def of(cls, settings: ReviewSettings) -> ReviewSettingsBody:
@@ -541,7 +595,47 @@ class ReviewSettingsBody(BaseModel):
             prereview=settings.prereview,
             runner=settings.runner,
             repos=[ReviewRepoSettingBody.of(config) for config in settings.repos],
+            standards_dir=None if settings.standards_dir is None else str(settings.standards_dir),
+            standards_user_dir=None
+            if settings.standards_user_dir is None
+            else str(settings.standards_user_dir),
         )
+
+
+class ScoreOut(BaseModel):
+    """One criterion's score (agent text: render ``criterion`` as text)."""
+
+    criterion: str
+    score: float = Field(ge=0.0, le=10.0)
+
+
+class PointOut(BaseModel):
+    """One scored round of the repo; ``mean`` is its overall score from 0 to 10."""
+
+    round_id: int
+    number: int
+    head_sha: str
+    at: datetime
+    mean: float = Field(ge=0.0, le=10.0)
+    scores: list[ScoreOut]
+
+    @classmethod
+    def of(cls, point: Point) -> PointOut:
+        return cls(
+            round_id=point.round_id,
+            number=point.number,
+            head_sha=point.head_sha,
+            at=point.at,
+            mean=round(point.mean, 2),
+            scores=[ScoreOut(criterion=s.criterion, score=s.score) for s in point.scores],
+        )
+
+
+class MetricsHistoryOut(BaseModel):
+    """A repo's metrics over time (spec §5.2): its latest scored rounds, oldest first."""
+
+    repo: str
+    points: list[PointOut]
 
 
 class CrossFindingOut(BaseModel):
@@ -721,3 +815,127 @@ class ReviewErrorOut(BaseModel):
         description="For a Post all that stopped: what was and wasn't posted, per PR (the "
         "error is the PR's that stopped it)",
     )
+
+
+# --- the knowledge model (plan Task 14) ---------------------------------------------------------
+
+
+class UnitOut(BaseModel):
+    """One unit of the author's knowledge, as Settings → Review shows it."""
+
+    unit: str = Field(description="repo/<owner>/<name>[/<path>] or tag/<tag>")
+    kind: UnitKind
+    repo: str | None
+    path: str
+    tag: str | None
+    familiarity: float = Field(ge=0.0, le=1.0)
+    override: Override | None = Field(
+        description="The override in force: the unit's own, or its nearest folder's"
+    )
+    override_unit: str | None = Field(default=None, description="Where the override is set")
+    exposures: dict[ExposureKind, int]
+    last_exposure: datetime | None
+    changes_since_last: int
+    distance: float
+
+    @classmethod
+    def of(cls, view: UnitView) -> UnitOut:
+        unit = view.unit
+        return cls(
+            unit=unit.id,
+            kind=unit.kind,
+            repo=unit.repo,
+            path=unit.path,
+            tag=unit.tag,
+            familiarity=round(view.familiarity, 4),
+            override=view.override,
+            override_unit=None if view.override_unit is None else view.override_unit.id,
+            exposures=dict(view.exposures),
+            last_exposure=view.last_exposure,
+            changes_since_last=view.changes_since_last,
+            distance=round(view.distance, 4),
+        )
+
+
+class KnowledgeOut(BaseModel):
+    """What Jesinia thinks you know: one page of the units, from ``offset``, of ``total``;
+    ``truncated`` when more follow."""
+
+    units: list[UnitOut]
+    total: int
+    truncated: bool
+    offset: int = 0
+
+    @classmethod
+    def of(cls, view: KnowledgeView) -> KnowledgeOut:
+        return cls(
+            units=[UnitOut.of(u) for u in view.units],
+            total=view.total,
+            truncated=view.truncated,
+            offset=view.offset,
+        )
+
+
+class OverrideIn(BaseModel):
+    """Mark a unit known or unknown; ``null`` clears the correction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    override: Override | None
+
+
+class QuizIn(BaseModel):
+    """A finished quiz: how many of the answered questions were right (skips don't count)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_id: int = Field(ge=1)
+    right: int = Field(ge=0, le=QUIZ_MAX_QUESTIONS)
+    answered: int = Field(ge=1, le=QUIZ_MAX_QUESTIONS)
+
+
+class QuizOut(BaseModel):
+    recorded: bool = Field(description="False when the round already had a result")
+
+
+class KeepReviewIn(BaseModel):
+    """Keep a round's review page again (Retry); the PR's latest round when omitted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_id: int | None = Field(default=None, ge=1)
+
+
+class KeptReviewOut(BaseModel):
+    """Where a round's review page went in the KB, or why it couldn't be kept."""
+
+    state: Literal["kept", "failed"]
+    page_id: str | None
+    path: str | None = Field(description="The page's KB path (it carries the PR's title)")
+    error: str | None = Field(description="Why the page couldn't be written (the cause)")
+
+    @classmethod
+    def of(cls, kept: KeptState) -> KeptReviewOut:
+        return cls(state=kept.state, page_id=kept.page_id, path=kept.path, error=kept.error)
+
+
+class SystemAcceptIn(BaseModel):
+    """Accept the round's drafted How it works. ``base_rev`` is the page revision of the
+    draft the author was shown (null for a seed); another one answers 409."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_id: int = Field(ge=1)
+    base_rev: str | None = Field(default=None, max_length=64)
+
+
+class SystemPageOut(BaseModel):
+    """The How it works page as written."""
+
+    page_id: str
+    path: str
+    rev: str
+
+    @classmethod
+    def of(cls, page: PageWithRev) -> SystemPageOut:
+        return cls(page_id=page.page.id, path=str(page.page.path), rev=page.rev)

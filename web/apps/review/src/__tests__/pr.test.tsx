@@ -241,6 +241,53 @@ describe("the quiz", () => {
   });
 });
 
+describe("the quiz result", () => {
+  const finishQuiz = async () => {
+    await screen.findByRole("heading", { level: 2, name: "Overview" });
+    await go(/Quiz/);
+    const quiz = screen.getByRole("article", { name: "Quiz" });
+    await userEvent.click(within(quiz).getByRole("button", { name: "Skip" }));
+    await userEvent.click(within(quiz).getByRole("radio", { name: "Each side" }));
+    await userEvent.click(within(quiz).getByRole("button", { name: "Check" }));
+    await userEvent.click(within(quiz).getByRole("button", { name: "Next question" }));
+    await userEvent.click(within(quiz).getByRole("radio", { name: "The ledger" }));
+    await userEvent.click(within(quiz).getByRole("button", { name: "Check" }));
+    await userEvent.click(within(quiz).getByRole("button", { name: "Finish" }));
+    return quiz;
+  };
+
+  it("is recorded for the knowledge model once the quiz is finished (skips don't count)", async () => {
+    const { calls } = setup(reviewed(), { [`POST ${API}/quiz`]: () => Response.json({ recorded: true }) });
+    await finishQuiz();
+    await waitFor(() => expect(sent(calls, "POST", `${API}/quiz`)).toHaveLength(1));
+    const post = sent(calls, "POST", `${API}/quiz`)[0] as Request;
+    expect(post.headers.get("Idempotency-Key")).toBeTruthy();
+    expect(await post.clone().json()).toEqual({ round_id: ROUND.id, right: 1, answered: 2 });
+  });
+
+  it("a failed recording never gets in the way of the quiz", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { calls } = setup(reviewed(), {
+      [`POST ${API}/quiz`]: () => Response.json({ error: "Boom", detail: "down" }, { status: 503 }),
+    });
+    const quiz = await finishQuiz();
+    await waitFor(() => expect(sent(calls, "POST", `${API}/quiz`)).toHaveLength(1));
+    expect(within(quiz).getByText("1 of 3 right · 1 skipped. The quiz never blocks posting.")).toBeInTheDocument();
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(screen.queryByText(/quiz result/i)).toBeNull(); // nothing shown to the author
+  });
+
+  it("a quiz with every question skipped records nothing", async () => {
+    const { calls } = setup();
+    await screen.findByRole("heading", { level: 2, name: "Overview" });
+    await go(/Quiz/);
+    const quiz = screen.getByRole("article", { name: "Quiz" });
+    for (let i = 0; i < 3; i += 1) await userEvent.click(within(quiz).getByRole("button", { name: "Skip" }));
+    expect(within(quiz).getByText(/0 of 3 right · 3 skipped/)).toBeInTheDocument();
+    expect(sent(calls, "POST", `${API}/quiz`)).toHaveLength(0);
+  });
+});
+
 describe("the other pages", () => {
   it("findings stay in their groups, with severity, location and rule", async () => {
     setup();
