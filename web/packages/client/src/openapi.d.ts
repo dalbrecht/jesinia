@@ -3331,7 +3331,9 @@ export interface components {
         };
         /**
          * IssueRowOut
-         * @description An Inbox or Backlog row with its triage against the repo's schema.
+         * @description An Inbox or Backlog row with its triage against the repo's schema. ``state`` is
+         *     GitHub's (``open`` or ``closed``) and ``linked_pr_state`` sums up the linked PRs
+         *     (``merged``, ``open``, ``closed`` or ``null``): the board's status view uses both.
          */
         IssueRowOut: {
             /** Repo */
@@ -3378,6 +3380,10 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** State */
+            state: string;
+            /** Linked Pr State */
+            linked_pr_state: string | null;
         };
         /**
          * IssueSuggestionEditIn

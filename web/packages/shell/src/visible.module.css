@@ -1,0 +1,19 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* A hidden character's visible token (R62): warn-toned, danger-toned when it reorders text. */
+.hiddenChar {
+  display: inline-block;
+  margin-inline: 1px;
+  padding: 0 3px;
+  border: 1px solid var(--jx-warn);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-warn-bg);
+  color: var(--jx-warn);
+  font-family: var(--jx-font-mono);
+  font-size: 0.85em;
+  line-height: 1.2;
+}
+.hiddenChar[data-kind="bidi"] {
+  border-color: var(--jx-danger);
+  background: var(--jx-danger-bg);
+  color: var(--jx-danger);
+}

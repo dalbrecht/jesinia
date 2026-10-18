@@ -44,7 +44,7 @@ test-e2e: ## Run end-to-end tests (Playwright)
 # Playwright's webServer runs this, so the JS toolchain never starts Python itself.
 e2e-server: ## Build the apps and serve a throwaway e2e instance (needs E2E_HOME, E2E_PORT, E2E_FEEDS_PORT)
 	@test -n "$(E2E_HOME)" && test -n "$(E2E_PORT)" && test -n "$(E2E_FEEDS_PORT)" || { echo "set E2E_HOME, E2E_PORT and E2E_FEEDS_PORT"; exit 2; }
-	$(PNPM) --filter @jesinia/launcher --filter @jesinia/notes --filter @jesinia/rss --filter @jesinia/review \
+	$(PNPM) --filter @jesinia/launcher --filter @jesinia/notes --filter @jesinia/rss --filter @jesinia/review --filter @jesinia/issues \
 	  --filter @jesinia/design-demo build
 	bash web/tests/e2e/fixture.sh
 	JESINIA_HOME="$(E2E_HOME)/data" $(UV) run jesinia config set server.port "$(E2E_PORT)" >/dev/null

@@ -291,6 +291,8 @@ def _row(issue: Issue, result: Triage) -> IssueRow:
         milestone=issue.milestone,
         created_at=issue.created_at,
         updated_at=issue.updated_at,
+        state=issue.state,
+        linked_pr_state=issue.linked_pr_state,
     )
 
 

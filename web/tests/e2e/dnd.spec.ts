@@ -68,8 +68,13 @@ test("a keyboard drag onto a closed epic shows why it can't drop, and Tab cancel
   await page.keyboard.press("Space");
   const announcer = page.locator("[data-dnd-announcer]");
   await expect(announcer).toContainText("Picked up New issue.");
-  await page.keyboard.press("ArrowDown");
-  await expect(announcer).toHaveText("Over Done.");
+  // dnd-kit's keyboard sensor starts listening a task after the pick-up is announced, so under
+  // load the first arrow can arrive before it listens and be dropped: press until it moves (a
+  // press it heard changes the announcement, so it is never pressed twice).
+  await expect(async () => {
+    if ((await announcer.textContent())?.startsWith("Picked up")) await page.keyboard.press("ArrowDown");
+    await expect(announcer).toHaveText("Over Done.", { timeout: 1000 });
+  }).toPass();
   await page.keyboard.press("ArrowDown");
   await expect(announcer).toHaveText("Can't drop on Locked epic: This epic is closed.");
   await expect(page.locator("[data-drop-state=refused]")).toContainText("This epic is closed");

@@ -222,7 +222,9 @@ class IssuesRepoIn(BaseModel):
 
 
 class IssueRowOut(BaseModel):
-    """An Inbox or Backlog row with its triage against the repo's schema."""
+    """An Inbox or Backlog row with its triage against the repo's schema. ``state`` is
+    GitHub's (``open`` or ``closed``) and ``linked_pr_state`` sums up the linked PRs
+    (``merged``, ``open``, ``closed`` or ``null``): the board's status view uses both."""
 
     repo: str
     number: int
@@ -243,6 +245,8 @@ class IssueRowOut(BaseModel):
     milestone: str | None
     created_at: datetime
     updated_at: datetime
+    state: str
+    linked_pr_state: str | None
 
     @classmethod
     def of(cls, row: IssueRow) -> IssueRowOut:

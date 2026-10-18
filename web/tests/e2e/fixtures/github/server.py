@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A fake GitHub API for the Review e2e (stdlib only; started by ``make e2e-server``).
+"""A fake GitHub API for the Review and Issues e2e (stdlib only; started by ``make e2e-server``).
 
 Serves the recorded-shape JSON beside this file for one repository, ``e2e-dev/greeter``
 (two open PRs), and records every request so a test can ask what reached "GitHub" at
-``GET /__requests``. It binds 127.0.0.1 on an ephemeral port and writes the port to
-``--port-file`` once it is listening; nothing else is reachable and no real credential is
+``GET /__requests``. For Issues it keeps the repo's labels and issues in memory: a test opens an
+issue with ``POST /__issues`` (``{title, body, labels}``, opened now), and label writes change it
+as GitHub would (an unknown label is refused rather than created, so a write that relies on
+GitHub creating a label fails loudly). It binds 127.0.0.1 on an ephemeral port and writes the
+port to ``--port-file`` once it is listening; nothing else is reachable and no real credential is
 ever read or needed (any ``Authorization: Bearer ...`` is accepted, none is a 401).
 
 Fixture text may hold ``{{sha:<branch>}}``, replaced by that branch's commit in the bare
@@ -21,10 +24,11 @@ import json
 import re
 import subprocess
 import threading
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 HERE = Path(__file__).resolve().parent
 REPO = "e2e-dev/greeter"
@@ -32,6 +36,22 @@ VIEWER = "e2e-dev"
 PLACEHOLDER = re.compile(r"\{\{sha:([^}]+)\}\}")
 PULL = re.compile(rf"^/repos/{REPO}/pulls/(\d+)(?:/(files|commits|reviews|comments))?$")
 COMMIT = re.compile(rf"^/repos/{REPO}/commits/([0-9a-f]{{40}})/(check-runs|status)$")
+ISSUE = re.compile(
+    rf"^/repos/{REPO}/issues/(\d+)(?:/(labels|comments|timeline|sub_issues)(?:/(.+))?)?$"
+)
+LABEL = re.compile(rf"^/repos/{REPO}/labels/(.+)$")
+# The default label convention (Issues spec §2) plus an area, all present on the fake repo.
+LABELS = (
+    "agent-ready human-needed information-needed design-needed blocked icebox".split()
+    + ["priority: high", "priority: medium", "priority: low"]
+    + "bug enhancement tech-debt test performance security documentation".split()
+    + ["area:cli"]
+)
+FIRST_ISSUE = 3  # 1 and 2 are the PRs
+
+
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class State:
@@ -42,6 +62,35 @@ class State:
         self.requests: list[dict[str, Any]] = []
         self.repo = repo
         self.posted_reviews: dict[int, list[dict[str, Any]]] = {}
+        self.issues: dict[int, dict[str, Any]] = {}
+
+    def open_issue(self, body: Any) -> dict[str, Any]:
+        number = FIRST_ISSUE + len(self.issues)
+        data = body if isinstance(body, dict) else {}
+        now = _now()
+        issue = {
+            "id": 7000 + number,
+            "number": number,
+            "title": str(data.get("title", f"Issue {number}")),
+            "body": str(data.get("body", "")),
+            "state": "open",
+            "state_reason": None,
+            "labels": [{"name": name} for name in data.get("labels", [])],
+            "milestone": None,
+            "created_at": now,
+            "updated_at": now,
+            "html_url": f"https://github.com/{REPO}/issues/{number}",
+            "repository_url": f"https://api.github.com/repos/{REPO}",
+            "user": {"login": VIEWER, "type": "User"},
+            "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+        }
+        self.issues[number] = issue
+        return issue
+
+    def relabel(self, issue: dict[str, Any], names: list[str]) -> list[dict[str, str]]:
+        issue["labels"] = [{"name": name} for name in names]
+        issue["updated_at"] = _now()
+        return [{"name": name, "color": "ededed", "description": ""} for name in names]
 
     def sha(self, branch: str) -> str:
         out = subprocess.run(
@@ -100,6 +149,10 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 with state.lock:
                     self._send(200, state.requests)
                 return
+            if url.path == "/__issues" and method == "POST":
+                with state.lock:
+                    self._send(201, state.open_issue(body))
+                return
             with state.lock:
                 state.requests.append(
                     {"method": method, "path": url.path, "query": url.query, "body": body}
@@ -115,8 +168,34 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             missing = (404, state.fixture("not-found"))
             if method == "POST" and path == "/graphql":
                 return 200, state.fixture("threads-empty")
+            if issue := ISSUE.match(path):
+                found = state.issues.get(int(issue.group(1)))
+                if found is not None:
+                    return self._issue(method, found, issue.group(2), issue.group(3), body)
             if method != "GET" and not path.endswith("/reviews"):
                 return missing
+            if path == f"/repos/{REPO}":
+                return 200, {"full_name": REPO, "default_branch": "main"}
+            if path == f"/repos/{REPO}/issues":
+                wanted = query.get("labels", [None])[0]
+                listed = [
+                    i
+                    for i in state.issues.values()
+                    if wanted is None or {"name": wanted} in i["labels"]
+                ]
+                return 200, listed if query.get("page", ["1"])[0] == "1" else []
+            if path == f"/repos/{REPO}/labels":
+                labels = [{"name": name, "color": "ededed", "description": ""} for name in LABELS]
+                return 200, labels if query.get("page", ["1"])[0] == "1" else []
+            if label := LABEL.match(path):
+                name = unquote(label.group(1))
+                return (
+                    (200, {"name": name, "color": "ededed", "description": ""})
+                    if name in LABELS
+                    else missing
+                )
+            if path == f"/repos/{REPO}/milestones":
+                return 200, []
             if path == "/user":
                 return 200, state.fixture("user")
             if path == "/user/orgs":
@@ -129,7 +208,11 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 number = state.pull_for_sha(commit.group(1))
                 if number is None:
                     return missing
-                name = f"pull-{number}-check-runs" if commit.group(2) == "check-runs" else "status-empty"
+                name = (
+                    f"pull-{number}-check-runs"
+                    if commit.group(2) == "check-runs"
+                    else "status-empty"
+                )
                 return 200, state.fixture(name)
             pull = PULL.match(path)
             if pull is None:
@@ -146,6 +229,28 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             if part == "comments":
                 return 200, state.fixture("comments-empty")
             return 200, state.fixture(f"pull-{number}-{part}")
+
+        def _issue(
+            self, method: str, issue: dict[str, Any], part: str | None, rest: str | None, body: Any
+        ) -> tuple[int, Any]:
+            """An issue of the fake repo: read it, its (empty) comments and timeline, or change
+            its labels the way GitHub does, except that an unknown label is refused."""
+            names = [label["name"] for label in issue["labels"]]
+            if method == "GET" and part is None:
+                return 200, issue
+            if method == "GET" and part in ("comments", "timeline", "sub_issues"):
+                return 200, []
+            if method == "POST" and part == "labels" and isinstance(body, dict):
+                added = [str(name) for name in body.get("labels", [])]
+                if any(name not in LABELS for name in added):
+                    return 422, {"message": "Validation Failed", "errors": ["unknown label"]}
+                return 200, state.relabel(issue, names + [n for n in added if n not in names])
+            if method == "DELETE" and part == "labels" and rest is not None:
+                name = unquote(rest)
+                if name not in names:
+                    return 404, state.fixture("not-found")
+                return 200, state.relabel(issue, [n for n in names if n != name])
+            return 404, state.fixture("not-found")
 
         def _post_review(self, number: int, body: Any) -> tuple[int, Any]:
             if not isinstance(body, dict) or body.get("commit_id") != state.head_of(number):
@@ -173,6 +278,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             self._handle("POST")
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._handle("DELETE")
 
     return Handler
 

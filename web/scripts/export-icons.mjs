@@ -30,6 +30,7 @@ const SHIPPED = {
   "web/apps/notes/public/icons": { app: "notes", glyphs: [] },
   "web/apps/rss/public/icons": { app: "rss", glyphs: [] },
   "web/apps/review/public/icons": { app: "review", glyphs: [] },
+  "web/apps/issues/public/icons": { app: "issues", glyphs: [] },
 };
 
 /** The photo exports; `inset` is the symbol's margin (17% ≈ 66% of the tile, 26% keeps it in the maskable zone). */

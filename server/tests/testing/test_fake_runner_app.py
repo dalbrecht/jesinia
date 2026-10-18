@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from jesinia.apps.issues.application.agent_output import parse_agent_json
+from jesinia.apps.issues.application.agent_output import schema_for as issues_schema_for
 from jesinia.apps.review.application.jobs import parse_job_output, schema_for
 from jesinia.apps.review.domain.jobs import JobKind
 from jesinia.apps.review.module import ReviewModule
@@ -296,4 +298,26 @@ async def test_a_review_job_turn_replies_with_json_and_never_writes(tmp_path: Pa
     events = [e async for e in runner.run(req)]
     text = "".join(e.text for e in events if isinstance(e, TextDelta))
     assert parse_job_output(text, schema_for(JobKind.FINDINGS))["findings"]
+    assert isinstance(events[-1], TurnDone)
+
+
+async def test_a_triage_ask_gets_a_reply_valid_against_the_issues_schema(tmp_path: Path) -> None:
+    """The Issues e2e approves the fake runner's suggestion (PWA Task 12)."""
+
+    async def post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+        raise AssertionError("a triage ask never writes")
+
+    runner = McpScriptRunner(post)
+    prompt = "Triage the issue. Reply with only one JSON object, and nothing else."
+    req = TurnRequest(prompt, tmp_path, "sys", None, tmp_path / "m", [])
+    events = [e async for e in runner.run(req)]
+    text = "".join(e.text for e in events if isinstance(e, TextDelta))
+    reply = parse_agent_json(text, issues_schema_for("triage"))
+    assert reply["labels"] == [
+        {
+            "dimension": "readiness",
+            "value": "agent-ready",
+            "reason": "The steps to reproduce are clear.",
+        }
+    ]
     assert isinstance(events[-1], TurnDone)

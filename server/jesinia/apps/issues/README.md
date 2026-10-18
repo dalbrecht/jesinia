@@ -100,7 +100,10 @@ Task 10 adds themes (spec §5.1, §6.2, rulings IR15, IR22, IR27):
   (`ConversionPlan`, IR27): the epic is created in one of its issues' repos and the theme's
   issues are linked under it.
 
-The web app comes in PR 4.
+PR 4 (Tasks 11–14) adds the web app, `web/apps/issues/`, served at `/issues/`. Task 12 adds its
+shell: the Inbox and Backlog (a compact list with multi-select and a bulk bar, or a board by
+readiness, priority or status), an issue in the book layout, and the Pending changes tray, which
+polls each batch it starts (an apply, a retry or an approval) to its per-issue results.
 
 ## Layout
 
@@ -242,7 +245,9 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     required; send `null` to clear it.
   - `POST /repos/{owner}/{repo}/sync`: sync the repo now.
   - `GET /{inbox|backlog}?repo&filter`: a view, served from the cache, even without the
-    `github` service.
+    `github` service. Each row carries GitHub's `state` and `linked_pr_state` (the linked PRs
+    summed up as `merged`, `open` or `closed`; `null` until something fills it), which the
+    board's status view is derived from.
   - `GET /item/{owner}/{repo}/{n}` and `POST …/refresh`: one issue, and a fetch of its
     comments and timeline.
   - `POST /labels/{owner}/{repo}/preview` with `{kind}`. It isn't keyed, on purpose: it writes

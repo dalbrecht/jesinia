@@ -25,7 +25,7 @@ describe("Launcher", () => {
     expect(screen.getByRole("link", { name: /Notes/ })).toHaveAttribute("href", "/notes/");
     expect(screen.getByRole("link", { name: /RSS/ })).toHaveAttribute("href", "/rss/");
     expect(screen.getByRole("link", { name: /Review/ })).toHaveAttribute("href", "/review/");
-    expect(screen.getByText("Issues").closest("[aria-disabled]")).not.toBeNull();
+    expect(screen.getByRole("link", { name: /Issues/ })).toHaveAttribute("href", "/issues/");
     expect(await screen.findByText("12 pages indexed")).toBeInTheDocument();
     expect(await screen.findByText("not logged in")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Sync now" }));

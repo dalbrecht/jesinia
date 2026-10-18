@@ -13,7 +13,8 @@ token, so e2e never syncs a real account (Review shows its auth-missing state), 
 to that, with a fixed test token, and ``JESINIA_FAKE_GITHUB_REPOS`` makes the review
 workspace fetch from the bare repositories beside it. A review job prompt (``Run the <job>
 job.``) is answered with a fixed JSON output for the fixture PR, valid against the job's real
-schema. It refuses to load outside a throwaway ``JESINIA_HOME``, so none of this can ever
+schema, and an Issues triage ask (``Triage the issue.``) with one readiness suggestion valid against
+the triage schema. It refuses to load outside a throwaway ``JESINIA_HOME``, so none of this can ever
 activate in a real install.
 """
 
@@ -50,6 +51,23 @@ DRAFT: dict[str, object] = {
     "body": "Drafted by the fake runner.",
 }
 TAG_REPLY = '["fixture","new-fixture-tag"]'
+# An Issues triage ask (its prompt starts "Triage the issue."): one readiness suggestion for the
+# fixture issue, valid against apps/issues/schemas/triage.json.
+TRIAGE_PROMPT = "Triage the issue."
+TRIAGE_REPLY = json.dumps(
+    {
+        "labels": [
+            {
+                "dimension": "readiness",
+                "value": "agent-ready",
+                "reason": "The steps to reproduce are clear.",
+            }
+        ],
+        "duplicates": [],
+        "parent": None,
+        "agent_ready": {"ready": True, "missing": [], "reason": "Small and well described."},
+    }
+)
 REPLY = (
     "I read the page. ",
     "It is about the fixture topic. ",
@@ -214,6 +232,10 @@ class McpScriptRunner:
         key = str(req.workdir)
         if (review := review_job_reply(req.prompt)) is not None:
             yield TextDelta(review)
+            yield TurnDone(f"fake-{key[-8:]}", "fake-model")
+            return
+        if req.prompt.startswith(TRIAGE_PROMPT):
+            yield TextDelta(TRIAGE_REPLY)
             yield TurnDone(f"fake-{key[-8:]}", "fake-model")
             return
         if req.prompt.startswith("TAGS:"):

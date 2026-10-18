@@ -477,6 +477,14 @@ async def test_views_serve_rows_with_triage_and_sync_state(env: Env) -> None:
     assert bad_repo.status_code == 400
 
 
+async def test_should_carry_state_and_linked_pr_state_on_view_rows(env: Env) -> None:
+    """The board's status view (spec §6.2) derives its columns from these (PWA Task 12)."""
+    await env.watch_and_sync()
+    view = (await env.client.get(f"{API}/backlog", params={"repo": REPO})).json()
+    row = next(row for row in view["rows"] if row["number"] == 1)
+    assert row["state"] == "open" and row["linked_pr_state"] is None
+
+
 async def test_an_item_is_served_from_the_cache_and_refreshed_on_demand(env: Env) -> None:
     missing = await env.client.get(ITEM)
     assert missing.status_code == 404 and missing.json()["error"] == "IssueNotCachedError"

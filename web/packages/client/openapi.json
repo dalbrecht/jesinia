@@ -16222,6 +16222,21 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "linked_pr_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linked Pr State"
           }
         },
         "type": "object",
@@ -16244,10 +16259,12 @@
           "parent",
           "milestone",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "state",
+          "linked_pr_state"
         ],
         "title": "IssueRowOut",
-        "description": "An Inbox or Backlog row with its triage against the repo's schema."
+        "description": "An Inbox or Backlog row with its triage against the repo's schema. ``state`` is\nGitHub's (``open`` or ``closed``) and ``linked_pr_state`` sums up the linked PRs\n(``merged``, ``open``, ``closed`` or ``null``): the board's status view uses both."
       },
       "IssueSuggestionEditIn": {
         "properties": {
