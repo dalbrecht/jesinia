@@ -47,6 +47,7 @@ export function repo(over: Partial<Repo> = {}): Repo {
     schema_errors: [],
     settings_schema: null,
     migrated: false,
+    unmapped_labels: [],
     synced_at: NOW,
     sync_error: null,
     ...over,
