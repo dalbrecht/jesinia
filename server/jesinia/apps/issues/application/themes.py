@@ -496,8 +496,9 @@ class ThemeService:
             return None, ()
         if not is_open:
             raise ThemeEpicClosedError(
+                epic,
                 f"the theme #{tag}'s epic {epic[0]}#{epic[1]} is closed; reopen it or ask for a "
-                "new epic"
+                "new epic",
             )
         node = Node(*epic) if found is None else found.node
         return node, ancestors_of(self._cache, *epic)

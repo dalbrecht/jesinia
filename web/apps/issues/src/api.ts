@@ -87,6 +87,8 @@ export class IssuesRequestError extends Error {
     readonly retryAfter: number | null = null,
     /** `EarlierBatchError`: the batch to retry or abandon first. */
     readonly batchId: string | null = null,
+    /** `GroupEpicExistsError`, `ThemeEpicClosedError`: the epic it names, `owner/repo#n`. */
+    readonly epic: string | null = null,
   ) {
     super(message);
     this.name = "IssuesRequestError";
@@ -178,6 +180,7 @@ function unwrap<T>(r: Result<T>): T {
       typeof body.error === "string" ? body.error : null,
       retry,
       typeof body.batch_id === "string" ? body.batch_id : null,
+      typeof body.epic === "string" ? body.epic : null,
     );
   }
   return r.data as T;
@@ -853,10 +856,9 @@ export async function approveThemeEpic(
 export const isRefusal = (e: unknown, code: string): e is IssuesRequestError =>
   e instanceof IssuesRequestError && e.code === code;
 
-/** The issue a refusal's cause names in parentheses, "(owner/repo#n)" (an existing epic). */
-export function refInCause(cause: string): { repo: string; number: number } | null {
-  const m = /\(([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9][0-9]{0,8})\)/.exec(cause);
-  return m?.[1] ? parseRef(m[1]) : null;
+/** The epic a refusal names (its structured `epic` field), when it is the typed error `code`. */
+export function epicOfRefusal(e: unknown, code: string): { repo: string; number: number } | null {
+  return isRefusal(e, code) && e.epic !== null ? parseRef(e.epic) : null;
 }
 
 /** An epic's readiness in a few words. */

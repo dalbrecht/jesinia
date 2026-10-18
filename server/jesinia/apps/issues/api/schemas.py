@@ -134,6 +134,9 @@ class IssuesErrorOut(BaseModel):
     retry_after: int | None = None
     # ``EarlierBatchError``: the batch to retry or abandon first, so a client can follow it.
     batch_id: str | None = None
+    # ``GroupEpicExistsError`` and ``ThemeEpicClosedError``: the epic they name, as
+    # ``owner/repo#n``, so a client offers it without parsing the message.
+    epic: str | None = None
 
 
 class LabelCanonicalBody(BaseModel):

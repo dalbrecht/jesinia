@@ -325,8 +325,13 @@ def _status_of(exc: Exception) -> int:
 def _error(exc: Exception, now: Callable[[], datetime]) -> JSONResponse:
     wait = retry_after(exc.reset_at, now()) if isinstance(exc, GitHubRateLimitedError) else None
     batch_id = exc.batch_id if isinstance(exc, EarlierBatchError) else None
+    named = exc.epic if isinstance(exc, GroupEpicExistsError | ThemeEpicClosedError) else None
     body = IssuesErrorOut(
-        error=type(exc).__name__, detail=str(exc), retry_after=wait, batch_id=batch_id
+        error=type(exc).__name__,
+        detail=str(exc),
+        retry_after=wait,
+        batch_id=batch_id,
+        epic=None if named is None else f"{named[0]}#{named[1]}",
     )
     headers = None if wait is None else {"Retry-After": str(wait)}
     return JSONResponse(

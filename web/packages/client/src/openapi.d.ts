@@ -3618,6 +3618,8 @@ export interface components {
             retry_after?: number | null;
             /** Batch Id */
             batch_id?: string | null;
+            /** Epic */
+            epic?: string | null;
         };
         /**
          * IssuesRepoIn

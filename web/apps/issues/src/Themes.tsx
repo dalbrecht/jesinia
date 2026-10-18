@@ -18,7 +18,7 @@ import {
   getThemes,
   isRefusal,
   publishTheme,
-  refInCause,
+  epicOfRefusal,
   refOf,
   removeTheme,
   type IssueTarget,
@@ -140,11 +140,9 @@ type EpicDraft = {
   error: unknown;
 };
 
-/** The closed epic a ThemeEpicClosedError names ("… epic owner/repo#n is closed …"). */
+/** The closed epic a ThemeEpicClosedError names. */
 export function closedEpicOf(e: unknown): { repo: string; number: number } | null {
-  if (!isRefusal(e, "ThemeEpicClosedError")) return null;
-  const m = /epic ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[0-9]+) is closed/.exec(e.message);
-  return m?.[1] ? refInCause(`(${m[1]})`) : null;
+  return epicOfRefusal(e, "ThemeEpicClosedError");
 }
 
 function ReopenLink({ problem }: { problem: unknown }) {

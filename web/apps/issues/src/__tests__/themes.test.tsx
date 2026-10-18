@@ -163,7 +163,7 @@ describe("publishing and To epic", () => {
         "GET /api/issues/themes/onboarding/epic": (req: Request) =>
           new URL(req.url).searchParams.get("new_epic") === "true"
             ? json(PLAN())
-            : json({ error: "ThemeEpicClosedError", detail: "the theme #onboarding's epic acme/app#40 is closed; reopen it or ask for a new epic" }, 409), // prettier-ignore
+            : json({ error: "ThemeEpicClosedError", detail: "the theme's epic is closed; reopen it or ask for a new epic", epic: "acme/app#40" }, 409), // prettier-ignore
         "POST /api/issues/themes/onboarding/epic": () => json(batch("b6", { origin: "epic" }), 202),
       }),
     );
@@ -200,7 +200,7 @@ describe("publishing and To epic", () => {
       routes({
         "GET /api/issues/themes/onboarding/epic": () => json(PLAN()),
         "POST /api/issues/themes/onboarding/epic": () =>
-          json({ error: "ThemeEpicClosedError", detail: "the theme #onboarding's epic acme/app#40 is closed" }, 409),
+          json({ error: "ThemeEpicClosedError", detail: "the theme's epic is closed", epic: "acme/app#40" }, 409),
       }),
     );
     await userEvent.click(await screen.findByRole("button", { name: "Turn #onboarding into an epic" }));

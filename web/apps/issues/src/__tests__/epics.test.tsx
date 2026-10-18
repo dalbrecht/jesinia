@@ -253,7 +253,7 @@ describe("group proposals", () => {
         "GET /api/issues/suggestions": suggestions([GROUP]),
         "POST /api/issues/suggestions/g1/approve": () =>
           refuse
-            ? json({ error: "GroupEpicExistsError", detail: "an epic for acme/app#1, acme/app#2 already exists (acme/app#30); add the issues to it" }, 409) // prettier-ignore
+            ? json({ error: "GroupEpicExistsError", detail: "an epic for those issues already exists; add the issues to it", epic: "acme/app#30" }, 409) // prettier-ignore
             : json({ suggestion: GROUP, batch: batch("b1", { origin: "suggestion" }) }, 202),
       }),
       "/issues/epics",
@@ -280,7 +280,10 @@ describe("group proposals", () => {
         "GET /api/issues/epics/acme/app/30": () => json({ error: "NotAnEpicError", detail: "gone" }, 404),
         "GET /api/issues/suggestions": suggestions([GROUP]),
         "POST /api/issues/suggestions/g1/approve": () =>
-          json({ error: "GroupEpicExistsError", detail: "already exists (acme/app#30); add the issues to it" }, 409),
+          json(
+            { error: "GroupEpicExistsError", detail: "already exists; add the issues to it", epic: "acme/app#30" },
+            409,
+          ),
       }),
       "/issues/epics",
     );

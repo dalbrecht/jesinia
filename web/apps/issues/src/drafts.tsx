@@ -12,8 +12,7 @@ import {
   dismissSuggestion,
   errorCause,
   getDrafts,
-  isRefusal,
-  refInCause,
+  epicOfRefusal,
   setParentChange,
   type AskRun,
   type Suggestion,
@@ -154,7 +153,7 @@ export function useProposalApproval(onOpenEpic?: (repo: string, n: number) => vo
     setProblem(draft.id, null);
     await tray.approve(draft, (e) => {
       const text = errorCause(e);
-      const existing = isRefusal(e, "GroupEpicExistsError") ? refInCause(e.message) : null;
+      const existing = epicOfRefusal(e, "GroupEpicExistsError");
       if (existing === null) {
         // An EarlierBatchError's batch is followed in the tray, with its Retry and Abandon.
         setProblem(draft.id, { text, action: null });

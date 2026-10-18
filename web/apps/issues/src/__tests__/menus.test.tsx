@@ -12,7 +12,7 @@ import {
   groupsScope,
   issueSplitScope,
   readinessText,
-  refInCause,
+  epicOfRefusal,
   setParentChange,
   splitScope,
 } from "../api";
@@ -149,7 +149,7 @@ describe("helpers", () => {
     const target = { repo: "acme/app", number: 3, is_initiative: false };
     expect(containmentRefusal(target, { repo: "acme/app", number: 9 }, parentOf)).toBeNull(); // a loop in the cache ends
     expect(containmentRefusal(target, { repo: "acme/app", number: 2 }, parentOf)?.code).toBe("cycle");
-    expect(refInCause("no ref here")).toBeNull();
+    expect(epicOfRefusal(new Error("not a refusal"), "GroupEpicExistsError")).toBeNull();
     expect(readinessText(readiness())).toBe("Not ready");
     expect(groupsScope("Acme/App")).toBe("groups:acme/app");
     expect(issueSplitScope("Acme/App", 3)).toBe("split:acme/app#3");

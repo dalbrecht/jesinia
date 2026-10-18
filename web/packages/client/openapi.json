@@ -16867,6 +16867,17 @@
               }
             ],
             "title": "Batch Id"
+          },
+          "epic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epic"
           }
         },
         "type": "object",

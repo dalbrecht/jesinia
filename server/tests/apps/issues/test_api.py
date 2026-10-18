@@ -13,7 +13,7 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,7 +21,7 @@ import httpx
 import pytest
 from fastapi import APIRouter, FastAPI
 
-from jesinia.apps.issues.api.routes import build_router
+from jesinia.apps.issues.api.routes import _error, build_router
 from jesinia.apps.issues.api.tools import build_tools
 from jesinia.apps.issues.application.apply import ApplyEngine
 from jesinia.apps.issues.application.epics import BriefService, EpicService
@@ -33,8 +33,9 @@ from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
 from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.changes import ChangeBatch, Comment, CreateIssue, New
-from jesinia.apps.issues.domain.epics import brief_scope
+from jesinia.apps.issues.domain.epics import GroupEpicExistsError, brief_scope
 from jesinia.apps.issues.domain.suggestions import SuggestionFilters, priority_scope
+from jesinia.apps.issues.domain.themes import ThemeEpicClosedError
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
@@ -1836,3 +1837,13 @@ async def test_an_incomplete_batch_is_abandoned_over_the_api(env: Env) -> None:
         f"{PENDING}/nope/abandon", json={"created": []}, headers=keyed()
     )
     assert missing.status_code == 404
+
+
+def test_a_refusal_naming_an_epic_carries_it_as_a_field() -> None:
+    def now() -> datetime:
+        return datetime(2026, 10, 18, tzinfo=UTC)
+
+    exists = _error(GroupEpicExistsError("b1", ("acme/app", 4), "an epic exists"), now)
+    closed = _error(ThemeEpicClosedError(("acme/app", 40), "the epic is closed"), now)
+    assert json.loads(exists.body)["epic"] == "acme/app#4"
+    assert json.loads(closed.body)["epic"] == "acme/app#40"
