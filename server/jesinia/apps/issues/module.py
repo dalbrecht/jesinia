@@ -194,6 +194,10 @@ class IssuesModule:
         self._queries = IssueQueries(store, _utc_now)
         suggest = self._suggest = self._suggestions(ctx, store, self._conn)
         applied = self._applied = SqliteApplyStore(self._conn)
+        # Single process and nothing applies yet: a batch left running was cut off (IR45), with
+        # or without the github service.
+        if interrupted := applied.interrupt_running():
+            log.info("marked %d issues apply batches interrupted after a stop", interrupted)
         self._pending = PendingService(applied, store, _utc_now)
         ctx.scheduler.every(SUGGEST_JOB, RUN_INTERVAL, self.run_suggestions, at_start=True)
         github = ctx.services.get("github")
@@ -223,9 +227,6 @@ class IssuesModule:
             self._apply = ApplyService(
                 engine, applied, SqliteSuggestionStore(self._conn), store, _utc_now
             )
-            # Single process and nothing applies yet: a batch left running was cut off (IR45).
-            if interrupted := self._apply.recover():
-                log.info("marked %d issues apply batches interrupted after a stop", interrupted)
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_repos, at_start=True)
 
     async def stop(self) -> None:

@@ -469,6 +469,10 @@ class ApplyStore(Protocol):
     def save_batch(self, applied: AppliedBatch) -> None:
         """Store (or replace) an applied batch and its result."""
 
+    def start_batch(self, applied: AppliedBatch, taken: Sequence[str]) -> None:
+        """Store a new batch and remove the staged changes it took from the tray, in one
+        transaction: a crash never leaves both, or neither."""
+
     def batch(self, batch_id: str) -> AppliedBatch | None: ...
 
     def batch_by_key(self, request_key: str) -> AppliedBatch | None:

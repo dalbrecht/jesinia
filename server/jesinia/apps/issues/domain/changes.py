@@ -71,6 +71,15 @@ StepState = Literal["done", "failed", "skipped"]
 BatchStatus = Literal["running", "finished", "interrupted"]
 BATCH_STATUSES: tuple[BatchStatus, ...] = get_args(BatchStatus)
 NOT_RUN = "not run yet"
+# A comment or a new issue whose write was on its way when the batch was cut off: it may have
+# gone out, so Retry doesn't send it blindly again (it fails once, asking to check GitHub).
+IN_FLIGHT = "in flight: the write may have gone out when the batch was cut off"
+UNSURE = (
+    "not repeated: the batch was cut off while this was being sent, so it may have gone out; "
+    "check GitHub, then retry to send it"
+)
+# Steps whose write GitHub would repeat (a second comment, a second issue).
+UNREPEATABLE: tuple[StepKind, ...] = ("comment", "create_issue")
 ALREADY_CLOSED = "already closed"
 STEP_STATES: tuple[StepState, ...] = get_args(StepState)
 PendingSource = Literal["drag", "picker", "menu", "bulk", "queue"]

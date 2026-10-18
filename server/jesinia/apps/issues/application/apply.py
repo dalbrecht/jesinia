@@ -49,7 +49,10 @@ from jesinia.apps.issues.application.ports import ApplyCache, IssueWrites
 from jesinia.apps.issues.application.sync import OnTriaged
 from jesinia.apps.issues.domain.changes import (
     ALREADY_CLOSED,
+    IN_FLIGHT,
     NOT_RUN,
+    UNREPEATABLE,
+    UNSURE,
     BatchResult,
     ChangeBatch,
     ChangeDomainError,
@@ -251,7 +254,15 @@ class ApplyEngine:
                     results.append(kept[index])
                 elif stopped is not None:
                     results.append(StepResult(step, "failed", self._not_run(stopped)))
+                elif (
+                    index < len(kept)
+                    and kept[index].cause == IN_FLIGHT
+                    and step.kind in UNREPEATABLE
+                ):
+                    results.append(self._failed(run, step, UNSURE))
                 else:
+                    if step.kind in UNREPEATABLE:
+                        self._progress(on_step, steps, kept, results, run, attempting=step)
                     try:
                         results.append(await self._step(run, step))
                     except _BatchStoppedError as exc:
@@ -280,18 +291,23 @@ class ApplyEngine:
         kept: Sequence[StepResult],
         results: Sequence[StepResult],
         run: _Run,
+        *,
+        attempting: Step | None = None,
     ) -> None:
-        """Tell ``on_step`` the result so far; best effort (the write already happened)."""
+        """Tell ``on_step`` the result so far; best effort (the write already happened). With
+        ``attempting``, that step is recorded ``in flight`` first: a stop or crash during its
+        write leaves it unsure, never "not run"."""
         if on_step is None:
             return
+        current = [] if attempting is None else [StepResult(attempting, "skipped", IN_FLIGHT)]
         rest = [
             kept[i]
             if i < len(kept) and kept[i].state == "done"
             else StepResult(s, "skipped", NOT_RUN)
             for i, s in enumerate(steps)
-        ][len(results) :]
+        ][len(results) + len(current) :]
         try:
-            on_step(BatchResult((*results, *rest), dict(run.created)))
+            on_step(BatchResult((*results, *current, *rest), dict(run.created)))
         except Exception:
             log.exception("issues.apply: recording a step's progress failed")
 

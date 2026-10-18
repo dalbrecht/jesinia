@@ -1401,3 +1401,157 @@ async def test_a_background_batch_that_breaks_is_interrupted_and_logged(
     monkeypatch.setattr(world.applied, "batch", unreadable)
     await world.service.drain()
     assert "marking batch" in caplog.text and again.status == "running"
+
+
+# --- PR 2 re-review: replays never re-run a batch (N1), in-flight writes (N2), retries (N3–N5) --
+
+
+class HeldComments(FakeWrites):
+    """``FakeWrites`` whose ``comment`` waits for ``go`` before it posts (a write in flight)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.go = asyncio.Event()
+
+    async def comment(self, repo: str, n: int, body: str) -> CommentRef:
+        self.started.set()
+        await self.go.wait()
+        return await super().comment(repo, n, body)
+
+
+async def test_replaying_a_finished_keyed_batch_posts_nothing_more(world: World) -> None:
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+    first = world.service.start_pending(None, key="apply:k")
+    await world.service.drain()
+    again = world.service.start_pending(None, key="apply:k")
+    await world.service.drain()
+    assert again.id == first.id and again.status == "finished"
+    assert world.github.comments_posted == [(1, "A")]
+
+
+async def test_replaying_an_interrupted_keyed_batch_posts_nothing_more(world: World) -> None:
+    await world.synced(issue(1), issue(2))
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+    world.pending.stage(REPO, 2, Comment("B"), "menu")
+    first = world.service.start_pending(None, key="apply:k")
+    await world.service.drain()
+    stored = world.applied.batch(first.id)
+    assert stored is not None
+    world.applied.save_batch(replace(stored, status="interrupted"))
+    again = world.service.start_pending(None, key="apply:k")
+    await world.service.drain()
+    assert again.status == "interrupted"  # resuming is Retry's job, never a replay's
+    assert world.github.comments_posted == [(1, "A"), (2, "B")]
+
+
+async def test_a_replay_after_a_crash_before_the_key_completed_never_reruns(world: World) -> None:
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+    written = world.service.begin_pending(None, key="apply:k")  # the row, then the crash
+    restarted = ApplyService(world.engine, world.applied, world.drafts, world.store, world.clock)
+    assert restarted.recover() == 1
+    again = restarted.start_pending(None, key="apply:k")
+    await restarted.drain()
+    assert again.id == written.id and again.status == "interrupted"
+    assert world.github.comments_posted == []
+
+
+async def test_a_replay_of_a_running_batch_with_no_task_resumes_it_once(world: World) -> None:
+    await world.synced(issue(1), issue(2))
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+    world.pending.stage(REPO, 2, Comment("B"), "menu")
+    written = world.service.begin_pending(None, key="apply:k")
+    # The first comment went out and was recorded, then the task was lost.
+    (first, second) = written.result.results
+    done = replace(written.result, results=(replace(first, state="done", cause=None), second))
+    world.applied.save_batch(replace(written, result=done))
+    world.github.comments_posted.append((1, "A"))
+    again = world.service.start_pending(None, key="apply:k")
+    await world.service.drain()
+    final = world.applied.batch(again.id)
+    assert final is not None and final.result.complete
+    assert world.github.comments_posted == [(1, "A"), (2, "B")]
+
+
+async def test_a_comment_cut_off_in_flight_is_never_reposted_blindly(
+    conn: sqlite3.Connection,
+) -> None:
+    world = World(conn)
+    held = HeldComments()
+    held.files, held.repo_labels = world.github.files, world.github.repo_labels
+    world.github = held
+    world.engine = ApplyEngine(held, world.store, world.clock, pause=world.pauses)
+    world.service = ApplyService(
+        world.engine, world.applied, world.drafts, world.store, world.clock
+    )
+    world.sync = SyncService(held, world.store, world.clock)
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+    started = world.service.start_pending(None, key=None)
+    await held.started.wait()
+    await world.service.stop()  # cut off while the comment may be on its way
+    held.go.set()
+
+    first = await world.service.retry(started.id)
+    (step,) = first.result.results
+    assert step.state == "failed" and "check GitHub" in (step.cause or "")
+    assert held.comments_posted == []
+    second = await world.service.retry(started.id)  # the author checked: now it is posted
+    assert second.result.complete and held.comments_posted == [(1, "A")]
+
+
+async def test_a_retry_while_the_batch_still_has_a_task_is_refused(world: World) -> None:
+    from jesinia.apps.issues.domain.changes import BatchRunningError
+
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+    started = world.service.start_pending(None, key=None)
+    stored = world.applied.batch(started.id)
+    assert stored is not None
+    world.applied.save_batch(replace(stored, status="finished"))  # finished, cache update left
+    with pytest.raises(BatchRunningError):
+        world.service.start_retry(started.id)
+    await world.service.drain()
+
+
+async def test_one_key_on_two_approvals_is_two_approvals(world: World) -> None:
+    await world.synced(issue(1), issue(2))
+    first = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    second = world.draft(2, "label", {"dimension": "priority", "value": "priority: high"})
+    a = world.service.start_approval(first, key="same")
+    b = world.service.start_approval(second, key="same")
+    await world.service.drain()
+    assert a.batch.id != b.batch.id
+    found = world.drafts.suggestion(second)
+    assert found is not None and found.state == "approved"
+
+
+async def test_starting_a_tray_batch_is_one_transaction(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+
+    def broken(ids: object) -> int:
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(world.applied, "_delete", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        world.service.begin_pending(None, key="apply:k")
+    assert world.applied.batch_by_key("apply:k") is None  # no batch without its rows taken
+    assert len(world.pending.pending()) == 1
+
+
+async def test_a_replayed_approval_running_with_no_task_resumes_once(world: World) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    written = world.service.begin_approval(sid, key="k")  # the row, then the task was lost
+    assert world.drafts.release_all() == 1  # as a restart releases claims
+    again = world.service.start_approval(sid, key="k")
+    await world.service.drain()
+    assert again.batch.id == written.batch.id
+    assert world.write_names() == ["add_labels"]
+    found = world.drafts.suggestion(sid)
+    assert found is not None and found.state == "approved" and not world.drafts.is_claimed(sid)

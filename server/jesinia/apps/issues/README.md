@@ -181,7 +181,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     - A finished batch that GitHub stopped says so in `stopped` and `rate_limited_until`. There
       is no 503 and no `Retry-After`.
     - `POST /pending/{batch}/retry` (202) resumes a finished or interrupted batch, and never
-      repeats a step already done (a posted comment included). A batch still running is a 409.
+      repeats a recorded step. A comment or new issue cut off mid-write is never re-sent blindly
+      (see below). A batch still running is a 409.
   - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
     same batch. The batch keeps the key too, so a replay never applies the tray again, even
     across a crash (ruling IR46).
@@ -268,8 +269,12 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
     order started.
   - A stop cancels the running batches and marks them `interrupted`. Start marks those a crash
     left `running` the same way.
-  - Retry resumes either from the recorded steps, so a comment that went out is never posted
-    again.
+  - Retry resumes either from the recorded steps, so a recorded step is never repeated.
+  - A comment or a new issue is recorded `in flight` right before its write. If the batch is cut
+    off then, the write may have gone out, so the first Retry doesn't send it blindly. It fails
+    that step, asking you to check GitHub, and the next Retry sends it.
+  - A replay of the key answers the batch as it stands and never runs it again. It resumes only
+    a batch still `running` that no task holds.
   - A close's comment withheld because the issue was already closed stays withheld on Retry.
   - An unexpected error fails only its step, with its type, and the batch goes on.
 - **Claims:** an approval's (or its Retry's) claim is released whatever happens: done, failed,

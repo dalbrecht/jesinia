@@ -28,7 +28,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Protocol, cast
+from typing import Protocol
 
 from jesinia.apps.issues.application.apply import ApplyEngine
 from jesinia.apps.issues.application.labels import Clock
@@ -131,6 +131,10 @@ def _outcomes(result: BatchResult) -> dict[tuple[str, int], tuple[ItemState, str
         for step in result.results
         if step.step.target is not None
     }
+
+
+def _approval_key(suggestion_id: str, key: str | None) -> str | None:
+    return None if key is None else f"{suggestion_id}:{key}"
 
 
 def applied_batch(store: ApplyStore, batch_id: str) -> AppliedBatch:
@@ -238,7 +242,9 @@ class ApplyService:
       always answers that batch, so a replay never applies the tray again.
     - **Stops:** ``stop`` cancels the running batches, which are marked ``interrupted``; ``recover``
       (at start) marks those a crash left ``running``. Retry resumes either without repeating a
-      step already done. An approval's claim (IR40) is released whatever happens.
+      recorded step; a comment or new issue cut off mid-write fails once ("check GitHub")
+      rather than being sent blindly again. A replay never re-runs a batch. An approval's claim
+      (IR40) is released whatever happens.
 
     Args:
         engine: the apply engine.
@@ -278,8 +284,19 @@ class ApplyService:
         key: str | None,
     ) -> AppliedBatch:
         """Store ``batch`` as ``running``, every step not run yet (write-ahead)."""
+        applied = self._new(batch, origin, suggestion_id, key)
+        self._store.save_batch(applied)
+        return applied
+
+    def _new(
+        self,
+        batch: ChangeBatch,
+        origin: ApplyOrigin,
+        suggestion_id: str | None,
+        key: str | None,
+    ) -> AppliedBatch:
         now = self._clock()
-        applied = AppliedBatch(
+        return AppliedBatch(
             self._new_id(),
             origin,
             suggestion_id,
@@ -290,8 +307,16 @@ class ApplyService:
             status="running",
             request_key=key,
         )
-        self._store.save_batch(applied)
-        return applied
+
+    def _by_key(self, key: str | None) -> AppliedBatch | None:
+        return None if key is None else self._store.batch_by_key(key)
+
+    def _resume_lost(self, applied: AppliedBatch, claimed: str | None) -> None:
+        """A replay found its batch ``running`` with no task here (one a restart's recovery
+        hasn't seen yet): resume it, never repeating a done step. A finished or interrupted
+        batch is left as it is: resuming that is Retry's job, never a replay's."""
+        if applied.status == "running" and applied.id not in self._tasks:
+            self._spawn(applied, claimed, resume=True)
 
     def begin_pending(self, ids: Sequence[str] | None, key: str | None) -> AppliedBatch:
         """Take the staged changes (only ``ids`` when given) out of the tray into a stored
@@ -300,17 +325,21 @@ class ApplyService:
         Raises:
             NothingPendingError: nothing staged matches.
         """
-        if key is not None and (found := self._store.batch_by_key(key)) is not None:
+        if (found := self._by_key(key)) is not None:
             return found
         staged = self._store.pending(ids)
         if not staged:
             raise NothingPendingError("nothing is pending to apply")
-        applied = self._begin(pending_batch(staged), "pending", None, key)
-        self._store.delete_pending([change.id for change in staged])
+        applied = self._new(pending_batch(staged), "pending", None, key)
+        self._store.start_batch(applied, [change.id for change in staged])
         return applied
 
     def start_pending(self, ids: Sequence[str] | None, key: str | None) -> AppliedBatch:
-        """``begin_pending``, then run the batch in the background."""
+        """``begin_pending``, then run the batch in the background. A replay of ``key``
+        answers its batch as it stands and never runs it again (``_resume_lost``)."""
+        if (found := self._by_key(key)) is not None:
+            self._resume_lost(found, None)
+            return found
         applied = self.begin_pending(ids, key)
         self._spawn(applied, None)
         return applied
@@ -331,7 +360,8 @@ class ApplyService:
             BatchRunningError: it is still running.
         """
         stored = applied_batch(self._store, batch_id)
-        if stored.status == "running":
+        if stored.status == "running" or batch_id in self._tasks:
+            # A task still holds it (its result may be stored while the cache update runs).
             raise BatchRunningError(f"batch {batch_id} is still running; poll it")
         again = replace(stored, status="running", updated_at=self._clock())
         self._store.save_batch(again)
@@ -354,8 +384,8 @@ class ApplyService:
         return sid if sid is not None and self._suggestions.claim(sid, self._clock()) else None
 
     def begin_approval(self, suggestion_id: str, key: str | None) -> Approval:
-        """Check an approval, claim its draft and store its batch ``running``. The same
-        ``key`` answers the approval it already started.
+        """Check an approval, claim its draft and store its batch ``running``, keeping ``key``
+        (``start_approval`` answers a replay of it before calling this).
 
         Raises:
             SuggestionNotFoundError: no such suggestion.
@@ -365,11 +395,6 @@ class ApplyService:
             DuplicateNotCachedError: a duplicate whose original isn't cached.
             InvalidChangeError: a kind that can't be approved yet.
         """
-        if key is not None and (started := self._store.batch_by_key(key)) is not None:
-            current = self._suggestions.suggestion(cast(str, started.suggestion_id))
-            if current is None:
-                raise SuggestionNotFoundError(f"no suggestion {started.suggestion_id}")
-            return Approval(current, started)
         found = self._suggestions.suggestion(suggestion_id)
         if found is None:
             raise SuggestionNotFoundError(f"no suggestion {suggestion_id}")
@@ -383,17 +408,33 @@ class ApplyService:
         if not self._suggestions.claim(found.id, self._clock()):
             raise SuggestionStateError(f"suggestion {found.id} is being approved already")
         try:
-            applied = self._begin(batch, "suggestion", found.id, key)
+            applied = self._begin(batch, "suggestion", found.id, _approval_key(found.id, key))
         except BaseException:
             self._release(found.id)
             raise
         return Approval(found, applied)
 
+    def _approval_by_key(self, suggestion_id: str, key: str | None) -> Approval | None:
+        """The approval this ``key`` already started for this suggestion (a key is scoped to
+        its suggestion: one key on two approvals is two approvals)."""
+        started = self._by_key(_approval_key(suggestion_id, key))
+        if started is None:
+            return None
+        current = self._suggestions.suggestion(suggestion_id)
+        if current is None:
+            raise SuggestionNotFoundError(f"no suggestion {suggestion_id}")
+        return Approval(current, started)
+
     def start_approval(self, suggestion_id: str, key: str | None) -> Approval:
-        """``begin_approval``, then apply it in the background (the request never waits)."""
+        """``begin_approval``, then apply it in the background (the request never waits). A
+        replay of ``key`` answers its approval as it stands and never runs it again."""
+        if (replayed := self._approval_by_key(suggestion_id, key)) is not None:
+            batch = replayed.batch
+            if batch.status == "running" and batch.id not in self._tasks:
+                self._resume_lost(batch, self._retry_claim(batch))
+            return replayed
         approval = self.begin_approval(suggestion_id, key)
-        if approval.batch.status == "running" and approval.batch.id not in self._tasks:
-            self._spawn(approval.batch, approval.suggestion.id)
+        self._spawn(approval.batch, approval.suggestion.id)
         return approval
 
     async def approve(self, suggestion_id: str) -> Approval:
@@ -428,6 +469,8 @@ class ApplyService:
     ) -> None:
         """A background run ended: whatever happened, its claim is released, and a run that was
         cancelled (a stop) or broke is ``interrupted``. Best effort: start recovers the rest."""
+        # One task per batch at a time: a Retry or a replay never starts another while this one
+        # is held (``begin_retry``, ``_resume_lost``), so this is its own entry.
         self._tasks.pop(batch_id, None)
         if claimed is not None:
             self._release(claimed)

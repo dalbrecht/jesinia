@@ -23,6 +23,7 @@ from jesinia.apps.issues.domain.changes import (
     parse_source,
     result_json,
 )
+from jesinia.core.db import transaction
 
 _PENDING_COLUMNS = "id, ref, change_json, created_at, source"
 _BATCH_COLUMNS = (
@@ -96,10 +97,18 @@ class SqliteApplyStore:
         return [_pending(row) for row in rows]
 
     def delete_pending(self, ids: Sequence[str]) -> int:
+        return self._delete(ids)
+
+    def _delete(self, ids: Sequence[str]) -> int:
         if not ids:
             return 0
         marks = ", ".join("?" for _ in ids)
         return self._conn.execute(f"DELETE FROM pending WHERE id IN ({marks})", list(ids)).rowcount
+
+    def start_batch(self, applied: AppliedBatch, taken: Sequence[str]) -> None:
+        with transaction(self._conn):
+            self.save_batch(applied)
+            self._delete(taken)
 
     def clear_pending(self) -> None:
         self._conn.execute("DELETE FROM pending")
