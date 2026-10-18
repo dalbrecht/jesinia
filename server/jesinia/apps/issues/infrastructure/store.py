@@ -19,6 +19,7 @@ from jesinia.apps.issues.application.ports import (
     SchemaSource,
     StoredIssue,
 )
+from jesinia.apps.issues.domain.changes import InvalidChangeError
 from jesinia.apps.issues.domain.labels import (
     PLAN_TTL,
     CreateLabel,
@@ -27,7 +28,16 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlan,
     parse_plan_kind,
 )
-from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, Canonical, LabelSchema
+from jesinia.apps.issues.domain.schema import (
+    DEFAULT_SCHEMA,
+    OVERLAY_DIMENSIONS,
+    Canonical,
+    LabelSchema,
+    OverlayDimension,
+    SchemaEntry,
+    with_overlay,
+)
+from jesinia.apps.issues.domain.suggestions import HUMAN_NEEDED
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
     IssueRow,
@@ -35,6 +45,7 @@ from jesinia.apps.issues.domain.triage import (
     SyncCursor,
     Triage,
     ViewName,
+    content_hash,
     stale_before,
 )
 from jesinia.core.db import transaction
@@ -49,6 +60,12 @@ from jesinia.services.github.domain.issue import (
 
 _SOURCES: tuple[SchemaSource, ...] = ("default", "repo", "settings")
 _IN_INBOX = "(issues.inbox = 1 AND issues.complete = 0)"
+# An open (draft or edited) suggestion of ``kind`` about the issue, for the saved filters.
+_HAS_OPEN_SUGGESTION = (
+    "EXISTS (SELECT 1 FROM suggestions WHERE suggestions.repo = issues.repo "
+    "AND suggestions.n = issues.number AND suggestions.state IN ('draft', 'edited') "
+    "AND suggestions.kind = ?{extra})"
+)
 _REPO_COLUMNS = (
     "repo, watched, added_at, schema_source, schema_json, migrated, cursor_json, synced_at, "
     "sync_error, settings_schema_json"
@@ -191,6 +208,14 @@ def _repo_state(row: tuple[object, ...]) -> RepoState:
     )
 
 
+def _overlay_dimension(value: object) -> OverlayDimension:
+    """Raises: InvalidChangeError: a stored overlay row with an unknown dimension."""
+    for dimension in OVERLAY_DIMENSIONS:
+        if value == dimension:
+            return dimension
+    raise InvalidChangeError(f"schema_overlay holds an unknown dimension {value!r}")
+
+
 def _source(value: str) -> SchemaSource:
     return next(source for source in _SOURCES if source == value)
 
@@ -314,11 +339,34 @@ class SqliteIssuesStore:
         row = self._conn.execute(
             f"SELECT {_REPO_COLUMNS} FROM repos WHERE repo = ?", (repo,)
         ).fetchone()
-        return None if row is None else _repo_state(row)
+        return None if row is None else self._overlaid(_repo_state(row))
 
     def all_repos(self) -> list[RepoState]:
         rows = self._conn.execute(f"SELECT {_REPO_COLUMNS} FROM repos ORDER BY repo")
-        return [_repo_state(row) for row in rows]
+        return [self._overlaid(_repo_state(row)) for row in rows]
+
+    def _overlaid(self, state: RepoState) -> RepoState:
+        """``state`` with its approved schema entries merged over the stored schema, as every
+        read sees it (a labels.yml re-read by sync can't drop them)."""
+        rows = self._conn.execute(
+            "SELECT dimension, canonical, aliases_json FROM schema_overlay WHERE repo = ? "
+            "ORDER BY approved_at, rowid",
+            (state.repo,),
+        )
+        entries = tuple(
+            SchemaEntry(_overlay_dimension(dimension), str(canonical), tuple(json.loads(aliases)))
+            for dimension, canonical, aliases in rows
+        )
+        if not entries:
+            return state
+        return replace(state, schema=with_overlay(state.schema, entries), overlay=entries)
+
+    def add_overlay(self, repo: str, entry: SchemaEntry, now: datetime) -> None:
+        self._conn.execute(
+            "INSERT INTO schema_overlay (repo, dimension, canonical, aliases_json, approved_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (repo, dimension, canonical) DO NOTHING",
+            (repo, entry.dimension, entry.canonical, json.dumps(list(entry.aliases)), _time(now)),
+        )
 
     def set_schema(self, repo: str, source: SchemaSource, schema: LabelSchema) -> None:
         self._conn.execute(
@@ -401,14 +449,20 @@ class SqliteIssuesStore:
             return {}
         marks = ", ".join("?" for _ in numbers)
         rows = self._conn.execute(
-            "SELECT number, complete, inbox, state FROM issues "
+            "SELECT number, complete, inbox, state, json FROM issues "
             f"WHERE repo = ? AND number IN ({marks})",
             (repo, *numbers),
         )
-        return {
-            number: PreviousTriage(bool(complete), bool(inbox), is_open=state == "open")
-            for number, complete, inbox, state in rows
-        }
+        found: dict[int, PreviousTriage] = {}
+        for number, complete, inbox, state, text in rows:
+            cached = _issue(text)
+            found[number] = PreviousTriage(
+                bool(complete),
+                bool(inbox),
+                is_open=state == "open",
+                content=content_hash(cached.title, cached.body, cached.labels),
+            )
+        return found
 
     def is_unchanged(self, repo: str, issue: Issue) -> bool:
         row = self._conn.execute(
@@ -474,6 +528,24 @@ class SqliteIssuesStore:
                 (_issue_json(replace(issue, labels=tuple(labels))), issue.repo, issue.number),
             )
             self._write_triage(issue.repo, [(issue.number, triaged)])
+
+    def refresh_issue(self, issue: Issue, triaged: Triage) -> None:
+        with transaction(self._conn):
+            updated = self._conn.execute(
+                "UPDATE issues SET json = ?, state = ?, updated_at = ?, sub_issue_count = ? "
+                "WHERE repo = ? AND number = ? AND updated_at <= ?",
+                (
+                    _issue_json(issue),
+                    issue.state,
+                    _time(issue.updated_at),
+                    issue.sub_issue_count,
+                    issue.repo,
+                    issue.number,
+                    _time(issue.updated_at),
+                ),
+            )
+            if updated.rowcount:  # a newer row (a sync since) keeps its own triage
+                self._write_triage(issue.repo, [(issue.number, triaged)])
 
     def update_triage(self, repo: str, triaged: Sequence[tuple[int, Triage]]) -> None:
         with transaction(self._conn):
@@ -690,6 +762,17 @@ class SqliteIssuesStore:
         elif filters.saved == "stale_90d":
             where.append("issues.updated_at < ?")
             params.append(_time(stale_before(now)))
+        elif filters.saved == "human_needed_could_be_ready":
+            where.append("json_extract(issues.triage_json, '$.readiness') = ?")
+            where.append(
+                _HAS_OPEN_SUGGESTION.format(
+                    extra=" AND json_extract(suggestions.payload_json, '$.ready') = 1"
+                )
+            )
+            params.extend([HUMAN_NEEDED, "readiness_gap"])
+        elif filters.saved == "possible_duplicates":
+            where.append(_HAS_OPEN_SUGGESTION.format(extra=""))
+            params.append("duplicate")
         query = (
             "SELECT issues.json, issues.triage_json FROM issues "
             "JOIN repos ON repos.repo = issues.repo "

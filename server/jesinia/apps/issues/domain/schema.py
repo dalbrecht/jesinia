@@ -36,6 +36,7 @@ import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from typing import Literal, get_args
 
 import yaml
 
@@ -138,17 +139,20 @@ class _Index:
     free_prefixes: tuple[str, ...]
 
 
-@lru_cache(maxsize=32)
-def _index(schema: LabelSchema) -> _Index:
-    by_label: dict[str, tuple[str, str]] = {}
-    dimensions: tuple[tuple[str, Sequence[Canonical]], ...] = (
+def _dimensions(schema: LabelSchema) -> tuple[tuple[str, Sequence[Canonical]], ...]:
+    return (
         (READINESS, schema.readiness),
         (PRIORITY, schema.priority),
         (TYPE, schema.type),
         (AREA, schema.areas),
         (HIERARCHY, (schema.epic, schema.initiative)),
     )
-    for dimension, values in dimensions:
+
+
+@lru_cache(maxsize=32)
+def _index(schema: LabelSchema) -> _Index:
+    by_label: dict[str, tuple[str, str]] = {}
+    for dimension, values in _dimensions(schema):
         for value in values:
             for label in (value.name, *value.aliases):
                 by_label.setdefault(_key(label), (dimension, value.name))
@@ -231,6 +235,50 @@ def write_name(canonical: Canonical, existing_labels: Iterable[str]) -> str | No
         if _key(alias) in existing:
             return existing[_key(alias)]
     return existing.get(_key(canonical.name))
+
+
+OverlayDimension = Literal["readiness", "priority", "type", "area"]
+OVERLAY_DIMENSIONS: tuple[OverlayDimension, ...] = get_args(OverlayDimension)
+
+
+@dataclass(frozen=True)
+class SchemaEntry:
+    """A schema value the author approved outside labels.yml and Settings (a ``new_area``
+    suggestion, later a published ``theme:``), kept in the local ``schema_overlay``."""
+
+    dimension: OverlayDimension
+    canonical: str
+    aliases: tuple[str, ...] = ()
+
+
+def with_overlay(schema: LabelSchema, entries: Iterable[SchemaEntry]) -> LabelSchema:
+    """``schema`` with the approved ``entries`` appended to their dimensions. It is merged over
+    every schema read, a read-only labels.yml's included, so a later sync from the file never
+    drops an approved entry. An entry whose name or an alias is already a label of the schema
+    (by ``label_key``) is left out, so merging twice changes nothing and a label never means two
+    things."""
+    taken = {
+        label_key(label)
+        for _, values in _dimensions(schema)
+        for value in values
+        for label in (value.name, *value.aliases)
+    }
+    added: dict[str, list[Canonical]] = {dimension: [] for dimension in OVERLAY_DIMENSIONS}
+    for entry in entries:
+        labels = [label_key(label) for label in (entry.canonical, *entry.aliases)]
+        if any(label in taken for label in labels):
+            continue
+        taken.update(labels)
+        added[entry.dimension].append(Canonical(entry.canonical, entry.aliases))
+    if not any(added.values()):
+        return schema
+    return replace(
+        schema,
+        readiness=(*schema.readiness, *added[READINESS]),
+        priority=(*schema.priority, *added[PRIORITY]),
+        type=(*schema.type, *added[TYPE]),
+        areas=(*schema.areas, *added[AREA]),
+    )
 
 
 class _LabelsYmlRefusedError(ValueError):

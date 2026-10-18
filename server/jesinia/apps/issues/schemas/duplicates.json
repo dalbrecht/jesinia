@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "$id": "https://jesinia.local/issues/schemas/duplicates.json",
+  "title": "duplicates",
+  "description": "A standalone duplicates check for one issue (Task 7), chosen only from the candidates Jesinia's similarity search gave.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["duplicates"],
+  "properties": {
+    "duplicates": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["repo", "number", "reason"],
+        "properties": {
+          "repo": {"type": "string", "minLength": 3, "maxLength": 140},
+          "number": {"type": "integer", "minimum": 1, "maximum": 999999999},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+        }
+      }
+    }
+  }
+}

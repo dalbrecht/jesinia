@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "$id": "https://jesinia.local/issues/schemas/grouping.json",
+  "title": "grouping",
+  "description": "Epic proposals (Task 8): new groups of related open issues, additions to existing epics, and splits of issues too big for one PR.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["groups", "additions", "splits"],
+  "properties": {
+    "groups": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "scope", "issues", "reason"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1, "maxLength": 256},
+          "scope": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "issues": {"type": "array", "minItems": 2, "maxItems": 50, "items": {"$ref": "#/$defs/issue"}},
+          "reason": {"$ref": "#/$defs/reason"}
+        }
+      }
+    },
+    "additions": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["epic", "issue", "reason"],
+        "properties": {
+          "epic": {"$ref": "#/$defs/issue"},
+          "issue": {"$ref": "#/$defs/issue"},
+          "reason": {"$ref": "#/$defs/reason"}
+        }
+      }
+    },
+    "splits": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue", "parts", "reason"],
+        "properties": {
+          "issue": {"$ref": "#/$defs/issue"},
+          "parts": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["title", "body"],
+              "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 256},
+                "body": {"type": "string", "maxLength": 4000}
+              }
+            }
+          },
+          "reason": {"$ref": "#/$defs/reason"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "number"],
+      "properties": {
+        "repo": {"type": "string", "minLength": 3, "maxLength": 140},
+        "number": {"type": "integer", "minimum": 1, "maximum": 999999999}
+      }
+    },
+    "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+  }
+}

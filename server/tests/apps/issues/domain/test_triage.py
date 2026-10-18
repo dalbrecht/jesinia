@@ -18,6 +18,7 @@ from jesinia.apps.issues.domain.triage import (
     PreviousTriage,
     SavedFilter,
     SyncCursor,
+    content_hash,
     in_view,
     is_inbox,
     parse_saved_filter,
@@ -83,11 +84,17 @@ def test_views_and_saved_filters_are_validated() -> None:
     assert parse_view("inbox") == "inbox" and parse_view("backlog") == "backlog"
     with pytest.raises(InvalidViewError):
         parse_view("epics")
-    assert SAVED_FILTERS == ("incomplete", "stale_90d")
+    assert SAVED_FILTERS == (
+        "incomplete",
+        "stale_90d",
+        "human_needed_could_be_ready",
+        "possible_duplicates",
+    )
     assert parse_saved_filter(None) is None
     assert parse_saved_filter("stale_90d") == "stale_90d"
+    assert parse_saved_filter("possible_duplicates") == "possible_duplicates"
     with pytest.raises(InvalidFilterError):
-        parse_saved_filter("possible_duplicates")
+        parse_saved_filter("duplicates")
     assert IssueFilters().repo is None
     assert IssueFilters(repo="acme/web", saved="incomplete").saved == "incomplete"
     with pytest.raises(InvalidRepoError):
@@ -152,3 +159,11 @@ def test_alias_schema_completes_via_triage() -> None:
         type=DEFAULT_SCHEMA.type,
     )
     assert triage(("design needed", "priority: low", "bug", "area:x"), 0, schema).complete
+
+
+def test_content_hash_covers_title_body_and_labels_only() -> None:
+    base = content_hash("Crash", "on login", ["bug", "area:web"])
+    assert base == content_hash("Crash", "on login", ["Area:Web ", "bug"])  # order, case
+    assert base != content_hash("Crash!", "on login", ["bug", "area:web"])
+    assert base != content_hash("Crash", "on login.", ["bug", "area:web"])
+    assert base != content_hash("Crash", "on login", ["bug"])

@@ -47,11 +47,19 @@ from jesinia.apps.issues.application.ports import (
     SchemaSource,
     StoredIssue,
 )
-from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA, LabelSchema, parse_labels_yml
+from jesinia.apps.issues.domain.schema import (
+    DEFAULT_SCHEMA,
+    LabelSchema,
+    SchemaEntry,
+    parse_labels_yml,
+    with_overlay,
+)
 from jesinia.apps.issues.domain.triage import (
     IssueNotCachedError,
     RepoMovedError,
     RepoNotWatchedError,
+    Triage,
+    content_hash,
     is_inbox,
     triage,
 )
@@ -69,8 +77,12 @@ EPIC_BACKFILL_PER_SYNC = 10
 DETAIL_PAGE_CAP = 10
 
 Clock = Callable[[], datetime]
-# Told which issues just entered the Inbox view (Task 5 queues suggestion jobs from it).
+# Told which issues just entered the Inbox view, or changed while in it (Task 5 queues
+# suggestion runs from them).
 OnInbox = Callable[[str, Sequence[int]], Awaitable[None]]
+# Told each issue's triage whenever it is stored (a sync page or a recompute), so drafts that
+# lost their premise can be retired (Task 5).
+OnTriaged = Callable[[str, Sequence[tuple[Issue, Triage]]], None]
 
 
 def _key(repo: str) -> str:
@@ -80,7 +92,8 @@ def _key(repo: str) -> str:
 
 async def read_schema(github: SchemaReads, state: RepoState) -> tuple[SchemaSource, LabelSchema]:
     """``state``'s effective schema as GitHub has it now: ``.jesinia/labels.yml`` when it exists,
-    else the one kept in Settings, else the default (spec §2). A file that exists but can't be
+    else the one kept in Settings, else the default (spec §2), with the approved overlay entries
+    merged over it (Task 6), so a re-read file never drops them. A file that exists but can't be
     read as text gives the default with the cause in ``errors``.
 
     Raises:
@@ -89,16 +102,20 @@ async def read_schema(github: SchemaReads, state: RepoState) -> tuple[SchemaSour
     try:
         text = await github.file(state.repo, LABELS_YML)
     except GitHubPayloadError as exc:
-        return "repo", replace(DEFAULT_SCHEMA, errors=(str(exc),))
+        return "repo", with_overlay(replace(DEFAULT_SCHEMA, errors=(str(exc),)), state.overlay)
     if text is None:
-        return _without_file(state.settings_schema)
-    return "repo", parse_labels_yml(text)
+        return _without_file(state.settings_schema, state.overlay)
+    return "repo", with_overlay(parse_labels_yml(text), state.overlay)
 
 
-def _without_file(settings: LabelSchema | None) -> tuple[SchemaSource, LabelSchema]:
+def _without_file(
+    settings: LabelSchema | None, overlay: Sequence[SchemaEntry]
+) -> tuple[SchemaSource, LabelSchema]:
     """The effective schema when the repo has no labels.yml (spec §2 precedence: labels.yml,
-    then the schema made in Settings, then the default)."""
-    return ("default", DEFAULT_SCHEMA) if settings is None else ("settings", settings)
+    then the schema made in Settings, then the default), with the overlay merged over it."""
+    if settings is None:
+        return "default", with_overlay(DEFAULT_SCHEMA, overlay)
+    return "settings", with_overlay(settings, overlay)
 
 
 async def _capped_pages[T](fetch: Callable[[str | None], Awaitable[Page[T]]]) -> list[T]:
@@ -122,6 +139,11 @@ class SyncService:
         clock: the current UTC time.
         on_inbox: awaited with the issues that just entered the Inbox view; best effort, its
             failure is logged and never breaks a sync.
+        on_inbox_edit: awaited with the issues already in the Inbox view whose title, body or
+            labels changed on GitHub (``content_hash``; a comment alone is no edit); best
+            effort, like ``on_inbox``.
+        on_triaged: called with each issue's triage whenever a sync page or a recompute stores
+            it; best effort, like ``on_inbox``.
     """
 
     def __init__(
@@ -131,11 +153,15 @@ class SyncService:
         clock: Clock,
         *,
         on_inbox: OnInbox | None = None,
+        on_inbox_edit: OnInbox | None = None,
+        on_triaged: OnTriaged | None = None,
     ) -> None:
         self._github = github
         self._store = store
         self._clock = clock
         self._on_inbox = on_inbox
+        self._on_inbox_edit = on_inbox_edit
+        self._on_triaged = on_triaged
         self._locks: dict[str, asyncio.Lock] = {}
         self._syncing: set[str] = set()
         self._backoff_until: datetime | None = None
@@ -284,13 +310,16 @@ class SyncService:
                 if not (cursor.covers(i.updated_at, i.id) and self._store.is_unchanged(repo, i))
             ]
             links = {} if is_first else await self._children(repo, fresh)
-            stored, entered = self._triaged(state, schema, fresh)
+            stored, entered, edited = self._triaged(state, schema, fresh)
             cursor, done = cursor.after_page(
                 [(i.updated_at, i.id) for i in page.items], page.next_token
             )
             self._store.save_page(repo, stored, links, cursor, self._clock())
+            self._triaged_listener(repo, [(item.issue, item.triage) for item in stored])
             if entered:
-                await self._notify(repo, entered)
+                await self._notify(self._on_inbox, repo, entered)
+            if edited:
+                await self._notify(self._on_inbox_edit, repo, edited)
         if not is_first:
             for n in self._store.epics_without_links(repo, EPIC_BACKFILL_PER_SYNC):
                 children = await self._github.sub_issues(repo, n)
@@ -307,12 +336,13 @@ class SyncService:
 
     def _triaged(
         self, state: RepoState, schema: LabelSchema, issues: Sequence[Issue]
-    ) -> tuple[builtins.list[StoredIssue], builtins.list[int]]:
-        """Each issue's triage and Inbox flag, and the issues that just entered the Inbox
-        view."""
+    ) -> tuple[builtins.list[StoredIssue], builtins.list[int], builtins.list[int]]:
+        """Each issue's triage and Inbox flag, the issues that just entered the Inbox view, and
+        those that were in it already and changed (``issues`` are only changed ones)."""
         previous = self._store.previous_triage(state.repo, [i.number for i in issues])
         stored: builtins.list[StoredIssue] = []
         entered: builtins.list[int] = []
+        edited: builtins.list[int] = []
         for issue in issues:
             result = triage(issue.labels, issue.sub_issue_count, schema)
             before = previous.get(issue.number)
@@ -327,15 +357,28 @@ class SyncService:
             was_shown = (
                 before is not None and before.inbox and not before.complete and before.is_open
             )
-            if inbox and not result.complete and not was_shown and issue.state == "open":
-                entered.append(issue.number)
-        return stored, entered
+            if inbox and not result.complete and issue.state == "open":
+                if not was_shown:
+                    entered.append(issue.number)
+                elif before is not None and before.content != content_hash(
+                    issue.title, issue.body, issue.labels
+                ):
+                    edited.append(issue.number)
+        return stored, entered, edited
 
-    async def _notify(self, repo: str, numbers: Sequence[int]) -> None:
-        if self._on_inbox is None:
+    def _triaged_listener(self, repo: str, triaged: Sequence[tuple[Issue, Triage]]) -> None:
+        if self._on_triaged is None or not triaged:
             return
         try:
-            await self._on_inbox(repo, numbers)
+            self._on_triaged(repo, triaged)
+        except Exception:  # best effort: a failing listener never breaks a sync
+            log.exception("issues: the triage listener failed for %s", repo)
+
+    async def _notify(self, listener: OnInbox | None, repo: str, numbers: Sequence[int]) -> None:
+        if listener is None:
+            return
+        try:
+            await listener(repo, numbers)
         except Exception:  # best effort: a failing listener never breaks a sync
             log.exception("issues: the Inbox listener failed for %s %s", repo, list(numbers))
 
@@ -369,7 +412,7 @@ class SyncService:
             state = self.state(name)
             self._store.set_settings_schema(name, schema)
             if state.schema_source != "repo":
-                source, effective = _without_file(schema)
+                source, effective = _without_file(schema, state.overlay)
                 self._store_effective(state, source, effective)
 
     def back_off(self, until: datetime | None) -> None:
@@ -380,10 +423,14 @@ class SyncService:
         if self._backoff_until is None or resume > self._backoff_until:
             self._backoff_until = resume
 
+    def backoff_until(self) -> datetime | None:
+        """GitHub's reset time while a rate limit is known (writes wait it out too)."""
+        return self._backoff_until
+
     async def recompute(self, repo: str) -> None:
         """Re-triage every cached issue of ``repo`` against its stored schema (IR18): call it
-        after the schema or its overlay changes. Kept for Task 5–6's ``schema_overlay``, which
-        changes the stored schema outside Settings. It can clear the Inbox flag (an issue now
+        after the schema or its overlay changes (an approved new area writes the overlay, which
+        changes the effective schema outside Settings). It can clear the Inbox flag (an issue now
         complete) but never set it: the convention changed, not the issue, so this never floods
         the Inbox (IR30). It waits for a running sync of the repo, so pages that sync saves with
         the old schema can't overwrite it.
@@ -398,13 +445,11 @@ class SyncService:
             self._retriage(current.repo, current.schema)
 
     def _retriage(self, repo: str, schema: LabelSchema) -> None:
-        self._store.update_triage(
-            repo,
-            [
-                (i.number, triage(i.labels, i.sub_issue_count, schema))
-                for i in self._store.issues(repo)
-            ],
-        )
+        triaged = [
+            (i, triage(i.labels, i.sub_issue_count, schema)) for i in self._store.issues(repo)
+        ]
+        self._store.update_triage(repo, [(i.number, result) for i, result in triaged])
+        self._triaged_listener(repo, triaged)
 
     # Details --------------------------------------------------------------------------
 
