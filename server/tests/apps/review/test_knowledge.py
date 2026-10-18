@@ -41,6 +41,7 @@ from jesinia.apps.review.domain.knowledge import (
     KnowledgeInputError,
     LoggedCommit,
     Override,
+    QuizResultTooLarge,
     SummaryEntry,
     Unit,
     UnitRecord,
@@ -1227,6 +1228,13 @@ def test_quiz_kind_counts_skipped_questions_as_not_right() -> None:
     assert quiz_kind(3, 4) == "quiz_pass"  # no question count known: over the answered
 
 
+@pytest.mark.parametrize(("right", "answered"), [(4, 4), (1, 4), (6, 6)])
+def test_quiz_kind_refuses_more_answers_than_the_quiz_has(right: int, answered: int) -> None:
+    """Codex P2: answered (and so right) can't exceed the quiz's real question count."""
+    with pytest.raises(QuizResultTooLarge):
+        quiz_kind(right, answered, questions=3)
+
+
 async def test_the_emails_digest_is_keyed_per_install(kenv: KEnv) -> None:
     """M3: what's stored can't confirm a guessed address without the install's key."""
     keyed = KnowledgeService(
@@ -1285,7 +1293,7 @@ async def test_the_merge_of_a_reviewed_pr_isnt_change_since_its_review(kenv: KEn
     kenv.clock.now = NOW + DAY
     base, head = reviewed_round(kenv, 1, ["src/a.py"])
     kenv.workspace.reviewed[(base, head)] = [sha(5), sha(6)]
-    kenv.identity.merges[1] = MergeState("merged", sha(7))
+    kenv.identity.merges[1] = MergeState("merged", sha(7), head)
     kenv.clock.now = NOW + 2 * DAY
     kenv.workspace.tips[WEB] = TIP2
     kenv.workspace.log = [
@@ -1381,18 +1389,28 @@ async def test_a_horizon_re_read_never_backdates_commits_it_sees_first(kenv: KEn
 async def test_github_merges_reads_the_prs_landing() -> None:
     from jesinia.apps.review.infrastructure.merges import GitHubMerges
 
+    head = "b" * 40
+
     class Prs:
-        def __init__(self, answer: tuple[str, str | None]) -> None:
+        def __init__(self, answer: tuple[str, str | None, str | None]) -> None:
             self.answer = answer
 
-        async def merge_state(self, repo: str, number: int) -> tuple[str, str | None]:
+        async def merge_state(self, repo: str, number: int) -> tuple[str, str | None, str | None]:
             return self.answer
 
-    def merges(answer: tuple[str, str | None]) -> GitHubMerges:
+    def merges(answer: tuple[str, str | None, str | None]) -> GitHubMerges:
         return GitHubMerges(Prs(answer))  # type: ignore[arg-type]
 
-    assert await merges(("merged", sha(7))).merge_state(WEB, 1) == MergeState("merged", sha(7))
-    assert await merges(("merged", "not-a-sha")).merge_state(WEB, 1) == MergeState("merged", None)
-    assert await merges(("merged", None)).merge_state(WEB, 1) == MergeState("merged", None)
-    assert await merges(("closed", None)).merge_state(WEB, 1) == MergeState("closed", None)
-    assert await merges(("open", None)).merge_state(WEB, 1) == MergeState("open", None)
+    merged = MergeState("merged", sha(7), head)
+    assert await merges(("merged", sha(7), head)).merge_state(WEB, 1) == merged
+    assert await merges(("merged", "not-a-sha", head)).merge_state(WEB, 1) == MergeState(
+        "merged", None, head
+    )
+    assert await merges(("merged", sha(7), "bad")).merge_state(WEB, 1) == MergeState(
+        "merged", sha(7), None
+    )
+    assert await merges(("merged", None, None)).merge_state(WEB, 1) == MergeState(
+        "merged", None, None
+    )
+    assert await merges(("closed", None, None)).merge_state(WEB, 1) == MergeState("closed", None)
+    assert await merges(("open", None, None)).merge_state(WEB, 1) == MergeState("open", None)

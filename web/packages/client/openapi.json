@@ -20499,7 +20499,8 @@
           },
           "watched": {
             "type": "boolean",
-            "title": "Watched"
+            "title": "Watched",
+            "default": false
           },
           "suggested": {
             "type": "boolean",
@@ -20555,10 +20556,10 @@
         },
         "type": "object",
         "required": [
-          "repo",
-          "watched"
+          "repo"
         ],
-        "title": "ReviewRepoSettingBody"
+        "title": "ReviewRepoSettingBody",
+        "description": "One repo's settings. In a PUT, every field left out keeps its value (a repo not yet\nknown gets the defaults), so a save never puts back what changed elsewhere."
       },
       "ReviewSettingsBody": {
         "properties": {

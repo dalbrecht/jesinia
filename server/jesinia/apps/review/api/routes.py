@@ -69,7 +69,7 @@ from jesinia.apps.review.domain.kept import (
     NotKeepable,
     SystemPageChanged,
 )
-from jesinia.apps.review.domain.knowledge import KnowledgeError, parse_unit
+from jesinia.apps.review.domain.knowledge import KnowledgeError, QuizResultTooLarge, parse_unit
 from jesinia.apps.review.domain.posting import (
     CommentOnlyOnOwnPr,
     EarlierReviewPosted,
@@ -188,6 +188,7 @@ _STATUS: dict[type[Exception], int] = {
     PostingDomainError: status.HTTP_400_BAD_REQUEST,
     PullRequestDomainError: status.HTTP_400_BAD_REQUEST,
     GateInputError: status.HTTP_400_BAD_REQUEST,
+    QuizResultTooLarge: status.HTTP_422_UNPROCESSABLE_CONTENT,
     KnowledgeError: status.HTTP_400_BAD_REQUEST,
     # The app's own failure (a workspace or job error, say): still typed, structured JSON.
     ReviewError: status.HTTP_500_INTERNAL_SERVER_ERROR,

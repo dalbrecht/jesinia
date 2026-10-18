@@ -858,16 +858,16 @@ async def test_viewer_emails_raise_other_github_failures(prs: PrClient) -> None:
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
-        ({"state": "closed", "merged_at": "2026-10-18T00:00:00Z", "merge_commit_sha": SHA},
-         ("merged", SHA)),
-        ({"state": "closed", "merged_at": "2026-10-18T00:00:00Z", "merge_commit_sha": None},
-         ("merged", None)),
-        ({"state": "closed", "merged_at": None}, ("closed", None)),
-        ({"state": "open", "merged_at": None}, ("open", None)),
+        ({"state": "closed", "merged_at": "2026-10-18T00:00:00Z", "merge_commit_sha": SHA,
+          "head": {"sha": "b" * 40}}, ("merged", SHA, "b" * 40)),
+        ({"state": "closed", "merged_at": "2026-10-18T00:00:00Z", "merge_commit_sha": None,
+          "head": {}}, ("merged", None, None)),
+        ({"state": "closed", "merged_at": None}, ("closed", None, None)),
+        ({"state": "open", "merged_at": None}, ("open", None, None)),
     ],
 )  # fmt: skip
-async def test_merge_state_reads_the_landing_commit(
-    prs: PrClient, payload: dict[str, object], expected: tuple[str, str | None]
+async def test_merge_state_reads_the_landing_commit_and_the_head_merged(
+    prs: PrClient, payload: dict[str, object], expected: tuple[str, str | None, str | None]
 ) -> None:
     respx.get(f"{API}/repos/acme/web/pulls/3").mock(return_value=Response(200, json=payload))
     assert await prs.merge_state("acme/web", 3) == expected

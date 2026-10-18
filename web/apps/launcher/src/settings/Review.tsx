@@ -14,6 +14,8 @@ import { sentence, unreachable } from "./unreachable";
 
 type Settings = components["schemas"]["ReviewSettingsBody"];
 type RepoSetting = components["schemas"]["ReviewRepoSettingBody"];
+/** A repo's save: its name and only the fields the author changed (the rest are kept). */
+type RepoChange = Pick<RepoSetting, "repo"> & Partial<RepoSetting>;
 type PreReview = Settings["prereview"];
 type Unit = components["schemas"]["UnitOut"];
 type Knowledge = components["schemas"]["KnowledgeOut"];
@@ -76,7 +78,7 @@ function RepoForm({
 }: {
   config: RepoSetting;
   defaultMode: PreReview;
-  save: (repo: RepoSetting) => Promise<boolean>;
+  save: (repo: RepoChange) => Promise<boolean>;
 }) {
   const modeId = useId();
   const [watched, setWatched] = useState(config.watched);
@@ -88,18 +90,25 @@ function RepoForm({
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    await save({
-      repo: config.repo,
-      watched,
+    // Only what the author changed is sent: every field left out keeps the server's value,
+    // so a repo confirmed in the queue (or edited elsewhere) since this page loaded is never
+    // put back.
+    const change: RepoChange = { repo: config.repo };
+    if (watched !== config.watched) {
+      change.watched = watched;
       // Watching a suggested repo is the author's consent, as Confirm in the queue is.
-      suggested: config.suggested && !watched,
-      prereview: mode === "" ? null : mode,
-      automated_reviewer: reviewer.trim() || null,
-      metrics: metrics
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean),
-    });
+      if (watched && config.suggested) change.suggested = false;
+    }
+    const prereview = mode === "" ? null : mode;
+    if (prereview !== (config.prereview ?? null)) change.prereview = prereview;
+    const automated = reviewer.trim() || null;
+    if (automated !== (config.automated_reviewer ?? null)) change.automated_reviewer = automated;
+    const lines = metrics
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.join("\n") !== (config.metrics ?? []).join("\n")) change.metrics = lines;
+    await save(change);
     setSaving(false);
   };
 
@@ -278,8 +287,10 @@ function SettingsPanel() {
     return null;
   };
 
-  const saveRepo = async (repo: RepoSetting) => {
-    const outcome = await write({ repos: [repo] });
+  const saveRepo = async (repo: RepoChange) => {
+    // The server keeps every per-repo field left out; the generated type marks the ones with
+    // defaults as required, so the partial change is cast.
+    const outcome = await write({ repos: [repo as RepoSetting] });
     if ("data" in outcome) {
       toast.show({ tone: "success", message: `${repo.repo} saved.` });
       return true;

@@ -4800,11 +4800,18 @@ export interface components {
              */
             stack_outcomes?: components["schemas"]["PostOutcomeOut"][] | null;
         };
-        /** ReviewRepoSettingBody */
+        /**
+         * ReviewRepoSettingBody
+         * @description One repo's settings. In a PUT, every field left out keeps its value (a repo not yet
+         *     known gets the defaults), so a save never puts back what changed elsewhere.
+         */
         ReviewRepoSettingBody: {
             /** Repo */
             repo: string;
-            /** Watched */
+            /**
+             * Watched
+             * @default false
+             */
             watched: boolean;
             /**
              * Suggested

@@ -720,6 +720,26 @@ async def test_every_review_setting_round_trips(env: Env, tmp_path: Path) -> Non
     assert kept["standards_dir"] == str(standards)
     kept_web = next(r for r in kept["repos"] if r["repo"] == "acme/web")
     assert kept_web["watched"] is True and kept_web["metrics"] == ["Security", "Tests"]
+    # Codex P2: every per-repo field left out keeps its value, not only metrics.
+    assert kept_web["prereview"] == "everything" and kept_web["automated_reviewer"] == "copilot"
+    only_metrics = {"prereview": "triage", "runner": "codex",
+                    "repos": [{"repo": "acme/web", "metrics": ["Docs"]}]}  # fmt: skip
+    after_metrics = (
+        await env.client.put(f"{API}/settings", json=only_metrics, headers=keyed())
+    ).json()
+    web_now = next(r for r in after_metrics["repos"] if r["repo"] == "acme/web")
+    assert web_now == {**web, "watched": True, "metrics": ["Docs"]}
+    # A repo not yet known, sent with only its name, gets the defaults.
+    fresh = {"prereview": "triage", "runner": "codex", "repos": [{"repo": "acme/new"}]}
+    new = next(
+        r
+        for r in (await env.client.put(f"{API}/settings", json=fresh, headers=keyed())).json()[
+            "repos"
+        ]
+        if r["repo"] == "acme/new"
+    )
+    assert new == {"repo": "acme/new", "watched": False, "suggested": False, "prereview": None,
+                   "automated_reviewer": None, "metrics": None}  # fmt: skip
     cleared = {**partial, "standards_dir": "", "standards_user_dir": None,
                "repos": [{"repo": "acme/web", "watched": True, "metrics": []}]}  # fmt: skip
     after = (await env.client.put(f"{API}/settings", json=cleared, headers=keyed())).json()
@@ -1162,6 +1182,20 @@ async def test_a_quiz_result_is_recorded_once_for_its_own_round(env: Env) -> Non
     assert refused.status_code == 400 and refused.json()["error"] == "KnowledgeInputError"
     too_many = {"round_id": round_id, "right": 1, "answered": 11}
     assert (await env.client.post(f"{PR}/quiz", json=too_many, headers=keyed())).status_code == 422
+
+
+async def test_a_quiz_result_over_the_rounds_questions_is_refused(env: Env) -> None:
+    """Codex P2: with the quiz's question count known, more answered (or right) than it
+    has is a 422, never absorbed."""
+    round_id = env.round()
+    env.store.put_artifact(round_id, "quiz", {"questions": [{"q": 1}, {"q": 2}, {"q": 3}]})
+    over = {"round_id": round_id, "right": 4, "answered": 4}
+    refused = await env.client.post(f"{PR}/quiz", json=over, headers=keyed())
+    assert refused.status_code == 422 and refused.json()["error"] == "QuizResultTooLarge"
+    fine = {"round_id": round_id, "right": 2, "answered": 3}
+    assert (await env.client.post(f"{PR}/quiz", json=fine, headers=keyed())).json() == {
+        "recorded": True
+    }
 
 
 async def test_a_metric_of_any_size_is_bounded_before_the_domain_sees_it(env: Env) -> None:

@@ -11,6 +11,7 @@ import { App } from "../App";
 
 type Settings = components["schemas"]["ReviewSettingsBody"];
 type Unit = components["schemas"]["UnitOut"];
+type RepoSetting = components["schemas"]["ReviewRepoSettingBody"];
 
 const SETTINGS: Settings = {
   prereview: "triage",
@@ -191,10 +192,10 @@ describe("Settings → Review", () => {
     expect(body).not.toHaveProperty("standards_dir");
     expect(body).not.toHaveProperty("standards_user_dir");
     expect(body.repos).toEqual([
+      // Only what changed: `suggested` was left as it was, so it isn't sent (Codex P2).
       {
         repo: "acme/web",
         watched: false,
-        suggested: false,
         prereview: null,
         automated_reviewer: null,
         metrics: ["Security", "Docs"],
@@ -239,6 +240,37 @@ describe("Settings → Review", () => {
     const lib = within(review.getByRole("group", { name: "other/lib" }));
     await waitFor(() => expect(lib.getByRole("checkbox", { name: "Watched" })).toBeChecked());
     await waitFor(() => expect(review.getByLabelText("Coding-standards checkout")).toHaveValue("/Users/me/elsewhere"));
+  });
+
+  it("a repo confirmed in the queue stays confirmed when its metrics are saved here", async () => {
+    let server: Settings = structuredClone(SETTINGS);
+    const calls = renderReview({
+      "GET /api/review/settings": () => Response.json(server),
+      "PUT /api/review/settings": async (req: Request) => {
+        const body = (await req.clone().json()) as Settings;
+        const repos = new Map((server.repos ?? []).map((r) => [r.repo, r]));
+        for (const r of body.repos ?? []) repos.set(r.repo, { ...repos.get(r.repo), ...r } as RepoSetting);
+        server = { ...server, repos: [...repos.values()] };
+        return Response.json(server);
+      },
+    });
+    const review = await loaded();
+    // Confirmed in the queue after the page loaded.
+    server = {
+      ...server,
+      repos: (server.repos ?? []).map((r) => (r.repo === "other/lib" ? { ...r, watched: true, suggested: false } : r)),
+    };
+    const lib = within(review.getByRole("group", { name: "other/lib" }));
+    await userEvent.click(lib.getByLabelText("Metrics"));
+    await userEvent.paste("Security");
+    await userEvent.click(lib.getByRole("button", { name: "Save other/lib" }));
+    await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(1));
+    expect((await lastPut(calls)).repos).toEqual([{ repo: "other/lib", metrics: ["Security"] }]);
+    expect(server.repos?.find((r) => r.repo === "other/lib")).toMatchObject({
+      watched: true,
+      suggested: false,
+      metrics: ["Security"],
+    });
   });
 
   it("watching a suggested repo confirms it", async () => {
@@ -534,5 +566,6 @@ describe("What Jesinia thinks you know", () => {
     expect(sent(calls, "PUT", "/api/review/knowledge/repo/acme/web/w299")).toHaveLength(1);
     const offsets = sent(calls, "GET", "/api/review/knowledge").map((r) => new URL(r.url).searchParams.get("offset"));
     expect(offsets).toContain("200");
-  });
+    // 600 rows, rendered page by page: slow under coverage on a busy machine.
+  }, 30_000);
 });

@@ -515,8 +515,11 @@ class PostedOut(BaseModel):
 
 
 class ReviewRepoSettingBody(BaseModel):
+    """One repo's settings. In a PUT, every field left out keeps its value (a repo not yet
+    known gets the defaults), so a save never puts back what changed elsewhere."""
+
     repo: str = Field(min_length=3, max_length=REPO_MAX)
-    watched: bool
+    watched: bool = False
     suggested: bool = False
     prereview: PreReviewMode | None = None
     automated_reviewer: str | None = Field(default=None, min_length=1, max_length=REVIEWER_MAX)
@@ -539,20 +542,24 @@ class ReviewRepoSettingBody(BaseModel):
         )
 
     def config(self, current: RepoConfig | None = None) -> RepoConfig:
-        """The repo's settings, its metrics kept from ``current`` when left out.
+        """The repo's settings: each field sent, the rest kept from ``current`` (or the
+        defaults for a repo not yet known).
 
         Raises:
             InvalidPrRefError: ``repo`` isn't ``owner/name``.
             InvalidSettingError: a metric that isn't one short line of visible text.
         """
-        sent = "metrics" in self.model_fields_set
-        metrics = self.metrics if sent else (None if current is None else current.metrics)
+        base = current or RepoConfig(self.repo)
+        sent = self.model_fields_set
+        metrics = self.metrics if "metrics" in sent else base.metrics
         return RepoConfig(
             self.repo,
-            watched=self.watched,
-            automated_reviewer=self.automated_reviewer,
-            prereview=self.prereview,
-            suggested=self.suggested,
+            watched=self.watched if "watched" in sent else base.watched,
+            automated_reviewer=self.automated_reviewer
+            if "automated_reviewer" in sent
+            else base.automated_reviewer,
+            prereview=self.prereview if "prereview" in sent else base.prereview,
+            suggested=self.suggested if "suggested" in sent else base.suggested,
             metrics=None if metrics is None else tuple(metrics),
         )
 

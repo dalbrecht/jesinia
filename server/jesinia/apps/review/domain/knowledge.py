@@ -110,6 +110,10 @@ class KnowledgeInputError(KnowledgeError, ValueError):
     """A familiarity input that cannot describe real history."""
 
 
+class QuizResultTooLarge(KnowledgeInputError):  # noqa: N818 - the error code clients see
+    """More questions answered (or right) than the round's quiz has (Codex P2)."""
+
+
 def _component_ok(part: str) -> bool:
     return (
         bool(part)
@@ -420,10 +424,15 @@ def quiz_kind(right: int, answered: int, questions: int | None = None) -> Exposu
 
     Raises:
         KnowledgeInputError: nothing answered, or counts no quiz can produce.
+        QuizResultTooLarge: more answered than the quiz's ``questions``.
     """
     if not 0 < answered <= QUIZ_MAX_QUESTIONS or not 0 <= right <= answered:
         raise KnowledgeInputError(f"not a quiz result: {right} right of {answered} answered")
-    out_of = max(answered, questions or 0)
+    if questions is not None and answered > questions:
+        raise QuizResultTooLarge(
+            f"{answered} questions answered, but the quiz has {questions}; nothing was recorded"
+        )
+    out_of = answered if questions is None else questions
     return "quiz_pass" if right >= QUIZ_PASS_SHARE * out_of else "quiz_fail"
 
 

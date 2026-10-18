@@ -217,10 +217,12 @@ class ViewerEmails(Protocol):
 
 @dataclass(frozen=True)
 class MergeState:
-    """Whether a PR is open, merged (with the commit that landed it) or closed unmerged."""
+    """Whether a PR is open, merged (with the commit that landed it, and the PR head that
+    merge held) or closed unmerged."""
 
     state: Literal["open", "merged", "closed"]
     sha: str | None
+    head_sha: str | None = None
 
 
 class PrMerges(Protocol):
@@ -423,7 +425,10 @@ class KnowledgeService:
                     self._failed(f"the merge of {rnd.repo}#{rnd.number}", exc, errors)
                     continue
                 if merge.state != "open":
-                    self._store.settle_merge(rnd, merge.sha if merge.state == "merged" else None)
+                    # The merge commit is exempt only when it merged the head the author
+                    # reviewed: commits pushed after the review are unreviewed code (R88).
+                    exempt = merge.state == "merged" and merge.head_sha == rnd.head_sha
+                    self._store.settle_merge(rnd, merge.sha if exempt else None)
         return noted
 
     async def _emails(self, workspace: KnowledgeWorkspace) -> set[str]:

@@ -291,17 +291,23 @@ class PrClient:
         except (GitHubRequestError, GitHubPayloadError) as exc:
             return _pull_request_from_search(repo, item, str(exc))
 
-    async def merge_state(self, repo: str, number: int) -> tuple[str, str | None]:
+    async def merge_state(self, repo: str, number: int) -> tuple[str, str | None, str | None]:
         """Whether the PR is ``open``, ``merged`` (with the commit that landed it, GitHub's
-        ``merge_commit_sha``) or ``closed`` unmerged."""
+        ``merge_commit_sha``, and the PR's ``head.sha`` it merged) or ``closed`` unmerged."""
         validate_repo(repo)
         validate_pull_number(number)
         path = f"/repos/{repo}/pulls/{number}"
         data = _mapping(await self._get_json(path), path)
         if data.get("merged_at"):
             sha = data.get("merge_commit_sha")
-            return "merged", sha if isinstance(sha, str) and sha else None
-        return ("open", None) if _text(data, "state") == "open" else ("closed", None)
+            head = data.get("head")
+            head_sha = head.get("sha") if isinstance(head, Mapping) else None
+            return (
+                "merged",
+                sha if isinstance(sha, str) and sha else None,
+                head_sha if isinstance(head_sha, str) and head_sha else None,
+            )
+        return ("open", None, None) if _text(data, "state") == "open" else ("closed", None, None)
 
     async def viewer_emails(self) -> list[str]:
         """The viewer's email addresses, lowercase: the profile's public email, GitHub's
