@@ -1050,7 +1050,7 @@ async def test_approving_a_suggestion_without_an_issue_says_it_cant_be_yet(
 ) -> None:
     conn.execute(
         "INSERT INTO suggestions (id, scope, kind, payload_json, reason, state, created_at, "
-        "updated_at) VALUES ('g1', 'queue:mine', 'group', '{}', 'r', 'draft', ?, ?)",
+        "updated_at) VALUES ('g1', 'queue:mine', 'queue_next', '{}', 'r', 'draft', ?, ?)",
         (world.clock().isoformat(), world.clock().isoformat()),
     )
     with pytest.raises(InvalidChangeError):

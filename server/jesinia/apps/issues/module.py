@@ -6,9 +6,14 @@ With the ``github`` service it syncs the watched repos every ``SYNC_INTERVAL`` (
 ``issues.sync`` job, also at start) and runs the label batches. Issues entering the Inbox, or
 edited while there, are queued for suggestion runs, which the ``issues.suggest`` job starts
 through the ``agents`` service (looked up per run). Approvals and the pending-changes tray
-apply through one engine (``ApplyEngine``). It serves ``/api/issues`` and the read-only
-``issues_search`` and ``issues_get`` MCP tools; the cache reads, suggestion drafts and the tray
-work without GitHub."""
+apply through one engine (``ApplyEngine``), and so do checklist conversions and approved
+epic proposals; approved delivery briefs are posted as the epic's brief comment. Work queues
+are local: their Done and band moves stage in the tray, and sync's closed-issue hook marks their
+items done. Themes are tags from the KB catalog (the ``tags`` service, looked up per add),
+kept locally per issue; publishing one stages its label in the tray, and turning one into an
+epic is one approved batch. It serves ``/api/issues`` and the read-only ``issues_search``,
+``issues_get``, ``queues_list`` and ``queue_get`` MCP tools; the cache reads, suggestion
+drafts, epic views, queues, themes and the tray work without GitHub."""
 
 from __future__ import annotations
 
@@ -23,20 +28,30 @@ from fastapi import APIRouter, HTTPException, status
 from jesinia.apps.issues.api.routes import build_router
 from jesinia.apps.issues.api.tools import build_tools
 from jesinia.apps.issues.application.apply import ApplyEngine
+from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
-from jesinia.apps.issues.application.ports import AgentAsker
+from jesinia.apps.issues.application.ports import AgentAsker, ThemeTags
+from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import RUN_INTERVAL, SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.application.themes import ThemeService
+from jesinia.apps.issues.domain.triage import Triage
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
+from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
+from jesinia.apps.issues.infrastructure.queue_store import SqliteQueueStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
+from jesinia.apps.issues.infrastructure.theme_store import SqliteThemeStore
 from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.idempotency import RETENTION, IdempotencyStore, SqliteIdempotencyStore
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.github.application.issues import IssueClient
+from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
+from jesinia.services.github.domain.issue import Issue
+from jesinia.services.kb.application.tags import TagService
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +86,10 @@ class IssuesModule:
         self._pending: PendingService | None = None
         self._apply: ApplyService | None = None
         self._applied: SqliteApplyStore | None = None
+        self._epics: EpicService | None = None
+        self._briefs: BriefService | None = None
+        self._queues: QueueService | None = None
+        self._themes: ThemeService | None = None
 
     @property
     def idempotency(self) -> IdempotencyStore:
@@ -130,6 +149,43 @@ class IssuesModule:
         if self._apply is None:
             raise self._needs_github()
         return self._apply
+
+    @property
+    def epics(self) -> EpicService:
+        """The Epics views, conversion plans, milestones and agent proposals (no GitHub)."""
+        if self._epics is None:
+            raise _not_started()
+        return self._epics
+
+    @property
+    def briefs(self) -> BriefService:
+        """Publishing approved delivery briefs (needs the github service)."""
+        if self._briefs is None:
+            raise self._needs_github()
+        return self._briefs
+
+    @property
+    def queues(self) -> QueueService:
+        """Work queues (local; Done and band moves stage in the tray, no GitHub needed)."""
+        if self._queues is None:
+            raise _not_started()
+        return self._queues
+
+    @property
+    def themes(self) -> ThemeService:
+        """Themes (local; publishing stages in the tray; new tags need the kb tag catalog)."""
+        if self._themes is None:
+            raise _not_started()
+        return self._themes
+
+    def on_triaged(self, repo: str, triaged: Sequence[tuple[Issue, Triage]]) -> None:
+        """Sync's and the engine's hook for each stored page of triaged issues: queue items whose
+        issue closed are marked done (``auto_done`` never raises), then drafts that lost their
+        premise are retired. Both are best effort; the caller isolates a failure."""
+        if self._queues is not None:
+            self._queues.auto_done(repo, triaged)
+        if self._suggest is not None:
+            self._suggest.retire_stale(repo, triaged)
 
     async def run_suggestions(self) -> None:
         """The ``issues.suggest`` job: start the suggestion runs that are due."""
@@ -198,7 +254,35 @@ class IssuesModule:
         # or without the github service.
         if interrupted := applied.interrupt_running():
             log.info("marked %d issues apply batches interrupted after a stop", interrupted)
-        self._pending = PendingService(applied, store, _utc_now)
+        queue_store = SqliteQueueStore(self._conn)
+        # A queue item's Done holds its staged change: the tray never undoes it alone (M2).
+        self._pending = PendingService(applied, store, _utc_now, holders=queue_store)
+        briefs = SqliteBriefStore(self._conn)
+        self._epics = EpicService(
+            store,
+            SqliteSuggestionStore(self._conn),
+            suggest,
+            briefs,
+            _utc_now,
+            batches=applied,
+        )
+        self._queues = QueueService(
+            queue_store,
+            store,
+            self._epics,
+            self._pending,
+            suggest,
+            SqliteSuggestionStore(self._conn),
+            _utc_now,
+        )
+
+        def tags() -> ThemeTags | None:
+            found = ctx.services.get("tags")
+            return found if isinstance(found, TagService) else None
+
+        self._themes = ThemeService(
+            SqliteThemeStore(self._conn), store, self._pending, tags, _utc_now, batches=applied
+        )
         ctx.scheduler.every(SUGGEST_JOB, RUN_INTERVAL, self.run_suggestions, at_start=True)
         github = ctx.services.get("github")
         if isinstance(github, GitHubService):
@@ -209,7 +293,7 @@ class IssuesModule:
                 _utc_now,
                 on_inbox=suggest.queue_new,
                 on_inbox_edit=suggest.queue_edited,
-                on_triaged=suggest.retire_stale,
+                on_triaged=self.on_triaged,
             )
             self._queries = IssueQueries(store, _utc_now, self._sync.is_syncing)
             self._labels = LabelSetupService(
@@ -221,11 +305,21 @@ class IssuesModule:
                 _utc_now,
                 on_rate_limit=self._sync.back_off,
                 on_schema_changed=self._sync.recompute,
-                on_triaged=suggest.retire_stale,
+                on_triaged=self.on_triaged,
                 blocked_until=self._sync.backoff_until,
             )
             self._apply = ApplyService(
                 engine, applied, SqliteSuggestionStore(self._conn), store, _utc_now
+            )
+            self._briefs = BriefService(
+                client,
+                store,
+                briefs,
+                SqliteSuggestionStore(self._conn),
+                _utc_now,
+                viewer=PrClient(github).viewer,
+                on_rate_limit=self._sync.back_off,
+                blocked_until=self._sync.backoff_until,
             )
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_repos, at_start=True)
 
@@ -242,6 +336,10 @@ class IssuesModule:
         self._pending = None
         self._apply = None
         self._applied = None
+        self._epics = None
+        self._briefs = None
+        self._queues = None
+        self._themes = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None

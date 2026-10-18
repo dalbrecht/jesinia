@@ -17,6 +17,7 @@
         "additionalProperties": false,
         "required": ["repo", "number", "reason"],
         "properties": {
+          "kind": {"enum": ["issue", "epic", "milestone"]},
           "repo": {"type": "string", "minLength": 3, "maxLength": 140},
           "number": {"type": "integer", "minimum": 1, "maximum": 999999999},
           "position": {"type": "integer", "minimum": 1, "maximum": 1000},
