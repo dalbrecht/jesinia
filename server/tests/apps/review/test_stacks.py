@@ -53,6 +53,7 @@ from jesinia.apps.review.domain.stacks import (
     NotAStackError,
     PostAllItem,
     PostAllStopped,
+    RoundNotOfPr,
     agent_cross_findings,
     attempt_key,
     detect_stacks,
@@ -756,11 +757,10 @@ async def test_a_frozen_or_stale_round_anywhere_stops_post_all_before_posting(
     assert "posted: #1" in str(replayed.value)
     assert [p["number"] for p in stack.github.posted] == [1]
 
-    # A round id that isn't the PR's current round is stale.
-    stale = replace(items[1], round_id=stack.rounds[5])
-    with pytest.raises(PostAllStopped) as refused:
-        await stack.service.post_all(stack.ref(1), [items[0], stale], key="K2")
-    assert refused.value.outcomes[1].error_code == "RoundChanged"
+    # A round id of another PR is refused before anything (Codex P2 on PR #63).
+    borrowed = replace(items[1], round_id=stack.rounds[5])
+    with pytest.raises(RoundNotOfPr):
+        await stack.service.post_all(stack.ref(1), [items[0], borrowed], key="K2")
     missing = replace(items[1], round_id=9999)
     with pytest.raises(PostAllStopped) as unknown:
         await stack.service.post_all(stack.ref(1), [missing], key="K3")
@@ -1154,3 +1154,27 @@ async def test_a_stopped_post_all_answers_with_the_failing_prs_error_and_every_o
         headers=keyed(),
     )
     assert outside.status_code == 400 and outside.json()["error"] == "InvalidPostAllError"
+
+
+async def test_post_all_refuses_a_round_of_another_pr(stack: StackEnv) -> None:
+    """Codex P2 on PR #63: PR #2 paired with #1's posted round must not take the posted
+    fast path and report #2 as posted: refused, typed, before anything."""
+    one = await stack.item(1)
+    await stack.service.post_all(stack.ref(1), [one], key="K")
+    assert [p["number"] for p in stack.github.posted] == [1]
+    borrowed = replace(one, number=2)
+    with pytest.raises(RoundNotOfPr) as refused:
+        await stack.service.post_all(stack.ref(1), [borrowed], key="K")
+    assert refused.value.number == 2 and refused.value.round_id == one.round_id
+    with pytest.raises(RoundNotOfPr):
+        await stack.service.post_all(stack.ref(1), [await stack.item(3), borrowed], key="K4")
+    assert [p["number"] for p in stack.github.posted] == [1]  # #3 wasn't posted either
+
+
+async def test_a_round_of_another_pr_is_a_409(api: ApiEnv) -> None:
+    items = await api.items(1, 2)
+    items[1]["round_id"] = items[0]["round_id"]
+    refused = await api.client.post(f"{STACK}/1/post-all", json={"items": items}, headers=keyed())
+    assert refused.status_code == 409 and refused.json()["error"] == "RoundNotOfPr"
+    assert "stack_outcomes" not in refused.json()
+    assert api.stack.github.posted == []

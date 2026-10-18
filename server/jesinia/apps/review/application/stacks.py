@@ -51,6 +51,7 @@ from jesinia.apps.review.domain.stacks import (
     PostAllResult,
     PostAllStopped,
     PostOutcome,
+    RoundNotOfPr,
     StackPreparationError,
     agent_cross_findings,
     attempt_key,
@@ -567,12 +568,19 @@ class StackReviews:
         Raises:
             NotAStackError: as ``members``.
             InvalidPostAllError: no items, a PR outside the stack, or a PR named twice.
+            RoundNotOfPr: an item names a round of another PR; nothing was posted.
             PostAllStopped: a PR couldn't be posted (a frozen or stale round is found before
                 anything is posted); its ``outcomes`` say what was and wasn't posted.
         """
         members = self.members(ref)
         repo = members[0].pr.ref.repo
         ordered = order_post_all(items, [m.pr.ref.number for m in members])
+        for item in ordered:
+            # Before the posted fast path: another PR's posted round must never make this PR
+            # look posted (Codex P2 on PR #63). A round that doesn't exist is checked later.
+            found = self._store.round(item.round_id)
+            if found is not None and found.ref != PrRef(repo, item.number):
+                raise RoundNotOfPr(item.number, item.round_id)
         # A frozen or stale round anywhere stops the run before anything is posted; a round
         # posted already (by this request or not) is reported, never checked or sent again.
         for at, item in enumerate(ordered):

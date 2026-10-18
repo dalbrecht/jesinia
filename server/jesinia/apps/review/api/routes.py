@@ -82,6 +82,7 @@ from jesinia.apps.review.domain.stacks import (
     InvalidPostAllError,
     NotAStackError,
     PostAllStopped,
+    RoundNotOfPr,
 )
 from jesinia.core.auth import Principal, require_owner
 from jesinia.core.idempotency import IdempotencyStore, IdempotentCall, idempotent
@@ -120,6 +121,7 @@ _STATUS: dict[type[Exception], int] = {
     NoReviewRound: status.HTTP_404_NOT_FOUND,
     NotAStackError: status.HTTP_404_NOT_FOUND,
     InvalidPostAllError: status.HTTP_400_BAD_REQUEST,
+    RoundNotOfPr: status.HTTP_409_CONFLICT,
     InvalidPrRefError: status.HTTP_400_BAD_REQUEST,
     InvalidSettingError: status.HTTP_400_BAD_REQUEST,
     InvalidDraftError: status.HTTP_400_BAD_REQUEST,

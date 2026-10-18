@@ -49,6 +49,17 @@ class InvalidPostAllError(StackError):
     """A **Post all** request that names nothing, a PR outside the stack, or a PR twice."""
 
 
+class RoundNotOfPr(StackError):  # noqa: N818 - the error code clients see
+    """A Post all item names a round of another PR than its own number (Codex P2 on PR
+    #63): refused before anything, never reported as posted. ``number`` is the item's PR,
+    ``round_id`` the round it named."""
+
+    def __init__(self, number: int, round_id: int) -> None:
+        super().__init__(f"round {round_id} isn't a review round of #{number}; nothing was posted")
+        self.number = number
+        self.round_id = round_id
+
+
 class StackMember(Protocol):
     """What the stack rule reads of a PR (``PullRequest`` and ``PrSnapshot`` both have it)."""
 
