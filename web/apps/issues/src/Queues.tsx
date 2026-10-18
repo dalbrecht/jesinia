@@ -17,7 +17,9 @@ import {
   errorCause,
   getQueues,
   refOf,
+  removeQueueItem,
   splitScope,
+  type ItemKind,
   type QueueItem,
   type QueueSummary,
   type Suggestion,
@@ -27,32 +29,59 @@ import { Drops, type DropAction } from "./drops";
 import s from "./issues.module.css";
 import { QueueDraft, QueueView } from "./QueueView";
 
-type Addable = { repo: string; number: number };
+/** Something to add: a list row (an issue or epic, which the cache tells apart) or a queue item,
+ * which keeps its kind so a milestone stays a milestone. */
+export type Addable = { repo: string; number: number; kind?: ItemKind };
 const plural = (n: number, one: string, other: string) => `${n} ${n === 1 ? one : other}`;
 
-/** Add issues (or epics: the cache decides which) to a queue, one after another. */
-export function useAddToQueue() {
+/** Add items to a queue, one after another, at once, with Undo (spec §6.1). `onChanged` runs
+ * after an add and after its Undo, so a caller can re-read counts. */
+export function useAddToQueue(onChanged?: () => void) {
   const client = useClient();
   const toast = useToast();
   const keys = useRef(new ActionKeys());
+  const changed = useRef(onChanged);
+  changed.current = onChanged;
   return useCallback(
     async (queue: { id: string; name: string }, items: readonly Addable[], position?: number) => {
-      let added = 0;
+      const added: { kind: ItemKind; repo: string; n: number }[] = [];
       for (const [i, item] of items.entries()) {
-        const action = `add:${queue.id}:${refOf(item)}`;
+        const kind = item.kind ?? "issue";
+        const action = `add:${queue.id}:${kind}:${refOf(item)}`;
         const at = position === undefined ? {} : { position: position + i };
         try {
-          await addQueueItem(client, queue.id, { kind: "issue", repo: item.repo, n: item.number, ...at }, keys.current.keyFor(action)); // prettier-ignore
+          await addQueueItem(client, queue.id, { kind, repo: item.repo, n: item.number, ...at }, keys.current.keyFor(action)); // prettier-ignore
           keys.current.settle(action);
-          added += 1;
+          added.push({ kind, repo: item.repo, n: item.number });
         } catch (e) {
           keys.current.settle(action, e);
           toast.show({ tone: "danger", message: `Couldn't add ${refOf(item)} to ${queue.name}: ${errorCause(e)}` });
         }
       }
-      if (added > 0)
-        toast.show({ tone: "success", message: `Added ${plural(added, "item", "items")} to ${queue.name}.` });
-      return added;
+      const undo = async () => {
+        let removed = 0;
+        for (const item of added) {
+          const action = `unadd:${queue.id}:${item.kind}:${item.repo}#${item.n}`;
+          try {
+            await removeQueueItem(client, queue.id, item, keys.current.keyFor(action));
+            keys.current.settle(action);
+            removed += 1;
+          } catch (e) {
+            keys.current.settle(action, e);
+            toast.show({ tone: "danger", message: `Couldn't take ${item.repo}#${item.n} back out of ${queue.name}: ${errorCause(e)}` }); // prettier-ignore
+          }
+        }
+        if (removed > 0) toast.show({ tone: "info", message: `Took ${plural(removed, "item", "items")} back out of ${queue.name}.` }); // prettier-ignore
+        changed.current?.();
+      };
+      if (added.length > 0)
+        toast.show({
+          tone: "success",
+          message: `Added ${plural(added.length, "item", "items")} to ${queue.name}.`,
+          action: { label: "Undo", onAction: () => void undo() },
+        });
+      changed.current?.();
+      return added.length;
     },
     [client, toast],
   );
@@ -86,13 +115,12 @@ export function AddToQueueMenu({ targets, name }: { targets: readonly Addable[];
 const asAddable = (items: readonly DragItem[]): Addable[] =>
   items.map((item) => {
     const data = item.data as QueueItem;
-    return { repo: data.repo, number: data.n };
+    return { repo: data.repo, number: data.n, kind: data.kind };
   });
 
 export function Queues() {
   const client = useClient();
   const toast = useToast();
-  const add = useAddToQueue();
   const keys = useRef(new ActionKeys());
   const [queues, setQueues] = useState<QueueSummary[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -113,6 +141,7 @@ export function Queues() {
   useEffect(() => {
     void read();
   }, [read]);
+  const add = useAddToQueue(() => void read());
 
   const create = async () => {
     const wanted = name.trim();
@@ -170,7 +199,7 @@ export function Queues() {
         <div className={s.listBar}>
           <div role="tablist" aria-label="Queues" className={s.queueTabs} onKeyDown={moveTab}>
             {list.map((q) => {
-              const data: DropAction = { drop: (items) => void add(q, asAddable(items)).then(() => read()) };
+              const data: DropAction = { drop: (items) => void add(q, asAddable(items)) };
               const isSelected = q.id === selected;
               return (
                 <DropTarget

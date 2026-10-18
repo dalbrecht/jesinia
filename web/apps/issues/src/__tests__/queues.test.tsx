@@ -365,3 +365,109 @@ describe("one queue", () => {
     expect(await screen.findByText("Couldn't open the queue: gone.")).toBeInTheDocument();
   });
 });
+
+describe("fix round 1: kinds, Undo for adds and removes, focus after Done", () => {
+  const doneRoute = (routes: { set: (q: Queue) => void }, get: () => Queue, n: number) => () => {
+    const q = get();
+    const item = q.items.find((i) => i.n === n) as QueueItem;
+    const next = queue("q1", q.items.filter((i) => i.n !== n), { done: [{ ...item, done_at: "2026-10-18T12:00:00Z", done_pending: null }] }); // prettier-ignore
+    routes.set(next);
+    return json({ queue: next, staged: null });
+  };
+
+  function liveRoutes(start: Queue, over: (get: () => Queue) => Record<string, unknown> = () => ({})) {
+    let current = start;
+    const get = () => current;
+    const holder = { set: (q: Queue) => (current = q) };
+    const made = routesFor(start, {
+      "GET /api/issues/queues/q1": () => json(current),
+      [`POST ${ITEM(1)}/done`]: doneRoute(holder, get, 1),
+      [`POST ${ITEM(2)}/done`]: doneRoute(holder, get, 2),
+      [`POST ${ITEM(1)}/undo`]: () => {
+        current = queue("q1", [queueItem(1, { title: "Fix login" }), ...current.items]);
+        return json(current);
+      },
+      [`DELETE ${ITEM(1)}`]: () => {
+        current = queue("q1", current.items.filter((i) => i.n !== 1)); // prettier-ignore
+        return json(current);
+      },
+      ...over(get),
+    });
+    return made;
+  }
+
+  it("a milestone dropped on another queue's tab stays a milestone, and the add has Undo (I3, I5)", async () => {
+    const q = queue("q1", [queueItem(5, { kind: "milestone", title: "v1" }), queueItem(1, { title: "Fix login" })]);
+    const { routes } = routesFor(q, {
+      "POST /api/issues/queues/q2/items": () => json(queue("q2", []), 201),
+      "DELETE /api/issues/queues/q2/items/milestone/acme/app/5": () => json(queue("q2", [])),
+    });
+    const { calls } = renderApp(routes, "/issues/queues");
+    await screen.findByRole("list", { name: "Next up" });
+    const user = await pickUp("Move acme/app#5 v1");
+    await moveTo(user, "Mine");
+    await user.keyboard("[Space]");
+    await waitFor(() => expect(callsTo(calls, "POST", "/api/issues/queues/q2/items")).toHaveLength(1));
+    expect(await bodies(callsTo(calls, "POST", "/api/issues/queues/q2/items"))).toEqual([{ kind: "milestone", repo: "acme/app", n: 5 }]); // prettier-ignore
+    expect(await toast(/Added 1 item to Mine/)).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(callsTo(calls, "DELETE", "/api/issues/queues/q2/items/milestone/acme/app/5")).toHaveLength(1)); // prettier-ignore
+    expect(await toast(/Took 1 item back out of Mine/)).toBe(true);
+  });
+
+  it("Remove has Undo, which puts the item back at its place with its note (I5)", async () => {
+    const q = queue("q1", [queueItem(1, { title: "Fix login", note: "after lunch" }), queueItem(2, { title: "Add export" })]); // prettier-ignore
+    const { routes } = liveRoutes(q, (get) => ({
+      "POST /api/issues/queues/q1/items": () => json(queue("q1", [queueItem(1, { title: "Fix login", note: "after lunch" }), ...get().items]), 201), // prettier-ignore
+    }));
+    const { calls } = renderApp(routes, "/issues/queues");
+    await userEvent.click(await screen.findByRole("button", { name: "More for acme/app#1" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Remove from Next up" }));
+    expect(await toast(/Removed acme\/app#1 from Next up/)).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(callsTo(calls, "POST", "/api/issues/queues/q1/items")).toHaveLength(1));
+    expect(await bodies(callsTo(calls, "POST", "/api/issues/queues/q1/items"))).toEqual([{ kind: "issue", repo: "acme/app", n: 1, position: 0, note: "after lunch" }]); // prettier-ignore
+    expect(await screen.findByRole("checkbox", { name: "Done: acme/app#1 Fix login" })).toBeInTheDocument();
+  });
+
+  it("after x, focus moves to the next item, so a second x marks that one done (I4)", async () => {
+    const { routes } = liveRoutes(TWO);
+    const { calls } = renderApp(routes, "/issues/queues");
+    (await screen.findByRole("checkbox", { name: "Done: acme/app#1 Fix login" })).focus();
+    await userEvent.keyboard("x");
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Done: acme/app#2 Add export" })).toHaveFocus());
+    await userEvent.keyboard("x");
+    await waitFor(() => expect(callsTo(calls, "POST", `${ITEM(2)}/done`)).toHaveLength(1));
+    // The last one gone, focus stays in the queue rather than falling to the page.
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+  });
+
+  it("after Remove from the menu, or Undo in the Done group, focus lands on an item, not the page (I4)", async () => {
+    const { routes } = liveRoutes(TWO);
+    renderApp(routes, "/issues/queues");
+    await userEvent.click(await screen.findByRole("button", { name: "More for acme/app#1" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Remove from Next up" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Done: acme/app#2 Add export" })).toHaveFocus());
+    await userEvent.click(screen.getByRole("checkbox", { name: "Done: acme/app#2 Add export" }));
+    const group = await screen.findByRole("group", { name: "Done (1)" });
+    expect(document.activeElement).not.toBe(document.body);
+    await userEvent.click(within(group).getByRole("button", { name: "Undo Done: acme/app#2" }));
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+  });
+
+  it("a milestone has no Done (the server refuses it), and x inside an open menu doesn't mark done (M2, M10)", async () => {
+    const q = queue("q1", [queueItem(5, { kind: "milestone", title: "v1" }), queueItem(1, { title: "Fix login" })]);
+    const { calls } = renderApp(routesFor(q).routes, "/issues/queues");
+    await screen.findByRole("list", { name: "Next up" });
+    expect(screen.queryByRole("checkbox", { name: "Done: acme/app#5 v1" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "More for acme/app#5" }));
+    expect(screen.queryByRole("menuitem", { name: /Done/ })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: /Done, with a comment/ })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByRole("button", { name: "More for acme/app#1" }));
+    await waitFor(() => expect(screen.getAllByRole("menuitem")[0]).toHaveFocus());
+    await userEvent.keyboard("x");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(callsTo(calls, "POST", `${ITEM(1)}/done`)).toHaveLength(0);
+  });
+});

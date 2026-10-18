@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "re
 import { ActionMenu } from "./ActionMenu";
 import {
   ActionKeys,
+  addQueueItem,
   approveQueueDraft,
   askQueue,
   bandQueueItem,
@@ -48,6 +49,9 @@ const rowOf = (item: QueueItem): Row => ({
   data: item,
 });
 const bandName = (value: string | null) => (value === null ? "No priority" : `${shortValue("priority", value)} priority`.replace(/^./, (c) => c.toUpperCase())); // prettier-ignore
+
+/** Done closes an issue or epic (or hands it to an agent); a milestone isn't the author's to close. */
+const canBeDone = (item: QueueItem) => item.kind !== "milestone";
 
 const isEditable = (target: EventTarget | null) =>
   target instanceof HTMLTextAreaElement ||
@@ -138,6 +142,20 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
   const [problem, setProblem] = useState<string | null>(null);
   const [banded, setBanded] = useState(false);
   const reads = useRef(0);
+  const box = useRef<HTMLDivElement>(null);
+  // After Done, Remove or Undo the focused row unmounts; this names the row that takes focus.
+  const focusNext = useRef<string | null>(null);
+
+  useEffect(() => {
+    const wanted = focusNext.current;
+    if (wanted === null || queue === null) return;
+    focusNext.current = null;
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (!lost) return; // the user (or a drop) has put focus somewhere already
+    const row = [...(box.current?.querySelectorAll<HTMLElement>("[data-row-id]") ?? [])].find((el) => el.dataset.rowId === wanted); // prettier-ignore
+    const target = row?.querySelector<HTMLElement>("input[type=checkbox]") ?? row?.querySelector<HTMLElement>("button");
+    (target ?? box.current)?.focus();
+  }, [queue]);
 
   const read = useCallback(async () => {
     const at = ++reads.current;
@@ -183,6 +201,13 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
   }
 
   const name = queue.name;
+
+  /** The row to focus once `item` leaves the open list: the next one, else the one before. */
+  const neighbourOf = (item: QueueItem) => {
+    const at = queue.items.findIndex((i) => idOf(i) === idOf(item));
+    const near = queue.items[at + 1] ?? queue.items[at - 1];
+    return near ? idOf(near) : "";
+  };
 
   /** Move `item` to `position` among the open items, at once, with Undo. */
   const move = async (item: QueueItem, position: number, undoable = true) => {
@@ -242,6 +267,7 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
 
   const done = async (item: QueueItem, then: "close" | "agent_ready", comment?: string) => {
     const body = comment === undefined ? { then } : { then, comment };
+    focusNext.current = neighbourOf(item);
     try {
       await write(
         `done:${idOf(item)}:${then}`,
@@ -259,6 +285,7 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
   };
 
   const undo = async (item: QueueItem) => {
+    focusNext.current = idOf(item);
     try {
       await write(
         `undo:${idOf(item)}`,
@@ -271,7 +298,10 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
     }
   };
 
+  /** Remove at once, with Undo: it goes back at its place with its note (its added date resets). */
   const remove = async (item: QueueItem) => {
+    const from = queue.items.findIndex((i) => idOf(i) === idOf(item));
+    focusNext.current = neighbourOf(item);
     try {
       await write(
         `remove:${idOf(item)}`,
@@ -279,8 +309,27 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
         (q) => q,
       );
       await tray.refresh();
+      toast.show({
+        tone: "info",
+        message: `Removed ${refOfItem(item)} from ${name}.`,
+        action: { label: "Undo", onAction: () => void putBack(item, from) },
+      });
     } catch (e) {
       toast.show({ tone: "danger", message: `Couldn't remove ${refOfItem(item)}: ${errorCause(e)}` });
+    }
+  };
+
+  const putBack = async (item: QueueItem, position: number) => {
+    const note = item.note === null ? {} : { note: item.note };
+    focusNext.current = idOf(item);
+    try {
+      await write(
+        `putback:${idOf(item)}`,
+        (key) => addQueueItem(client, id, { kind: item.kind, repo: item.repo, n: item.n, position: Math.max(position, 0), ...note }, key), // prettier-ignore
+        (q) => q,
+      );
+    } catch (e) {
+      toast.show({ tone: "danger", message: `Couldn't put ${refOfItem(item)} back: ${errorCause(e)}` });
     }
   };
 
@@ -311,6 +360,7 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
 
   const onKey = (item: QueueItem) => (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "x" || e.metaKey || e.ctrlKey || e.altKey || isEditable(e.target)) return;
+    if (!canBeDone(item) || (e.target instanceof Element && e.target.closest("[role=menu]"))) return;
     e.preventDefault();
     void done(item, "close");
   };
@@ -321,8 +371,9 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
     const item = row.data;
     const ref = refOfItem(item);
     const at = queue.items.findIndex((i) => idOf(i) === row.id);
+    const doable = canBeDone(item);
     const options = [
-      { id: "agent", label: "Done: hand it to an agent (agent-ready)" },
+      ...(doable ? [{ id: "agent", label: "Done: hand it to an agent (agent-ready)" }] : []),
       ...(at > 0 ? [{ id: "up", label: "Move up" }] : []),
       ...(at < queue.items.length - 1 ? [{ id: "down", label: "Move down" }] : []),
       ...values.filter((v) => v !== item.priority).map((v) => ({ id: `band:${v}`, label: `Move to ${bandName(v).toLowerCase()}` })), // prettier-ignore
@@ -336,17 +387,19 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
       else void intoBand(item, choice.slice("band:".length), 0);
     };
     return (
-      <div className={s.queueRow} onKeyDown={onKey(item)} data-index={index}>
+      <div className={s.queueRow} onKeyDown={onKey(item)} data-index={index} data-row-id={row.id}>
         <button type="button" {...handleProps} className={s.grip} aria-label={`Move ${row.label}`}>
           <span aria-hidden="true">⠿</span>
         </button>
-        <input
-          type="checkbox"
-          checked={false}
-          aria-label={`Done: ${row.label}`}
-          aria-keyshortcuts="x"
-          onChange={() => void done(item, "close")}
-        />
+        {doable ? (
+          <input
+            type="checkbox"
+            checked={false}
+            aria-label={`Done: ${row.label}`}
+            aria-keyshortcuts="x"
+            onChange={() => void done(item, "close")}
+          />
+        ) : null}
         <span className={s.ref}>{ref}</span>
         {item.kind !== "issue" ? <Badge tone="neutral">{item.kind}</Badge> : null}
         <span className={s.queueTitle}>{item.title === null ? "Not cached" : <VisibleText text={item.title} />}</span>
@@ -377,20 +430,23 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
           name={`More for ${ref}`}
           options={options}
           onPick={pick}
-          create={{ label: `Done, with a comment on ${ref}`, submitLabel: "Done", onCreate: (comment) => void done(item, "close", comment) }} // prettier-ignore
+          create={doable ? { label: `Done, with a comment on ${ref}`, submitLabel: "Done", onCreate: (comment) => void done(item, "close", comment) } : undefined} // prettier-ignore
         />
       </div>
     );
   };
 
   const itemsOf = (rows: readonly DragItem[]) => rows.map((r) => r.data as QueueItem);
-  const doneZone: DropAction = { drop: (rows) => void Promise.all(itemsOf(rows).map((i) => done(i, "close"))) };
-  const removeZone: DropAction = { drop: (rows) => void Promise.all(itemsOf(rows).map((i) => remove(i))) };
+  // One write after another, so each answer's queue doesn't race the others.
+  const inTurn = (rows: readonly DragItem[], each: (item: QueueItem) => Promise<void>) =>
+    void itemsOf(rows).reduce((prev, item) => prev.then(() => each(item)), Promise.resolve());
+  const doneZone: DropAction = { drop: (rows) => inTurn(rows.filter((r) => canBeDone(r.data as QueueItem)), (i) => done(i, "close")) }; // prettier-ignore
+  const removeZone: DropAction = { drop: (rows) => inTurn(rows, remove) };
   const warned = queue.items.filter((i) => i.warning !== null).length;
   const order = queue.items.map((i) => refOfItem(i).toLowerCase());
 
   return (
-    <div className={s.queue}>
+    <div className={s.queue} ref={box} tabIndex={-1}>
       <div className={s.listBar}>
         {queue.description ? (
           <span className={s.muted}>
