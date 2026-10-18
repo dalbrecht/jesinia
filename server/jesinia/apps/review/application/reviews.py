@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Reading a PR's review, marking it done, and Settings → Review.
+"""Reading a PR's review, marking it done, a repo's metrics over time, and Settings → Review.
 
 Everything here reads ``review.sqlite`` only, never GitHub (spec §2, "Always cached"): an
 opened PR renders from its cached row and latest round at once, with the queue's sync state
@@ -11,9 +11,13 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Final, Protocol
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Final, Literal, Protocol
 
 from jesinia.apps.review.domain.followup import FollowUp
+from jesinia.apps.review.domain.metrics import Point, point_of
 from jesinia.apps.review.domain.posting import Draft, NoReviewRound, RoundChanged
 from jesinia.apps.review.domain.queue import (
     InvalidSettingError,
@@ -27,6 +31,7 @@ from jesinia.apps.review.domain.queue import (
     StoredPr,
     SyncStatus,
     nothing_to_walk_from_json,
+    parse_folder_setting,
     queue_row,
 )
 from jesinia.apps.review.domain.stacks import stack_numbers
@@ -35,6 +40,17 @@ from jesinia.services.github.domain.pr import PrFile
 # A runner name names an agent CLI the agents service knows; nothing path-like.
 _RUNNER = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 FINDING_SOURCES: Final = ("correctness", "findings")
+# The trend shows a repo's latest scored rounds: enough to see a drift, bounded to read.
+HISTORY_LIMIT: Final = 200
+
+
+class Keep(Enum):
+    """A setting left out of an update: it keeps its value."""
+
+    KEEP = "keep"
+
+
+KEEP: Final = Keep.KEEP
 
 
 class ReviewReadStore(Protocol):
@@ -76,6 +92,18 @@ class ReviewReadStore(Protocol):
 
     def upsert_repo(self, config: RepoConfig) -> None: ...
 
+    def standards_dir(self) -> Path | None: ...
+
+    def set_standards_dir(self, path: Path | None) -> None: ...
+
+    def standards_user_dir(self) -> Path | None: ...
+
+    def set_standards_user_dir(self, path: Path | None) -> None: ...
+
+    def metric_rounds(
+        self, repo: str, limit: int
+    ) -> list[tuple[int, int, str, datetime, object]]: ...
+
 
 @dataclass(frozen=True)
 class PrView:
@@ -111,11 +139,15 @@ class FindingsView:
 
 @dataclass(frozen=True)
 class ReviewSettings:
-    """Settings → Review: the pre-review default, the agent runner, and per-repo choices."""
+    """Settings → Review: the pre-review default, the agent runner, the standards folders
+    (the coding-standards checkout, the base layer; the author's own documents, the user
+    layer), and per-repo choices."""
 
     prereview: PreReviewMode
     runner: str
     repos: tuple[RepoConfig, ...]
+    standards_dir: Path | None = None
+    standards_user_dir: Path | None = None
 
 
 class ReviewReads:
@@ -126,9 +158,15 @@ class ReviewReads:
         status: the queue's sync state (``QueueService.status``), never awaited.
     """
 
-    def __init__(self, store: ReviewReadStore, status: Callable[[], SyncStatus]) -> None:
+    def __init__(
+        self,
+        store: ReviewReadStore,
+        status: Callable[[], SyncStatus],
+        home: Callable[[], Path] = Path.home,
+    ) -> None:
         self._store = store
         self._status = status
+        self._home = home
 
     def _stored(self, ref: PrRef) -> StoredPr:
         stored = self._store.pr(ref)
@@ -194,26 +232,65 @@ class ReviewReads:
         self._store.mark_round_done(found.id)
         return replace(found, done=True)
 
+    def metrics_history(self, repo: str) -> list[Point]:
+        """``repo``'s scored rounds, oldest first: its latest ``HISTORY_LIMIT`` (spec §5.2,
+        "scores are kept per repo over time"). A round's scores are the set it was scored on
+        then; nothing is recomputed.
+
+        Raises:
+            InvalidPrRefError: ``repo`` isn't ``owner/name``.
+        """
+        rows = self._store.metric_rounds(RepoConfig(repo).repo, HISTORY_LIMIT)
+        points = (point_of(*row) for row in rows)
+        return [point for point in points if point is not None]
+
     def settings(self) -> ReviewSettings:
         configs = self._store.repo_configs()
         return ReviewSettings(
             self._store.prereview_default(),
             self._store.job_runner(),
             tuple(configs[repo] for repo in sorted(configs)),
+            self._store.standards_dir(),
+            self._store.standards_user_dir(),
         )
 
-    def update_settings(
-        self, prereview: PreReviewMode, runner: str, repos: Sequence[RepoConfig]
-    ) -> ReviewSettings:
-        """Save Settings → Review; repos not listed keep their settings.
+    def repo_config(self, repo: str) -> RepoConfig | None:
+        """``repo``'s saved settings, if any.
 
         Raises:
-            InvalidSettingError: a runner name that isn't one.
+            InvalidPrRefError: ``repo`` isn't ``owner/name``.
+        """
+        return self._store.repo_configs().get(RepoConfig(repo).repo)
+
+    def update_settings(
+        self,
+        prereview: PreReviewMode,
+        runner: str,
+        repos: Sequence[RepoConfig],
+        *,
+        standards_dir: str | None | Literal[Keep.KEEP] = KEEP,
+        standards_user_dir: str | None | Literal[Keep.KEEP] = KEEP,
+    ) -> ReviewSettings:
+        """Save Settings → Review; repos not listed, and folders left as ``KEEP``, keep
+        their settings. Everything is checked before anything is saved.
+
+        Raises:
+            InvalidSettingError: a runner name that isn't one, or a folder that isn't an
+                absolute path (or ``~/…``).
         """
         if not _RUNNER.fullmatch(runner):
             raise InvalidSettingError(f"not an agent runner name: {runner!r}")
+        folders: list[tuple[Callable[[Path | None], None], Path | None]] = []
+        if standards_dir is not KEEP:
+            path = parse_folder_setting(standards_dir, self._home())
+            folders.append((self._store.set_standards_dir, path))
+        if standards_user_dir is not KEEP:
+            path = parse_folder_setting(standards_user_dir, self._home())
+            folders.append((self._store.set_standards_user_dir, path))
         self._store.set_prereview_default(prereview)
         self._store.set_job_runner(runner)
+        for setter, folder in folders:
+            setter(folder)
         for config in repos:
             self._store.upsert_repo(config)
         return self.settings()

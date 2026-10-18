@@ -1848,6 +1848,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Metrics
+         * @description A repo's metrics over time, for the trend (spec §5.2). From the cache only.
+         */
+        get: operations["get_metrics_api_review_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/settings": {
         parameters: {
             query?: never;
@@ -1859,7 +1879,9 @@ export interface paths {
         get: operations["get_settings_api_review_settings_get"];
         /**
          * Put Settings
-         * @description Save Settings → Review; repos not listed keep their settings.
+         * @description Save Settings → Review. Repos not listed keep their settings; a listed repo's
+         *     metrics, and either folder, keep theirs when left out. A metrics change applies from
+         *     the repo's next round.
          */
         put: operations["put_settings_api_review_settings_put"];
         post?: never;
@@ -2932,6 +2954,16 @@ export interface components {
             /** Text */
             text: string;
         };
+        /**
+         * MetricsHistoryOut
+         * @description A repo's metrics over time (spec §5.2): its latest scored rounds, oldest first.
+         */
+        MetricsHistoryOut: {
+            /** Repo */
+            repo: string;
+            /** Points */
+            points: components["schemas"]["PointOut"][];
+        };
         /** MoveIn */
         MoveIn: {
             /** Folder */
@@ -3109,6 +3141,27 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /**
+         * PointOut
+         * @description One scored round of the repo; ``mean`` is its overall score from 0 to 10.
+         */
+        PointOut: {
+            /** Round Id */
+            round_id: number;
+            /** Number */
+            number: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Mean */
+            mean: number;
+            /** Scores */
+            scores: components["schemas"]["ScoreOut"][];
         };
         /** PollSummaryOut */
         PollSummaryOut: {
@@ -3641,10 +3694,15 @@ export interface components {
             prereview?: ("triage" | "everything" | "on_open") | null;
             /** Automated Reviewer */
             automated_reviewer?: string | null;
+            /**
+             * Metrics
+             * @description The criteria this repo's reviews are scored on, from the next round on; null or empty: the standards decide. Left out of a PUT: kept
+             */
+            metrics?: string[] | null;
         };
         /**
          * ReviewSettingsBody
-         * @description Settings → Review.
+         * @description Settings → Review. A folder left out of a PUT keeps its value; null or "" clears it.
          */
         ReviewSettingsBody: {
             /**
@@ -3659,6 +3717,16 @@ export interface components {
             runner: string;
             /** Repos */
             repos?: components["schemas"]["ReviewRepoSettingBody"][];
+            /**
+             * Standards Dir
+             * @description The coding-standards checkout (the base layer): absolute, or ~/…
+             */
+            standards_dir?: string | null;
+            /**
+             * Standards User Dir
+             * @description The folder of your own standards documents (the user layer)
+             */
+            standards_user_dir?: string | null;
         };
         /** RoundOut */
         RoundOut: {
@@ -3730,6 +3798,16 @@ export interface components {
              * @description Tags for the note; one not in the catalog yet is added to it
              */
             tags?: string[];
+        };
+        /**
+         * ScoreOut
+         * @description One criterion's score (agent text: render ``criterion`` as text).
+         */
+        ScoreOut: {
+            /** Criterion */
+            criterion: string;
+            /** Score */
+            score: number;
         };
         /** SessionIn */
         SessionIn: {
@@ -10868,6 +10946,91 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UnitOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    get_metrics_api_review_metrics_get: {
+        parameters: {
+            query: {
+                repo: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsHistoryOut"];
                 };
             };
             /** @description Bad Request */

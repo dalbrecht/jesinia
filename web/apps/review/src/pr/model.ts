@@ -3,6 +3,7 @@
 // server, so read here only for shape), the book's outline, a patch's hunks, and the words
 // for coverage and the verdict. Every string read here is the PR's or an agent's text: it is
 // only ever rendered as text or through the safe Markdown renderer.
+import { hasHidden } from "@jesinia/shell";
 import type { PrFile, PrView } from "../api";
 
 export type Depth = "quick" | "deep";
@@ -349,64 +350,9 @@ export function stepId(step: Step): string {
 }
 
 // --- hidden and direction-changing characters (Trojan Source, I6) ---------------------------
+// The rules live in the shell, so every app shows untrusted names the same way (R62).
 
-export type Run = { text: string } | { code: string; kind: "bidi" | "invisible" | "control" };
-
-function hiddenKind(cp: number): "bidi" | "invisible" | "control" | null {
-  if (
-    (cp >= 0x202a && cp <= 0x202e) ||
-    (cp >= 0x2066 && cp <= 0x2069) ||
-    cp === 0x200e ||
-    cp === 0x200f ||
-    cp === 0x061c
-  )
-    return "bidi";
-  if (
-    (cp >= 0x200b && cp <= 0x200d) ||
-    (cp >= 0x2060 && cp <= 0x2064) ||
-    [0xfeff, 0x00ad, 0x180e, 0x034f, 0x115f, 0x1160, 0x3164, 0xffa0].includes(cp)
-  )
-    return "invisible";
-  if ((cp < 0x20 && cp !== 0x09) || (cp >= 0x7f && cp <= 0x9f)) return "control";
-  return null;
-}
-
-const code = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
-
-/**
- * Text split into plain runs and the characters that hide or reorder what is read: bidi
- * controls, zero-width and invisible characters, and control characters (a tab, and the CR of a
- * CRLF line ending, are ordinary). Each becomes a token the UI shows visibly.
- */
-export function revealHidden(text: string): Run[] {
-  const out: Run[] = [];
-  let plain = "";
-  const chars = [...text];
-  chars.forEach((ch, i) => {
-    const cp = ch.codePointAt(0) as number;
-    const kind = cp === 0x0d && i === chars.length - 1 ? null : hiddenKind(cp);
-    if (kind === null) {
-      plain += ch;
-      return;
-    }
-    if (plain) out.push({ text: plain });
-    plain = "";
-    out.push({ code: code(cp), kind });
-  });
-  if (plain || out.length === 0) out.push({ text: plain });
-  return out;
-}
-
-/** Text with each hidden character as its token, for accessible names and plain strings. */
-export function visibleText(text: string): string {
-  return revealHidden(text)
-    .map((r) => ("code" in r ? `⟪${r.code}⟫` : r.text))
-    .join("");
-}
-
-export function hasHidden(text: string): boolean {
-  return revealHidden(text).some((r) => "code" in r);
-}
+export { hasHidden, revealHidden, visibleText, type HiddenRun as Run } from "@jesinia/shell";
 
 /** Whether a hunk (or a file's patch) has any hidden or direction-changing character. */
 export const hunkHasHidden = (hunk: Hunk) => hasHidden(hunk.header) || hunk.lines.some((l) => hasHidden(l.text));

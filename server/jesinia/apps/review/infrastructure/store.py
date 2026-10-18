@@ -428,7 +428,7 @@ class SqliteReviewStore:
 
     def repo_configs(self) -> dict[str, RepoConfig]:
         rows = self._conn.execute(
-            "SELECT repo, watched, automated_reviewer, prereview, suggested FROM repos"
+            "SELECT repo, watched, automated_reviewer, prereview, suggested, metrics FROM repos"
         )
         return {
             repo: RepoConfig(
@@ -437,25 +437,42 @@ class SqliteReviewStore:
                 automated_reviewer=reviewer,
                 prereview=None if prereview is None else parse_prereview_mode(prereview),
                 suggested=bool(suggested),
+                metrics=None if metrics is None else tuple(json.loads(metrics)),
             )
-            for repo, watched, reviewer, prereview, suggested in rows
+            for repo, watched, reviewer, prereview, suggested, metrics in rows
         }
 
     def upsert_repo(self, config: RepoConfig) -> None:
+        metrics = None if config.metrics is None else json.dumps(list(config.metrics))
         self._conn.execute(
-            "INSERT INTO repos (repo, watched, automated_reviewer, prereview, suggested) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "INSERT INTO repos (repo, watched, automated_reviewer, prereview, suggested, metrics) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (repo) DO UPDATE SET watched = excluded.watched, "
             "automated_reviewer = excluded.automated_reviewer, prereview = excluded.prereview, "
-            "suggested = excluded.suggested",
+            "suggested = excluded.suggested, metrics = excluded.metrics",
             (
                 config.repo,
                 int(config.watched),
                 config.automated_reviewer,
                 config.prereview,
                 int(config.suggested),
+                metrics,
             ),
         )
+
+    def metric_rounds(self, repo: str, limit: int) -> list[tuple[int, int, str, datetime, object]]:
+        """The latest ``limit`` rounds of ``repo`` (canonical) with a ``metrics`` artifact,
+        oldest first: id, PR number, head, start time and the decoded artifact."""
+        rows = self._conn.execute(
+            "SELECT r.id, r.number, r.head_sha, r.started_at, a.json FROM rounds r "
+            "JOIN artifacts a ON a.round_id = r.id AND a.kind = 'metrics' "
+            "WHERE r.repo = ? ORDER BY r.id DESC LIMIT ?",
+            (repo, limit),
+        ).fetchall()
+        return [
+            (round_id, number, head, datetime.fromisoformat(started), json.loads(data))
+            for round_id, number, head, started, data in reversed(rows)
+        ]
 
     # PRs --------------------------------------------------------------------------------
 

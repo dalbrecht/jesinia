@@ -25,9 +25,11 @@ from jesinia.apps.review.api.schemas import (
     DraftsOut,
     KnowledgeOut,
     LoadIn,
+    MetricsHistoryOut,
     OpenIn,
     OpenOut,
     OverrideIn,
+    PointOut,
     PostAllIn,
     PostAllOut,
     PostedOut,
@@ -52,7 +54,7 @@ from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import OpenResult, Pipeline
 from jesinia.apps.review.application.posting import PostingFailed, PostingService
 from jesinia.apps.review.application.queue import QueueService
-from jesinia.apps.review.application.reviews import ReviewReads
+from jesinia.apps.review.application.reviews import KEEP, ReviewReads
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import GateInputError
@@ -83,6 +85,7 @@ from jesinia.apps.review.domain.queue import (
     PrRef,
     QueueDomainError,
     QueueFilter,
+    RepoConfig,
     ReviewNotAllowedError,
 )
 from jesinia.apps.review.domain.stacks import (
@@ -561,17 +564,41 @@ def build_router(host: ReviewHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run))
 
+    @r.get("/metrics", response_model=MetricsHistoryOut)
+    async def get_metrics(
+        repo: Annotated[str, Query(min_length=3, max_length=REPO_MAX)],
+    ) -> Response:
+        """A repo's metrics over time, for the trend (spec §5.2). From the cache only."""
+
+        async def run() -> MetricsHistoryOut:
+            points = host.reviews.metrics_history(repo)
+            canonical = RepoConfig(repo).repo
+            return MetricsHistoryOut(repo=canonical, points=[PointOut.of(p) for p in points])
+
+        return await _respond(run)
+
     @r.get("/settings", response_model=ReviewSettingsBody)
     async def get_settings() -> ReviewSettingsBody:
         return ReviewSettingsBody.of(host.reviews.settings())
 
     @r.put("/settings", response_model=ReviewSettingsBody)
     async def put_settings(body: ReviewSettingsBody, idem: IdempotentCall = keyed) -> Response:
-        """Save Settings → Review; repos not listed keep their settings."""
+        """Save Settings → Review. Repos not listed keep their settings; a listed repo's
+        metrics, and either folder, keep theirs when left out. A metrics change applies from
+        the repo's next round."""
 
         async def run() -> ReviewSettingsBody:
-            repos = [repo.config() for repo in body.repos]
-            saved = host.reviews.update_settings(body.prereview, body.runner, repos)
+            repos = [repo.config(host.reviews.repo_config(repo.repo)) for repo in body.repos]
+            sent = body.model_fields_set
+            saved = host.reviews.update_settings(
+                body.prereview,
+                body.runner,
+                repos,
+                standards_dir=body.standards_dir if "standards_dir" in sent else KEEP,
+                standards_user_dir=body.standards_user_dir
+                if "standards_user_dir" in sent
+                else KEEP,
+            )
             return ReviewSettingsBody.of(saved)
 
         return await idem.run(lambda: _respond(run))

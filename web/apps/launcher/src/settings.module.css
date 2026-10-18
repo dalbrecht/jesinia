@@ -214,3 +214,79 @@
   color: var(--jx-danger);
   font-size: var(--jx-text-sm);
 }
+
+/* Settings → Review: one fieldset per repo, and the knowledge model's units. */
+.repo {
+  display: grid;
+  gap: var(--jx-space-3);
+  margin: 0;
+  padding: var(--jx-space-3) var(--jx-space-4) var(--jx-space-4);
+  border: 1px solid var(--jx-border);
+  border-radius: var(--jx-radius-md);
+}
+.repoName {
+  padding: 0 var(--jx-space-1);
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-sm);
+  font-weight: var(--jx-weight-semibold);
+  overflow-wrap: anywhere;
+}
+.repo p {
+  margin: 0;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jx-space-2);
+  font-size: var(--jx-text-sm);
+}
+.inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2);
+}
+.units {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.unit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px auto;
+  align-items: center;
+  gap: var(--jx-space-1) var(--jx-space-3);
+  padding: var(--jx-space-2) 0;
+  border-bottom: 1px solid var(--jx-border);
+}
+.unitName {
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-sm);
+  overflow-wrap: anywhere;
+}
+.unitSource {
+  grid-column: 1 / -1;
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-xs);
+}
+.familiarity {
+  display: block;
+  height: 6px;
+  border-radius: var(--jx-radius-full);
+  background: var(--jx-surface-sunken);
+  overflow: hidden;
+}
+.familiarity > span {
+  display: block;
+  height: 100%;
+  background: var(--jx-accent);
+}
+@media (max-width: 560px) {
+  .unit {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .familiarity {
+    grid-column: 1 / -1;
+  }
+}

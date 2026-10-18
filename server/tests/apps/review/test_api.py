@@ -198,6 +198,7 @@ READS = [
     ("GET", f"{PR}/drafts"),
     ("GET", f"{API}/settings"),
     ("GET", f"{API}/knowledge"),
+    ("GET", f"{API}/metrics?repo=acme/web"),
 ]
 WRITES = [
     ("POST", f"{API}/load", {"ref": "acme/web#1"}),
@@ -559,9 +560,10 @@ async def test_done_marks_the_latest_round(env: Env) -> None:
 async def test_settings_round_trip(env: Env) -> None:
     default = (await env.client.get(f"{API}/settings")).json()
     assert default["prereview"] == "triage" and default["runner"] == "codex"
+    assert default["standards_dir"] is None and default["standards_user_dir"] is None
     assert default["repos"] == [
         {"repo": "acme/web", "watched": True, "suggested": False, "prereview": None,
-         "automated_reviewer": None}
+         "automated_reviewer": None, "metrics": None}
     ]  # fmt: skip
     wanted = {
         "prereview": "everything",
@@ -579,6 +581,79 @@ async def test_settings_round_trip(env: Env) -> None:
         f"{API}/settings", json={**wanted, "runner": "../bin/sh"}, headers=keyed()
     )
     assert bad.status_code == 400 and bad.json()["error"] == "InvalidSettingError"
+
+
+async def test_every_review_setting_round_trips(env: Env, tmp_path: Path) -> None:
+    """Settings → Review (plan Task 15): the pre-review default, the runner, the standards
+    folders, and per repo whether it is watched, its pre-review, automated reviewer and
+    metrics."""
+    standards, mine = tmp_path / "coding-standards", tmp_path / "my-standards"
+    web = {"repo": "acme/web", "watched": False, "suggested": False, "prereview": "everything",
+           "automated_reviewer": "copilot", "metrics": ["Security", "Tests"]}  # fmt: skip
+    api = {"repo": "acme/api", "watched": True, "suggested": False, "prereview": None,
+           "automated_reviewer": None, "metrics": None}  # fmt: skip
+    wanted = {
+        "prereview": "on_open",
+        "runner": "claude",
+        "standards_dir": str(standards),
+        "standards_user_dir": str(mine),
+        "repos": [web, api],
+    }
+    saved = await env.client.put(f"{API}/settings", json=wanted, headers=keyed())
+    assert saved.status_code == 200
+    now = (await env.client.get(f"{API}/settings")).json()
+    assert now == {**wanted, "repos": [api, web]}  # sorted by repo
+    assert env.store.standards_dir() == standards and env.store.standards_user_dir() == mine
+    assert env.store.repo_configs()["acme/web"].metrics == ("Security", "Tests")
+    # Fields left out keep their values; an empty folder clears it.
+    partial = {"prereview": "triage", "runner": "codex",
+               "repos": [{"repo": "acme/web", "watched": True}]}  # fmt: skip
+    kept = (await env.client.put(f"{API}/settings", json=partial, headers=keyed())).json()
+    assert kept["standards_dir"] == str(standards)
+    kept_web = next(r for r in kept["repos"] if r["repo"] == "acme/web")
+    assert kept_web["watched"] is True and kept_web["metrics"] == ["Security", "Tests"]
+    cleared = {**partial, "standards_dir": "", "standards_user_dir": None,
+               "repos": [{"repo": "acme/web", "watched": True, "metrics": []}]}  # fmt: skip
+    after = (await env.client.put(f"{API}/settings", json=cleared, headers=keyed())).json()
+    assert after["standards_dir"] is None and after["standards_user_dir"] is None
+    assert next(r for r in after["repos"] if r["repo"] == "acme/web")["metrics"] is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"standards_dir": "relative/path"},
+        {"standards_user_dir": "/tmp/bad\x00name"},
+        {"repos": [{"repo": "acme/web", "watched": True, "metrics": ["a\u202eb"]}]},
+        {"repos": [{"repo": "acme/web", "watched": True, "metrics": ["x" * 121]}]},
+    ],
+)
+async def test_review_settings_refuse_bad_folders_and_metrics(
+    env: Env, change: dict[str, object]
+) -> None:
+    body = {"prereview": "triage", "runner": "codex", "repos": [], **change}
+    response = await env.client.put(f"{API}/settings", json=body, headers=keyed())
+    assert response.status_code == 400 and response.json()["error"] == "InvalidSettingError"
+    assert env.store.standards_dir() is None
+
+
+async def test_metrics_history_serves_a_repos_points(env: Env) -> None:
+    empty = await env.client.get(f"{API}/metrics", params={"repo": "acme/web"})
+    assert empty.status_code == 200 and empty.json() == {"repo": "acme/web", "points": []}
+    round_id = env.round()
+    scores = [{"criterion": INJECTION, "rule": {"id": "x.md", "layer": "base"}, "score": 7,
+               "note": "n"}]  # fmt: skip
+    env.store.put_artifact(round_id, "metrics", {"scores": scores})
+    body = (await env.client.get(f"{API}/metrics", params={"repo": "Acme/Web"})).json()
+    assert body["repo"] == "acme/web"
+    (point,) = body["points"]
+    assert point["round_id"] == round_id and point["number"] == 1 and point["mean"] == 7.0
+    assert point["scores"] == [{"criterion": INJECTION, "score": 7.0}]
+    assert point["head_sha"] == HEAD and point["at"].startswith("20")
+    bad = await env.client.get(f"{API}/metrics", params={"repo": "not a repo"})
+    assert bad.status_code == 400 and bad.json()["error"] == "InvalidPrRefError"
+    missing = await env.client.get(f"{API}/metrics")
+    assert missing.status_code == 422
 
 
 # --- MCP: read-only, PR text fenced (carry h) ---------------------------------------------------
@@ -718,12 +793,15 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
 
         setattr(env.poster, name, tripped)
     calls.clear()
+    queries = {f"{API}/metrics": "?repo=acme/web"}
     gets = [
-        str(getattr(route, "path", "")).format(owner="acme", repo="web", number=1)
+        (path := str(getattr(route, "path", "")).format(owner="acme", repo="web", number=1))
+        + queries.get(path, "")
         for route in build_router(env.host).routes
         if "GET" in getattr(route, "methods", set())
     ]
-    assert len(gets) == 6  # queue, the PR, its drafts, its stack, knowledge, settings
+    # queue, the PR, its drafts, its stack, knowledge, metrics, settings
+    assert len(gets) == 7
     # PR 1 is alone: its stack answers "not a stack", from the cache too.
     expected = {f"{API}/stacks/acme/web/1": 404}
     # M4: walked with the head's files cached (the PR view's diff) and without (drafts

@@ -1518,3 +1518,42 @@ async def test_a_depth_switch_while_the_round_is_still_preparing_reaches_the_new
     by_kind = dict(zip(env.jobs.ran, env.jobs.rounds, strict=True))
     for kind in (JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ):
         assert by_kind[kind].depth == "deep", kind
+
+
+# --- per-repo metric overrides (plan Task 15) ---------------------------------------------------
+
+
+async def test_a_repos_metric_overrides_apply_to_the_next_round_not_an_existing_one(
+    env: Env,
+) -> None:
+    env.store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Security", "Tests")))
+    ref = env.add()
+    await prereview(env)  # round 1 is prepared: it keeps the criteria in force now
+    first, _ = latest(env, ref)
+    assert env.artifacts(first)["metric_criteria"] == ["Security", "Tests"]
+    env.store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Docs",)))
+    env.jobs.rounds.clear()
+    env.jobs.ran.clear()
+    await env.pipeline.open(ref, depth="deep")  # the same round, prepared again on open
+    await env.pipeline.drain()
+    ran = zip(env.jobs.rounds, env.jobs.ran, strict=True)
+    (scored,) = [r for r, job in ran if job is JobKind.METRICS]
+    assert scored.id == first and scored.metric_criteria == ("Security", "Tests")
+    assert env.artifacts(first)["metric_criteria"] == ["Security", "Tests"]
+    # The next round of the repo is scored on the new set.
+    env.jobs.rounds.clear()
+    request = env.request(ref, "everything")
+    await env.pipeline.prereview(request)
+    assert request.round_id != first
+    assert env.artifacts(request.round_id)["metric_criteria"] == ["Docs"]
+    assert {r.metric_criteria for r in env.jobs.rounds} == {("Docs",)}
+
+
+async def test_a_repo_without_metric_overrides_leaves_the_criteria_to_the_standards(
+    env: Env,
+) -> None:
+    ref = env.add()
+    await prereview(env)
+    round_id, _ = latest(env, ref)
+    assert env.artifacts(round_id)["metric_criteria"] is None
+    assert {r.metric_criteria for r in env.jobs.rounds} == {None}

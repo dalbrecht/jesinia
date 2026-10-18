@@ -106,6 +106,9 @@ class Round:
     # The author wrote this PR (spec §3.3): Background is minimised, the verdict reads as
     # ready (or not) to request review.
     own_pr: bool = False
+    # The repo's own metric set as it was when the round was first prepared (spec §5.2):
+    # the metrics job scores exactly these; ``None``: the standards decide.
+    metric_criteria: tuple[str, ...] | None = None
 
     @property
     def repo(self) -> str:

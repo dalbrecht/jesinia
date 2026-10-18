@@ -8,7 +8,7 @@ This is the first part of it (PR 1). It adds:
 - **The repo tools:** four read-only MCP tools (`repo_read`, `repo_grep`, `repo_ls`, `repo_git`). Review agents read PR code only through these. See `application/repo_tools.py` and `api/tools.py`.
 - **The auto-skip rules:** which files a review leaves out (lockfiles, generated, vendored and binary files). See `domain/skip.py`.
 
-It uses the `github` service (`services/github/`) for pull request data and for posting reviews. PR 2 adds the queue, the pre-review pipeline, the REST API and posting (below). PR 3 adds the web app (`web/apps/review/`); PR 4 adds follow-ups, re-reviews and stacks (below); PR 5 adds the knowledge model (below).
+It uses the `github` service (`services/github/`) for pull request data and for posting reviews. PR 2 adds the queue, the pre-review pipeline, the REST API and posting (below). PR 3 adds the web app (`web/apps/review/`); PR 4 adds follow-ups, re-reviews and stacks (below); PR 5 adds the knowledge model, per-repo metrics with a trend, and Settings → Review (below).
 
 ## API
 
@@ -18,7 +18,8 @@ It uses the `github` service (`services/github/`) for pull request data and for 
   - `POST /prs/…/refresh` fetches a queued PR from GitHub now and checks its new head against your previous review ("Review the new head" opens it afterwards, under that head's own gates).
   - `GET|PUT /prs/…/drafts`, `POST /prs/…/post/preview`, `POST /prs/…/post` and `POST /prs/…/done`.
   - `GET /stacks/…`, `POST /stacks/…/open` and `POST /stacks/…/post-all` (below).
-  - `GET|PUT /settings`.
+  - `GET|PUT /settings`: Settings → Review in the Settings app (`web/apps/launcher/src/settings/Review.tsx`). The pre-review default, the agent runner, the standards folders (`standards_dir`, the coding-standards checkout, and `standards_user_dir`, your own documents: absolute or `~/…`, `null` or `""` clears, left out keeps), and per repo `watched`, `prereview`, `automated_reviewer` and `metrics`. Repos not listed keep their settings; a listed repo's `metrics`, left out, keep theirs.
+  - `GET /metrics?repo=<owner/name>` (below).
   - `GET /knowledge` and `PUT /knowledge/<unit>` (below), and `POST /prs/…/quiz` (a finished quiz's result).
 - **Stacks** (`domain/stacks.py`, `application/stacks.py`, spec §4.3): PRs whose base branch is another open PR's head branch, in the same repo (the head branch must live there), ordered bottom-up. A group that isn't one chain (a fork, two PRs on one branch, a cycle, more than 20 PRs) is never a stack: each PR is shown alone, with the reason.
   - A stack review is one Overview, one Background and one stack walkthrough (with cross-PR findings) for the PRs at their current heads. Each PR keeps its own round, walkthrough, findings, drafts and recommendation. Opening the stack opens every PR under its own gates; the stack's jobs start once no PR is held. A failed stack job, or one a stop cut short (marked `interrupted` at start), runs again only through Retry.
@@ -33,8 +34,12 @@ It uses the `github` service (`services/github/`) for pull request data and for 
 - **The knowledge model** (`domain/knowledge.py`, `application/knowledge.py`, spec §6.1): what you know, per unit. A unit is a folder of a repo at most 3 deep (`repo/<owner>/<name>[/<path>]`, the root included) or a KB tag (`tag/<tag>`, known for now only through your own marks).
   - **Signals**, each stored once by its source: your commits reachable from each repo's default branch only (from the workspace's mirror, matched to the signed-in `gh` user's emails and your global git `user.email`, read incrementally from the last tip, page by page); rounds you posted or marked done (`review_deep` or `review_quick`, on the paths stored with the round, so a PR merged before the next ingest still counts); and quiz results (`quiz_pass` with at least 60% of the answered questions right, else `quiz_fail`). A file exposes every folder above it. **KB pages don't count** (R84): a page in the KB isn't necessarily yours (clipped articles, other people's notes, agent output), so it isn't evidence of what you know; the plan's KB-page weight (0.5) is deferred.
   - **Familiarity** in [0, 1]: each exposure weighs deep 1.0, commit 0.8, quiz pass 0.6, quick 0.4 (a failed quiz 0), halved every 90 days, combined as `1 - Π(1 - weight · decay)`. Commits together count at most 0.35, below the quick threshold, and never lift weaker evidence over it: an author email is anyone's to claim, so commits never decide a quick PR (R80). A unit with no evidence of its own gets a prior: its nearest best-known unit's score times `1 - distance`, the share of its path not shared with that unit (R82), capped at 0.3 so code new to you never proposes quick on its own (R83). Then times `1 - c / (c + 200)` for the `c` lines that landed in the unit since your last exposure. Marking a folder **known** makes it and everything beneath it 1.0, **unknown** 0.0 (the nearest mark wins).
+  - **Corrections:** Settings → Review lists each unit with its familiarity and its source, and marks it known, unknown or cleared (`PUT /knowledge/<unit>`); `override_unit` names the folder an inherited mark is set on.
   - **Use:** the proposed depth reads the lowest familiarity over the PR's paths (deep below 0.4); a depth you chose for the head still wins (R57). Every agent's ContextPack gets a bounded summary, fenced as untrusted (R79): it names units only in `[A-Za-z0-9._/-]` and short, anything else as an opaque `(area <hash>)`. Until a repo's history has been read once (or you marked part of it), its familiarity is unknown and the depth follows the PR's size.
   - **Ingest** runs at start and every 30 minutes (`review.knowledge-ingest`). It is best-effort: each source runs on its own, and a failure is logged with its cause without stopping anything else.
+- **Metrics** (`domain/metrics.py`, `ReviewReads.metrics_history`, spec §5.2): the metrics job scores a deep round from 0 to 10 per criterion.
+  - **Per-repo metrics:** a repo's own set (`RepoConfig.metrics`, migration `0010_repo_metrics.sql`; at most 30 criteria of one visible line, up to 120 characters each) replaces "the criteria the standards set": the job gets it as `metrics.md` and scores exactly those. A round keeps the set it was first prepared with (its `metric_criteria` artifact), so a change applies from the repo's next round and never rewrites a round that exists.
+  - **Trend:** `GET /metrics?repo=` answers the repo's latest 200 scored rounds, oldest first, each with its mean and scores, read from the cache. The PWA draws it under the Metrics page (`web/apps/review/src/pr/Trend.tsx`): plain SVG in the design tokens, with a spoken summary and a table of the numbers. Criteria are agent text: shown as text.
 - **Posting** (`application/posting.py`) is the only GitHub write.
   - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `approve_against_evidence`, `newer_head`, `own_pr_comment_only`) and a digest. Approving an unfinished round, or one whose verdict isn't approve, needs `approve_against_evidence` confirmed: Jesinia recommends, the author decides.
   - A post must carry that digest and confirm every warning. It goes out as one atomic review on the round's head. Drafts GitHub can't anchor go in the body.
@@ -96,7 +101,7 @@ All under Jesinia's data directory (`~/Library/Application Support/jesinia/`):
 
 ## Configuration
 
-Nothing is configured by the user yet. Limits and time-outs are constants in code:
+In **Settings → Review** (`/settings/#review`): the pre-review default and agent, the standards folders, each repo's overrides (watched, pre-review, automated reviewer, metrics), and corrections to the knowledge model (*What Jesinia thinks you know*). Limits and time-outs are constants in code:
 
 - the caps in `domain/repo_access.py`;
 - `SEARCH_TIMEOUT` in `application/repo_tools.py`;

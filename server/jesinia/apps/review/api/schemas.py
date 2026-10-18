@@ -22,6 +22,7 @@ from jesinia.apps.review.domain.knowledge import (
     Override,
     UnitKind,
 )
+from jesinia.apps.review.domain.metrics import Point
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
     DRAFTS_MAX,
@@ -55,6 +56,9 @@ REF_MAX = 500
 REPO_MAX = 140
 RUNNER_MAX = 64
 REVIEWER_MAX = 100
+# Generous bounds on what a request may carry; the domain checks the real limits (400).
+METRICS_MAX_SENT = 200
+FOLDER_MAX_SENT = 4096
 
 
 class EvidenceOut(BaseModel):
@@ -513,6 +517,12 @@ class ReviewRepoSettingBody(BaseModel):
     suggested: bool = False
     prereview: PreReviewMode | None = None
     automated_reviewer: str | None = Field(default=None, min_length=1, max_length=REVIEWER_MAX)
+    metrics: list[str] | None = Field(
+        default=None,
+        max_length=METRICS_MAX_SENT,
+        description="The criteria this repo's reviews are scored on, from the next round on; "
+        "null or empty: the standards decide. Left out of a PUT: kept",
+    )
 
     @classmethod
     def of(cls, config: RepoConfig) -> ReviewRepoSettingBody:
@@ -522,25 +532,44 @@ class ReviewRepoSettingBody(BaseModel):
             suggested=config.suggested,
             prereview=config.prereview,
             automated_reviewer=config.automated_reviewer,
+            metrics=None if config.metrics is None else list(config.metrics),
         )
 
-    def config(self) -> RepoConfig:
-        """Raises: InvalidPrRefError: ``repo`` isn't ``owner/name``."""
+    def config(self, current: RepoConfig | None = None) -> RepoConfig:
+        """The repo's settings, its metrics kept from ``current`` when left out.
+
+        Raises:
+            InvalidPrRefError: ``repo`` isn't ``owner/name``.
+            InvalidSettingError: a metric that isn't one short line of visible text.
+        """
+        sent = "metrics" in self.model_fields_set
+        metrics = self.metrics if sent else (None if current is None else current.metrics)
         return RepoConfig(
             self.repo,
             watched=self.watched,
             automated_reviewer=self.automated_reviewer,
             prereview=self.prereview,
             suggested=self.suggested,
+            metrics=None if metrics is None else tuple(metrics),
         )
 
 
 class ReviewSettingsBody(BaseModel):
-    """Settings → Review."""
+    """Settings → Review. A folder left out of a PUT keeps its value; null or "" clears it."""
 
     prereview: PreReviewMode
     runner: str = Field(min_length=1, max_length=RUNNER_MAX, description="The agent runner")
     repos: list[ReviewRepoSettingBody] = Field(default_factory=list, max_length=500)
+    standards_dir: str | None = Field(
+        default=None,
+        max_length=FOLDER_MAX_SENT,
+        description="The coding-standards checkout (the base layer): absolute, or ~/…",
+    )
+    standards_user_dir: str | None = Field(
+        default=None,
+        max_length=FOLDER_MAX_SENT,
+        description="The folder of your own standards documents (the user layer)",
+    )
 
     @classmethod
     def of(cls, settings: ReviewSettings) -> ReviewSettingsBody:
@@ -548,7 +577,47 @@ class ReviewSettingsBody(BaseModel):
             prereview=settings.prereview,
             runner=settings.runner,
             repos=[ReviewRepoSettingBody.of(config) for config in settings.repos],
+            standards_dir=None if settings.standards_dir is None else str(settings.standards_dir),
+            standards_user_dir=None
+            if settings.standards_user_dir is None
+            else str(settings.standards_user_dir),
         )
+
+
+class ScoreOut(BaseModel):
+    """One criterion's score (agent text: render ``criterion`` as text)."""
+
+    criterion: str
+    score: float = Field(ge=0.0, le=10.0)
+
+
+class PointOut(BaseModel):
+    """One scored round of the repo; ``mean`` is its overall score from 0 to 10."""
+
+    round_id: int
+    number: int
+    head_sha: str
+    at: datetime
+    mean: float = Field(ge=0.0, le=10.0)
+    scores: list[ScoreOut]
+
+    @classmethod
+    def of(cls, point: Point) -> PointOut:
+        return cls(
+            round_id=point.round_id,
+            number=point.number,
+            head_sha=point.head_sha,
+            at=point.at,
+            mean=round(point.mean, 2),
+            scores=[ScoreOut(criterion=s.criterion, score=s.score) for s in point.scores],
+        )
+
+
+class MetricsHistoryOut(BaseModel):
+    """A repo's metrics over time (spec §5.2): its latest scored rounds, oldest first."""
+
+    repo: str
+    points: list[PointOut]
 
 
 class CrossFindingOut(BaseModel):

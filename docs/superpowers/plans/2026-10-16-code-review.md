@@ -686,15 +686,15 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - Modify: `apps/review/application/` (`metrics_history(repo) -> list[Point]`)
 - Test: web and server tests
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - every setting round-trips;
   - knowledge overrides persist;
   - the trend renders points per repo;
   - per-repo metric overrides apply to the next round.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): settings and metrics trend`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): settings and metrics trend`.
 
 ### Task 16: Kept review pages and "How it works"
 

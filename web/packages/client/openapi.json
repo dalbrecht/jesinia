@@ -9736,6 +9736,111 @@
         }
       }
     },
+    "/api/review/metrics": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Metrics",
+        "description": "A repo's metrics over time, for the trend (spec \u00a75.2). From the cache only.",
+        "operationId": "get_metrics_api_review_metrics_get",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsHistoryOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
     "/api/review/settings": {
       "get": {
         "tags": [
@@ -9831,7 +9936,7 @@
           "review"
         ],
         "summary": "Put Settings",
-        "description": "Save Settings \u2192 Review; repos not listed keep their settings.",
+        "description": "Save Settings \u2192 Review. Repos not listed keep their settings; a listed repo's\nmetrics, and either folder, keep theirs when left out. A metrics change applies from\nthe repo's next round.",
         "operationId": "put_settings_api_review_settings_put",
         "parameters": [
           {
@@ -12759,6 +12864,28 @@
         ],
         "title": "MessageIn"
       },
+      "MetricsHistoryOut": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/PointOut"
+            },
+            "type": "array",
+            "title": "Points"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "points"
+        ],
+        "title": "MetricsHistoryOut",
+        "description": "A repo's metrics over time (spec \u00a75.2): its latest scored rounds, oldest first."
+      },
       "MoveIn": {
         "properties": {
           "folder": {
@@ -13252,6 +13379,51 @@
           "created_at"
         ],
         "title": "PendingOut"
+      },
+      "PointOut": {
+        "properties": {
+          "round_id": {
+            "type": "integer",
+            "title": "Round Id"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "head_sha": {
+            "type": "string",
+            "title": "Head Sha"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "mean": {
+            "type": "number",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Mean"
+          },
+          "scores": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreOut"
+            },
+            "type": "array",
+            "title": "Scores"
+          }
+        },
+        "type": "object",
+        "required": [
+          "round_id",
+          "number",
+          "head_sha",
+          "at",
+          "mean",
+          "scores"
+        ],
+        "title": "PointOut",
+        "description": "One scored round of the repo; ``mean`` is its overall score from 0 to 10."
       },
       "PollSummaryOut": {
         "properties": {
@@ -14708,6 +14880,22 @@
               }
             ],
             "title": "Automated Reviewer"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics",
+            "description": "The criteria this repo's reviews are scored on, from the next round on; null or empty: the standards decide. Left out of a PUT: kept"
           }
         },
         "type": "object",
@@ -14742,6 +14930,32 @@
             "type": "array",
             "maxItems": 500,
             "title": "Repos"
+          },
+          "standards_dir": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Standards Dir",
+            "description": "The coding-standards checkout (the base layer): absolute, or ~/\u2026"
+          },
+          "standards_user_dir": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Standards User Dir",
+            "description": "The folder of your own standards documents (the user layer)"
           }
         },
         "type": "object",
@@ -14750,7 +14964,7 @@
           "runner"
         ],
         "title": "ReviewSettingsBody",
-        "description": "Settings \u2192 Review."
+        "description": "Settings \u2192 Review. A folder left out of a PUT keeps its value; null or \"\" clears it."
       },
       "RoundOut": {
         "properties": {
@@ -14935,6 +15149,27 @@
           "agent_text"
         ],
         "title": "SaveIn"
+      },
+      "ScoreOut": {
+        "properties": {
+          "criterion": {
+            "type": "string",
+            "title": "Criterion"
+          },
+          "score": {
+            "type": "number",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "criterion",
+          "score"
+        ],
+        "title": "ScoreOut",
+        "description": "One criterion's score (agent text: render ``criterion`` as text)."
       },
       "SessionIn": {
         "properties": {
@@ -15782,8 +16017,7 @@
                 "review_quick",
                 "review_deep",
                 "quiz_pass",
-                "quiz_fail",
-                "kb_page"
+                "quiz_fail"
               ]
             },
             "type": "object",

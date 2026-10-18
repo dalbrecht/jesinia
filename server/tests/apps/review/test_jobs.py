@@ -1076,3 +1076,27 @@ async def test_rereview_pack_says_when_previous_comments_were_cut(env: Env) -> N
     assert "1 previous comments left out: they don't fit" in pack["job.md"]
     assert "(a stored Jesinia round)" in pack["job.md"]
     assert "[c3]" not in pack["previous-comments.md"]
+
+
+# --- Task 15: per-repo metric overrides -------------------------------------------------------
+
+
+async def test_the_metrics_job_scores_exactly_the_repos_criteria_when_set(env: Env) -> None:
+    """Spec §5.2: the set of metrics is editable per repo; the author's set is their own
+    standards (trusted), so it goes in Jesinia's files, never fenced as PR data."""
+    pack = env.capture_pack()
+    reply: dict[str, object] = {"scores": []}
+    env.script(json.dumps(reply))
+    await env.jobs.run(JobKind.METRICS, replace(a_round(), metric_criteria=("Security", "Tests")))
+    assert pack["metrics.md"] == (
+        "# The metrics to score\n\nThe author set this repo's metrics: score exactly these "
+        "criteria, one score each, in this order, each naming the rule of the standards that "
+        "fits it best.\n\n- Security\n- Tests\n"
+    )
+    # Only the metrics job is told; without a set, the standards decide.
+    for job, criteria in ((JobKind.OVERVIEW, ("Security",)), (JobKind.METRICS, None)):
+        pack = env.capture_pack()
+        out = reply if job is JobKind.METRICS else {"summary": "s", "purpose": "p", "sources": []}
+        env.script(json.dumps(out))
+        await env.jobs.run(job, replace(a_round(), metric_criteria=criteria))
+        assert "metrics.md" not in pack

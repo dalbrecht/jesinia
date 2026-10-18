@@ -25,6 +25,8 @@ export type StackOpenResult = components["schemas"]["StackOpenOut"];
 export type CrossFinding = components["schemas"]["CrossFindingOut"];
 export type PostOutcome = components["schemas"]["PostOutcomeOut"];
 export type PostAllItem = components["schemas"]["PostAllItemIn"];
+export type MetricsHistory = components["schemas"]["MetricsHistoryOut"];
+export type TrendPoint = components["schemas"]["PointOut"];
 
 /** The queue's sections (design pass pattern 2), in tab order. */
 export type SectionId = "ready" | "waiting" | "loaded" | "approved";
@@ -293,6 +295,11 @@ export async function getPr(client: JesiniaClient, repo: string, number: number)
   return unwrap(
     await client.GET("/api/review/prs/{owner}/{repo}/{number}", { params: { path: { ...split(repo), number } } }),
   );
+}
+
+/** A repo's metrics over time (spec §5.2): its latest scored rounds, oldest first. */
+export async function getMetricsHistory(client: JesiniaClient, repo: string): Promise<MetricsHistory> {
+  return unwrap(await client.GET("/api/review/metrics", { params: { query: { repo } } }));
 }
 
 /** Load a PR for review now, from a URL, `owner/repo#n` or a review route. */

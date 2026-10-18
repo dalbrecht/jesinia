@@ -608,7 +608,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       case "findings":
         return artifacts.findings ? <Findings findings={artifacts.findings} /> : pendingPage("Findings");
       case "metrics":
-        return artifacts.metrics ? <Metrics scores={artifacts.metrics} /> : pendingPage("Metrics");
+        return artifacts.metrics ? <Metrics scores={artifacts.metrics} repo={repo} /> : pendingPage("Metrics");
       case "quiz":
         if (artifacts.quiz)
           return <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} onFinish={quizFinished} />;

@@ -169,6 +169,8 @@ OpenState = Literal["started", "running", "up_to_date", "failed", "checking"] | 
 # Why an open waits (Codex P1 on PR #63): planning a round before its head is classified would
 # leave out the re-review for good.
 CHECKING = "checking this head against your previous review first"
+# The metric set a round is scored on, kept from its first preparation.
+METRIC_CRITERIA: Final = "metric_criteria"
 # The touched paths a round keeps for the knowledge model.
 ROUND_PATHS_MAX = 5_000
 ProgressState = Literal["started", "job_started", "job_done", "job_failed", "finished", "failed"]
@@ -830,6 +832,7 @@ class Pipeline:
             merge_base=base,
             hunk_index=index,
             own_pr=self._is_own(ref),
+            metric_criteria=self._metric_criteria(ref, round_id),
         )
         correctness_depth = await self._jobs.correctness_depth(round)
         self._store.set_depth(ref, head, round_id, depth)
@@ -851,6 +854,21 @@ class Pipeline:
         return _Prepared(
             ref, round, diff, ci, correctness_depth, tuple(warnings), followup, new_hunks
         )
+
+    def _metric_criteria(self, ref: PrRef, round_id: int) -> tuple[str, ...] | None:
+        """The repo's metric set for this round: the one stored when the round was first
+        prepared, so a change made since applies from the next round, never to this one
+        (spec §5.2); else the repo's set now, stored with the round."""
+        if METRIC_CRITERIA in self._store.artifact_kinds(round_id):
+            stored = self._store.artifact(round_id, METRIC_CRITERIA)
+            items = stored if isinstance(stored, list) else []
+            return tuple(item for item in items if isinstance(item, str)) or None
+        config = self._store.repo_configs().get(ref.repo)
+        criteria = None if config is None else config.metrics
+        self._store.put_artifact(
+            round_id, METRIC_CRITERIA, None if criteria is None else list(criteria)
+        )
+        return criteria
 
     def _known(
         self, ref: PrRef, paths: Sequence[str], warnings: list[str]

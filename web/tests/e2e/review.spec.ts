@@ -135,3 +135,49 @@ test("a deep review shows its coverage; approving with a BLOCKING comment warns,
   await expect(row.getByText("Pre-review ready")).toBeVisible();
   await expect(row.getByText(/100%/)).toBeVisible();
 });
+
+test("Settings → Review saves a repo's metrics and corrects what Jesinia thinks you know", async ({ page }) => {
+  await login(page);
+  const auth = { Authorization: `Bearer ${token()}` };
+  type Repo = { repo: string; watched: boolean; metrics: string[] | null };
+  const before = (await (await page.request.get("/api/review/settings", { headers: auth })).json()) as {
+    repos: Repo[];
+  };
+  const original = before.repos.find((r) => r.repo === "e2e-dev/greeter");
+  expect(original).toBeDefined();
+  // A mark on a repo no other test reviews (a mark would change a greeter PR's depth).
+  const unit = "repo/e2e-dev/other/my docs";
+  const marked = await page.request.put(`/api/review/knowledge/${encodeURI(unit)}`, {
+    headers: { ...auth, "Idempotency-Key": "e2e-knowledge-mark" },
+    data: { override: "known" },
+  });
+  expect(marked.ok()).toBe(true);
+
+  await page.goto("/settings/#review");
+  const review = page.getByRole("region", { name: "Review", exact: true });
+  await expect(review.getByRole("combobox", { name: "Pre-review", exact: true })).toHaveValue("on_open");
+  const greeter = review.getByRole("group", { name: "e2e-dev/greeter" });
+  const metrics = greeter.getByLabel("Metrics");
+  await metrics.fill("");
+  await metrics.focus();
+  await page.keyboard.insertText("Security\nTests");
+  await greeter.getByRole("button", { name: "Save e2e-dev/greeter" }).click();
+  await expect(page.getByText("e2e-dev/greeter saved.").first()).toBeVisible();
+  const saved = await page.request.get("/api/review/settings", { headers: auth });
+  const repos = ((await saved.json()) as { repos: Repo[] }).repos;
+  expect(repos.find((r) => r.repo === "e2e-dev/greeter")?.metrics).toEqual(["Security", "Tests"]);
+
+  // The correction is cleared through the page: the unit's id travels with its slashes intact.
+  const known = page.getByRole("region", { name: "What Jesinia thinks you know" });
+  const docs = known.getByRole("listitem", { name: "e2e-dev/other / my docs" });
+  await expect(docs.getByText("Known: you marked it")).toBeVisible();
+  await docs.getByRole("combobox", { name: "Correct e2e-dev/other / my docs" }).selectOption("");
+  await expect(known.getByRole("listitem", { name: "e2e-dev/other / my docs" })).toHaveCount(0);
+
+  // Leave the repo as it was.
+  const restored = await page.request.put("/api/review/settings", {
+    headers: { ...auth, "Idempotency-Key": "e2e-review-metrics-reset" },
+    data: { prereview: "on_open", runner: "fake", repos: [original] },
+  });
+  expect(restored.ok()).toBe(true);
+});

@@ -165,8 +165,9 @@ JOB_INSTRUCTIONS: Mapping[JobKind, str] = {
         "an explanation."
     ),
     JobKind.METRICS: (
-        "Job: metrics. Score the PR from 0 to 10 against the criteria the standards set, "
-        "each score naming the rule it measures."
+        "Job: metrics. Score the PR from 0 to 10 against the criteria the standards set "
+        "(or exactly those metrics.md lists, when it is there), each score naming the rule "
+        "it measures."
     ),
     JobKind.STACK_WALKTHROUGH: (
         "Job: stack_walkthrough. Walk through the stack of PRs as one change, in reading "
@@ -430,6 +431,16 @@ def _commit_log(
     if cut:
         notes.append(f"{cut} commit messages{of} were cut at {COMMIT_MESSAGE_CHARS} characters")
     return "\n\n".join(reversed(kept))
+
+
+def metrics_prompt(criteria: Sequence[str]) -> str:
+    """``metrics.md``: the repo's own metric set, which the metrics job scores exactly."""
+    listing = "".join(f"- {criterion}\n" for criterion in criteria)
+    return (
+        "# The metrics to score\n\nThe author set this repo's metrics: score exactly these "
+        "criteria, one score each, in this order, each naming the rule of the standards that "
+        f"fits it best.\n\n{listing}"
+    )
 
 
 def _request(job: JobKind, depth: Depth, schema: Mapping[str, object]) -> str:
@@ -708,12 +719,13 @@ class JobRunner:
         own = (
             f"\n\n{OWN_PR_INSTRUCTIONS[job]}" if round.own_pr and job in OWN_PR_INSTRUCTIONS else ""
         )
+        files = {"standards.md": standards.as_prompt(limit=budget), "job.md": facts}
+        if job is JobKind.METRICS and round.metric_criteria:
+            # The author's own set (Settings → Review): their standards, so trusted.
+            files["metrics.md"] = metrics_prompt(round.metric_criteria)
         return ContextPack(
             role_prompt=f"{ROLE}\n\n{JOB_INSTRUCTIONS[job]}{walk_all}{own}",
-            files={
-                "standards.md": standards.as_prompt(limit=budget),
-                "job.md": facts,
-            },
+            files=files,
             untrusted=untrusted,
         )
 

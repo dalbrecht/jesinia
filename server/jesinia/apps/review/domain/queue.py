@@ -8,9 +8,11 @@ GitHub's own spelling is kept only as ``display_repo`` for the UI.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from jesinia.apps.review.domain.errors import ReviewError
@@ -29,6 +31,13 @@ PREREVIEW_MODES: tuple[PreReviewMode, ...] = ("triage", "everything", "on_open")
 DEFAULT_PREREVIEW: PreReviewMode = "triage"
 AuthorKind = Literal["you", "agent", "developer"]
 PrKind = Literal["new", "rereview", "rebase", "stack"]
+# A repo's own metric set (spec §5.2, "the set is editable per repo"): a short list of short
+# criteria the author writes in Settings → Review.
+METRIC_CRITERIA_MAX = 30
+METRIC_CRITERION_CHARS = 120
+# Control, format (bidi, zero-width) and line or paragraph separators: a criterion is one
+# visible line, so nothing in it can hide or reorder what the author or the agent reads.
+_HIDING_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 AutoReviewState = Literal["not_configured", "pending", "landed"]
 # A gate's state while it holds the PR back; then queued, running, and ready (done) or
 # failed. ``not_started``: the pre-review setting is "on open" and the PR wasn't loaded.
@@ -117,21 +126,80 @@ def parse_prereview_mode(value: str) -> PreReviewMode:
     raise InvalidSettingError(f"pre-review must be one of {', '.join(PREREVIEW_MODES)}")
 
 
+FOLDER_SETTING_CHARS = 1024
+
+
+def parse_folder_setting(value: str | None, home: Path) -> Path | None:
+    """A folder setting (the standards checkout, the author's own standards): an absolute
+    path, or ``~/…`` under ``home``; ``None`` (or blank) clears it. Whether it exists is
+    read when it is used: a missing folder is skipped then, never an error here.
+
+    Raises:
+        InvalidSettingError: a relative path, or one with a control character.
+    """
+    text = (value or "").strip()
+    if not text:
+        return None
+    if len(text) > FOLDER_SETTING_CHARS or any(
+        unicodedata.category(ch) in _HIDING_CATEGORIES for ch in text
+    ):
+        raise InvalidSettingError("a folder is one line of at most 1024 visible characters")
+    path = home / text[2:] if text == "~" or text.startswith("~/") else Path(text)
+    if not path.is_absolute():
+        raise InvalidSettingError(f"a folder must be an absolute path or start with ~/: {text!r}")
+    return path
+
+
+def parse_metric_criteria(values: Sequence[str] | None) -> tuple[str, ...] | None:
+    """A repo's metric criteria, trimmed, in order, each once (compared without case);
+    ``None`` when there are none, so the standards decide what is scored.
+
+    Raises:
+        InvalidSettingError: more than ``METRIC_CRITERIA_MAX`` criteria, one longer than
+            ``METRIC_CRITERION_CHARS``, or one with a control or invisible character.
+    """
+    kept: list[str] = []
+    seen: set[str] = set()
+    for value in values or ():
+        criterion = value.strip()
+        if not criterion:
+            continue
+        if len(criterion) > METRIC_CRITERION_CHARS:
+            raise InvalidSettingError(
+                f"a metric is at most {METRIC_CRITERION_CHARS} characters: {criterion[:40]!r}…"
+            )
+        if any(unicodedata.category(ch) in _HIDING_CATEGORIES for ch in criterion):
+            raise InvalidSettingError(
+                f"a metric is one line of visible text: {criterion!r} has a control or "
+                "invisible character"
+            )
+        if criterion.casefold() not in seen:
+            seen.add(criterion.casefold())
+            kept.append(criterion)
+    if len(kept) > METRIC_CRITERIA_MAX:
+        raise InvalidSettingError(f"a repo has at most {METRIC_CRITERIA_MAX} metrics")
+    return tuple(kept) or None
+
+
 @dataclass(frozen=True)
 class RepoConfig:
     """A repo's review settings; ``prereview`` overrides the user's default when set.
-    ``suggested``: not the author's own repo; it waits for the author to confirm it."""
+    ``suggested``: not the author's own repo; it waits for the author to confirm it.
+    ``metrics``: the criteria its reviews are scored on (``None``: the standards decide);
+    a change applies from the next round (spec §5.2)."""
 
     repo: str
     watched: bool = False
     automated_reviewer: str | None = None
     prereview: PreReviewMode | None = None
     suggested: bool = False
+    metrics: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "repo", _canonical(self.repo))
         if self.prereview is not None:
             parse_prereview_mode(self.prereview)
+        object.__setattr__(self, "metrics", parse_metric_criteria(self.metrics))
 
 
 @dataclass(frozen=True)
