@@ -43,7 +43,26 @@ Task 7 adds the priority and duplicate actions:
 - accepting a duplicate closes it as a duplicate of the original (by its database id) and
   comments `Duplicate of owner/repo#n`, always fully qualified.
 
-Epics, queues and themes come in PR 3, and the web app in PR 4.
+PR 3 (Tasks 8–10) adds epics, work queues and themes. Task 8 adds epics:
+
+- the Epics list and an epic's page, from the cache: progress (closed children of all),
+  readiness from the direct children with what blocks each, a "won't fit one PR" warning for
+  children in another repo, and a suggestion to add the `epic` label to an issue that has
+  children without it;
+- drop checks: an issue can't contain itself or one of its ancestors, another owner's issue, or
+  an initiative inside an epic (ruling IR17). A refused parent link is never staged;
+- checklist conversion: a plan from the epic's task list (linked items matched, unlinked open
+  items drafted as new issues with no labels), approved as **one batch** of `CreateIssue` then
+  `SetParent` through the apply engine;
+- agent proposals, all drafts: groups of related issues as candidate epics, additions to
+  existing epics (`kind` `group`), splits of an issue too big for one PR (`split`) and an epic's
+  delivery brief (`brief`). Approving a group or split applies it through the engine;
+- the delivery brief: approving it posts the epic's `<!-- jesinia:brief -->` comment once and
+  edits it in place afterwards;
+- milestones as queue items: each stands for its open issues, with readiness rolled up and a
+  brief built from them (Task 9's queues hold them).
+
+Queues and themes come next, and the web app in PR 4.
 
 ## Layout
 
@@ -55,6 +74,7 @@ domain/           pure rules, 100% covered
   labels.py       LabelOp (CreateLabel, DeleteLabel), setup and migration plans, plan checks
   suggestions.py  Suggestion drafts: what a triage reply may draft, edits, dismissals
   changes.py      Change, ChangeBatch, the ordered series, label edits, results, approvals
+  epics.py        is_epic, can_contain, readiness, checklist plans, proposals, briefs
   similarity.py   the local TF-IDF that pre-filters duplicate candidates
 application/      orchestration over ports
   ports.py        what the app needs: IssueReads, LabelWrites, AgentAsker, the store protocols
@@ -65,16 +85,18 @@ application/      orchestration over ports
   agent_output.py an agent's JSON reply, bounded and validated against schemas/*.json
   apply.py        ApplyEngine: runs a batch's series against fresh reads (paced, rate-limit safe)
   pending.py      PendingService (the tray) and ApplyService (apply, retry, approve)
+  epics.py        EpicService (views, plans, milestones, asks) and BriefService (the comment)
 infrastructure/
   store.py        SqliteIssuesStore over issues.sqlite
   suggestion_store.py  SqliteSuggestionStore: drafts, runs, the similarity corpus
   apply_store.py  SqliteApplyStore: the pending tray and the applied batches
+  brief_store.py  SqliteBriefStore: each epic's brief comment
 api/
   routes.py       REST under /api/issues
   schemas.py      request and response bodies (the generated web client's types)
   tools.py        the MCP tools
 migrations/       issues.sqlite schema
-schemas/          JSON schemas of the agent jobs' replies (triage and priority now; the rest for Tasks 8–9)
+schemas/          JSON schemas of the agent jobs' replies (triage, priority, grouping, brief; queue for Task 9)
 module.py         IssuesModule: wiring, jobs, the 503 guards
 ```
 
@@ -98,13 +120,16 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `suggestion_runs`: each issue's latest suggestion run, with its status, when it is due, and
   the cause of a failure.
 - `pending`: the pending-changes tray, in the order staged.
-- `apply_batches`: every batch (from the tray or an approval), stored `running` before its first
+- `apply_batches`: every batch (from the tray, an approval or a checklist conversion, its
+  `origin`), stored `running` before its first
   GitHub write and updated after every step, then `finished` (or `interrupted` by a stop), with
   the Idempotency-Key that started it. Kept 30
   days for Retry (pruned by the daily job).
 - `schema_overlay`: schema entries the author approved (a new area). They are merged over the
   repo's schema on every read, a read-only labels.yml included, so a sync never drops them.
 - A suggestion's `apply_error` says why its last approval didn't apply.
+- `epic_briefs`: each epic's brief comment, by its GitHub comment id, with the body posted. It is
+  `in_flight` from right before a new comment is posted until its id is stored (ruling IR8).
 
 ## Jobs
 
@@ -188,6 +213,23 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
     same batch. The batch keeps the key too, so a replay never applies the tray again, even
     across a crash (ruling IR46).
+  - `GET /epics?repo`: the open epics and initiatives with progress and readiness.
+    `GET /epics/{owner}/{repo}/{n}`: one epic, its children in order (each with what blocks it),
+    the approved brief and a brief composed from the cache (`default_brief`, for Copy brief);
+    404 for an issue that isn't an epic.
+  - `GET /epics/{owner}/{repo}/{n}/accepts?child_repo&child_n`: whether a drop may happen, with
+    the refusal's code and reason, or the "won't fit one PR" warning.
+  - `GET /epics/{owner}/{repo}/{n}/conversion`: the checklist conversion plan and its `digest`;
+    nothing is written. `POST` the same path with `{digest}` to approve it: a 202 with the batch
+    (`origin` `epic`) and `Location` to poll. A plan changed since is a 409
+    (`ConversionOutdatedError`), and so is one with nothing to do.
+  - `POST /epics/proposals` with `{repo?}`, `POST /suggestions/split` with `{repo, n}` and
+    `POST /epics/{owner}/{repo}/{n}/brief/draft` ask the agent in the background (202 with the
+    `scope`); poll `GET /suggestions?scope=` for its `ask_run` and the drafts.
+  - `POST /epics/{owner}/{repo}/{n}/brief` with `{text, suggestion_id?}` posts the brief, or
+    edits the stored comment in place, and marks the brief draft approved.
+  - `GET /milestones?repo` and `GET /milestones/{owner}/{repo}/{number}`: milestones with their
+    open issues, rolled-up readiness and brief.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
     `possible_duplicates`. The last two read the open suggestions.
   - Typed errors come back as `{error, detail}`. A GitHub rate limit met by a request itself
@@ -289,6 +331,33 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
 - **Cache:** afterwards the touched issues, the labels and (for a new area) the recomputed triage
   are written to the cache, best effort. A failure there, or in storing the batch, is logged with
   its cause and never fails the writes. Issues the batch created arrive with the next sync.
+
+## How epics stay safe
+
+- **Containment (IR17):** `can_contain` returns a refusal or nothing, never a string-or-bool. It
+  refuses an issue into itself, into one of its own descendants (a cycle, from the cached parent
+  chain), another owner's issue (GitHub's sub-issues need the same owner) and an initiative into
+  an epic. Staging such a parent link is refused with the reason (`ContainmentRefusedError`), and
+  nothing is staged.
+- **One batch (IR27):** a conversion, an approved group and an approved split each apply as one
+  batch through the engine: the new issues first (`CreateIssue`), then each `SetParent` naming
+  them by temp id. Every link is made against "no parent", so a parent set on GitHub since is a
+  conflict, never a move. New issues carry no labels: a label is never created implicitly (IR4).
+- **Approve what was shown:** a conversion is approved by the digest of the plan the author saw;
+  a plan that changed since (an edited checklist, a linked issue moved) is refused. A group or
+  split draft is re-checked against the cache when approved: an issue closed, gone or under a
+  parent since makes it stale (409), and nothing is applied.
+- **Agent asks (IR37):** grouping, splitting and briefs ask through `SuggestService`'s one-shot
+  facility, with the issues fenced as untrusted data. Replies are validated against
+  `schemas/grouping.json` or `schemas/brief.json`, with one retry. Jesinia keeps only issues it
+  listed, and a reply about issues that changed during the ask is discarded ("inputs changed,
+  ask again"). A brief's children, their order and links are Jesinia's own; the agent writes only
+  the scope and the acceptance criteria.
+- **The brief comment (IR8):** posting a new brief comment is checkpointed `in_flight` first. If
+  that can't be saved, nothing is sent. A post a stop or crash cut off is found again among the
+  epic's comments by its marker and edited, never posted twice. A stored comment deleted on GitHub
+  (404) is posted anew and its id kept. A rate limit refuses the write, backs syncs off, and is a
+  503 with `Retry-After`.
 
 ## How suggestions stay safe
 

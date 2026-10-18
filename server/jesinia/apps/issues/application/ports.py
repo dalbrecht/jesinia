@@ -387,7 +387,8 @@ class AgentAsker(Protocol):
 
 # The apply engine (Task 6) -------------------------------------------------------------------
 
-ApplyOrigin = Literal["pending", "suggestion"]
+# Where a batch came from: the tray, a suggestion's approval, or an epic's checklist conversion.
+ApplyOrigin = Literal["pending", "suggestion", "epic"]
 
 
 class IssueWrites(LabelWrites, Protocol):
@@ -483,3 +484,75 @@ class ApplyStore(Protocol):
 
     def prune_batches(self, before: datetime) -> int:
         """Forget batches last updated before ``before``; how many."""
+
+
+# Epics and briefs (Task 8) -------------------------------------------------------------------
+
+BriefState = Literal["in_flight", "posted"]
+
+
+@dataclass(frozen=True)
+class StoredBrief:
+    """An epic's delivery brief as stored on GitHub: ``comment_id`` and ``url`` of the comment
+    (``None`` until one is known), the ``body`` posted (marker included), and ``state``:
+    ``in_flight`` from right before a new comment is posted until its id is stored, ``posted``
+    after. ``attempt_at`` is when that post started (a cut-off one is looked for from then on)."""
+
+    repo: str
+    n: int
+    comment_id: int | None
+    url: str | None
+    body: str
+    state: BriefState
+    attempt_at: datetime | None
+    posted_at: datetime | None
+    updated_at: datetime
+
+    @property
+    def text(self) -> str:
+        """The brief without its marker, as the author wrote it."""
+        return self.body.split("\n", 1)[1] if "\n" in self.body else ""
+
+
+class BriefStore(Protocol):
+    """``epic_briefs`` in ``issues.sqlite``."""
+
+    def brief(self, repo: str, n: int) -> StoredBrief | None: ...
+
+    def mark_in_flight(self, repo: str, n: int, body: str, now: datetime) -> None:
+        """Record that a new brief comment is about to be posted (the checkpoint before an
+        irreversible write); a stored comment id is forgotten (it is gone on GitHub)."""
+
+    def mark_posted(
+        self, repo: str, n: int, comment_id: int, url: str, body: str, now: datetime
+    ) -> StoredBrief:
+        """Record the brief comment as posted (or edited) with its id."""
+
+
+class BriefWrites(Protocol):
+    """What publishing a brief asks GitHub (``IssueClient`` satisfies it). Every method may
+    raise ``GitHubError`` (a ``GitHubRateLimitedError`` while limited)."""
+
+    async def comment(self, repo: str, n: int, body: str) -> CommentRef: ...
+
+    async def edit_comment(self, repo: str, comment_id: int, body: str) -> CommentRef: ...
+
+    async def comments(
+        self, repo: str, n: int, since: datetime | None, page_token: str | None = None
+    ) -> Page[IssueComment]: ...
+
+
+class EpicCache(SuggestionCache, Protocol):
+    """The cache the epic views, plans and asks read (``SqliteIssuesStore`` has it)."""
+
+    def watched_repos(self) -> list[str]: ...
+
+    def sub_issue_links(self, repo: str, parent: int) -> list[IssueRef] | None: ...
+
+    def open_issues(self, repo: str | None) -> list[CachedIssue]:
+        """Open issues of watched repos (one repo when given), most recently updated first."""
+
+    def milestones(self, repo: str) -> list[Milestone]: ...
+
+    def milestone_issues(self, repo: str, title: str) -> list[CachedIssue]:
+        """The issues (open and closed) of the milestone titled ``title``, by number."""

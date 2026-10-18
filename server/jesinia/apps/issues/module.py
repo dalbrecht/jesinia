@@ -6,9 +6,10 @@ With the ``github`` service it syncs the watched repos every ``SYNC_INTERVAL`` (
 ``issues.sync`` job, also at start) and runs the label batches. Issues entering the Inbox, or
 edited while there, are queued for suggestion runs, which the ``issues.suggest`` job starts
 through the ``agents`` service (looked up per run). Approvals and the pending-changes tray
-apply through one engine (``ApplyEngine``). It serves ``/api/issues`` and the read-only
-``issues_search`` and ``issues_get`` MCP tools; the cache reads, suggestion drafts and the tray
-work without GitHub."""
+apply through one engine (``ApplyEngine``), and so do checklist conversions and approved
+epic proposals; approved delivery briefs are posted as the epic's brief comment. It serves
+``/api/issues`` and the read-only ``issues_search`` and ``issues_get`` MCP tools; the cache
+reads, suggestion drafts, epic views and the tray work without GitHub."""
 
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ from fastapi import APIRouter, HTTPException, status
 from jesinia.apps.issues.api.routes import build_router
 from jesinia.apps.issues.api.tools import build_tools
 from jesinia.apps.issues.application.apply import ApplyEngine
+from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.ports import AgentAsker
@@ -30,6 +32,7 @@ from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import RUN_INTERVAL, SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
+from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
 from jesinia.core.db import DbClass, ModuleDb, open_db
@@ -71,6 +74,8 @@ class IssuesModule:
         self._pending: PendingService | None = None
         self._apply: ApplyService | None = None
         self._applied: SqliteApplyStore | None = None
+        self._epics: EpicService | None = None
+        self._briefs: BriefService | None = None
 
     @property
     def idempotency(self) -> IdempotencyStore:
@@ -130,6 +135,20 @@ class IssuesModule:
         if self._apply is None:
             raise self._needs_github()
         return self._apply
+
+    @property
+    def epics(self) -> EpicService:
+        """The Epics views, conversion plans, milestones and agent proposals (no GitHub)."""
+        if self._epics is None:
+            raise _not_started()
+        return self._epics
+
+    @property
+    def briefs(self) -> BriefService:
+        """Publishing approved delivery briefs (needs the github service)."""
+        if self._briefs is None:
+            raise self._needs_github()
+        return self._briefs
 
     async def run_suggestions(self) -> None:
         """The ``issues.suggest`` job: start the suggestion runs that are due."""
@@ -199,6 +218,10 @@ class IssuesModule:
         if interrupted := applied.interrupt_running():
             log.info("marked %d issues apply batches interrupted after a stop", interrupted)
         self._pending = PendingService(applied, store, _utc_now)
+        briefs = SqliteBriefStore(self._conn)
+        self._epics = EpicService(
+            store, SqliteSuggestionStore(self._conn), suggest, briefs, _utc_now
+        )
         ctx.scheduler.every(SUGGEST_JOB, RUN_INTERVAL, self.run_suggestions, at_start=True)
         github = ctx.services.get("github")
         if isinstance(github, GitHubService):
@@ -227,6 +250,15 @@ class IssuesModule:
             self._apply = ApplyService(
                 engine, applied, SqliteSuggestionStore(self._conn), store, _utc_now
             )
+            self._briefs = BriefService(
+                client,
+                store,
+                briefs,
+                SqliteSuggestionStore(self._conn),
+                _utc_now,
+                on_rate_limit=self._sync.back_off,
+                blocked_until=self._sync.backoff_until,
+            )
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_repos, at_start=True)
 
     async def stop(self) -> None:
@@ -242,6 +274,8 @@ class IssuesModule:
         self._pending = None
         self._apply = None
         self._applied = None
+        self._epics = None
+        self._briefs = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None

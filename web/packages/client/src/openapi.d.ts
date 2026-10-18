@@ -1190,7 +1190,7 @@ export interface paths {
         /**
          * Get Suggestions
          * @description Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
-         *     repo, one batch ``scope`` (with its latest priority ask), or all, oldest first and at
+         *     repo, one batch ``scope`` (with its latest background ask), or all, oldest first and at
          *     most ``limit``. ``state`` may repeat (default: the
          *     open ones, ``draft`` and ``edited``).
          */
@@ -1428,6 +1428,229 @@ export interface paths {
          *     409.
          */
         post: operations["retry_batch_api_issues_pending__batch__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/epics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Epics
+         * @description The open epics and initiatives of the watched repos (or one ``repo``), each with its
+         *     progress and readiness, from the cache.
+         */
+        get: operations["get_epics_api_issues_epics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/epics/{owner}/{repo}/{n}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Epic
+         * @description One epic: its children in order with what blocks each, its readiness, the approved
+         *     brief and a brief composed from the cache. 404 for an issue that isn't an epic.
+         */
+        get: operations["get_epic_api_issues_epics__owner___repo___n__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/epics/{owner}/{repo}/{n}/accepts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Accepts
+         * @description Whether ``child_repo#child_n`` may be dropped onto this issue: refused (with the
+         *     reason) for itself, one of its ancestors, another owner's issue or an initiative into an
+         *     epic; warned for another repo ("won't fit one PR").
+         */
+        get: operations["get_accepts_api_issues_epics__owner___repo___n__accepts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/epics/{owner}/{repo}/{n}/conversion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Conversion
+         * @description What converting the issue's checklist into sub-issues would do: linked items matched,
+         *     unlinked ones drafted as new issues (no labels), and what is skipped and why. Writes
+         *     nothing.
+         */
+        get: operations["get_conversion_api_issues_epics__owner___repo___n__conversion_get"];
+        put?: never;
+        /**
+         * Convert
+         * @description Approve the conversion previewed with ``digest``: one batch (create the new issues,
+         *     then link every child in order) applied in the background, a 202 with the batch and
+         *     ``Location`` to poll. A 409 when the plan changed since (preview again) or has nothing
+         *     to do. The checklist stays in the body.
+         */
+        post: operations["convert_api_issues_epics__owner___repo___n__conversion_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/epics/{owner}/{repo}/{n}/brief/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Draft Brief
+         * @description Ask the agent for the epic's delivery brief, in the background; poll
+         *     ``GET /suggestions?scope=`` with the answer's ``scope``. The result is a ``brief`` draft
+         *     (``payload.text``) to edit and approve.
+         */
+        post: operations["draft_brief_api_issues_epics__owner___repo___n__brief_draft_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/epics/{owner}/{repo}/{n}/brief": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Brief
+         * @description Approve the brief: it is posted on the epic as the ``<!-- jesinia:brief -->``
+         *     comment, or the comment already stored is edited in place (a deleted one is posted
+         *     anew). A post cut off by a stop is found again, never posted twice.
+         */
+        post: operations["approve_brief_api_issues_epics__owner___repo___n__brief_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/epics/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose Groups
+         * @description Ask the agent to group open, ungrouped issues into candidate epics and to add some to
+         *     existing epics, in the background; the ``group`` drafts carry the answer's ``scope``.
+         *     Approving one creates the epic (or links the issue) through the apply engine.
+         */
+        post: operations["propose_groups_api_issues_epics_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/suggestions/split": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose Split
+         * @description Ask the agent how to split an open issue too big for one PR, in the background; the
+         *     ``split`` draft carries the answer's ``scope``. Approving it creates the parts as the
+         *     issue's sub-issues.
+         */
+        post: operations["propose_split_api_issues_suggestions_split_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/milestones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Milestones
+         * @description A repo's milestones from the cache, each standing for its open issues with their
+         *     readiness rolled up (a queue item and a filter; Jesinia never writes milestones).
+         */
+        get: operations["get_milestones_api_issues_milestones_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/milestones/{owner}/{repo}/{n}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Milestone
+         * @description One milestone (``n`` is its number): its open issues, their rolled-up readiness and
+         *     the brief built from them.
+         */
+        get: operations["get_milestone_api_issues_milestones__owner___repo___n__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1769,7 +1992,7 @@ export interface components {
              * Origin
              * @enum {string}
              */
-            origin: "pending" | "suggestion";
+            origin: "pending" | "suggestion" | "epic";
             /**
              * Status
              * @enum {string}
@@ -1873,6 +2096,18 @@ export interface components {
             /** Markdown */
             markdown: string;
         };
+        /**
+         * BlockerOut
+         * @description An issue in the way of an item's readiness, and why.
+         */
+        BlockerOut: {
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+            /** Reason */
+            reason: string;
+        };
         /** BodyIn */
         BodyIn: {
             /** Body */
@@ -1938,6 +2173,64 @@ export interface components {
             paths: string[];
             /** Detected At */
             detected_at: string;
+        };
+        /**
+         * ContainmentOut
+         * @description Whether a drop onto an epic may happen ("can't drop here" shows ``refusal.reason``);
+         *     ``warning`` is "won't fit one PR" for a child in another repo.
+         */
+        ContainmentOut: {
+            /** Allowed */
+            allowed: boolean;
+            refusal: components["schemas"]["RefusalOut"] | null;
+            /** Warning */
+            warning: string | null;
+        };
+        /**
+         * ConversionChildOut
+         * @description A child the conversion links: an existing issue (``repo`` and ``n``) or one it creates
+         *     (``temp_id``, ``is_new``), with its title and a warning for another repo.
+         */
+        ConversionChildOut: {
+            /** Item */
+            item: string;
+            /** Repo */
+            repo: string | null;
+            /** N */
+            n: number | null;
+            /** Temp Id */
+            temp_id: string | null;
+            /** Title */
+            title: string;
+            /** Is New */
+            is_new: boolean;
+            /** Warning */
+            warning: string | null;
+        };
+        /**
+         * ConversionIn
+         * @description The approval of a previewed conversion: its ``digest``.
+         */
+        ConversionIn: {
+            /** Digest */
+            digest: string;
+        };
+        /**
+         * ConversionPlanOut
+         * @description What converting the checklist would do, from the cache; nothing is written. Approve it
+         *     with ``digest`` (``POST`` the same path): the plan must still be this one.
+         */
+        ConversionPlanOut: {
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+            /** Digest */
+            digest: string;
+            /** Children */
+            children: components["schemas"]["ConversionChildOut"][];
+            /** Skipped */
+            skipped: components["schemas"]["SkippedItemOut"][];
         };
         /** CountsOut */
         CountsOut: {
@@ -2040,6 +2333,100 @@ export interface components {
             /** Runner */
             runner: string;
         };
+        /**
+         * EpicBriefIn
+         * @description The brief the author approves (edited or as drafted); ``suggestion_id`` is the
+         *     ``brief`` draft it came from, marked approved once posted.
+         */
+        EpicBriefIn: {
+            /** Text */
+            text: string;
+            /** Suggestion Id */
+            suggestion_id?: string | null;
+        };
+        /**
+         * EpicBriefOut
+         * @description The approved brief as stored on the epic (the ``<!-- jesinia:brief -->`` comment).
+         *     ``state`` is ``in_flight`` while a post was cut off (the next approval finds it again).
+         */
+        EpicBriefOut: {
+            /** Comment Id */
+            comment_id: number | null;
+            /** Url */
+            url: string | null;
+            /** Text */
+            text: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "in_flight" | "posted";
+            /** Posted At */
+            posted_at: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * EpicDetailOut
+         * @description An epic's page: the children in order (``null`` while never fetched; refresh the item),
+         *     the approved brief, a brief composed from the cache (``default_brief``, what Copy brief
+         *     offers before one is approved) and how many checklist items its body has (convert them with
+         *     ``GET``/``POST …/conversion``). ``body`` is the issue author's text, shown as data.
+         */
+        EpicDetailOut: {
+            epic: components["schemas"]["EpicOut"];
+            /** Body */
+            body: string;
+            /** Children */
+            children: components["schemas"]["MemberOut"][] | null;
+            brief: components["schemas"]["EpicBriefOut"] | null;
+            /** Default Brief */
+            default_brief: string;
+            /** Checklist Items */
+            checklist_items: number;
+        };
+        /**
+         * EpicOut
+         * @description An epic (or initiative) in the Epics list: ``done`` closed children of ``total``,
+         *     readiness, and ``lacks_label`` when it has children but no ``epic`` label (Jesinia suggests
+         *     adding it).
+         */
+        EpicOut: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
+            /** Labels */
+            labels: string[];
+            /** Priority */
+            priority: string | null;
+            /** Is Initiative */
+            is_initiative: boolean;
+            /** Lacks Label */
+            lacks_label: boolean;
+            /** Done */
+            done: number;
+            /** Total */
+            total: number;
+            readiness: components["schemas"]["ReadinessOut"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** EpicsOut */
+        EpicsOut: {
+            /** Epics */
+            epics: components["schemas"]["EpicOut"][];
+        };
         /** EvidenceOut */
         EvidenceOut: {
             /** Ci */
@@ -2097,6 +2484,14 @@ export interface components {
         FolderPatchIn: {
             /** Name */
             name: string;
+        };
+        /**
+         * GroupAskIn
+         * @description Which open, ungrouped issues to group: one repo's, or every watched repo's (``null``).
+         */
+        GroupAskIn: {
+            /** Repo */
+            repo?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2448,13 +2843,16 @@ export interface components {
         /**
          * IssueSuggestionsOut
          * @description Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked
-         *     for, ``priority_run`` the latest priority ask when a batch ``scope`` was.
+         *     for. When a ``scope`` was, ``ask_run`` is the latest background ask about it (a priority,
+         *     groups, split or brief ask); ``priority_run`` is the same run, kept for the priority
+         *     clients.
          */
         IssueSuggestionsOut: {
             /** Suggestions */
             suggestions: components["schemas"]["IssueSuggestionOut"][];
             run: components["schemas"]["IssueSuggestionRunOut"] | null;
             priority_run?: components["schemas"]["IssuePriorityRunOut"] | null;
+            ask_run?: components["schemas"]["IssuePriorityRunOut"] | null;
         };
         /**
          * IssueTargetBody
@@ -2725,6 +3123,34 @@ export interface components {
             /** Marked */
             marked: number;
         };
+        /**
+         * MemberOut
+         * @description A child of an epic, or an open issue of a milestone. ``cached`` is false for one in a
+         *     repo nobody added (its title and state are unknown then); ``blocker`` says why it isn't
+         *     ready (``None``: ready, or closed); ``warning`` is "won't fit one PR".
+         */
+        MemberOut: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+            /** Cached */
+            cached: boolean;
+            /** Title */
+            title: string | null;
+            /** Url */
+            url: string | null;
+            /** State */
+            state: string | null;
+            /** Readiness */
+            readiness: string | null;
+            /** Complete */
+            complete: boolean | null;
+            /** Blocker */
+            blocker: string | null;
+            /** Warning */
+            warning?: string | null;
+        };
         /** MergeIn */
         MergeIn: {
             /** Sources */
@@ -2743,6 +3169,41 @@ export interface components {
         MessageIn: {
             /** Text */
             text: string;
+        };
+        /**
+         * MilestoneDetailOut
+         * @description A milestone with its open issues and the brief built from them.
+         */
+        MilestoneDetailOut: {
+            milestone: components["schemas"]["MilestoneOut"];
+            /** Issues */
+            issues: components["schemas"]["MemberOut"][];
+            /** Brief */
+            brief: string;
+        };
+        /**
+         * MilestoneOut
+         * @description A milestone as a queue item: its open issues' count and rolled-up readiness.
+         */
+        MilestoneOut: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+            /** Title */
+            title: string;
+            /** State */
+            state: string;
+            /** Due On */
+            due_on: string | null;
+            /** Open Issues */
+            open_issues: number;
+            readiness: components["schemas"]["ReadinessOut"];
+        };
+        /** MilestonesOut */
+        MilestonesOut: {
+            /** Milestones */
+            milestones: components["schemas"]["MilestoneOut"][];
         };
         /** MoveIn */
         MoveIn: {
@@ -3218,6 +3679,34 @@ export interface components {
              */
             as_of: string;
         };
+        /**
+         * ReadinessOut
+         * @description Whether an item is ready for an agent: ``blockers`` name each issue in the way;
+         *     ``warning`` is "won't fit one PR" when an epic's children span repos; ``note`` says why an
+         *     item with nothing to check isn't ready (no children, children never fetched, all closed).
+         */
+        ReadinessOut: {
+            /** Ready */
+            ready: boolean;
+            /** Blockers */
+            blockers: components["schemas"]["BlockerOut"][];
+            /** Cross Repo */
+            cross_repo: boolean;
+            /** Warning */
+            warning: string | null;
+            /** Note */
+            note: string | null;
+        };
+        /** RefusalOut */
+        RefusalOut: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "self" | "cycle" | "cross_owner" | "initiative";
+            /** Reason */
+            reason: string;
+        };
         /** RemoveAreaBody */
         RemoveAreaBody: {
             /**
@@ -3495,6 +3984,13 @@ export interface components {
              * @description The KB folder kept posts are written to
              */
             source_folder: string;
+        };
+        /** SkippedItemOut */
+        SkippedItemOut: {
+            /** Item */
+            item: string;
+            /** Reason */
+            reason: string;
         };
         /** StartIn */
         StartIn: {
@@ -8527,6 +9023,886 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApplyBatchOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_epics_api_issues_epics_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_epic_api_issues_epics__owner___repo___n__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicDetailOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_accepts_api_issues_epics__owner___repo___n__accepts_get: {
+        parameters: {
+            query: {
+                child_repo: string;
+                child_n: number;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContainmentOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_conversion_api_issues_epics__owner___repo___n__conversion_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversionPlanOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    convert_api_issues_epics__owner___repo___n__conversion_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    draft_brief_api_issues_epics__owner___repo___n__brief_draft_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuePriorityRunOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    approve_brief_api_issues_epics__owner___repo___n__brief_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicBriefIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicBriefOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    propose_groups_api_issues_epics_proposals_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupAskIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuePriorityRunOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    propose_split_api_issues_suggestions_split_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssueRefIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuePriorityRunOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_milestones_api_issues_milestones_get: {
+        parameters: {
+            query: {
+                repo: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MilestonesOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_milestone_api_issues_milestones__owner___repo___n__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MilestoneDetailOut"];
                 };
             };
             /** @description Bad Request */

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import HTTPException
 
+from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.reads import IssueQueries
@@ -107,7 +108,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     module = IssuesModule()
     with pytest.raises(HTTPException, match="not started"):
         _ = module.sync
-    for name in ("labels", "queries", "pending", "apply"):
+    for name in ("labels", "queries", "pending", "apply", "epics", "briefs"):
         with pytest.raises(HTTPException, match="not started"):
             getattr(module, name)
     await module.sync_repos()  # nothing to sync before start
@@ -120,6 +121,9 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
         _ = module.labels
     with pytest.raises(HTTPException, match="require the github service"):
         _ = module.apply
+    with pytest.raises(HTTPException, match="require the github service"):
+        _ = module.briefs  # posting a brief needs GitHub, ...
+    assert isinstance(module.epics, EpicService)  # ... the epic views don't
     assert isinstance(module.queries, IssueQueries)  # the cache reads need no GitHub
     assert isinstance(module.pending, PendingService)  # so does the tray
     assert module.clock().tzinfo is not None
@@ -152,6 +156,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     assert isinstance(module.sync, SyncService)
     assert isinstance(module.labels, LabelSetupService)
     assert isinstance(module.apply, ApplyService)
+    assert isinstance(module.briefs, BriefService)
     assert module.pending.batch("b").status == "interrupted"
     # Without a token a repo can't be added (GitHub names it), ...
     with pytest.raises(GitHubUnavailable):

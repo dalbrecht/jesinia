@@ -28,9 +28,10 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, cast
 
 from jesinia.apps.issues.application.apply import ApplyEngine
+from jesinia.apps.issues.application.epics import ancestors_of, check_parent, facts_of
 from jesinia.apps.issues.application.labels import Clock
 from jesinia.apps.issues.application.ports import (
     AppliedBatch,
@@ -58,6 +59,7 @@ from jesinia.apps.issues.domain.changes import (
     parse_source,
     pending_batch,
 )
+from jesinia.apps.issues.domain.epics import Facts, Key, issue_key, proposal_batch
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA
 from jesinia.apps.issues.domain.suggestions import (
     OPEN_STATES,
@@ -188,6 +190,9 @@ class PendingService:
         state = self._cache.repo(target.repo)
         check_change(change, DEFAULT_SCHEMA if state is None else state.schema)
         if isinstance(change, SetParent):
+            if isinstance(change.parent, Existing):
+                # Refused while dragging, with the reason (IR17): nothing is staged.
+                check_parent(self._cache, change.parent, target)
             # Staged against the parent the author saw: a move on GitHub since is a conflict.
             seen = cached.issue.parent
             expected = None if seen is None else Existing(seen.repo, seen.number)
@@ -353,6 +358,23 @@ class ApplyService:
         """``begin_pending`` and wait for the result."""
         return await self._run(self.begin_pending(ids, None), None)
 
+    def start_batch(
+        self, make: Callable[[], ChangeBatch], origin: ApplyOrigin, key: str | None
+    ) -> AppliedBatch:
+        """Store the batch ``make`` builds (an approved checklist conversion, say) ``running``
+        and apply it in the background (IR45). A replay of ``key`` answers its batch as it
+        stands, without calling ``make`` and never running it again (IR46).
+
+        Raises:
+            Whatever ``make`` raises; nothing is stored then.
+        """
+        if (found := self._by_key(key)) is not None:
+            self._resume_lost(found, None)
+            return found
+        applied = self._begin(make(), origin, None, key)
+        self._spawn(applied, None)
+        return applied
+
     async def apply(self, batch: ChangeBatch, *, origin: ApplyOrigin) -> AppliedBatch:
         """Store ``batch``, apply it and wait for the result."""
         return await self._run(self._begin(batch, origin, None, None), None)
@@ -408,6 +430,8 @@ class ApplyService:
         if found.kind == "priority":
             # About a batch of issues: each change is guarded by the label the draft saw.
             batch = approval_batch(found)
+        elif found.kind in ("group", "split"):
+            batch = self._proposal_batch(found)
         else:
             batch = self._issue_batch(found)
         if not self._suggestions.claim(found.id, self._clock()):
@@ -572,6 +596,28 @@ class ApplyService:
                 self._cache, str(found.payload["repo"]), int(str(found.payload["n"]))
             )
         return approval_batch(found, duplicate_id)
+
+    def _proposal_batch(self, found: Suggestion) -> ChangeBatch:
+        """The batch approving a ``group`` or ``split`` draft makes, after its premise check
+        against the cache (``domain.epics.proposal_batch``).
+
+        Raises:
+            SuggestionStaleError: see ``proposal_batch``.
+        """
+        payload = found.payload
+        refs = [
+            cast(dict[str, object], payload[name]) for name in ("epic", "issue") if name in payload
+        ]
+        refs += cast(list[dict[str, object]], payload.get("issues", []))
+        known: dict[Key, Facts] = {}
+        ancestors: dict[Key, tuple[Key, ...]] = {}
+        for ref in refs:
+            repo, n = str(ref["repo"]), cast(int, ref["n"])
+            facts = facts_of(self._cache, repo, n)
+            if facts is not None:
+                known[facts.key] = facts
+                ancestors[issue_key(repo, n)] = ancestors_of(self._cache, repo, n)
+        return proposal_batch(found, known, ancestors)
 
     def _release(self, suggestion_id: str) -> None:
         """Release a claim, best effort: a failure here must not hide the apply's own outcome

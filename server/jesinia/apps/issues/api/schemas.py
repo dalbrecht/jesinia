@@ -10,14 +10,24 @@ from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, Field, JsonValue
 
+from jesinia.apps.issues.application.epics import (
+    Containment,
+    EpicChild,
+    EpicDetail,
+    EpicSummary,
+    MilestoneItem,
+)
 from jesinia.apps.issues.application.labels import LabelRun, OpResult
 from jesinia.apps.issues.application.ports import (
     AppliedBatch,
     ApplyOrigin,
+    BriefState,
+    CachedIssue,
     RepoState,
     RunSource,
     RunStatus,
     SchemaSource,
+    StoredBrief,
     SuggestionRun,
 )
 from jesinia.apps.issues.application.reads import IssueDetail
@@ -31,6 +41,7 @@ from jesinia.apps.issues.domain.changes import (
     EnsureLabel,
     Existing,
     IssueChange,
+    New,
     PendingChange,
     PendingSource,
     RemoveArea,
@@ -42,6 +53,15 @@ from jesinia.apps.issues.domain.changes import (
     StepResult,
     StepState,
     Target,
+)
+from jesinia.apps.issues.domain.epics import (
+    Blocker,
+    ConversionPlan,
+    Member,
+    PlannedChild,
+    Readiness,
+    RefusalCode,
+    member_blocker,
 )
 from jesinia.apps.issues.domain.labels import (
     CreateLabel,
@@ -516,11 +536,14 @@ class IssueSuggestionRunOut(BaseModel):
 
 class IssueSuggestionsOut(BaseModel):
     """Suggestions, oldest first; ``run`` is the issue's latest run when one issue was asked
-    for, ``priority_run`` the latest priority ask when a batch ``scope`` was."""
+    for. When a ``scope`` was, ``ask_run`` is the latest background ask about it (a priority,
+    groups, split or brief ask); ``priority_run`` is the same run, kept for the priority
+    clients."""
 
     suggestions: list[IssueSuggestionOut]
     run: IssueSuggestionRunOut | None
     priority_run: IssuePriorityRunOut | None = None
+    ask_run: IssuePriorityRunOut | None = None
 
 
 class IssueSuggestionEditIn(BaseModel):
@@ -874,3 +897,325 @@ class SuggestionApproveOut(BaseModel):
 
     suggestion: IssueSuggestionOut
     batch: ApplyBatchOut
+
+
+# Epics, conversion, briefs and milestones (Task 8) --------------------------------------------
+
+
+class BlockerOut(BaseModel):
+    """An issue in the way of an item's readiness, and why."""
+
+    repo: str
+    n: int
+    reason: str
+
+    @classmethod
+    def of(cls, blocker: Blocker) -> BlockerOut:
+        return cls(repo=blocker.repo, n=blocker.n, reason=blocker.reason)
+
+
+class ReadinessOut(BaseModel):
+    """Whether an item is ready for an agent: ``blockers`` name each issue in the way;
+    ``warning`` is "won't fit one PR" when an epic's children span repos; ``note`` says why an
+    item with nothing to check isn't ready (no children, children never fetched, all closed)."""
+
+    ready: bool
+    blockers: list[BlockerOut]
+    cross_repo: bool
+    warning: str | None
+    note: str | None
+
+    @classmethod
+    def of(cls, readiness: Readiness) -> ReadinessOut:
+        return cls(
+            ready=readiness.ready,
+            blockers=[BlockerOut.of(b) for b in readiness.blockers],
+            cross_repo=readiness.cross_repo,
+            warning=readiness.warning,
+            note=readiness.note,
+        )
+
+
+class RefusalOut(BaseModel):
+    code: RefusalCode
+    reason: str
+
+
+class ContainmentOut(BaseModel):
+    """Whether a drop onto an epic may happen ("can't drop here" shows ``refusal.reason``);
+    ``warning`` is "won't fit one PR" for a child in another repo."""
+
+    allowed: bool
+    refusal: RefusalOut | None
+    warning: str | None
+
+    @classmethod
+    def of(cls, found: Containment) -> ContainmentOut:
+        refusal = found.refusal
+        return cls(
+            allowed=refusal is None,
+            refusal=None
+            if refusal is None
+            else RefusalOut(code=refusal.code, reason=refusal.reason),
+            warning=found.warning,
+        )
+
+
+class EpicOut(BaseModel):
+    """An epic (or initiative) in the Epics list: ``done`` closed children of ``total``,
+    readiness, and ``lacks_label`` when it has children but no ``epic`` label (Jesinia suggests
+    adding it)."""
+
+    repo: str
+    number: int
+    title: str
+    url: str
+    labels: list[str]
+    priority: str | None
+    is_initiative: bool
+    lacks_label: bool
+    done: int
+    total: int
+    readiness: ReadinessOut
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, summary: EpicSummary) -> EpicOut:
+        issue = summary.issue
+        return cls(
+            repo=issue.repo,
+            number=issue.number,
+            title=issue.title,
+            url=issue.url,
+            labels=list(issue.labels),
+            priority=summary.triage.priority,
+            is_initiative=summary.is_initiative,
+            lacks_label=summary.lacks_label,
+            done=summary.done,
+            total=summary.total,
+            readiness=ReadinessOut.of(summary.readiness),
+            updated_at=issue.updated_at,
+        )
+
+
+class EpicsOut(BaseModel):
+    epics: list[EpicOut]
+
+
+class MemberOut(BaseModel):
+    """A child of an epic, or an open issue of a milestone. ``cached`` is false for one in a
+    repo nobody added (its title and state are unknown then); ``blocker`` says why it isn't
+    ready (``None``: ready, or closed); ``warning`` is "won't fit one PR"."""
+
+    repo: str
+    number: int
+    cached: bool
+    title: str | None
+    url: str | None
+    state: str | None
+    readiness: str | None
+    complete: bool | None
+    blocker: str | None
+    warning: str | None = None
+
+    @classmethod
+    def of(cls, cached: CachedIssue, warning: str | None = None) -> MemberOut:
+        issue = cached.issue
+        is_open = issue.state == "open"
+        member = Member(issue.repo, issue.number, issue.title, is_open, cached.triage)
+        return cls(
+            repo=issue.repo,
+            number=issue.number,
+            cached=True,
+            title=issue.title,
+            url=issue.url,
+            state=issue.state,
+            readiness=cached.triage.readiness,
+            complete=cached.triage.complete,
+            blocker=member_blocker(member) if is_open else None,
+            warning=warning,
+        )
+
+    @classmethod
+    def child(cls, found: EpicChild) -> MemberOut:
+        if found.cached is not None:
+            return cls.of(found.cached, found.warning)
+        return cls(
+            repo=found.ref.repo,
+            number=found.ref.number,
+            cached=False,
+            title=None,
+            url=None,
+            state=None,
+            readiness=None,
+            complete=None,
+            blocker="not in the cache; sync its repo first",
+            warning=found.warning,
+        )
+
+
+class EpicBriefOut(BaseModel):
+    """The approved brief as stored on the epic (the ``<!-- jesinia:brief -->`` comment).
+    ``state`` is ``in_flight`` while a post was cut off (the next approval finds it again)."""
+
+    comment_id: int | None
+    url: str | None
+    text: str
+    state: BriefState
+    posted_at: datetime | None
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, brief: StoredBrief) -> EpicBriefOut:
+        return cls(
+            comment_id=brief.comment_id,
+            url=brief.url,
+            text=brief.text,
+            state=brief.state,
+            posted_at=brief.posted_at,
+            updated_at=brief.updated_at,
+        )
+
+
+class EpicDetailOut(BaseModel):
+    """An epic's page: the children in order (``null`` while never fetched; refresh the item),
+    the approved brief, a brief composed from the cache (``default_brief``, what Copy brief
+    offers before one is approved) and how many checklist items its body has (convert them with
+    ``GET``/``POST …/conversion``). ``body`` is the issue author's text, shown as data."""
+
+    epic: EpicOut
+    body: str
+    children: list[MemberOut] | None
+    brief: EpicBriefOut | None
+    default_brief: str
+    checklist_items: int
+
+    @classmethod
+    def of(cls, detail: EpicDetail) -> EpicDetailOut:
+        children = detail.children
+        return cls(
+            epic=EpicOut.of(detail.summary),
+            body=detail.summary.issue.body,
+            children=None if children is None else [MemberOut.child(c) for c in children],
+            brief=None if detail.brief is None else EpicBriefOut.of(detail.brief),
+            default_brief=detail.default_brief,
+            checklist_items=detail.checklist_items,
+        )
+
+
+class ConversionChildOut(BaseModel):
+    """A child the conversion links: an existing issue (``repo`` and ``n``) or one it creates
+    (``temp_id``, ``is_new``), with its title and a warning for another repo."""
+
+    item: str
+    repo: str | None
+    n: int | None
+    temp_id: str | None
+    title: str
+    is_new: bool
+    warning: str | None
+
+    @classmethod
+    def of(cls, child: PlannedChild) -> ConversionChildOut:
+        target = child.target
+        existing = target if isinstance(target, Existing) else None
+        return cls(
+            item=child.item,
+            repo=None if existing is None else existing.repo,
+            n=None if existing is None else existing.n,
+            temp_id=target.temp_id if isinstance(target, New) else None,
+            title=child.title,
+            is_new=child.is_new,
+            warning=child.warning,
+        )
+
+
+class SkippedItemOut(BaseModel):
+    item: str
+    reason: str
+
+
+class ConversionPlanOut(BaseModel):
+    """What converting the checklist would do, from the cache; nothing is written. Approve it
+    with ``digest`` (``POST`` the same path): the plan must still be this one."""
+
+    repo: str
+    n: int
+    digest: str
+    children: list[ConversionChildOut]
+    skipped: list[SkippedItemOut]
+
+    @classmethod
+    def of(cls, repo: str, n: int, plan: ConversionPlan) -> ConversionPlanOut:
+        return cls(
+            repo=repo,
+            n=n,
+            digest=plan.digest,
+            children=[ConversionChildOut.of(c) for c in plan.children],
+            skipped=[SkippedItemOut(item=s.item, reason=s.reason) for s in plan.skipped],
+        )
+
+
+class ConversionIn(BaseModel):
+    """The approval of a previewed conversion: its ``digest``."""
+
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class EpicBriefIn(BaseModel):
+    """The brief the author approves (edited or as drafted); ``suggestion_id`` is the
+    ``brief`` draft it came from, marked approved once posted."""
+
+    text: str = Field(min_length=1, max_length=COMMENT_BODY_LIMIT)
+    suggestion_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class GroupAskIn(BaseModel):
+    """Which open, ungrouped issues to group: one repo's, or every watched repo's (``null``)."""
+
+    repo: str | None = Field(default=None, min_length=3, max_length=REPO_MAX)
+
+
+class MilestoneOut(BaseModel):
+    """A milestone as a queue item: its open issues' count and rolled-up readiness."""
+
+    repo: str
+    number: int
+    title: str
+    state: str
+    due_on: datetime | None
+    open_issues: int
+    readiness: ReadinessOut
+
+    @classmethod
+    def of(cls, item: MilestoneItem) -> MilestoneOut:
+        m = item.milestone
+        return cls(
+            repo=item.repo,
+            number=m.number,
+            title=m.title,
+            state=m.state,
+            due_on=m.due_on,
+            open_issues=item.open_issues,
+            readiness=ReadinessOut.of(item.readiness),
+        )
+
+
+class MilestonesOut(BaseModel):
+    milestones: list[MilestoneOut]
+
+
+class MilestoneDetailOut(BaseModel):
+    """A milestone with its open issues and the brief built from them."""
+
+    milestone: MilestoneOut
+    issues: list[MemberOut]
+    brief: str
+
+    @classmethod
+    def of(cls, item: MilestoneItem) -> MilestoneDetailOut:
+        return cls(
+            milestone=MilestoneOut.of(item),
+            issues=[MemberOut.of(c) for c in item.issues],
+            brief=item.brief,
+        )

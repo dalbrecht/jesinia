@@ -30,7 +30,7 @@ _BATCH_COLUMNS = (
     "id, origin, suggestion_id, batch_json, result_json, created_at, updated_at, status, "
     "request_key"
 )
-_ORIGINS: tuple[ApplyOrigin, ...] = ("pending", "suggestion")
+_ORIGINS: tuple[ApplyOrigin, ...] = ("pending", "suggestion", "epic")
 
 
 def _time(value: datetime) -> str:

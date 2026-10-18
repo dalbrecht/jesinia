@@ -25,7 +25,7 @@ MAX_REPLY_DEPTH = 32
 MAX_INT_DIGITS = 18
 _ERRORS_SHOWN = 5
 _FENCED_REPLY = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\n(.*)\n```$", re.DOTALL)
-SCHEMA_NAMES = ("triage", "duplicates", "grouping", "priority", "queue")
+SCHEMA_NAMES = ("triage", "duplicates", "grouping", "priority", "queue", "brief")
 
 
 def _is_json_integer(checker: object, instance: object) -> bool:

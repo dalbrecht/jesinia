@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Issues routes under ``/api/issues``: watched repos and their Settings, the Inbox and
 Backlog, one issue, the label setup and migration batches, suggestion drafts (list, edit,
-dismiss, approve, and runs on demand), and the pending-changes tray with its applied batches.
+dismiss, approve, and runs on demand), the pending-changes tray with its applied batches, and
+epics (their list and page, drop checks, checklist conversion, group, split and brief asks, the
+approved brief) and milestones.
 
 Every route needs the owner: the app mounts module routers behind ``require_owner``, so agent
 session tokens are refused (IR2); the routes that change GitHub (applying a label batch,
@@ -28,8 +30,18 @@ from pydantic import BaseModel
 from jesinia.apps.issues.api.schemas import (
     REPO_MAX,
     ApplyBatchOut,
+    ContainmentOut,
+    ConversionIn,
+    ConversionPlanOut,
+    EpicBriefIn,
+    EpicBriefOut,
+    EpicDetailOut,
+    EpicOut,
+    EpicsOut,
+    GroupAskIn,
     IssueDetailOut,
     IssuePriorityRunOut,
+    IssueRefIn,
     IssuesErrorOut,
     IssuesRepoIn,
     IssuesRepoOut,
@@ -45,6 +57,9 @@ from jesinia.apps.issues.api.schemas import (
     LabelApplyOut,
     LabelPlanIn,
     LabelPlanOut,
+    MilestoneDetailOut,
+    MilestoneOut,
+    MilestonesOut,
     PendingApplyIn,
     PendingIn,
     PendingListOut,
@@ -52,6 +67,7 @@ from jesinia.apps.issues.api.schemas import (
     SuggestionApproveOut,
     body_change,
 )
+from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.reads import IssueQueries
@@ -63,6 +79,12 @@ from jesinia.apps.issues.domain.changes import (
     ChangeDomainError,
     NothingPendingError,
     PendingNotFoundError,
+)
+from jesinia.apps.issues.domain.epics import (
+    ConversionOutdatedError,
+    EpicDomainError,
+    NotAnEpicError,
+    NothingToConvertError,
 )
 from jesinia.apps.issues.domain.labels import (
     LabelNameCollisionError,
@@ -76,6 +98,7 @@ from jesinia.apps.issues.domain.schema import InvalidSettingsSchemaError, valida
 from jesinia.apps.issues.domain.suggestions import (
     OPEN_STATES,
     DuplicateNotCachedError,
+    PriorityRun,
     SuggestionDomainError,
     SuggestionFilters,
     SuggestionNotFoundError,
@@ -127,6 +150,12 @@ class IssuesHost(Protocol):
     def apply(self) -> ApplyService: ...
 
     @property
+    def epics(self) -> EpicService: ...
+
+    @property
+    def briefs(self) -> BriefService: ...
+
+    @property
     def idempotency(self) -> IdempotencyStore: ...
 
     def clock(self) -> datetime:
@@ -152,6 +181,9 @@ _STATUS: dict[type[Exception], int] = {
     NothingPendingError: status.HTTP_409_CONFLICT,
     BatchRunningError: status.HTTP_409_CONFLICT,
     BatchNotFoundError: status.HTTP_404_NOT_FOUND,
+    NotAnEpicError: status.HTTP_404_NOT_FOUND,
+    ConversionOutdatedError: status.HTTP_409_CONFLICT,
+    NothingToConvertError: status.HTTP_409_CONFLICT,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -161,6 +193,7 @@ _STATUS: dict[type[Exception], int] = {
     LabelPlanError: status.HTTP_400_BAD_REQUEST,
     SuggestionDomainError: status.HTTP_400_BAD_REQUEST,
     ChangeDomainError: status.HTTP_400_BAD_REQUEST,
+    EpicDomainError: status.HTTP_400_BAD_REQUEST,
     InvalidSettingsSchemaError: status.HTTP_400_BAD_REQUEST,
     GitHubReferenceError: status.HTTP_400_BAD_REQUEST,
     IssueDomainError: status.HTTP_400_BAD_REQUEST,
@@ -168,6 +201,7 @@ _STATUS: dict[type[Exception], int] = {
 _TYPED = (
     TriageDomainError,
     ChangeDomainError,
+    EpicDomainError,
     LabelPlanError,
     SuggestionDomainError,
     SuggestionRunError,
@@ -368,7 +402,7 @@ def build_router(host: IssuesHost) -> APIRouter:
         limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     ) -> Response:
         """Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
-        repo, one batch ``scope`` (with its latest priority ask), or all, oldest first and at
+        repo, one batch ``scope`` (with its latest background ask), or all, oldest first and at
         most ``limit``. ``state`` may repeat (default: the
         open ones, ``draft`` and ``edited``)."""
 
@@ -380,13 +414,15 @@ def build_router(host: IssuesHost) -> APIRouter:
             if repo is not None and n is not None:
                 found = host.suggest.run_state(repo, n)
                 latest = None if found is None else IssueSuggestionRunOut.of(found)
-            asked = None if scope is None else host.suggest.priority_run(scope)
+            asked = None if scope is None else host.suggest.ask_run(scope)
+            shown = None if asked is None else IssuePriorityRunOut.of(asked)
             return IssueSuggestionsOut(
                 suggestions=[
                     IssueSuggestionOut.of(s) for s in host.suggest.suggestions(filters, limit)
                 ],
                 run=latest,
-                priority_run=None if asked is None else IssuePriorityRunOut.of(asked),
+                priority_run=shown,
+                ask_run=shown,
             )
 
         return await _respond(run, host.clock)
@@ -573,6 +609,183 @@ def build_router(host: IssuesHost) -> APIRouter:
             return _started(again.id, ApplyBatchOut.of(again))
 
         return await idem.run(lambda: _respond(run, host.clock))
+
+    epic_path = "/epics/{owner}/{repo}/{n}"
+
+    def _ask_started(run: PriorityRun) -> Response:
+        out = IssuePriorityRunOut.of(run)
+        return JSONResponse(jsonable_encoder(out), status_code=status.HTTP_202_ACCEPTED)
+
+    @r.get("/epics", response_model=EpicsOut)
+    async def get_epics(
+        repo: Annotated[str | None, Query(max_length=REPO_MAX)] = None,
+    ) -> Response:
+        """The open epics and initiatives of the watched repos (or one ``repo``), each with its
+        progress and readiness, from the cache."""
+
+        async def run() -> EpicsOut:
+            return EpicsOut(epics=[EpicOut.of(e) for e in host.epics.epics(repo)])
+
+        return await _respond(run, host.clock)
+
+    @r.get(epic_path, response_model=EpicDetailOut)
+    async def get_epic(owner: Owner, repo: Name, n: Number) -> Response:
+        """One epic: its children in order with what blocks each, its readiness, the approved
+        brief and a brief composed from the cache. 404 for an issue that isn't an epic."""
+
+        async def run() -> EpicDetailOut:
+            return EpicDetailOut.of(host.epics.epic(_repo(owner, repo), n))
+
+        return await _respond(run, host.clock)
+
+    @r.get(f"{epic_path}/accepts", response_model=ContainmentOut)
+    async def get_accepts(
+        owner: Owner,
+        repo: Name,
+        n: Number,
+        child_repo: Annotated[str, Query(min_length=3, max_length=REPO_MAX)],
+        child_n: Annotated[int, Query(ge=1, le=999_999_999)],
+    ) -> Response:
+        """Whether ``child_repo#child_n`` may be dropped onto this issue: refused (with the
+        reason) for itself, one of its ancestors, another owner's issue or an initiative into an
+        epic; warned for another repo ("won't fit one PR")."""
+
+        async def run() -> ContainmentOut:
+            found = host.epics.accepts(_repo(owner, repo), n, child_repo, child_n)
+            return ContainmentOut.of(found)
+
+        return await _respond(run, host.clock)
+
+    @r.get(f"{epic_path}/conversion", response_model=ConversionPlanOut)
+    async def get_conversion(owner: Owner, repo: Name, n: Number) -> Response:
+        """What converting the issue's checklist into sub-issues would do: linked items matched,
+        unlinked ones drafted as new issues (no labels), and what is skipped and why. Writes
+        nothing."""
+
+        async def run() -> ConversionPlanOut:
+            name = _repo(owner, repo)
+            return ConversionPlanOut.of(name, n, host.epics.conversion(name, n))
+
+        return await _respond(run, host.clock)
+
+    @r.post(
+        f"{epic_path}/conversion",
+        response_model=ApplyBatchOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def convert(
+        owner: Owner,
+        repo: Name,
+        n: Number,
+        body: ConversionIn,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Approve the conversion previewed with ``digest``: one batch (create the new issues,
+        then link every child in order) applied in the background, a 202 with the batch and
+        ``Location`` to poll. A 409 when the plan changed since (preview again) or has nothing
+        to do. The checklist stays in the body."""
+
+        async def run() -> Response:
+            name = _repo(owner, repo)
+            started = host.apply.start_batch(
+                lambda: host.epics.conversion(name, n, body.digest).changes,
+                "epic",
+                _request_key("convert", idem),
+            )
+            return _started(started.id, ApplyBatchOut.of(started))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        f"{epic_path}/brief/draft",
+        response_model=IssuePriorityRunOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def draft_brief(
+        owner: Owner, repo: Name, n: Number, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Ask the agent for the epic's delivery brief, in the background; poll
+        ``GET /suggestions?scope=`` with the answer's ``scope``. The result is a ``brief`` draft
+        (``payload.text``) to edit and approve."""
+
+        async def run() -> Response:
+            return _ask_started(host.epics.start_brief(_repo(owner, repo), n))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(f"{epic_path}/brief", response_model=EpicBriefOut)
+    async def approve_brief(
+        owner: Owner,
+        repo: Name,
+        n: Number,
+        body: EpicBriefIn,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Approve the brief: it is posted on the epic as the ``<!-- jesinia:brief -->``
+        comment, or the comment already stored is edited in place (a deleted one is posted
+        anew). A post cut off by a stop is found again, never posted twice."""
+
+        async def run() -> EpicBriefOut:
+            posted = await host.briefs.approve(_repo(owner, repo), n, body.text, body.suggestion_id)
+            return EpicBriefOut.of(posted)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        "/epics/proposals",
+        response_model=IssuePriorityRunOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def propose_groups(body: GroupAskIn, idem: IdempotentCall = keyed) -> Response:
+        """Ask the agent to group open, ungrouped issues into candidate epics and to add some to
+        existing epics, in the background; the ``group`` drafts carry the answer's ``scope``.
+        Approving one creates the epic (or links the issue) through the apply engine."""
+
+        async def run() -> Response:
+            return _ask_started(host.epics.start_groups(body.repo))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        "/suggestions/split",
+        response_model=IssuePriorityRunOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def propose_split(body: IssueRefIn, idem: IdempotentCall = keyed) -> Response:
+        """Ask the agent how to split an open issue too big for one PR, in the background; the
+        ``split`` draft carries the answer's ``scope``. Approving it creates the parts as the
+        issue's sub-issues."""
+
+        async def run() -> Response:
+            return _ask_started(host.epics.start_split(body.repo, body.n))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get("/milestones", response_model=MilestonesOut)
+    async def get_milestones(
+        repo: Annotated[str, Query(min_length=3, max_length=REPO_MAX)],
+    ) -> Response:
+        """A repo's milestones from the cache, each standing for its open issues with their
+        readiness rolled up (a queue item and a filter; Jesinia never writes milestones)."""
+
+        async def run() -> MilestonesOut:
+            return MilestonesOut(
+                milestones=[MilestoneOut.of(m) for m in host.epics.milestones(repo)]
+            )
+
+        return await _respond(run, host.clock)
+
+    @r.get("/milestones/{owner}/{repo}/{n}", response_model=MilestoneDetailOut)
+    async def get_milestone(owner: Owner, repo: Name, n: Number) -> Response:
+        """One milestone (``n`` is its number): its open issues, their rolled-up readiness and
+        the brief built from them."""
+
+        async def run() -> MilestoneDetailOut:
+            return MilestoneDetailOut.of(host.epics.milestone(_repo(owner, repo), n))
+
+        return await _respond(run, host.clock)
 
     # Last: ``/{view}`` would otherwise also match ``/repos``.
     @r.get("/{view}", response_model=IssueViewOut)
