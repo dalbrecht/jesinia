@@ -4,7 +4,7 @@
 // `fake` runner, whose review outputs are valid against the real job schemas. Nothing here
 // touches the developer's GitHub, `gh` config or credentials.
 import { expect, test, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const home = process.env.E2E_HOME ?? "";
@@ -127,6 +127,29 @@ test("a deep review shows its coverage; approving with a BLOCKING comment warns,
   expect(review.comments[0]).toMatchObject({ path: "src/greeter.py", line: 6 });
   expect(review.comments[0]?.body).toContain("BLOCKING");
   expect(JSON.stringify(review)).toContain("jesinia-posting");
+
+  // The posted deep review is kept as a page in the throwaway KB (spec §8), through the KB
+  // service: everything Jesinia owns under `jesinia:`, the agent's text inside provenance.
+  await outline.getByRole("link", { name: /Recommendation/ }).click();
+  const kept = page.getByRole("region", { name: "Kept in your KB" });
+  await expect(kept.getByRole("link", { name: /Reviews\/e2e-dev-greeter\/#1 / })).toBeVisible();
+  const folder = join(home, "kb", "Reviews", "e2e-dev-greeter");
+  const name = readdirSync(folder).find((file) => file.startsWith("#1 "));
+  expect(name).toBeDefined();
+  const text = readFileSync(join(folder, name ?? ""), "utf8");
+  expect(text).toMatch(/^---\nid: [0-9a-f-]{36}\ntitle: /);
+  expect(text).toContain("kind: review/pr");
+  expect(text).toContain("source: https://github.com/e2e-dev/greeter/pull/1");
+  expect(text).toContain("<!-- jesinia:ai agent=fake ");
+  expect(text).toContain("Tags: #code-review #greeter");
+
+  // How it works is only drafted: it is written when the author accepts the seed.
+  const seed = kept.getByRole("region", { name: "Start How it works" });
+  await expect(seed.getByLabel("Drafted How it works")).toContainText("How greetings work today");
+  expect(existsSync(join(folder, "How it works.md"))).toBe(false);
+  await seed.getByRole("button", { name: "Accept" }).click();
+  await expect(kept.getByText("How it works is updated with this review.")).toBeVisible();
+  expect(readFileSync(join(folder, "How it works.md"), "utf8")).toContain("How greetings work today");
 
   // Back in the queue the reviewed PR shows its finished pre-review and coverage.
   await page.getByRole("link", { name: /Queue/ }).click();

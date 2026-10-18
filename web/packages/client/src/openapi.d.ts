@@ -1722,6 +1722,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/prs/{owner}/{repo}/{number}/keep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Keep
+         * @description Keep the round's review page in the KB again (Retry), and draft its How it works
+         *     again unless one was accepted. A KB failure is the answer's ``error``, not a 5xx.
+         */
+        post: operations["keep_api_review_prs__owner___repo___number__keep_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/prs/{owner}/{repo}/{number}/system/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept System
+         * @description Write the round's drafted How it works (spec §6.2: never automatic). Refused with
+         *     409 SystemPageChanged when the page changed since the draft was made.
+         */
+        post: operations["accept_system_api_review_prs__owner___repo___number__system_accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/stacks/{owner}/{repo}/{number}": {
         parameters: {
             query?: never;
@@ -2768,6 +2810,37 @@ export interface components {
              */
             created: boolean;
             post: components["schemas"]["PostOut"];
+        };
+        /**
+         * KeepReviewIn
+         * @description Keep a round's review page again (Retry); the PR's latest round when omitted.
+         */
+        KeepReviewIn: {
+            /** Round Id */
+            round_id?: number | null;
+        };
+        /**
+         * KeptReviewOut
+         * @description Where a round's review page went in the KB, or why it couldn't be kept.
+         */
+        KeptReviewOut: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "kept" | "failed";
+            /** Page Id */
+            page_id: string | null;
+            /**
+             * Path
+             * @description The page's KB path (it carries the PR's title)
+             */
+            path: string | null;
+            /**
+             * Error
+             * @description Why the page couldn't be written (the cause)
+             */
+            error: string | null;
         };
         /**
          * KnowledgeOut
@@ -4022,6 +4095,29 @@ export interface components {
             syncing: boolean;
             /** Sync Error */
             sync_error: string | null;
+        };
+        /**
+         * SystemAcceptIn
+         * @description Accept the round's drafted How it works. ``base_rev`` is the page revision of the
+         *     draft the author was shown (null for a seed); another one answers 409.
+         */
+        SystemAcceptIn: {
+            /** Round Id */
+            round_id: number;
+            /** Base Rev */
+            base_rev?: string | null;
+        };
+        /**
+         * SystemPageOut
+         * @description The How it works page as written.
+         */
+        SystemPageOut: {
+            /** Page Id */
+            page_id: string;
+            /** Path */
+            path: string;
+            /** Rev */
+            rev: string;
         };
         /** TagCheckOut */
         TagCheckOut: {
@@ -10391,6 +10487,194 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RoundOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    keep_api_review_prs__owner___repo___number__keep_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["KeepReviewIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeptReviewOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    accept_system_api_review_prs__owner___repo___number__system_accept_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemAcceptIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemPageOut"];
                 };
             };
             /** @description Bad Request */

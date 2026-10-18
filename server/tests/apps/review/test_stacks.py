@@ -89,7 +89,7 @@ from jesinia.services.github.domain.pr import (
     ReviewSummary,
 )
 from tests.apps.review.fakes import START, FakeClock, FakePullRequests, pull
-from tests.apps.review.test_api import Host, HostModule, keyed
+from tests.apps.review.test_api import Host, HostModule, keeper_in, keyed
 from tests.apps.review.test_jobs import (
     SESSIONS_DB,
     TOOLS,
@@ -1046,7 +1046,9 @@ STACK = f"{API}/stacks/acme/web"
 
 
 @pytest.fixture
-async def api(cfg: Config, conn: sqlite3.Connection, stack: StackEnv) -> AsyncIterator[ApiEnv]:
+async def api(
+    cfg: Config, conn: sqlite3.Connection, stack: StackEnv, tmp_path: Path
+) -> AsyncIterator[ApiEnv]:
     pipeline = Pipeline(
         github=PipelineGitHub(pull(1)),
         files=FakeFiles(),
@@ -1059,6 +1061,7 @@ async def api(cfg: Config, conn: sqlite3.Connection, stack: StackEnv) -> AsyncIt
     queue = QueueService(FakePullRequests(), stack.store, stack.clock)
     reads = ReviewReads(stack.store, queue.status)
     knowledge = KnowledgeService(store=SqliteKnowledgeStore(conn), clock=stack.clock)
+    keeper, kb_conn = keeper_in(tmp_path, stack.store, stack.clock)
     host = Host(
         queue,
         pipeline,
@@ -1067,6 +1070,7 @@ async def api(cfg: Config, conn: sqlite3.Connection, stack: StackEnv) -> AsyncIt
         SqliteIdempotencyStore(conn),
         stack.service,
         knowledge,
+        keeper,
     )
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
@@ -1076,6 +1080,7 @@ async def api(cfg: Config, conn: sqlite3.Connection, stack: StackEnv) -> AsyncIt
         ) as client:
             yield ApiEnv(client, stack)
     await stack.service.drain()
+    kb_conn.close()
 
 
 @dataclass

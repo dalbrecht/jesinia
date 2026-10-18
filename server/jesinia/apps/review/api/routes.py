@@ -23,6 +23,8 @@ from jesinia.apps.review.api.schemas import (
     DoneIn,
     DraftsIn,
     DraftsOut,
+    KeepReviewIn,
+    KeptReviewOut,
     KnowledgeOut,
     LoadIn,
     MetricsHistoryOut,
@@ -48,8 +50,11 @@ from jesinia.apps.review.api.schemas import (
     StackOpenIn,
     StackOpenOut,
     StackOut,
+    SystemAcceptIn,
+    SystemPageOut,
     UnitOut,
 )
+from jesinia.apps.review.application.keep import KeepService
 from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import OpenResult, Pipeline
 from jesinia.apps.review.application.posting import PostingFailed, PostingService
@@ -58,6 +63,12 @@ from jesinia.apps.review.application.reviews import KEEP, ReviewReads
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import GateInputError
+from jesinia.apps.review.domain.kept import (
+    KeptPageError,
+    NoSystemDraft,
+    NotKeepable,
+    SystemPageChanged,
+)
 from jesinia.apps.review.domain.knowledge import KnowledgeError, parse_unit
 from jesinia.apps.review.domain.posting import (
     CommentOnlyOnOwnPr,
@@ -102,6 +113,7 @@ from jesinia.services.github.application.service import (
     GitHubUnavailable,
 )
 from jesinia.services.github.domain.pr import PullRequestDomainError
+from jesinia.services.kb.application.errors import KbError, KbUnavailable
 
 
 class ReviewHost(Protocol):
@@ -128,11 +140,25 @@ class ReviewHost(Protocol):
     @property
     def knowledge(self) -> KnowledgeService: ...
 
+    @property
+    def keeper(self) -> KeepService: ...
+
+    async def keep_finished(self, round_id: int) -> None:
+        """Keep a finished round's review page, best effort (never raises)."""
+        ...
+
 
 _STATUS: dict[type[Exception], int] = {
     PrNotInQueueError: status.HTTP_404_NOT_FOUND,
     NoReviewRound: status.HTTP_404_NOT_FOUND,
     NotAStackError: status.HTTP_404_NOT_FOUND,
+    NoSystemDraft: status.HTTP_404_NOT_FOUND,
+    NotKeepable: status.HTTP_409_CONFLICT,
+    SystemPageChanged: status.HTTP_409_CONFLICT,
+    KeptPageError: status.HTTP_400_BAD_REQUEST,
+    # The KB, not this request, failed: the cause is in ``detail``.
+    KbUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
+    KbError: status.HTTP_500_INTERNAL_SERVER_ERROR,
     InvalidPostAllError: status.HTTP_400_BAD_REQUEST,
     RoundNotOfPr: status.HTTP_409_CONFLICT,
     InvalidPrRefError: status.HTTP_400_BAD_REQUEST,
@@ -170,6 +196,7 @@ _TYPED = (
     ReviewError,
     GitHubError,
     PullRequestDomainError,
+    KbError,
 )
 # ``Any`` is FastAPI's own type for ``responses`` (free-form OpenAPI fragments).
 _ERRORS: dict[int | str, dict[str, Any]] = {
@@ -460,7 +487,44 @@ def build_router(host: ReviewHost) -> APIRouter:
         shown = None if body is None else body.round_id
 
         async def run() -> RoundOut:
-            return RoundOut.of(host.reviews.done(_ref(owner, repo, number), shown))
+            finished = host.reviews.done(_ref(owner, repo, number), shown)
+            # A deep review is kept as a KB page; best effort, so Done never fails on it.
+            await host.keep_finished(finished.id)
+            return RoundOut.of(finished)
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.post(f"{pr_path}/keep", response_model=KeptReviewOut)
+    async def keep(
+        owner: Owner,
+        repo: Name,
+        number: Number,
+        body: KeepReviewIn | None = None,
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Keep the round's review page in the KB again (Retry), and draft its How it works
+        again unless one was accepted. A KB failure is the answer's ``error``, not a 5xx."""
+        round_id = None if body is None else body.round_id
+
+        async def run() -> KeptReviewOut:
+            return KeptReviewOut.of(
+                await host.keeper.retry_keep(_ref(owner, repo, number), round_id)
+            )
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.post(f"{pr_path}/system/accept", response_model=SystemPageOut)
+    async def accept_system(
+        owner: Owner, repo: Name, number: Number, body: SystemAcceptIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Write the round's drafted How it works (spec §6.2: never automatic). Refused with
+        409 SystemPageChanged when the page changed since the draft was made."""
+
+        async def run() -> SystemPageOut:
+            page = await host.keeper.accept_system_update(
+                _ref(owner, repo, number), body.round_id, body.base_rev
+            )
+            return SystemPageOut.of(page)
 
         return await idem.run(lambda: _respond(run))
 

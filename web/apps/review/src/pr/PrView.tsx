@@ -10,9 +10,11 @@ import { Badge, Button, useToast } from "@jesinia/design";
 import { ChatRail, useClient, type Runners } from "@jesinia/shell";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  acceptSystemUpdate,
   ActionKeys,
   errorCause,
   getPr,
+  keepReview,
   markDone,
   recordQuiz,
   openPr,
@@ -30,6 +32,7 @@ import { refOf } from "../Queue";
 import { Background } from "./Background";
 import { DraftsEditor, useDrafts } from "./Drafts";
 import { Findings } from "./Findings";
+import { KeptReview } from "./Kept";
 import { Metrics } from "./Metrics";
 import { Trend } from "./Trend";
 import {
@@ -42,6 +45,7 @@ import {
   type Depth,
   type Entry,
   type Finding,
+  type SystemDraft,
 } from "./model";
 import { Overview } from "./Overview";
 import { PostDialog } from "./Posting";
@@ -499,6 +503,37 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     );
   };
 
+  /** Keep the finished round's KB page again (spec §8); a KB failure shows on the round. */
+  const keepAgain = () =>
+    keyed(`keep:${repo}#${number}`, (key) => keepReview(client, repo, number, key, round?.id ?? null)).then(
+      (kept) => {
+        if (kept.state === "kept") toast.show({ tone: "success", message: "The review is kept in your KB." });
+        reread();
+      },
+      (e: unknown) => {
+        reread();
+        throw new Error(`Couldn't keep the review page: ${errorCause(e)}`);
+      },
+    );
+  /** Write the drafted How it works the author accepted (spec §6.2); never over an edit. */
+  const acceptDraft = (draft: SystemDraft) =>
+    keyed(`system:${repo}#${number}`, (key) =>
+      acceptSystemUpdate(client, repo, number, key, { roundId: round?.id ?? 0, baseRev: draft.base_rev }),
+    ).then(
+      () => {
+        toast.show({ tone: "success", message: "How it works is updated." });
+        reread();
+      },
+      (e: unknown) => {
+        if (e instanceof ReviewRequestError && e.code === "SystemPageChanged")
+          throw new Error(
+            "How it works changed since this draft was made, so nothing was written and the edit is kept. " +
+              "Choose Keep it again for a fresh draft, or edit the page in Notes.",
+          );
+        throw new Error(`Couldn't update How it works: ${errorCause(e)}`);
+      },
+    );
+
   const commentsId = entries.some((e) => e.kind === "comments") ? "comments" : "recommendation";
   const draftOn = (finding: Finding | undefined) => {
     if (!finding) return;
@@ -656,6 +691,14 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
                   Done without posting
                 </Button>
               </div>
+            ) : null}
+            {round?.done && round.depth === "deep" ? (
+              <KeptReview
+                kept={artifacts.kept}
+                draft={artifacts.systemDraft}
+                onKeep={keepAgain}
+                onAccept={acceptDraft}
+              />
             ) : null}
           </Recommendation>
         );

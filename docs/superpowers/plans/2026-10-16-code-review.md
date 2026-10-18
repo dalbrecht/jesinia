@@ -714,16 +714,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
     written only on accept;
   - the page is seeded from the first deep review on accept.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_keep_writes_review_page_with_front_matter`;
   - `test_quick_reviews_are_not_kept`;
   - `test_system_page_update_only_on_accept`;
   - `test_contradiction_becomes_design_finding` (fake runner).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci` and `make test-e2e`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): kept reviews and system pages`. **Open PR 5**, then
-  the Codex loop and merge.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci` and `make test-e2e`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): kept reviews and system pages`.
+  - [ ] **Open PR 5**, then the Codex loop and merge.
 - [ ] **Step 6: Acceptance on the author's Mac:**
   - watch 2 repos and wait for CI-gated pre-reviews;
   - do a quick review and a deep review with the quiz;

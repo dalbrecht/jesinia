@@ -165,6 +165,15 @@ class KnowledgeSource(Protocol):
     def summary(self, repo: str, paths: Sequence[str]) -> str: ...
 
 
+class SystemNotesSource(Protocol):
+    """The repo's "How it works" page (plan Task 16, ``KeepService``). It is anyone's to
+    edit, so the jobs fence it as untrusted, and only a deep findings job gets it."""
+
+    async def system_notes(self, repo: str) -> str:
+        """The page's body, ``""`` when the repo has none."""
+        ...
+
+
 OpenState = Literal["started", "running", "up_to_date", "failed", "checking"] | GateState
 # Why an open waits (Codex P1 on PR #63): planning a round before its head is classified would
 # leave out the re-review for good.
@@ -370,6 +379,8 @@ class Pipeline:
             re-review of a changed rebase reviews only the files that differ (spec §4.1).
         rereviews: incremental re-reviews (spec §4.2): a re-review's head also runs the
             ``rereview`` job, and a changed rebase marks its unchanged hunks (R69).
+        system_notes: the repo's "How it works" page, which deep reviews check the PR
+            against (spec §6.2); read for every round, best effort.
     """
 
     def __init__(
@@ -386,7 +397,9 @@ class Pipeline:
         slots: RoundSlots | None = None,
         followups: RoundFollowUps | None = None,
         rereviews: RoundRereviews | None = None,
+        system_notes: SystemNotesSource | None = None,
     ) -> None:
+        self._system_notes = system_notes
         self._slots: RoundSlots = _Unlimited() if slots is None else slots
         self._followups = followups
         self._rereviews = rereviews
@@ -823,6 +836,7 @@ class Pipeline:
         # The author's own choice for this head always wins over the proposal (R57).
         depth = self._store.chosen_depth(ref, head) or proposed
         index = await asyncio.to_thread(hunk_index, diff) if diff.complete else None
+        system_notes = await self._read_system_notes(ref, warnings)
         round = Round(
             round_id,
             pull,
@@ -833,6 +847,8 @@ class Pipeline:
             hunk_index=index,
             own_pr=self._is_own(ref),
             metric_criteria=self._metric_criteria(round_id),
+            # Read whatever the depth: the author may switch a round to deep later.
+            system_notes=system_notes,
         )
         correctness_depth = await self._jobs.correctness_depth(round)
         self._store.set_depth(ref, head, round_id, depth)
@@ -862,6 +878,18 @@ class Pipeline:
         stored = self._store.artifact(round_id, METRIC_CRITERIA)
         items = stored if isinstance(stored, list) else []
         return tuple(item for item in items if isinstance(item, str)) or None
+
+    async def _read_system_notes(self, ref: PrRef, warnings: list[str]) -> str:
+        """The repo's "How it works" body. Secondary: a failure leaves it out, with a
+        warning."""
+        if self._system_notes is None:
+            return ""
+        try:
+            return await self._system_notes.system_notes(ref.repo)
+        except Exception as exc:  # secondary: the round goes on without the notes
+            log.warning("reading How it works for %s failed: %s", ref, exc, exc_info=exc)
+            warnings.append(f"your system notes (How it works) couldn't be read: {exc}")
+            return ""
 
     def _known(
         self, ref: PrRef, paths: Sequence[str], warnings: list[str]

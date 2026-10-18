@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 
@@ -16,6 +16,7 @@ from jesinia.apps.review.application.reviews import PrView, ReviewSettings
 from jesinia.apps.review.application.stacks import StackOpenResult, StackView
 from jesinia.apps.review.domain.followup import FollowUpKind
 from jesinia.apps.review.domain.gates import CiState, Depth
+from jesinia.apps.review.domain.kept import KeptState
 from jesinia.apps.review.domain.knowledge import (
     QUIZ_MAX_QUESTIONS,
     ExposureKind,
@@ -51,6 +52,7 @@ from jesinia.apps.review.domain.stacks import (
     PostState,
 )
 from jesinia.services.github.domain.pr import DraftComment, PrFile, ReviewEvent, ReviewSide
+from jesinia.services.kb.application.service import PageWithRev
 
 REF_MAX = 500
 REPO_MAX = 140
@@ -874,3 +876,46 @@ class QuizIn(BaseModel):
 
 class QuizOut(BaseModel):
     recorded: bool = Field(description="False when the round already had a result")
+
+
+class KeepReviewIn(BaseModel):
+    """Keep a round's review page again (Retry); the PR's latest round when omitted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_id: int | None = Field(default=None, ge=1)
+
+
+class KeptReviewOut(BaseModel):
+    """Where a round's review page went in the KB, or why it couldn't be kept."""
+
+    state: Literal["kept", "failed"]
+    page_id: str | None
+    path: str | None = Field(description="The page's KB path (it carries the PR's title)")
+    error: str | None = Field(description="Why the page couldn't be written (the cause)")
+
+    @classmethod
+    def of(cls, kept: KeptState) -> KeptReviewOut:
+        return cls(state=kept.state, page_id=kept.page_id, path=kept.path, error=kept.error)
+
+
+class SystemAcceptIn(BaseModel):
+    """Accept the round's drafted How it works. ``base_rev`` is the page revision of the
+    draft the author was shown (null for a seed); another one answers 409."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_id: int = Field(ge=1)
+    base_rev: str | None = Field(default=None, max_length=64)
+
+
+class SystemPageOut(BaseModel):
+    """The How it works page as written."""
+
+    page_id: str
+    path: str
+    rev: str
+
+    @classmethod
+    def of(cls, page: PageWithRev) -> SystemPageOut:
+        return cls(page_id=page.page.id, path=str(page.page.path), rev=page.rev)

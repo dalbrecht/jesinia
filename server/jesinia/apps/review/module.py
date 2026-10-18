@@ -17,6 +17,7 @@ from jesinia.apps.review.api.routes import build_router
 from jesinia.apps.review.api.tools import build_review_tools, build_tools
 from jesinia.apps.review.application.followup import FollowUps
 from jesinia.apps.review.application.jobs import JobRunner
+from jesinia.apps.review.application.keep import KeepService
 from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
@@ -43,6 +44,8 @@ from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
+from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.tags import TagService
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +92,7 @@ class ReviewModule:
         self._followups: FollowUps | None = None
         self._stacks: StackReviews | None = None
         self._knowledge: KnowledgeService | None = None
+        self._keeper: KeepService | None = None
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -177,6 +181,24 @@ class ReviewModule:
             raise _not_started()
         return self._knowledge
 
+    @property
+    def keeper(self) -> KeepService:
+        """Kept review pages and How it works (needs the kb service)."""
+        if self._keeper is None:
+            if self._workspace is not None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "keeping review pages requires the kb service",
+                )
+            raise _not_started()
+        return self._keeper
+
+    async def keep_finished(self, round_id: int) -> None:
+        """Keep a finished deep round's KB page (spec §8): best effort, so posting and Done
+        never fail on it; without the KB nothing is kept."""
+        if self._keeper is not None:
+            await self._keeper.keep_finished(round_id)
+
     async def ingest_knowledge(self) -> None:
         """Read the knowledge model's signals (the ``review.knowledge-ingest`` job); failures
         are logged and reported, never raised."""
@@ -263,6 +285,9 @@ class ReviewModule:
         self._reviews = ReviewReads(store, cached_status)
         agents = ctx.services.get("agents")
         github = ctx.services.get("github")
+        kb, tags = ctx.services.get("kb"), ctx.services.get("tags")
+        if isinstance(kb, KbService) and isinstance(tags, TagService):
+            self._keeper = KeepService(kb=kb, tags=tags, store=store, clock=_utc_now)
 
         def knowledge_repos() -> list[str]:
             return [*store.watched_repos(), *(stored.pr.ref.repo for stored in store.prs())]
@@ -319,7 +344,12 @@ class ReviewModule:
             )
             self._reviews = ReviewReads(store, self._queue.status)
             self._posting = PostingService(
-                github=prs, writer=github, files=self._queue, store=store, clock=_utc_now
+                github=prs,
+                writer=github,
+                files=self._queue,
+                store=store,
+                clock=_utc_now,
+                on_posted=self.keep_finished,
             )
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_queue, at_start=True)
             ctx.scheduler.every(
@@ -338,6 +368,7 @@ class ReviewModule:
                     followups=followups,
                     rereviews=Rereviews(github=prs, workspace=self._workspace, store=store),
                     knowledge=self._knowledge,
+                    system_notes=self._keeper,
                 )
                 # A head classified after its round was planned gets its re-review then.
                 followups.on_classified = self._pipeline.replan
@@ -377,6 +408,7 @@ class ReviewModule:
         self._reviews = None
         self._idempotency = None
         self._knowledge = None
+        self._keeper = None
         self._scheduler = None
         self._jobs = None
         self._queue = None

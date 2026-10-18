@@ -109,6 +109,9 @@ class Round:
     # The repo's own metric set as it was when the round was first prepared (spec §5.2):
     # the metrics job scores exactly these; ``None``: the standards decide.
     metric_criteria: tuple[str, ...] | None = None
+    # The repo's "How it works" page (spec §6.2): a deep review's findings job checks the PR
+    # against it. Anyone may have edited it, so it is only ever fenced as untrusted data.
+    system_notes: str = ""
 
     @property
     def repo(self) -> str:

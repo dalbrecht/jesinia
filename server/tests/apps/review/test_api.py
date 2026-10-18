@@ -23,6 +23,7 @@ from fastapi import APIRouter, FastAPI
 
 from jesinia.apps.review.api.routes import build_router
 from jesinia.apps.review.api.tools import build_review_tools
+from jesinia.apps.review.application.keep import KeepService
 from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
@@ -44,7 +45,12 @@ from jesinia.core.module import AppContext, CallContext, ModuleHealth, ToolDef
 from jesinia.registry import modules
 from jesinia.services.github.application.service import GitHubRequestError, GitHubUnavailable
 from jesinia.services.github.domain.pr import PrFile
+from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.tags import TagService
+from jesinia.services.kb.infrastructure.fs import LocalFiles
+from jesinia.services.kb.infrastructure.index import SqliteIndex
 from tests.apps.review.fakes import HEAD, FakeClock, FakePullRequests, pull
+from tests.apps.review.test_keep import KB_DB
 from tests.apps.review.test_pipeline import (
     FakeFiles as PipelineFiles,
 )
@@ -75,6 +81,10 @@ class Host:
     idempotency: SqliteIdempotencyStore
     stacks: StackReviews
     knowledge: KnowledgeService
+    keeper: KeepService
+
+    async def keep_finished(self, round_id: int) -> None:
+        await self.keeper.keep_finished(round_id)
 
 
 class HostModule:
@@ -130,6 +140,16 @@ class StackJobsUnused:
         raise AssertionError("no stack job runs for a single PR")
 
 
+def keeper_in(
+    tmp_path: Path, store: SqliteReviewStore, clock: FakeClock
+) -> tuple[KeepService, sqlite3.Connection]:
+    """A keeper over a fresh KB in ``tmp_path`` (and its index's connection, to close)."""
+    (tmp_path / "kb").mkdir()
+    kb_conn = open_db(tmp_path / "kbdata", KB_DB)
+    kb = KbService(LocalFiles(tmp_path / "kb"), SqliteIndex(kb_conn), EventBus())
+    return KeepService(kb=kb, tags=TagService(kb, None), store=store, clock=clock), kb_conn
+
+
 def keyed() -> dict[str, str]:
     return {IDEMPOTENCY_HEADER: str(uuid.uuid4())}
 
@@ -142,7 +162,7 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @pytest.fixture
-async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
+async def env(cfg: Config, conn: sqlite3.Connection, tmp_path: Path) -> AsyncIterator[Env]:
     store = SqliteReviewStore(conn)
     store.upsert_repo(RepoConfig("acme/web", watched=True))
     store.set_viewer("me")
@@ -179,7 +199,10 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
         bus=EventBus(),
     )
     knowledge = KnowledgeService(store=SqliteKnowledgeStore(conn), clock=clock)
-    host = Host(queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks, knowledge)
+    keeper, kb_conn = keeper_in(tmp_path, store, clock)
+    host = Host(
+        queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks, knowledge, keeper
+    )
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
         transport = httpx.ASGITransport(app=app)
@@ -188,6 +211,7 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
         ) as client:
             yield Env(client, store, prs, clock, jobs, poster, host, snapshot.ref)
     await pipeline.drain()
+    kb_conn.close()
 
 
 # --- auth and idempotency (carry g) -------------------------------------------------------------
@@ -211,6 +235,8 @@ WRITES = [
     ("PUT", f"{PR}/drafts", {"summary": "", "drafts": []}),
     ("POST", f"{PR}/post", {"event": "COMMENT", "confirm": [], "digest": "x"}),
     ("POST", f"{PR}/done", None),
+    ("POST", f"{PR}/keep", None),
+    ("POST", f"{PR}/system/accept", {"round_id": 1, "base_rev": None}),
     ("PUT", f"{API}/settings", {"prereview": "triage", "runner": "codex", "repos": []}),
     ("PUT", f"{API}/knowledge/repo/acme/web/src", {"override": "known"}),
     ("POST", f"{PR}/quiz", {"round_id": 1, "right": 1, "answered": 1}),
@@ -555,6 +581,88 @@ async def test_done_marks_the_latest_round(env: Env) -> None:
     round_id = env.round()
     done = await env.client.post(f"{PR}/done", headers=keyed())
     assert done.status_code == 200 and done.json()["id"] == round_id and done.json()["done"]
+
+
+def _deep(env: Env) -> int:
+    """A finished deep round with an overview (enough to keep and to seed How it works)."""
+    round_id = env.round()
+    env.store._conn.execute("UPDATE rounds SET depth = 'deep' WHERE id = ?", (round_id,))
+    env.store.put_artifact(
+        round_id, "overview", {"summary": "s", "purpose": "Greets people.", "sources": []}
+    )
+    return round_id
+
+
+async def test_done_keeps_a_deep_review_and_its_page_can_be_kept_again(env: Env) -> None:
+    round_id = _deep(env)
+    done = await env.client.post(f"{PR}/done", headers=keyed(), json={"round_id": round_id})
+    assert done.status_code == 200
+    artifacts = (await env.client.get(PR)).json()["artifacts"]
+    assert artifacts["kept"]["state"] == "kept"
+    assert artifacts["kept"]["path"].startswith("Reviews/acme-web/#1 ")
+    assert artifacts["system_draft"]["kind"] == "seed"
+    assert "Greets people." in artifacts["system_draft"]["text"]
+
+    again = await env.client.post(f"{PR}/keep", headers=keyed(), json={"round_id": round_id})
+    assert again.status_code == 200
+    assert again.json()["page_id"] == artifacts["kept"]["page_id"]
+
+    # Without the KB the answer says why, as the round does; nothing fails.
+    env.host.keeper._kb.set_files(None, "no KB path is configured")
+    failed = await env.client.post(f"{PR}/keep", headers=keyed())
+    assert failed.status_code == 200
+    assert failed.json() == {
+        "state": "failed",
+        "page_id": None,
+        "path": None,
+        "error": "no KB path is configured",
+    }
+
+
+async def test_a_quick_review_isnt_kept(env: Env) -> None:
+    round_id = env.round()
+    assert (await env.client.post(f"{PR}/done", headers=keyed())).status_code == 200
+    assert "kept" not in (await env.client.get(PR)).json()["artifacts"]
+    refused = await env.client.post(f"{PR}/keep", headers=keyed(), json={"round_id": round_id})
+    assert refused.status_code == 409 and refused.json()["error"] == "NotKeepable"
+    missing = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": round_id, "base_rev": None}
+    )
+    assert missing.status_code == 404 and missing.json()["error"] == "NoSystemDraft"
+
+
+async def test_how_it_works_is_written_on_accept_and_never_over_an_edit(env: Env) -> None:
+    round_id = _deep(env)
+    await env.client.post(f"{PR}/done", headers=keyed())
+    accept = {"round_id": round_id, "base_rev": None}
+    written = await env.client.post(f"{PR}/system/accept", headers=keyed(), json=accept)
+    assert written.status_code == 200
+    assert written.json()["path"] == "Reviews/acme-web/How it works.md"
+    # The author was shown a different draft: refused, nothing written.
+    stale = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": round_id, "base_rev": "0" * 64}
+    )
+    assert stale.status_code == 200  # accepted already: the page as it is
+    other = _deep(env)
+    env.store.mark_round_done(other)
+    await env.host.keeper.retry_keep(env.ref, other)  # no approval: no update drafted
+    refused = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": other, "base_rev": None}
+    )
+    assert refused.status_code == 404
+
+
+async def test_a_conflicting_or_unwritable_how_it_works_is_typed(env: Env) -> None:
+    round_id = _deep(env)
+    await env.client.post(f"{PR}/done", headers=keyed())
+    accept = {"round_id": round_id, "base_rev": "f" * 64}
+    changed = await env.client.post(f"{PR}/system/accept", headers=keyed(), json=accept)
+    assert changed.status_code == 409 and changed.json()["error"] == "SystemPageChanged"
+    env.host.keeper._kb.set_files(None, "no KB path is configured")
+    gone = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": round_id, "base_rev": None}
+    )
+    assert gone.status_code == 503 and gone.json()["error"] == "KbUnavailable"
 
 
 async def test_settings_round_trip(env: Env) -> None:

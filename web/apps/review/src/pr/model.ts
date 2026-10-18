@@ -97,6 +97,20 @@ export type Rereview = {
   coverage: WalkCoverage | null;
 };
 
+/** Where a finished deep review's KB page went, or why it couldn't be kept (spec §8). */
+export type KeptPage = { state: "kept" | "failed"; page_id: string | null; path: string | null; error: string | null };
+/**
+ * A drafted How it works (spec §6.2): a seed (no page yet) or an update, made against the page's
+ * revision `base_rev`. Its text holds the page as it is in the KB: anyone's to have edited.
+ */
+export type SystemDraft = {
+  kind: "seed" | "update";
+  text: string;
+  base_rev: string | null;
+  state: "proposed" | "accepted" | "failed";
+  error: string | null;
+};
+
 /** A round's artifacts, by what the PR view shows; null where a job hasn't stored one. */
 export type Artifacts = {
   overview: Overview | null;
@@ -117,6 +131,8 @@ export type Artifacts = {
   isRereview: boolean;
   previous: PreviousReview | null;
   rereview: Rereview | null;
+  kept: KeptPage | null;
+  systemDraft: SystemDraft | null;
 };
 
 const REREVIEW_KINDS = new Set(["rereview", "changed_hunks_only"]);
@@ -173,7 +189,24 @@ export function readArtifacts(view: PrView): Artifacts {
       REREVIEW_KINDS.has(String(record(a.followup)?.kind)) || "rereview" in jobs || record(a.previous_review) !== null,
     previous: previousOf(a.previous_review),
     rereview: rereviewOf(a.rereview),
+    kept: keptOf(a.kept),
+    systemDraft: systemDraftOf(a.system_draft),
   };
+}
+
+const text = (x: unknown): string | null => (typeof x === "string" ? x : null);
+
+function keptOf(x: unknown): KeptPage | null {
+  const k = record(x);
+  if (k?.state !== "kept" && k?.state !== "failed") return null;
+  return { state: k.state, page_id: text(k.page_id), path: text(k.path), error: text(k.error) };
+}
+
+function systemDraftOf(x: unknown): SystemDraft | null {
+  const d = record(x);
+  if (!d || (d.kind !== "seed" && d.kind !== "update")) return null;
+  if (d.state !== "proposed" && d.state !== "accepted" && d.state !== "failed") return null;
+  return { kind: d.kind, text: text(d.text) ?? "", base_rev: text(d.base_rev), state: d.state, error: text(d.error) };
 }
 
 function previousOf(x: unknown): PreviousReview | null {

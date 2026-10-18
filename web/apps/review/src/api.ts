@@ -27,6 +27,8 @@ export type PostOutcome = components["schemas"]["PostOutcomeOut"];
 export type PostAllItem = components["schemas"]["PostAllItemIn"];
 export type MetricsHistory = components["schemas"]["MetricsHistoryOut"];
 export type TrendPoint = components["schemas"]["PointOut"];
+export type Kept = components["schemas"]["KeptReviewOut"];
+export type SystemPage = components["schemas"]["SystemPageOut"];
 
 /** The queue's sections (design pass pattern 2), in tab order. */
 export type SectionId = "ready" | "waiting" | "loaded" | "approved";
@@ -446,6 +448,41 @@ export async function markDone(
     await client.POST("/api/review/prs/{owner}/{repo}/{number}/done", {
       params: { ...prParams(repo, number), header: withIdempotency(key) },
       body: { round_id: roundId },
+    }),
+  );
+}
+
+/** Keep the round's review page in the KB again (Retry); a KB failure is the answer's `error`. */
+export async function keepReview(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  roundId: number | null = null,
+): Promise<Kept> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/keep", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { round_id: roundId },
+    }),
+  );
+}
+
+/**
+ * Write the round's drafted How it works (spec §6.2). `baseRev` is the page revision of the draft
+ * the author was shown (null for a seed): a page changed since is refused (409 SystemPageChanged).
+ */
+export async function acceptSystemUpdate(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  draft: { roundId: number; baseRev: string | null },
+): Promise<SystemPage> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/system/accept", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { round_id: draft.roundId, base_rev: draft.baseRev },
     }),
   );
 }
