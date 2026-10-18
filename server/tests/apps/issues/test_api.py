@@ -59,6 +59,7 @@ from jesinia.services.github.application.service import (
 from jesinia.services.github.domain.issue import (
     Issue,
     IssueComment,
+    IssueRef,
     LinkedPr,
     Milestone,
     TimelineEvent,
@@ -1417,6 +1418,16 @@ async def test_epic_routes_serve_the_list_the_page_and_drop_checks(env: Env) -> 
     }
     not_epic = await env.client.get(f"{API}/epics/acme/web/1")
     assert not_epic.status_code == 404 and not_epic.json()["error"] == "NotAnEpicError"
+
+
+async def test_should_name_each_listed_epics_parent_for_the_apps_drop_checks(env: Env) -> None:
+    # The Epics list refuses an epic dropped into its own child or ancestor before staging
+    # (Review Focus 3, UI side): it needs each epic's parent from the cache.
+    inner = issue(4, labels=("epic", "priority: high"), sub_issue_count=0)
+    env.github.put(replace(inner, parent=IssueRef(REPO, 3)))
+    await _with_epic(env)
+    listed = (await env.client.get(f"{API}/epics", params={"repo": REPO})).json()["epics"]
+    assert {e["number"]: e["parent"] for e in listed} == {3: None, 4: f"{REPO}#3"}
 
 
 async def test_a_conversion_is_previewed_then_applied_as_one_batch(env: Env) -> None:

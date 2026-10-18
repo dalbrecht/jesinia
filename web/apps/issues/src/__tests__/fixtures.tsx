@@ -1,9 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Shapes the Issues API answers with (`/api/issues`), for the app's tests.
 import { baseRoutes, fakeClient, type Routes } from "@jesinia/shell";
-import { act, render, screen } from "@testing-library/react";
-import { vi } from "vitest";
-import type { ApplyBatch, IssueDetail, IssueRow, IssueView, Pending, Repo, Suggestion, SuggestionList } from "../api";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { expect, vi } from "vitest";
+import type {
+  ApplyBatch,
+  Epic,
+  EpicDetail,
+  IssueDetail,
+  IssueRow,
+  IssueView,
+  Member,
+  Milestone,
+  Pending,
+  Queue,
+  QueueItem,
+  QueueSummary,
+  Readiness,
+  Repo,
+  Suggestion,
+  SuggestionList,
+  Theme,
+} from "../api";
 import { App } from "../App";
 
 export const REPO = "acme/app";
@@ -192,6 +211,9 @@ export function issuesRoutes(over: Routes = {}): Routes {
     "GET /api/issues/suggestions": suggestions(),
     "GET /api/issues/item/acme/app/1": detail(),
     "POST /api/issues/item/acme/app/1/refresh": detail(),
+    "GET /api/issues/themes": { themes: [] },
+    "GET /api/issues/epics": { epics: [] },
+    "GET /api/issues/queues": { queues: [] },
     ...over,
   });
 }
@@ -233,4 +255,171 @@ export async function tick(ms: number) {
 /** A toast saying `text` (shown, and repeated in the shell's live region). */
 export async function toast(text: RegExp): Promise<boolean> {
   return (await screen.findAllByText(text)).length > 0;
+}
+
+// --- epics, queues and themes (Task 13) --------------------------------------------------------
+
+export function readiness(over: Partial<Readiness> = {}): Readiness {
+  return { ready: false, blockers: [], cross_repo: false, warning: null, note: null, ...over };
+}
+
+export function epic(n: number, over: Partial<Epic> = {}): Epic {
+  return {
+    repo: REPO,
+    number: n,
+    title: `Epic ${n}`,
+    url: `https://github.com/${REPO}/issues/${n}`,
+    labels: ["epic", "priority: high"],
+    parent: null,
+    priority: "priority: high",
+    is_initiative: false,
+    lacks_label: false,
+    done: 1,
+    total: 3,
+    readiness: readiness({ blockers: [{ repo: REPO, n: 1, reason: "needs readiness" }] }),
+    updated_at: NOW,
+    ...over,
+  };
+}
+
+export function member(n: number, over: Partial<Member> = {}): Member {
+  return {
+    repo: REPO,
+    number: n,
+    cached: true,
+    title: `Child ${n}`,
+    url: `https://github.com/${REPO}/issues/${n}`,
+    state: "open",
+    readiness: "agent-ready",
+    complete: true,
+    blocker: null,
+    warning: null,
+    ...over,
+  };
+}
+
+export function epicDetail(n: number, over: Partial<EpicDetail> = {}): EpicDetail {
+  return {
+    epic: epic(n),
+    body: "The epic's body.",
+    children: [member(3), member(4, { readiness: null, complete: false, blocker: "needs readiness" })],
+    brief: null,
+    default_brief: `# Epic ${n}\n\n## Children, in order\n\n1. ${REPO}#3\n2. ${REPO}#4`,
+    checklist_items: 0,
+    ...over,
+  };
+}
+
+export function queueItem(n: number, over: Partial<QueueItem> = {}): QueueItem {
+  return {
+    kind: "issue",
+    repo: REPO,
+    n,
+    position: 0,
+    note: "",
+    added_at: NOW,
+    done_at: null,
+    done_pending: null,
+    title: `Issue ${n}`,
+    state: "open",
+    url: `https://github.com/${REPO}/issues/${n}`,
+    priority: "priority: medium",
+    pending_priority: null,
+    readiness: readiness({ ready: true }),
+    warning: null,
+    ...over,
+  };
+}
+
+export function queue(id: string, items: QueueItem[], over: Partial<Queue> = {}): Queue {
+  const placed = items.map((item, i) => ({ ...item, position: i }));
+  const values = ["priority: high", "priority: medium", "priority: low"];
+  return {
+    id,
+    name: "Next up",
+    description: "",
+    position: 0,
+    created_at: NOW,
+    items: placed,
+    done: [],
+    bands: [
+      ...values.map((value) => ({ value, items: placed.filter((i) => i.priority === value) })),
+      { value: null, items: placed.filter((i) => i.priority === null) },
+    ],
+    ...over,
+  };
+}
+
+export function queueSummary(id: string, over: Partial<QueueSummary> = {}): QueueSummary {
+  return { id, name: "Next up", description: "", position: 0, open: 2, done: 0, warnings: 0, ...over };
+}
+
+export function theme(tag: string, over: Partial<Theme> = {}): Theme {
+  return { tag, count: 1, publishable: true, ...over };
+}
+
+// --- driving the drag primitives by keyboard -----------------------------------------------------
+
+export const said = () => document.querySelector("[data-dnd-announcer]")?.textContent ?? "";
+
+export async function pickUp(name: string): Promise<UserEvent> {
+  const user = userEvent.setup();
+  (await screen.findByRole("button", { name })).focus();
+  await user.keyboard("[Space]");
+  await waitFor(() => expect(said()).toMatch(/^Picked up/));
+  return user;
+}
+
+/** Arrow through the targets until the announcer says we are over (or refused by) `target`. */
+export async function moveTo(user: UserEvent, target: string | RegExp) {
+  const matches = (text: string) => (typeof target === "string" ? text === target : target.test(text));
+  const reached = () =>
+    matches(
+      said()
+        .replace(/^Over /, "")
+        .replace(/\.$/, ""),
+    ) ||
+    (typeof target === "string" && said().startsWith(`Can't drop on ${target}:`));
+  for (const key of ["[ArrowDown]", "[ArrowUp]"]) {
+    for (let i = 0; i < 30; i += 1) {
+      await user.keyboard(key);
+      if (reached()) return said();
+    }
+  }
+  throw new Error(`never reached ${String(target)}; last said: ${said()}`);
+}
+
+/** Never leave the keyboard sensor mid-drag for the next test. */
+export async function settleDrag() {
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape", code: "Escape" });
+}
+
+/** A route that records each staged change and lists them back. */
+export function stagingRoutes(staged: Pending[] = []): Routes {
+  return {
+    "GET /api/issues/pending": () => json({ changes: staged }),
+    "POST /api/issues/pending": async (req: Request) => {
+      const body = (await req.json()) as Pick<Pending, "repo" | "n" | "change" | "source">;
+      const made = pending(`p${staged.length + 1}`, body);
+      staged.push(made);
+      return json(made, 201);
+    },
+  };
+}
+
+export function milestoneDetail(brief: string): Milestone {
+  return {
+    milestone: {
+      repo: REPO,
+      number: 5,
+      title: "v1",
+      state: "open",
+      due_on: null,
+      open_issues: 1,
+      readiness: readiness(),
+    },
+    issues: [],
+    brief,
+  };
 }

@@ -1055,13 +1055,15 @@ class ContainmentOut(BaseModel):
 class EpicOut(BaseModel):
     """An epic (or initiative) in the Epics list: ``done`` closed children of ``total``,
     readiness, and ``lacks_label`` when it has children but no ``epic`` label (Jesinia suggests
-    adding it)."""
+    adding it). ``parent`` (``owner/name#n``) is its own epic or initiative in the cache, so the
+    app can refuse a drop into its own child or ancestor before staging."""
 
     repo: str
     number: int
     title: str
     url: str
     labels: list[str]
+    parent: str | None
     priority: str | None
     is_initiative: bool
     lacks_label: bool
@@ -1079,6 +1081,7 @@ class EpicOut(BaseModel):
             title=issue.title,
             url=issue.url,
             labels=list(issue.labels),
+            parent=None if issue.parent is None else f"{issue.parent.repo}#{issue.parent.number}",
             priority=summary.triage.priority,
             is_initiative=summary.is_initiative,
             lacks_label=summary.lacks_label,

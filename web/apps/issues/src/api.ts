@@ -112,6 +112,17 @@ const COPY: Record<string, string> = {
   IssueNotCachedError: "That issue isn't cached yet: sync its repo first",
   ContainmentRefusedError: "That epic can't hold that issue",
   PendingNotFoundError: "That change is no longer staged",
+  GroupEpicExistsError: "An epic for these issues already exists: add them to it instead",
+  ThemeEpicClosedError: "The theme's epic is closed: reopen it on GitHub, or ask for a new epic",
+  BriefEditedOnGitHubError: "The brief was edited on GitHub since it was posted: refresh, or overwrite it",
+  BriefRecoveryIncompleteError: "Jesinia couldn't tell whether the brief was posted: check GitHub",
+  ThemeNearDuplicateError: "That's very close to a tag you already have: use that one",
+  ThemesUnavailableError: "Themes need the knowledge base, which isn't running",
+  NothingToPublishError: "Every issue of the theme in that repo has its label already",
+  ConversionOutdatedError: "The checklist changed since the preview: preview it again",
+  NothingToConvertError: "Nothing in the checklist is left to convert",
+  QueueNameTakenError: "A queue with that name exists already",
+  QueueItemExistsError: "That's in the queue already",
 };
 
 export const UNREACHABLE = "Check that Jesinia is running, then try again.";
@@ -396,6 +407,26 @@ export function describeSuggestion(s: Suggestion): string {
       const missing = Array.isArray(p.missing) ? p.missing.map(text).join(", ") : "";
       return `Not agent-ready yet: missing ${missing}`;
     }
+    case "group": {
+      const count = Array.isArray(p.issues) ? p.issues.length : 0;
+      const epic = p.epic as { repo?: unknown; n?: unknown } | undefined;
+      return epic
+        ? `Add ${count === 1 ? "1 issue" : `${count} issues`} to ${text(epic.repo)}#${text(epic.n)}`
+        : `A new epic for ${count} issues`;
+    }
+    case "split": {
+      const whole = p.issue as { repo?: unknown; n?: unknown } | undefined;
+      const parts = Array.isArray(p.parts) ? p.parts.length : 0;
+      return `Split ${text(whole?.repo)}#${text(whole?.n)} into ${parts} parts`;
+    }
+    case "brief":
+      return "A delivery brief";
+    case "queue_next":
+      return "Items to add next";
+    case "queue_order":
+      return "A new order";
+    case "queue_split":
+      return "Which queue each item fits";
     default:
       return s.kind;
   }
@@ -508,4 +539,369 @@ export function schemaValues(repos: Repo[], dimension: Dimension): string[] {
   const seen: string[] = [];
   for (const r of repos) for (const c of r.label_schema[dimension]) if (!seen.includes(c.name)) seen.push(c.name);
   return seen;
+}
+
+// --- epics, queues and themes (Task 13) --------------------------------------------------------
+
+export type Epic = Schemas["EpicOut"];
+export type EpicDetail = Schemas["EpicDetailOut"];
+export type Member = Schemas["MemberOut"];
+export type Readiness = Schemas["ReadinessOut"];
+export type ConversionPlan = Schemas["ConversionPlanOut"];
+export type PlanChild = Schemas["ConversionChildOut"];
+export type AskRun = Schemas["IssueAskRunOut"];
+export type Milestone = Schemas["MilestoneDetailOut"];
+export type QueueSummary = Schemas["WorkQueueSummaryOut"];
+export type Queue = Schemas["WorkQueueOut"];
+export type QueueItem = Schemas["WorkQueueItemOut"];
+export type QueueAction = Schemas["WorkQueueActionOut"];
+export type QueueApproval = Schemas["WorkQueueApprovalOut"];
+export type ItemKind = QueueItem["kind"];
+export type Theme = Schemas["ThemeSummaryOut"];
+export type ThemeDetail = Schemas["ThemeOut"];
+export type ThemeAdded = Schemas["ThemeAddOut"];
+export type ThemePublished = Schemas["ThemePublishOut"];
+export type ThemeEpicPlan = Schemas["ThemeEpicPlanOut"];
+export type IssueTarget = { repo: string; n: number };
+
+const epicParams = (repo: string, n: number) => ({ path: { ...split(repo), n } });
+
+export async function getEpics(client: JesiniaClient, repo?: string): Promise<Epic[]> {
+  const query = repo ? { repo } : {};
+  return unwrap(await client.GET("/api/issues/epics", { params: { query } })).epics;
+}
+
+export async function getEpic(client: JesiniaClient, repo: string, n: number): Promise<EpicDetail> {
+  return unwrap(await client.GET("/api/issues/epics/{owner}/{repo}/{n}", { params: epicParams(repo, n) }));
+}
+
+export async function getConversion(client: JesiniaClient, repo: string, n: number): Promise<ConversionPlan> {
+  return unwrap(await client.GET("/api/issues/epics/{owner}/{repo}/{n}/conversion", { params: epicParams(repo, n) }));
+}
+
+/** Approve the conversion previewed with `digest`: one batch, in the background (202). */
+export async function approveConversion(
+  client: JesiniaClient,
+  repo: string,
+  n: number,
+  digest: string,
+  key: string,
+): Promise<ApplyBatch> {
+  return unwrap(
+    await client.POST("/api/issues/epics/{owner}/{repo}/{n}/conversion", {
+      params: { ...epicParams(repo, n), header: withIdempotency(key) },
+      body: { digest },
+    }),
+  );
+}
+
+/** Ask the agent for the epic's brief, in the background; poll its `scope`. */
+export async function askBrief(client: JesiniaClient, repo: string, n: number, key: string): Promise<AskRun> {
+  return unwrap(
+    await client.POST("/api/issues/epics/{owner}/{repo}/{n}/brief/draft", {
+      params: { ...epicParams(repo, n), header: withIdempotency(key) },
+    }),
+  );
+}
+
+/** Post the brief (or edit its comment); `overwrite` replaces one edited on GitHub since. */
+export async function postBrief(
+  client: JesiniaClient,
+  repo: string,
+  n: number,
+  body: { text: string; suggestion_id?: string | null; overwrite: boolean },
+  key: string,
+): Promise<Schemas["EpicBriefOut"]> {
+  return unwrap(
+    await client.POST("/api/issues/epics/{owner}/{repo}/{n}/brief", {
+      params: { ...epicParams(repo, n), header: withIdempotency(key) },
+      body,
+    }),
+  );
+}
+
+/** Ask the agent for groups (candidate epics, additions) in one repo or all. */
+export async function askGroups(client: JesiniaClient, repo: string | null, key: string): Promise<AskRun> {
+  return unwrap(
+    await client.POST("/api/issues/epics/proposals", { params: { header: withIdempotency(key) }, body: { repo } }),
+  );
+}
+
+/** Ask the agent how to split an issue too big for one PR. */
+export async function askSplit(client: JesiniaClient, repo: string, n: number, key: string): Promise<AskRun> {
+  return unwrap(
+    await client.POST("/api/issues/suggestions/split", {
+      params: { header: withIdempotency(key) },
+      body: { repo, n },
+    }),
+  );
+}
+
+/** Drafts (and the latest background ask) of one ask `scope`, or of one `kind`. */
+export async function getDrafts(
+  client: JesiniaClient,
+  query: { scope?: string; kind?: string; repo?: string },
+): Promise<SuggestionList> {
+  return unwrap(await client.GET("/api/issues/suggestions", { params: { query } }));
+}
+
+export async function getMilestone(client: JesiniaClient, repo: string, n: number): Promise<Milestone> {
+  return unwrap(await client.GET("/api/issues/milestones/{owner}/{repo}/{n}", { params: epicParams(repo, n) }));
+}
+
+export async function getQueues(client: JesiniaClient): Promise<QueueSummary[]> {
+  return unwrap(await client.GET("/api/issues/queues")).queues;
+}
+
+export async function createQueue(client: JesiniaClient, name: string, key: string): Promise<Queue> {
+  return unwrap(
+    await client.POST("/api/issues/queues", {
+      params: { header: withIdempotency(key) },
+      body: { name, description: "" },
+    }),
+  );
+}
+
+export async function getQueue(client: JesiniaClient, id: string): Promise<Queue> {
+  return unwrap(await client.GET("/api/issues/queues/{queue_id}", { params: { path: { queue_id: id } } }));
+}
+
+export async function addQueueItem(
+  client: JesiniaClient,
+  id: string,
+  item: { kind: ItemKind; repo: string; n: number; position?: number },
+  key: string,
+): Promise<Queue> {
+  return unwrap(
+    await client.POST("/api/issues/queues/{queue_id}/items", {
+      params: { path: { queue_id: id }, header: withIdempotency(key) },
+      body: item,
+    }),
+  );
+}
+
+type ItemRef = { kind: ItemKind; repo: string; n: number };
+const itemPath = (id: string, item: ItemRef) => ({
+  path: { queue_id: id, kind: item.kind, ...split(item.repo), n: item.n },
+});
+
+/** Move an open item to `position` among the open items (local, at once). */
+export async function moveQueueItem(
+  client: JesiniaClient,
+  id: string,
+  item: ItemRef,
+  position: number,
+  key: string,
+): Promise<Queue> {
+  return unwrap(
+    await client.PATCH("/api/issues/queues/{queue_id}/items/{kind}/{owner}/{repo}/{n}", {
+      params: { ...itemPath(id, item), header: withIdempotency(key) },
+      body: { position },
+    }),
+  );
+}
+
+export async function removeQueueItem(client: JesiniaClient, id: string, item: ItemRef, key: string): Promise<Queue> {
+  return unwrap(
+    await client.DELETE("/api/issues/queues/{queue_id}/items/{kind}/{owner}/{repo}/{n}", {
+      params: { ...itemPath(id, item), header: withIdempotency(key) },
+    }),
+  );
+}
+
+/** Done: the item moves to the Done group at once, and its close (or agent-ready) is staged. */
+export async function doneQueueItem(
+  client: JesiniaClient,
+  id: string,
+  item: ItemRef,
+  body: { then: "close" | "agent_ready"; comment?: string },
+  key: string,
+): Promise<QueueAction> {
+  return unwrap(
+    await client.POST("/api/issues/queues/{queue_id}/items/{kind}/{owner}/{repo}/{n}/done", {
+      params: { ...itemPath(id, item), header: withIdempotency(key) },
+      body,
+    }),
+  );
+}
+
+export async function undoQueueItem(client: JesiniaClient, id: string, item: ItemRef, key: string): Promise<Queue> {
+  return unwrap(
+    await client.POST("/api/issues/queues/{queue_id}/items/{kind}/{owner}/{repo}/{n}/undo", {
+      params: { ...itemPath(id, item), header: withIdempotency(key) },
+    }),
+  );
+}
+
+/** A drop into a priority band: reorders at once, and stages the priority when the band differs. */
+export async function bandQueueItem(
+  client: JesiniaClient,
+  id: string,
+  item: ItemRef,
+  band: string,
+  position: number,
+  key: string,
+): Promise<QueueAction> {
+  return unwrap(
+    await client.POST("/api/issues/queues/{queue_id}/items/{kind}/{owner}/{repo}/{n}/band", {
+      params: { ...itemPath(id, item), header: withIdempotency(key) },
+      body: { band, position },
+    }),
+  );
+}
+
+export type QueueAsk = "next" | "order";
+
+export async function askQueue(client: JesiniaClient, id: string, what: QueueAsk, key: string): Promise<AskRun> {
+  const params = { path: { queue_id: id }, header: withIdempotency(key) };
+  return unwrap(
+    what === "next"
+      ? await client.POST("/api/issues/queues/{queue_id}/suggestions/next", { params })
+      : await client.POST("/api/issues/queues/{queue_id}/suggestions/order", { params }),
+  );
+}
+
+export async function askQueueSplit(client: JesiniaClient, ids: string[], key: string): Promise<AskRun> {
+  return unwrap(
+    await client.POST("/api/issues/queues/suggestions/split", {
+      params: { header: withIdempotency(key) },
+      body: { queue_ids: ids },
+    }),
+  );
+}
+
+/** Approve a queue draft: only the local queues change. */
+export async function approveQueueDraft(client: JesiniaClient, id: string, key: string): Promise<QueueApproval> {
+  return unwrap(
+    await client.POST("/api/issues/queues/suggestions/{suggestion_id}/approve", {
+      params: { path: { suggestion_id: id }, header: withIdempotency(key) },
+    }),
+  );
+}
+
+export const queueScope = (what: QueueAsk, id: string): string => `queue_${what}:${id}`;
+export const splitScope = (ids: string[]): string => `queue_split:${[...new Set(ids)].sort().join(",")}`;
+export const groupsScope = (repo: string | null): string => `groups:${repo === null ? "*" : repo.toLowerCase()}`;
+export const issueSplitScope = (repo: string, n: number): string => `split:${repo.toLowerCase()}#${n}`;
+export const briefScope = (repo: string, n: number): string => `brief:${repo.toLowerCase()}#${n}`;
+
+export async function getThemes(client: JesiniaClient): Promise<Theme[]> {
+  return unwrap(await client.GET("/api/issues/themes")).themes;
+}
+
+export async function getTheme(client: JesiniaClient, tag: string): Promise<ThemeDetail> {
+  return unwrap(await client.GET("/api/issues/themes/{tag}", { params: { path: { tag } } }));
+}
+
+/** Give issues a theme (local, at once); `added` is what an Undo takes off again. */
+export async function addTheme(client: JesiniaClient, tag: string, issues: IssueTarget[], key: string): Promise<ThemeAdded> {
+  return unwrap(
+    await client.POST("/api/issues/themes/{tag}/issues", {
+      params: { path: { tag }, header: withIdempotency(key) },
+      body: { issues },
+    }),
+  );
+} // prettier-ignore
+
+export async function removeTheme(client: JesiniaClient, tag: string, issues: IssueTarget[], key: string): Promise<void> {
+  unwrap(
+    await client.POST("/api/issues/themes/{tag}/issues/remove", {
+      params: { path: { tag }, header: withIdempotency(key) },
+      body: { issues },
+    }),
+  );
+} // prettier-ignore
+
+/** Stage the theme's label setup step and label additions in the tray. */
+export async function publishTheme(client: JesiniaClient, tag: string, repo: string, key: string): Promise<ThemePublished> {
+  return unwrap(
+    await client.POST("/api/issues/themes/{tag}/publish", {
+      params: { path: { tag }, header: withIdempotency(key) },
+      body: { repo },
+    }),
+  );
+} // prettier-ignore
+
+export async function getThemeEpic(
+  client: JesiniaClient,
+  tag: string,
+  repo: string,
+  newEpic: boolean,
+): Promise<ThemeEpicPlan> {
+  return unwrap(
+    await client.GET("/api/issues/themes/{tag}/epic", {
+      params: { path: { tag }, query: newEpic ? { repo, new_epic: true } : { repo } },
+    }),
+  );
+}
+
+export async function approveThemeEpic(
+  client: JesiniaClient,
+  tag: string,
+  body: { repo: string; digest: string; new_epic: boolean },
+  key: string,
+): Promise<ApplyBatch> {
+  return unwrap(
+    await client.POST("/api/issues/themes/{tag}/epic", {
+      params: { path: { tag }, header: withIdempotency(key) },
+      body,
+    }),
+  );
+}
+
+/** Whether a refusal is the typed error `code`. */
+export const isRefusal = (e: unknown, code: string): e is IssuesRequestError =>
+  e instanceof IssuesRequestError && e.code === code;
+
+/** The issue a refusal's cause names in parentheses, "(owner/repo#n)" (an existing epic). */
+export function refInCause(cause: string): { repo: string; number: number } | null {
+  const m = /\(([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9][0-9]{0,8})\)/.exec(cause);
+  return m?.[1] ? parseRef(m[1]) : null;
+}
+
+/** An epic's readiness in a few words. */
+export function readinessText(r: Readiness): string {
+  if (r.ready) return "Ready";
+  if (r.blockers.length > 0) return `${r.blockers.length} blocking`;
+  return r.note ?? "Not ready";
+}
+
+/** Why `target` can't hold `dragged` (an epic or issue), or null (ruling IR17's shape). The cached
+ * parent chain is walked (`parentOf`); GitHub checks again at apply time. */
+export function containmentRefusal(
+  target: { repo: string; number: number; is_initiative: boolean },
+  dragged: { repo: string; number: number; is_initiative?: boolean },
+  parentOf: (ref: string) => string | null,
+): { code: string; reason: string } | null {
+  const targetRef = refOf(target).toLowerCase();
+  const draggedRef = refOf(dragged).toLowerCase();
+  if (targetRef === draggedRef) return { code: "self", reason: "An epic can't contain itself" };
+  const owner = (repo: string) => repo.split("/")[0]?.toLowerCase();
+  if (owner(target.repo) !== owner(dragged.repo)) {
+    return { code: "cross_owner", reason: "GitHub's sub-issues need the same owner" };
+  }
+  if (dragged.is_initiative === true && !target.is_initiative) {
+    return { code: "initiative", reason: "An initiative sits above epics, so an epic can't contain it" };
+  }
+  const seen = new Set<string>();
+  for (let at = parentOf(targetRef); at !== null && !seen.has(at); at = parentOf(at)) {
+    if (at === draggedRef) return { code: "cycle", reason: `${refOf(dragged)} contains ${refOf(target)}, so it can't go inside it` }; // prettier-ignore
+    seen.add(at);
+  }
+  return null;
+}
+
+/**
+ * A staged parent link (ruling IR39): made against the parent the issue has now (`current`,
+ * "owner/repo#n" or null), so a move on GitHub since is a conflict at apply time. The server
+ * records the expected parent from its cache when staging; this states the same intent.
+ */
+export function setParentChange(parent: IssueTarget | null, current: string | null): StageableChange {
+  const was = current === null ? null : parseRef(current);
+  return {
+    kind: "set_parent",
+    parent,
+    expects_parent: true,
+    expected_parent: was === null ? null : { repo: was.repo, n: was.number },
+  };
 }

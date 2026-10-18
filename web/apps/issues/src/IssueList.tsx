@@ -2,10 +2,12 @@
 // The Inbox and Backlog (spec §3, §6): a compact list with multi-select and a bulk bar ("Suggest
 // with Claude", "Approve all"), or the board as a view toggle. Served from the cache at once and
 // read again in the background, with "Updated N min ago · refreshing…" (spec §6.3); when GitHub
-// can't be read the cached list stays under a banner.
-import { Badge, Banner, Button, toneFor, useToast, VisuallyHidden } from "@jesinia/design";
+// can't be read the cached list stays under a banner. The themes sit beside the list and the board
+// as drop targets and a filter; the bulk bar holds every drop's menu equivalent ("Add theme…",
+// "Move to epic…", "Add to queue…") for the selected issues.
+import { Badge, Banner, Button, Draggable, toneFor, useToast, VisuallyHidden } from "@jesinia/design";
 import { useClient, VisibleText } from "@jesinia/shell";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionKeys,
   IDLE_POLL_MS,
@@ -24,8 +26,12 @@ import {
   type SavedFilter,
   type ViewName,
 } from "./api";
-import { Board, type Grouping } from "./Board";
+import { Board, itemOf, type Grouping } from "./Board";
+import { Drops } from "./drops";
+import { MoveToEpicMenu } from "./Epics";
 import s from "./issues.module.css";
+import { AddToQueueMenu } from "./Queues";
+import { AddThemeMenu, ThemesColumn, useAddTheme, useThemes } from "./Themes";
 import { useTray } from "./Tray";
 
 const NAMES: Record<ViewName, string> = { inbox: "Inbox", backlog: "Backlog" };
@@ -70,6 +76,9 @@ export function IssueList({ view, repos, onOpen, active }: IssueListProps) {
   const [mode, setMode] = useState<"list" | "board">("list");
   const [grouping, setGrouping] = useState<Grouping>("readiness");
   const [busy, setBusy] = useState<string | null>(null);
+  const [themeFilter, setThemeFilter] = useState<{ tag: string; refs: ReadonlySet<string> } | null>(null);
+  const { themes, reload: reloadThemes } = useThemes();
+  const addTheme = useAddTheme(() => void reloadThemes());
 
   // A read started earlier (another filter, a poll) may resolve later: only the newest shows.
   const reads = useRef({ issued: 0, shown: 0 });
@@ -103,8 +112,11 @@ export function IssueList({ view, repos, onOpen, active }: IssueListProps) {
     return () => clearTimeout(timer);
   }, [read, pollMs, attempts]);
 
-  const rows = data?.rows ?? [];
+  const all = data?.rows ?? [];
+  const rows = themeFilter === null ? all : all.filter((row) => themeFilter.refs.has(refOf(row).toLowerCase()));
   const chosen = rows.filter((row) => selected.has(refOf(row)));
+  const targets = chosen.map((row) => ({ repo: row.repo, n: row.number }));
+  const group = useMemo(() => chosen.map(itemOf), [chosen]);
   const allSelected = rows.length > 0 && chosen.length === rows.length;
 
   const toggle = (row: IssueRow) =>
@@ -172,136 +184,179 @@ export function IssueList({ view, repos, onOpen, active }: IssueListProps) {
   const signedOut = syncError !== null && /gh auth login/.test(syncError);
 
   return (
-    <div className={s.listPane}>
-      <div className={s.listBar}>
-        <label className={s.field}>
-          <span>Repo</span>
-          <select aria-label="Repo" value={repo} onChange={(e) => setRepo(e.target.value)}>
-            <option value="">All repos</option>
-            {repos.map((r) => (
-              <option key={r.repo} value={r.repo}>
-                {r.repo}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className={s.field}>
-          <span>Filter</span>
-          <select aria-label="Filter" value={filter} onChange={(e) => setFilter(e.target.value as SavedFilter | "")}>
-            <option value="">Everything</option>
-            {SAVED_FILTERS.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <fieldset className={s.segmented}>
-          <legend>
-            <VisuallyHidden>View</VisuallyHidden>
-          </legend>
-          {(["list", "board"] as const).map((m) => (
-            <label key={m} className={s.segment} data-on={mode === m || undefined}>
-              <input type="radio" name={`${view}-mode`} checked={mode === m} onChange={() => setMode(m)} />
-              {m === "list" ? "List" : "Board"}
-            </label>
-          ))}
-        </fieldset>
-        {mode === "board" ? (
+    <Drops>
+      <div className={s.listPane}>
+        <div className={s.listBar}>
+          <label className={s.field}>
+            <span>Repo</span>
+            <select aria-label="Repo" value={repo} onChange={(e) => setRepo(e.target.value)}>
+              <option value="">All repos</option>
+              {repos.map((r) => (
+                <option key={r.repo} value={r.repo}>
+                  {r.repo}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className={s.field}>
+            <span>Filter</span>
+            <select aria-label="Filter" value={filter} onChange={(e) => setFilter(e.target.value as SavedFilter | "")}>
+              <option value="">Everything</option>
+              {SAVED_FILTERS.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <fieldset className={s.segmented}>
             <legend>
-              <VisuallyHidden>Columns by</VisuallyHidden>
+              <VisuallyHidden>View</VisuallyHidden>
             </legend>
-            {(["readiness", "priority", "status"] as const).map((g) => (
-              <label key={g} className={s.segment} data-on={grouping === g || undefined}>
-                <input
-                  type="radio"
-                  name={`${view}-grouping`}
-                  checked={grouping === g}
-                  onChange={() => setGrouping(g)}
-                />
-                {GROUPINGS[g]}
+            {(["list", "board"] as const).map((m) => (
+              <label key={m} className={s.segment} data-on={mode === m || undefined}>
+                <input type="radio" name={`${view}-mode`} checked={mode === m} onChange={() => setMode(m)} />
+                {m === "list" ? "List" : "Board"}
               </label>
             ))}
           </fieldset>
-        ) : null}
-        <span className={s.spacer} />
-        {data ? <span className={s.muted}>{freshness(data)}</span> : null}
-      </div>
-      {syncError !== null ? (
-        <div className={s.banners}>
-          <Banner tone="danger" cause={signedOut ? "Signed out of GitHub:" : "Couldn't refresh from GitHub:"}>
-            <Cause text={syncError} />
-            {rows.length ? " What you see is from the cache." : null}
-          </Banner>
-        </div>
-      ) : null}
-      {chosen.length > 0 ? (
-        <div className={s.bulk} role="toolbar" aria-label="Selected issues">
-          <strong>{chosen.length} selected</strong>
-          <Button size="sm" loading={busy === "suggest"} onClick={() => void suggest()}>
-            Suggest with Claude
-          </Button>
-          <Button size="sm" variant="primary" loading={busy === "approve"} onClick={() => void approveAll()}>
-            Approve all
-          </Button>
-          <span className={s.spacer} />
-          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-            Clear selection
-          </Button>
-        </div>
-      ) : null}
-      {data === null && readError !== null ? (
-        <div className={s.problem} role="alert">{`Couldn't read the ${NAMES[view]}: ${readError}`}</div>
-      ) : null}
-      {data !== null && mode === "board" ? (
-        <Board rows={rows} repos={repos} grouping={grouping} selected={selected} onOpen={onOpen} />
-      ) : null}
-      {data !== null && mode === "list" ? (
-        rows.length === 0 ? (
-          <p className={s.empty}>{repos.length === 0 ? "Add a repo in Settings → Issues to start." : EMPTY[view]}</p>
-        ) : (
-          <div className={s.listScroll}>
-            <div className={s.listHead}>
-              <input
-                type="checkbox"
-                aria-label="Select all"
-                checked={allSelected}
-                onChange={() => setSelected(allSelected ? new Set() : new Set(rows.map(refOf)))}
-              />
-              <span>{plural(rows.length, "issue", "issues")}</span>
-            </div>
-            <ul className={s.list} aria-label={NAMES[view]}>
-              {rows.map((row) => (
-                <li key={refOf(row)} className={s.row} data-selected={selected.has(refOf(row)) || undefined}>
+          {mode === "board" ? (
+            <fieldset className={s.segmented}>
+              <legend>
+                <VisuallyHidden>Columns by</VisuallyHidden>
+              </legend>
+              {(["readiness", "priority", "status"] as const).map((g) => (
+                <label key={g} className={s.segment} data-on={grouping === g || undefined}>
                   <input
-                    type="checkbox"
-                    aria-label={`Select ${refOf(row)}`}
-                    checked={selected.has(refOf(row))}
-                    onChange={() => toggle(row)}
+                    type="radio"
+                    name={`${view}-grouping`}
+                    checked={grouping === g}
+                    onChange={() => setGrouping(g)}
                   />
-                  <span className={s.ref}>{refOf(row)}</span>
-                  <button type="button" className={s.titleButton} onClick={() => onOpen(row)}>
-                    <VisibleText text={row.title} />
-                  </button>
-                  <span className={s.rowLabels}>
-                    {row.missing.map((dimension) => (
-                      <Badge key={`missing-${dimension}`} tone="warn" icon="!">
-                        needs {dimension}
-                      </Badge>
-                    ))}
-                    {row.labels.map((label) => (
-                      <Badge key={label} tone={toneFor(label)}>
-                        <VisibleText text={label} />
-                      </Badge>
-                    ))}
-                  </span>
-                </li>
+                  {GROUPINGS[g]}
+                </label>
               ))}
-            </ul>
+            </fieldset>
+          ) : null}
+          <span className={s.spacer} />
+          {data ? <span className={s.muted}>{freshness(data)}</span> : null}
+        </div>
+        {syncError !== null ? (
+          <div className={s.banners}>
+            <Banner tone="danger" cause={signedOut ? "Signed out of GitHub:" : "Couldn't refresh from GitHub:"}>
+              <Cause text={syncError} />
+              {rows.length ? " What you see is from the cache." : null}
+            </Banner>
           </div>
-        )
-      ) : null}
-    </div>
+        ) : null}
+        {chosen.length > 0 ? (
+          <div className={s.bulk} role="toolbar" aria-label="Selected issues">
+            <strong>{chosen.length} selected</strong>
+            <Button size="sm" loading={busy === "suggest"} onClick={() => void suggest()}>
+              Suggest with Claude
+            </Button>
+            <Button size="sm" variant="primary" loading={busy === "approve"} onClick={() => void approveAll()}>
+              Approve all
+            </Button>
+            <AddThemeMenu
+              targets={targets}
+              themes={themes}
+              name="Add a theme to the selected issues"
+              onAdd={(tag, issues) => void addTheme(tag, issues)}
+            />
+            <MoveToEpicMenu targets={chosen} name="Move the selected issues to an epic" />
+            <AddToQueueMenu targets={chosen} name="Add the selected issues to a queue" />
+            <span className={s.spacer} />
+            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+              Clear selection
+            </Button>
+          </div>
+        ) : null}
+        {data === null && readError !== null ? (
+          <div className={s.problem} role="alert">{`Couldn't read the ${NAMES[view]}: ${readError}`}</div>
+        ) : null}
+        {themeFilter !== null ? (
+          <div className={s.filterChip}>
+            <span>{`Showing the issues with #${themeFilter.tag}`}</span>
+            <Button size="sm" variant="ghost" onClick={() => setThemeFilter(null)}>
+              Show all
+            </Button>
+          </div>
+        ) : null}
+        <div className={s.withThemes}>
+          <div className={s.listMain}>
+            {data !== null && mode === "board" ? (
+              <Board rows={rows} repos={repos} grouping={grouping} selected={selected} onOpen={onOpen} />
+            ) : null}
+            {data !== null && mode === "list" ? (
+              rows.length === 0 ? (
+                <p className={s.empty}>
+                  {repos.length === 0 ? "Add a repo in Settings → Issues to start." : EMPTY[view]}
+                </p>
+              ) : (
+                <div className={s.listScroll}>
+                  <div className={s.listHead}>
+                    <input
+                      type="checkbox"
+                      aria-label="Select all"
+                      checked={allSelected}
+                      onChange={() => setSelected(allSelected ? new Set() : new Set(rows.map(refOf)))}
+                    />
+                    <span>{plural(rows.length, "issue", "issues")}</span>
+                  </div>
+                  <ul className={s.list} aria-label={NAMES[view]}>
+                    {rows.map((row) => {
+                      const item = itemOf(row);
+                      return (
+                        <li key={refOf(row)} data-selected={selected.has(refOf(row)) || undefined}>
+                          <Draggable id={item.id} label={item.label} data={row} group={group} className={s.row}>
+                            {(handle) => (
+                              <>
+                                <button type="button" {...handle} className={s.grip} aria-label={`Move ${item.label}`}>
+                                  <span aria-hidden="true">⠿</span>
+                                </button>
+                                <input
+                                  type="checkbox"
+                                  aria-label={`Select ${refOf(row)}`}
+                                  checked={selected.has(refOf(row))}
+                                  onChange={() => toggle(row)}
+                                />
+                                <span className={s.ref}>{refOf(row)}</span>
+                                <button type="button" className={s.titleButton} onClick={() => onOpen(row)}>
+                                  <VisibleText text={row.title} />
+                                </button>
+                                <span className={s.rowLabels}>
+                                  {row.missing.map((dimension) => (
+                                    <Badge key={`missing-${dimension}`} tone="warn" icon="!">
+                                      needs {dimension}
+                                    </Badge>
+                                  ))}
+                                  {row.labels.map((label) => (
+                                    <Badge key={label} tone={toneFor(label)}>
+                                      <VisibleText text={label} />
+                                    </Badge>
+                                  ))}
+                                </span>
+                              </>
+                            )}
+                          </Draggable>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )
+            ) : null}
+          </div>
+          <ThemesColumn
+            themes={themes}
+            filter={themeFilter?.tag ?? null}
+            onFilter={(tag, refs) => setThemeFilter(tag === null || refs === null ? null : { tag, refs })}
+            selected={targets}
+            onAdd={(tag, issues) => void addTheme(tag, issues)}
+          />
+        </div>
+      </div>
+    </Drops>
   );
 }

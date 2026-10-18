@@ -57,7 +57,7 @@ test("a new issue: approve the agent's suggestion at once, stage a picker change
   await page.goto("/issues/");
   const inbox = page.getByRole("list", { name: "Inbox" });
   await expect(inbox.getByText("needs readiness")).toBeVisible();
-  await inbox.getByRole("button", { name: "Greeter crashes on an empty name" }).click();
+  await inbox.getByRole("button", { name: "Greeter crashes on an empty name", exact: true }).click();
   await expect.poll(() => new URL(page.url()).pathname).toBe(`/issues/${REPO}/${number}`);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Greeter crashes on an empty name");
   // The body is Markdown rendered safely: emphasis kept, the script tag never.
@@ -97,4 +97,63 @@ test("a new issue: approve the agent's suggestion at once, stage a picker change
     (w) => `${w.method} ${decodeURIComponent(w.path.slice(labelsPath.length))} ${JSON.stringify(w.body)}`,
   );
   expect(described.slice(1).sort()).toEqual(["DELETE /priority: medium null", 'POST  {"labels":["priority: high"]}']);
+});
+
+test("a queue's order is local: a real mouse drag reorders it at once, and nothing reaches GitHub", async ({
+  page,
+}) => {
+  const auth = { Authorization: `Bearer ${token()}` };
+  expect(
+    (await page.request.put(`/api/issues/repos/${REPO}`, { headers: keyed(auth), data: { watched: true, settings_schema: null } })).ok(), // prettier-ignore
+  ).toBe(true);
+  const opened: number[] = [];
+  for (const title of ["Queue drag first", "Queue drag second"]) {
+    const made = await page.request.post(`${github()}/__issues`, {
+      data: { title, body: "", labels: ["bug", "area:cli", "priority: medium"] },
+    });
+    opened.push(((await made.json()) as { number: number }).number);
+  }
+  expect((await page.request.post(`/api/issues/repos/${REPO}/sync`, { headers: keyed(auth) })).ok()).toBe(true);
+  const name = `Drag ${Date.now()}`;
+  const made = await page.request.post("/api/issues/queues", { headers: keyed(auth), data: { name } });
+  expect(made.ok()).toBe(true);
+  const { id } = (await made.json()) as { id: string };
+  for (const n of opened) {
+    const added = await page.request.post(`/api/issues/queues/${id}/items`, {
+      headers: keyed(auth),
+      data: { kind: "issue", repo: REPO, n },
+    });
+    expect(added.ok()).toBe(true);
+  }
+  const order = async () => {
+    const got = (await (await page.request.get(`/api/issues/queues/${id}`, { headers: auth })).json()) as {
+      items: { n: number }[];
+    };
+    return got.items.map((item) => item.n);
+  };
+  expect(await order()).toEqual(opened);
+  const writesBefore = (await githubRequests(page)).filter((r) => r.method !== "GET").length;
+
+  const { url } = (await (await page.request.post("/api/auth/nonce", { headers: auth })).json()) as { url: string };
+  await page.goto(url);
+  await page.goto("/issues/queues");
+  await page.getByRole("tab").filter({ hasText: name }).click();
+  const list = page.getByRole("list", { name });
+  await expect(list.getByRole("listitem")).toHaveCount(2);
+  const handle = list.getByRole("button", { name: `Move ${REPO}#${opened[1]} Queue drag second` });
+  const top = await list.getByRole("listitem").first().boundingBox();
+  const box = await handle.boundingBox();
+  if (!top || !box) throw new Error("the queue did not lay out");
+  const x = box.x + box.width / 2;
+  await page.mouse.move(x, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(x, box.y + box.height / 2 - 6, { steps: 3 });
+  await page.mouse.move(x, top.y + 4, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator("[data-dnd-announcer]")).toContainText("to position 1 of 2");
+  await expect.poll(order).toEqual([opened[1], opened[0]]);
+  await expect(list.getByRole("listitem").first()).toContainText("Queue drag second");
+  // Local only: no write reached GitHub, and nothing waits in the tray.
+  expect((await githubRequests(page)).filter((r) => r.method !== "GET").length).toBe(writesBefore);
+  await expect(page.getByRole("region", { name: "Pending changes" })).toHaveCount(0);
 });

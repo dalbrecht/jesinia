@@ -3101,7 +3101,8 @@ export interface components {
          * EpicOut
          * @description An epic (or initiative) in the Epics list: ``done`` closed children of ``total``,
          *     readiness, and ``lacks_label`` when it has children but no ``epic`` label (Jesinia suggests
-         *     adding it).
+         *     adding it). ``parent`` (``owner/name#n``) is its own epic or initiative in the cache, so the
+         *     app can refuse a drop into its own child or ancestor before staging.
          */
         EpicOut: {
             /** Repo */
@@ -3114,6 +3115,8 @@ export interface components {
             url: string;
             /** Labels */
             labels: string[];
+            /** Parent */
+            parent: string | null;
             /** Priority */
             priority: string | null;
             /** Is Initiative */

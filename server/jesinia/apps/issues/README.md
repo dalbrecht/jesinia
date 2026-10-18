@@ -302,7 +302,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
     same batch. The batch keeps the key too, so a replay never applies the tray again, even
     across a crash (ruling IR46).
-  - `GET /epics?repo`: the open epics and initiatives with progress and readiness.
+  - `GET /epics?repo`: the open epics and initiatives with progress and readiness, and each
+    one's cached `parent`, so the app refuses a drop into an epic's own child before staging.
     `GET /epics/{owner}/{repo}/{n}`: one epic, its children in order (each with what blocks it),
     the approved brief and a brief composed from the cache (`default_brief`, for Copy brief);
     404 for an issue that isn't an epic.

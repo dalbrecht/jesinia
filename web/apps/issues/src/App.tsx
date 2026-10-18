@@ -9,9 +9,11 @@ import { AppShell, useClient, VisibleText } from "@jesinia/shell";
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { errorCause, getRepos, refOf, routeOf, routePath, type IssueRow, type Repo, type Route } from "./api";
 import { Backlog } from "./Backlog";
+import { Epics } from "./Epics";
 import { Inbox } from "./Inbox";
 import s from "./issues.module.css";
 import { IssueView } from "./IssueView";
+import { Queues } from "./Queues";
 import { loadTabs, sameTab, saveTabs, type OpenTab } from "./tabs";
 import { TrayProvider, useTray } from "./Tray";
 
@@ -192,11 +194,15 @@ function Workspace() {
             <Backlog repos={repos} onOpen={openRow} active={route.kind === "backlog"} />
           </div>
         ) : null}
-        {route.kind === "epics" ? (
-          <p className={s.empty}>Epics aren't in this version yet: they arrive with their list, briefs and drops.</p>
+        {visited.has("epics") ? (
+          <div className={s.pane} hidden={route.kind !== "epics"}>
+            <Epics repos={repos} onOpenIssue={openIssue} />
+          </div>
         ) : null}
-        {route.kind === "queues" ? (
-          <p className={s.empty}>Queues aren't in this version yet: they arrive with ordering and Done.</p>
+        {visited.has("queues") ? (
+          <div className={s.pane} hidden={route.kind !== "queues"}>
+            <Queues />
+          </div>
         ) : null}
         {tabs
           .filter((t) => visited.has(issueKey(t)))

@@ -50,8 +50,15 @@ export type TrayApi = {
   stage: (repo: string, n: number, change: StageableChange, source: PendingSource) => Promise<boolean>;
   /** Stage several changes in order (one drop of a multi-selection); resolves to how many. */
   stageAll: (changes: Staging[]) => Promise<number>;
-  /** Approve a suggestion: it applies at once, and its batch is followed here. */
-  approve: (suggestion: Suggestion) => Promise<boolean>;
+  /** Approve a suggestion: it applies at once, and its batch is followed here. A refusal is
+   * toasted, then handed to `onRefused` (for an action such as "add to that epic instead"). */
+  approve: (suggestion: Suggestion, onRefused?: (e: unknown) => void) => Promise<boolean>;
+  /** Follow a batch started elsewhere (a conversion, a theme's epic): results show here. */
+  follow: (batch: ApplyBatch, title: string) => void;
+  /** Follow the batch an EarlierBatchError names, so its Retry and Abandon are here. */
+  followEarlier: (e: unknown) => void;
+  /** Read the tray again (after a queue's Done or band move, or a publish, staged on the server). */
+  refresh: () => Promise<void>;
   /** Whether an approval of this suggestion is being sent. */
   isApproving: (suggestionId: string) => boolean;
   /** Bumped whenever a batch settles, so views read the cache again. */
@@ -239,18 +246,19 @@ export function TrayProvider({ children }: { children: ReactNode }) {
   );
 
   const approve = useCallback<TrayApi["approve"]>(
-    async (suggestion) => {
-      const where = `${suggestion.repo ?? ""}#${suggestion.n ?? ""}`;
+    async (suggestion, onRefused) => {
+      const where = suggestion.repo === null ? "" : `${suggestion.repo}#${suggestion.n ?? ""}`;
       const what = describeSuggestion(suggestion);
       try {
         const approval = await keyed(`approve:${suggestion.id}`, (key) =>
           approveSuggestion(client, suggestion.id, key),
         );
-        track(approval.batch, `Approved: ${what} on ${where}`);
+        track(approval.batch, where ? `Approved: ${what} on ${where}` : `Approved: ${what}`);
         return true;
       } catch (e) {
-        fail(`approve "${what}" on ${where}`, e);
+        fail(where ? `approve "${what}" on ${where}` : `approve "${what}"`, e);
         followEarlier(e);
+        onRefused?.(e);
         return false;
       }
     },
@@ -342,9 +350,12 @@ export function TrayProvider({ children }: { children: ReactNode }) {
   }, [hasPending]);
 
   const isApproving = useCallback((id: string) => busy.has(`approve:${id}`), [busy]);
+  const refresh = useCallback(async () => {
+    await readPending();
+  }, [readPending]);
   const api = useMemo<TrayApi>(
-    () => ({ stage, stageAll, approve, isApproving, revision }),
-    [stage, stageAll, approve, isApproving, revision],
+    () => ({ stage, stageAll, approve, isApproving, revision, follow: track, followEarlier, refresh }),
+    [stage, stageAll, approve, isApproving, revision, track, followEarlier, refresh],
   );
   const isEmpty = pending.length === 0 && tracked.length === 0;
 

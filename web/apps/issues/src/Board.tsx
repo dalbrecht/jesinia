@@ -4,38 +4,32 @@
 // waits for Apply). Status columns are derived from GitHub and refuse drops with the reason.
 // The drag primitives give every drop a keyboard and screen-reader equivalent (Space, arrows).
 //
-// The DndProvider is mounted here, not app-wide: the board is this version's only drag surface.
-import {
-  Badge,
-  DndProvider,
-  Draggable,
-  DropTarget,
-  toneFor,
-  type DragItem,
-  type DropTargetInfo,
-  type Refusal,
-} from "@jesinia/design";
+// The drag surface (`Drops`) is the list's, so the board's cards also drop onto the themes beside it.
+import { Badge, Draggable, DropTarget, toneFor, type DragItem, type Refusal } from "@jesinia/design";
 import { VisibleText, visibleText } from "@jesinia/shell";
 import { useMemo } from "react";
 import { refOf, schemaValues, STATUS_COLUMNS, statusOf, type Dimension, type IssueRow, type Repo } from "./api";
+import type { DropAction } from "./drops";
 import s from "./issues.module.css";
 import { useTray } from "./Tray";
 
 export type Grouping = "readiness" | "priority" | "status";
 
-const ISSUES = { one: "issue", other: "issues" };
 const NONE = "\u0000none";
 
 type Column = { id: string; label: string; value: string | null; rows: IssueRow[] };
-type ColumnData = { grouping: Grouping; value: string | null };
 
 const DERIVED: Refusal = {
   code: "derived",
   reason: "Status comes from GitHub (its state, linked PRs and labels), so a drop can't set it",
 };
 
-const itemOf = (row: IssueRow) => ({ id: refOf(row), label: `${refOf(row)} ${visibleText(row.title)}`, data: row });
-const rowsOf = (items: readonly DragItem[]) => items.map((item) => item.data as IssueRow);
+export const itemOf = (row: IssueRow) => ({
+  id: refOf(row),
+  label: `${refOf(row)} ${visibleText(row.title)}`,
+  data: row,
+});
+export const rowsOf = (items: readonly DragItem[]) => items.map((item) => item.data as IssueRow);
 
 /** Whether `row`'s repo schema has `value` for `dimension` (an unknown repo has none). */
 function hasValue(repos: Repo[], row: IssueRow, dimension: Dimension, value: string): boolean {
@@ -89,10 +83,7 @@ export function Board({ rows, repos, grouping, selected, onOpen }: BoardProps) {
   const group = useMemo(() => rows.filter((row) => selected.has(refOf(row))).map(itemOf), [rows, selected]);
   const columns = columnsFor(rows, repos, grouping);
 
-  const onDrop = (dropped: readonly DragItem[], target: DropTargetInfo) => {
-    // Only readiness and priority columns with a value take drops (the rest refuse, and refused
-    // drops never reach onDrop), so the target is one of those.
-    const { grouping: dimension, value } = target.data as { grouping: Dimension; value: string };
+  const dropOn = (dimension: Dimension, value: string) => (dropped: readonly DragItem[]) => {
     // One after another, then one read of the tray, so it shows every change staged.
     const changes = rowsOf(dropped)
       .filter((row) => row[dimension] !== value)
@@ -101,67 +92,60 @@ export function Board({ rows, repos, grouping, selected, onOpen }: BoardProps) {
   };
 
   return (
-    <DndProvider onDrop={onDrop} noun={ISSUES}>
-      <div className={s.board}>
-        {columns.map((column) => {
-          const data: ColumnData = { grouping, value: column.value };
-          return (
-            <DropTarget
-              key={column.id}
-              id={`column:${grouping}:${column.id}`}
-              label={visibleText(column.label)}
-              data={data}
-              accepts={(dragged) => columnRefusal(repos, grouping, column.value, rowsOf(dragged))}
-              className={s.column}
-              role="group"
-              aria-label={visibleText(column.label)}
-            >
-              <div className={s.columnHead}>
-                <span className={s.columnTitle}>
-                  <VisibleText text={column.label} />
-                </span>
-                <span className={s.muted}>{column.rows.length}</span>
-              </div>
-              <div className={s.columnBody}>
-                {column.rows.map((row) => {
-                  const item = itemOf(row);
-                  return (
-                    <Draggable
-                      key={item.id}
-                      id={item.id}
-                      label={item.label}
-                      data={row}
-                      group={group}
-                      className={s.card}
-                    >
-                      {(handle) => (
-                        <>
-                          <div className={s.cardTop}>
-                            <button type="button" {...handle} className={s.grip} aria-label={`Move ${item.label}`}>
-                              <span aria-hidden="true">⠿</span>
-                            </button>
-                            <span className={s.ref}>{refOf(row)}</span>
-                          </div>
-                          <button type="button" className={s.cardTitle} onClick={() => onOpen(row)}>
-                            <VisibleText text={row.title} />
+    <div className={s.board}>
+      {columns.map((column) => {
+        // Only readiness and priority columns with a value take drops (the rest refuse, and a
+        // refused drop never arrives), so a drop is always onto one of those.
+        const data: DropAction = { drop: dropOn(grouping as Dimension, column.value ?? "") };
+        return (
+          <DropTarget
+            key={column.id}
+            id={`column:${grouping}:${column.id}`}
+            label={visibleText(column.label)}
+            data={data}
+            accepts={(dragged) => columnRefusal(repos, grouping, column.value, rowsOf(dragged))}
+            className={s.column}
+            role="group"
+            aria-label={visibleText(column.label)}
+          >
+            <div className={s.columnHead}>
+              <span className={s.columnTitle}>
+                <VisibleText text={column.label} />
+              </span>
+              <span className={s.muted}>{column.rows.length}</span>
+            </div>
+            <div className={s.columnBody}>
+              {column.rows.map((row) => {
+                const item = itemOf(row);
+                return (
+                  <Draggable key={item.id} id={item.id} label={item.label} data={row} group={group} className={s.card}>
+                    {(handle) => (
+                      <>
+                        <div className={s.cardTop}>
+                          <button type="button" {...handle} className={s.grip} aria-label={`Move ${item.label}`}>
+                            <span aria-hidden="true">⠿</span>
                           </button>
-                          <div className={s.cardLabels}>
-                            {row.labels.slice(0, 4).map((label) => (
-                              <Badge key={label} tone={toneFor(label)}>
-                                <VisibleText text={label} />
-                              </Badge>
-                            ))}
-                          </div>
-                        </>
-                      )}
-                    </Draggable>
-                  );
-                })}
-              </div>
-            </DropTarget>
-          );
-        })}
-      </div>
-    </DndProvider>
+                          <span className={s.ref}>{refOf(row)}</span>
+                        </div>
+                        <button type="button" className={s.cardTitle} onClick={() => onOpen(row)}>
+                          <VisibleText text={row.title} />
+                        </button>
+                        <div className={s.cardLabels}>
+                          {row.labels.slice(0, 4).map((label) => (
+                            <Badge key={label} tone={toneFor(label)}>
+                              <VisibleText text={label} />
+                            </Badge>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </Draggable>
+                );
+              })}
+            </div>
+          </DropTarget>
+        );
+      })}
+    </div>
   );
 }

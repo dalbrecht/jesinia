@@ -44,9 +44,9 @@ describe("workspace tabs", () => {
     expect(window.location.pathname).toBe("/issues/backlog");
     expect(await screen.findByText("Add export")).toBeInTheDocument();
     await userEvent.click(within(nav).getByRole("link", { name: /^Epics/ }));
-    expect(screen.getByText(/Epics aren't in this version yet/)).toBeInTheDocument();
+    expect(await screen.findByRole("complementary", { name: "Epic list" })).toBeInTheDocument();
     await userEvent.click(within(nav).getByRole("link", { name: /^Queues/ }));
-    expect(screen.getByText(/Queues aren't in this version yet/)).toBeInTheDocument();
+    expect(await screen.findByText(/No queues yet/)).toBeInTheDocument();
   });
 
   it("opening an issue gives it a tab (kept across reloads); closing it goes back", async () => {
@@ -79,10 +79,10 @@ describe("the list", () => {
         "GET /api/issues/inbox": view([row(1, { title: `Sneaky${String.fromCodePoint(0x2066)} title` })]),
       }),
     );
-    const item = (await screen.findByRole("button", { name: /Sneaky/ })).closest("li");
+    const item = (await screen.findByRole("button", { name: /^Sneaky/ })).closest("li");
     if (!item) throw new Error("no row");
     expect(within(item).getByText("acme/app#1")).toBeInTheDocument();
-    expect(within(item).getByRole("button", { name: /Sneaky/ })).toHaveTextContent("Sneaky⟪U+2066⟫ title");
+    expect(within(item).getByRole("button", { name: /^Sneaky/ })).toHaveTextContent("Sneaky⟪U+2066⟫ title");
     expect(within(item).getByText("needs readiness")).toBeInTheDocument();
     expect(within(item).getByText("area:web")).toBeInTheDocument();
   });
