@@ -772,3 +772,111 @@ function StatusIndicator(props: { items: StatusItem[] }): JSX.Element;
 
 **Issues board columns**, the **Review quiz and metrics** widgets, and the **RSS feed
 tree** are app-specific components (brief §10), specified in their product specs.
+
+## 11. Drag and drop (added in Issues Task 11)
+
+Drag and drop is a primary way to work in Issues ([the Issues spec](../specs/2026-10-16-issues-design.md)
+§6.1), so it's wrapped once here and shared by every app. Built on `@dnd-kit/core` and
+`@dnd-kit/sortable` (MIT). Four parts: `DndProvider`, `Draggable`, `DropTarget` and
+`SortableList`.
+
+**Anatomy:**
+
+- **Drag preview:** a raised card that follows the pointer. It shows the first item's label and, for
+  a multi-selection, a count chip ("3 issues"). Over a refused target it gains a `--jx-danger`
+  border and the refusal's reason. `--jx-surface-raised`, `--jx-border`, `--jx-shadow-2`; the chip
+  is `--jx-accent` on `--jx-accent-fg`.
+- **Dragged items** stay in place at 45% opacity while the preview travels.
+- **Target highlight:** while a drag is on, a `DropTarget` that would take the items shows a 1 px
+  dashed `--jx-border-strong` outline (`available`); one that would refuse them dims to 60%
+  (`unavailable`). Under the drag it fills `--jx-accent-subtle` with a 2 px `--jx-accent` outline
+  (`over`), or `--jx-danger-bg` with a dashed `--jx-danger` outline and the reason in
+  `--jx-danger` text (`refused`).
+- **Insertion line:** in a `SortableList`, a 2 px `--jx-accent` line where the rows will land.
+  Rows don't shift aside, so the line reads the same for one row, a multi-selection, or rows
+  dragged in from elsewhere. No line is drawn where a drop would change nothing.
+
+Each part exposes its state as `data-drop-state` (`idle`, `available`, `unavailable`, `over`,
+`refused`), `data-dragging` and `data-insert-before`, for app styling through tokens and for tests.
+
+**Inputs**
+
+| Input | Behavior |
+|---|---|
+| Mouse, trackpad | Press and move 4 px to lift |
+| Touch | Long-press 250 ms to lift (`LONG_PRESS_MS`); moving more than 5 px first scrolls instead |
+| Keyboard | Space or Enter picks up; arrows move between drop targets in document order; Space or Enter drops; Escape cancels |
+| Auto-scroll | While the pointer rests within 40 px of a scrolling list's or board's edge, it scrolls, faster nearer the edge, up to 16 px a tick. It scrolls the containers under the pointer as well as around the dragged item, so a drag from one pane into a long list in another works. If the inner container can't go further, the outer one scrolls |
+
+With the keyboard, ↓ and → step to the next target and ↑ and ← to the previous; the first press
+goes to the nearest target in that direction. In a list, each row stands for the slot before it,
+plus an end slot; slots where a drop would change nothing are skipped.
+
+**Motion:** highlights change over `--jx-duration-fast`. On drop the preview settles into place
+over 200 ms (it mirrors `--jx-duration-base` and `--jx-ease`, since the Web Animations API can't
+read custom properties). Under `prefers-reduced-motion: reduce` the preview doesn't settle and
+highlights change at once.
+
+**Announcements** (one assertive live region, present from mount; plain sentences)
+
+| Moment | Example |
+|---|---|
+| Pick up | "Picked up 3 issues. Use the arrow keys to move, Space or Enter to drop, Escape to cancel." |
+| Over a target | "Over Epic A." |
+| Over a list position | "Over Next up, position 2 of 5." |
+| Over a refused target | "Can't drop on Epic A: An epic can't contain itself." |
+| Drop on a target | "Dropped 3 issues on Epic A." |
+| Reorder | "Moved Fix sync to position 3 of 4 in Next up." |
+| Drop into a list | "Dropped Fix sync in Next up at position 1 of 3." |
+| No change | "Fix sync stayed where it was. Nothing changed." |
+| Refused drop | "Can't drop on Epic A: An epic can't contain itself. Nothing changed." |
+| Cancel | "Drag cancelled. Nothing changed." |
+
+One item is named by its label, several by count, using the provider's `noun`.
+
+**ARIA:** each draggable is `role="button"` with `aria-roledescription="draggable"` and
+`aria-describedby` pointing at the instructions ("To pick up, press Space or Enter. …"). Focus
+returns to the draggable after a drop or cancel. Every drag also needs a menu equivalent in the
+app ("Move to epic…", "Add to queue…"); the primitives don't provide one.
+
+**Props**
+
+```ts
+type DragItem = { id: string; label?: string; data?: unknown };
+// Ruling IR17: a typed refusal with a reason, or null to accept. Never a string-or-bool.
+type Refusal = { code: string; reason: string };
+type Accepts = (items: readonly DragItem[]) => Refusal | null;
+type DropTargetInfo = { id: string; label: string; data?: unknown };
+
+// Mounted once per app. Refused drops never reach onDrop. Reorders inside one SortableList go
+// to its onMove; drops into a list from outside arrive here with position = the insertion slot
+// (0 before the first row, the list's length at the end), else position is null.
+function DndProvider(props: {
+  onDrop: (items: readonly DragItem[], target: DropTargetInfo, position: number | null) => void;
+  noun?: { one: string; other: string }; // default "item" / "items"
+  renderPreview?: (items: readonly DragItem[], refusal: Refusal | null) => ReactNode;
+  children: ReactNode;
+}): JSX.Element;
+
+// Its root is the handle. With a group that includes it, the whole group drags (multi-select).
+function Draggable(props: HTMLAttributes<HTMLDivElement> & {
+  id: string; label: string; data?: unknown; group?: readonly DragItem[]; disabled?: boolean;
+}): JSX.Element;
+
+// An epic, board column, theme, Done or Remove zone. accepts omitted: takes anything.
+function DropTarget(props: HTMLAttributes<HTMLDivElement> & {
+  id: string; label: string; data?: unknown; accepts?: Accepts;
+}): JSX.Element;
+
+// A queue or an epic's children. accepts applies to items from outside; reorders are always allowed.
+function SortableList<T extends DragItem>(props: {
+  id: string; label: string; items: readonly T[];
+  onMove: (order: string[], moved: readonly T[]) => void;
+  renderItem: (item: T, state: { index: number; isDragging: boolean }) => ReactNode;
+  selection?: readonly string[]; accepts?: Accepts; data?: unknown; className?: string;
+}): JSX.Element;
+```
+
+Ids must be unique within a provider: a `Draggable`, a `DropTarget` and a `SortableList` can't
+share one. Rows inside a `SortableList` are namespaced by the list, so the same issue can appear
+in a list and as a `Draggable` elsewhere.
