@@ -198,6 +198,9 @@ class FollowUps:
         self._written = 0
         # Asked for again while a pass ran: one more pass follows (a head that arrived since).
         self._again = False
+        # Told of each head classified (the pipeline adds a re-review to a round planned
+        # without it, Codex P1 on PR #63).
+        self.on_classified: Callable[[PrRef, str], Awaitable[object]] | None = None
 
     def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
         """What ``head_sha`` needs, once checked, under the PR's CI as cached now (C2)."""
@@ -367,7 +370,14 @@ class FollowUps:
             cause = str(exc) or type(exc).__name__
             self._store.put_followup(ref, head, FollowUp("new", error=cause))
             return 0
-        return 0 if found.error is not None else 1
+        if found.error is not None:
+            return 0
+        if self.on_classified is not None:
+            try:
+                await self.on_classified(ref, head)
+            except Exception as exc:  # secondary: the next open plans it anyway; cause logged
+                log.warning("review.followup %s: re-plan failed: %s", ref, exc, exc_info=exc)
+        return 1
 
     def start_refresh(self) -> None:
         """Run ``refresh`` in the background (one at a time), then ``after`` if it classified

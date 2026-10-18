@@ -299,6 +299,8 @@ class ReviewModule:
                     followups=followups,
                     rereviews=Rereviews(github=prs, workspace=self._workspace, store=store),
                 )
+                # A head classified after its round was planned gets its re-review then.
+                followups.on_classified = self._pipeline.replan
                 self._stacks = StackReviews(
                     store=store,
                     reads=self._reviews,

@@ -205,14 +205,16 @@ class Env:
     repo: Repo
     ref: PrRef
 
-    def sync(self, head: str, base: str, *, ci: CiState = "passing") -> None:
+    def sync(self, head: str, base: str, *, ci: CiState = "passing", reviews: bool = False) -> None:
+        """The PR as a sync caches it; ``reviews``: with GitHub's reviews as listed (so the
+        author's latest review is compared, R75), else none."""
         pr = pull(1, REPO, head=head, base=base)
         self.github.inbox = [pr]
         self.pipeline_github.pr = replace(pr, commit_count=1)
         snapshot = snapshot_of(
             pr,
             ci_state=ci,
-            reviews=[],
+            reviews=self.github.reviews_of.get((REPO, 1), []) if reviews else [],
             automated_reviewer=None,
             viewer="me",
         )
@@ -846,8 +848,12 @@ async def test_a_rereview_planned_on_open_fails_when_its_follow_up_is_gone(
             return 0
 
         def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
+            # Read twice while opening (is it classified, is it a re-review), then gone.
             self.calls += 1
-            return FollowUp("rereview", [], "n", "c" * 40, "github") if self.calls == 1 else None
+            return FollowUp("rereview", [], "n", "c" * 40, "github") if self.calls <= 2 else None
+
+        async def check(self, ref: PrRef) -> None:
+            return None
 
     pipeline = Pipeline(
         github=github,
@@ -1234,3 +1240,106 @@ async def test_a_head_prepared_before_it_was_classified_still_gets_its_rereview(
     assert isinstance(jobs, dict) and jobs["rereview"] == {"state": "done", "error": None}
     assert isinstance(env.store.artifact(round_id, "rereview"), dict)
     assert _given(env).new_hunks == (HunkRef("app.py", 1),)
+
+
+async def test_open_before_classification_classifies_first_and_plans_the_rereview(
+    env: Env,
+) -> None:
+    """Codex P1 on PR #63: the view opens a new head before the background refresh has
+    classified it. Opening classifies it first, so its round plans the re-review."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    inline = {"path": "app.py", "line": 30, "side": "RIGHT", "body": "Off by one here.",
+              "start_line": None, "start_side": None}  # fmt: skip
+    env.posted_round(repo.head, repo.base, "COMMENT", "A few notes.", [inline])
+    env.sync(repo.pushed, repo.base)
+    assert env.followups.followup(env.ref, repo.pushed) is None  # not classified yet
+
+    result = await env.pipeline.open(env.ref)
+    await env.pipeline.drain()
+
+    assert result.state == "started" and JobKind.REREVIEW in result.jobs
+    assert result.round_id is not None
+    jobs = env.store.artifact(result.round_id, "jobs")
+    assert isinstance(jobs, dict) and jobs["rereview"] == {"state": "done", "error": None}
+
+
+async def test_open_says_checking_while_the_head_cant_be_classified(env: Env) -> None:
+    """Codex P1: when the head can't be classified now (GitHub's reviews unreadable), opening
+    answers a retryable "checking" and starts nothing; the next open plans the re-review."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    env.posted_round(repo.head, repo.base, "COMMENT", "Notes.", [])
+    env.sync(repo.pushed, repo.base)
+    env.github.error = GitHubRequestError(502, "Bad Gateway")
+
+    waiting = await env.pipeline.open(env.ref)
+
+    assert waiting.state == "checking" and waiting.round_id is None
+    assert "previous review" in waiting.reason
+    assert env.store.latest_round_on_head(env.ref, repo.pushed) is None
+    retried = await env.pipeline.retry(env.ref)
+    assert retried.state == "checking"
+    env.github.error = None
+    result = await env.pipeline.open(env.ref)
+    await env.pipeline.drain()
+    assert JobKind.REREVIEW in result.jobs
+
+
+async def test_a_classification_landing_later_adds_the_rereview_once(env: Env) -> None:
+    """Codex P1: a round opened while its head needed nothing (no previous review then) gets
+    the re-review when the author's review appears and the head is classified again; done
+    jobs never run again, and the re-review is added once."""
+    repo = env.repo
+    env.followups.on_classified = env.pipeline.replan
+    env.sync(repo.pushed, repo.base, reviews=True)
+    first = await env.pipeline.open(env.ref)
+    await env.pipeline.drain()
+    assert first.round_id is not None and JobKind.REREVIEW not in first.jobs
+    ran_before = list(env.jobs.ran)
+
+    # The author's review on the earlier head shows up (requested by hand on GitHub).
+    env.github.reviews_of[(REPO, 1)] = [
+        ReviewSummary("me", False, "CHANGES_REQUESTED", repo.head, START, 0, "Fix it", "u1")
+    ]
+    env.sync(repo.pushed, repo.base, reviews=True)  # the author's latest review changed
+    assert await env.followups.refresh() == 1
+    await env.pipeline.drain()
+
+    added = env.jobs.ran[len(ran_before) :]
+    assert added == [JobKind.REREVIEW]  # only the missing job; nothing done runs again
+    jobs = env.store.artifact(first.round_id, "jobs")
+    assert isinstance(jobs, dict) and jobs["rereview"]["state"] in {"done", "failed"}
+    # Once: a later classification of the same head adds nothing.
+    assert await env.pipeline.replan(env.ref, repo.pushed) is None
+    await env.pipeline.drain()
+    assert env.jobs.ran.count(JobKind.REREVIEW) == 1
+
+
+async def test_replan_adds_nothing_where_opening_still_plans_it(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Codex P1: a re-plan touches only an opened round of the PR's current head; a
+    failing re-plan is logged and never stops the classification."""
+    repo = env.repo
+    env.sync(repo.head, repo.base)
+    env.posted_round(repo.head, repo.base, "COMMENT", "Notes.", [])
+    env.sync(repo.pushed, repo.base)
+    stored = env.store.pr(env.ref)
+    assert stored is not None
+    await env.followups.classify(stored)
+    assert await env.pipeline.replan(PrRef(REPO, 99), repo.pushed) is None  # not queued
+    assert await env.pipeline.replan(env.ref, repo.head) is None  # not the current head
+    assert await env.pipeline.replan(env.ref, repo.pushed) is None  # no round yet
+    opened = env.store.start_round(env.ref, repo.pushed, repo.base, "quick", env.clock())
+    assert await env.pipeline.replan(env.ref, repo.pushed) is None  # never opened
+
+    async def broken(ref: PrRef, head: str) -> object:
+        raise RuntimeError("the pipeline is stopping")
+
+    env.followups.on_classified = broken
+    # A posting that settles as not posted drops the PR's follow-ups (R75): re-classified.
+    attempt = env.store.start_posting(opened, "COMMENT", "k", "d", "x", [], env.clock())
+    env.store.settle_posting(attempt.id, "not_posted", "probe")
+    assert await env.followups.refresh() == 1
+    assert "re-plan failed" in caplog.text

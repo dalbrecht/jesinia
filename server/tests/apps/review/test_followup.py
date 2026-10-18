@@ -331,6 +331,9 @@ async def test_conflict_edit_restricts_the_rounds_diff_in_the_pipeline(
     class Changed:
         reanchored: list[tuple[int, str, str]] = []
 
+        async def check(self, ref: PrRef) -> None:
+            return None
+
         async def reanchor(self, round_id: int, head_sha: str, merge_base: str) -> int:
             self.reanchored.append((round_id, head_sha, merge_base))
             return 0
@@ -924,6 +927,9 @@ async def test_a_failed_reanchor_is_a_round_warning_and_rereviews_keep_the_whole
     jobs = FakeJobs(store)
 
     class Broken:
+        async def check(self, ref: PrRef) -> None:
+            return None
+
         async def reanchor(self, round_id: int, head_sha: str, merge_base: str) -> int:
             raise GitCommandError(("git", "merge-base"), 128, "bad object")
 

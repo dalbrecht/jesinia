@@ -7,7 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "../App";
 import type { PrView } from "../api";
-import { NEW_HEAD_NOT_FETCHED } from "../pr/PrView";
+import { CHECKING_RETRY_MS, NEW_HEAD_NOT_FETCHED } from "../pr/PrView";
 import { queue, routes, row } from "./fixtures";
 import { API, drafts, NEWER, PATH, reviewed } from "./pr-fixtures";
 
@@ -126,4 +126,27 @@ describe("head changes in the drafts", () => {
     expect(await screen.findByText(/A new review round started; your edits are kept here/)).toBeInTheDocument();
     expect(box).toHaveValue("Rounding happens once. More.");
   });
+});
+
+describe("a head still being checked (Codex P1 on PR #63)", () => {
+  it("says so and opens again by itself until the round starts", async () => {
+    let calls = 0;
+    const { calls: sent } = openPr(reviewed({ stale: true }, { head_sha: NEWER }), {
+      [`POST ${API}/open`]: () => {
+        calls += 1;
+        return calls === 1
+          ? Response.json({
+              state: "checking",
+              reason: "checking this head against your previous review first (not checked yet); it opens again shortly",
+              round_id: null,
+              jobs: [],
+            })
+          : Response.json({ state: "started", reason: "reviewing", round_id: 3, jobs: ["rereview"] }, { status: 202 });
+      },
+    });
+    await ready();
+    expect(await screen.findByText(/checking this head against your previous review first/)).toBeInTheDocument();
+    await waitFor(() => expect(opens(sent)).toHaveLength(2), { timeout: CHECKING_RETRY_MS + 3000 });
+    expect(await screen.findByText(/Reviewing: 1 job running/)).toBeInTheDocument();
+  }, 15_000);
 });

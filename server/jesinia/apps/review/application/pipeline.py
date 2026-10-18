@@ -154,7 +154,10 @@ Clock = Callable[[], datetime]
 # The author's knowledge of a repo, from the knowledge model (plan Task 14). Trusted
 # context for the agents, so it is built from Jesinia's own records only, never PR text.
 KnowledgeSource = Callable[[str], str]
-OpenState = Literal["started", "running", "up_to_date", "failed"] | GateState
+OpenState = Literal["started", "running", "up_to_date", "failed", "checking"] | GateState
+# Why an open waits (Codex P1 on PR #63): planning a round before its head is classified would
+# leave out the re-review for good.
+CHECKING = "checking this head against your previous review first"
 ProgressState = Literal["started", "job_started", "job_done", "job_failed", "finished", "failed"]
 
 
@@ -229,6 +232,10 @@ class RoundFollowUps(Protocol):
     async def reanchor(self, round_id: int, head_sha: str, merge_base: str) -> int: ...
 
     def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None: ...
+
+    async def check(self, ref: PrRef) -> None:
+        """Classify ``ref``'s current head now if it isn't (a failure is recorded unchecked,
+        never raised)."""
 
 
 class RoundRereviews(Protocol):
@@ -455,6 +462,8 @@ class Pipeline:
         result = gate_for(stored, config, self._clock(), immediate=True)
         if result.state != "ready" and not self._gate_passed(stored):
             return OpenResult(result.state, result.reason)
+        if (waiting := await self._classified(stored)) is not None:
+            return waiting
         return self._start_open(stored, depth=depth, walk_everything=walk_everything, quiz=quiz)
 
     async def retry(self, ref: PrRef) -> OpenResult:
@@ -469,7 +478,52 @@ class Pipeline:
         result = gate_for(stored, config, self._clock(), immediate=True)
         if result.state != "ready" and not self._gate_passed(stored):
             return OpenResult(result.state, result.reason)
+        if (waiting := await self._classified(stored)) is not None:
+            return waiting
         return self._start_open(stored, rerun_failed=True)
+
+    async def _classified(self, stored: StoredPr) -> OpenResult | None:
+        """``None`` once the head's follow-up is known; the head is classified now when it
+        isn't (bounded by the workspace's and GitHub's own time limits). When it can't be
+        (GitHub or git failed, a posting is still being confirmed), a retryable
+        ``checking`` result: the view opens again shortly (Codex P1 on PR #63). **Review
+        anyway** doesn't wait: a classification landing later adds the re-review
+        (``replan``)."""
+        if self._followups is None:
+            return None
+        pr = stored.pr
+        found = self._followups.followup(pr.ref, pr.head_sha)
+        if found is None or found.error is not None:  # not classified, or not yet able to
+            await self._followups.check(pr.ref)
+            found = self._followups.followup(pr.ref, pr.head_sha)
+        if found is not None and found.error is None:
+            return None
+        why = "not checked yet" if found is None else found.error
+        return OpenResult("checking", f"{CHECKING} ({why}); it opens again shortly")
+
+    async def replan(self, ref: PrRef, head: str) -> OpenResult | None:
+        """A classification landed for ``head`` after its round was planned without it
+        (Codex P1 on PR #63): add the re-review to that round, if the round was opened (the
+        job is open-only, R70) and it is neither done, failed, planned nor running. Nothing
+        that ran runs again. Returns what started, or ``None``."""
+        stored = self._store.pr(ref)
+        if stored is None or stored.pr.head_sha != head or not self._is_rereview(ref, head):
+            return None
+        latest = self._store.latest_round_on_head(ref, head)
+        if latest is None:
+            return None
+        round_id = latest[0]
+        done = self._store.artifact_kinds(round_id)
+        coming = self._planned.get(round_id, Counter())
+        on_open = {kind for kinds in ON_OPEN_JOBS.values() for kind in kinds}
+        if not any(kind.value in done or coming[kind] for kind in on_open):
+            return None  # never opened: opening plans the re-review itself
+        failed = _failed_jobs(self._store.artifact(round_id, "jobs"))
+        kind = JobKind.REREVIEW
+        if kind.value in done or kind.value in failed or coming[kind]:
+            return None  # a running re-review is planned until it ends: counted in coming
+        log.info("review replan %s@%s: adding the re-review", ref, head[:12])
+        return self._launch(ref, head, round_id, REREVIEW_JOBS, owned=False)
 
     async def review_anyway(self, ref: PrRef) -> OpenResult:
         """``open`` without the CI and automated-review gates (the author's **Review
@@ -569,13 +623,26 @@ class Pipeline:
             return OpenResult("up_to_date", "this head's review is complete", round_id)
         if not rerun and all(coming[kind] for kind in missing):
             return OpenResult("running", "this head is being reviewed", round_id)
+        return self._launch(ref, head, round_id, missing, owned=owned, rerun=frozenset(rerun))
+
+    def _launch(
+        self,
+        ref: PrRef,
+        head: str,
+        round_id: int,
+        missing: tuple[JobKind, ...],
+        *,
+        owned: bool,
+        rerun: frozenset[JobKind] = frozenset(),
+    ) -> OpenResult:
+        """Start ``missing`` on the round in the background (an open's runner)."""
         self._plan(round_id, missing, +1)
         if owned:
             self._store.set_state(ref, head, "running", "reviewing (opened)")
         # Counted now, so a runner finishing meanwhile can't drop the shared preparation.
         self._runners[round_id] = self._runners.get(round_id, 0) + 1
         task = asyncio.create_task(
-            self._run_open(ref, head, round_id, missing, owned, frozenset(rerun)),
+            self._run_open(ref, head, round_id, missing, owned, rerun),
             name=f"review-open:{ref}",
         )
         self._opens.add(task)

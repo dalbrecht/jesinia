@@ -92,7 +92,21 @@ function saveRead(key: string, read: ReadonlySet<string>): void {
 }
 
 /** What opening (or Review anyway, Retry) said, in words, with the next step it offers. */
-type Notice = { text: string; anyway: boolean; tone: "info" | "problem"; retryOpen?: boolean; retry?: boolean };
+type Notice = {
+  text: string;
+  anyway: boolean;
+  tone: "info" | "problem";
+  retryOpen?: boolean;
+  retry?: boolean;
+  checking?: boolean;
+};
+
+/**
+ * How long the view waits before opening again while the server is still checking the head
+ * against the author's previous review (Codex P1 on PR #63): the round must know whether it
+ * is a re-review before it is planned.
+ */
+export const CHECKING_RETRY_MS = 3000;
 
 /**
  * Said when "Review the new head" fetched the PR again (Task 11 M7) and found the head it had
@@ -116,6 +130,7 @@ function noticeOf(result: OpenResult, newHead = false): Notice | null {
   if (result.state === "failed") return { text: result.reason, anyway: false, tone: "problem", retry: true };
   if (result.state === "running")
     return { text: "This head is being reviewed: pages fill in as they finish.", anyway: false, tone: "info" };
+  if (result.state === "checking") return { text: result.reason, anyway: false, tone: "info", checking: true };
   return { text: result.reason, anyway: GATES_ANYWAY.has(result.state), tone: "problem" };
 }
 
@@ -173,6 +188,13 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   const outlineId = useId();
 
   const reread = () => setReads((n) => n + 1);
+  // While the head is being checked, open again shortly, by itself (Codex P1 on PR #63).
+  const retryLater = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    if (!notice?.checking) return;
+    const timer = setTimeout(() => retryLater.current(), CHECKING_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [notice]);
   useEffect(() => {
     if (!active) return;
     let current = true;
@@ -450,6 +472,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         }),
     );
   };
+  retryLater.current = () => retryOpen();
   const done = () => {
     keyed(`done:${repo}#${number}`, (key) => markDone(client, repo, number, key, round?.id ?? null)).then(
       () => {
