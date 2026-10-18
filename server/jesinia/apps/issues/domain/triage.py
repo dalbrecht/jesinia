@@ -19,6 +19,7 @@ Pure: no I/O.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -26,12 +27,16 @@ from datetime import datetime, timedelta
 from typing import Literal, get_args
 
 from jesinia.apps.issues.domain.completeness import completeness
-from jesinia.apps.issues.domain.schema import LabelSchema, classify
+from jesinia.apps.issues.domain.schema import LabelSchema, classify, label_key
 from jesinia.services.github.domain.repo import validate_repo
 
 ViewName = Literal["inbox", "backlog"]
-# Task 5 adds ``human_needed_could_be_ready`` and ``possible_duplicates`` (ruling IR10).
-SavedFilter = Literal["incomplete", "stale_90d"]
+# Saved filters (spec §3.2, ruling IR10): ``incomplete``; ``stale_90d`` (no activity in 90
+# days); ``human_needed_could_be_ready`` (``human-needed`` with an open suggestion that it could
+# be ``agent-ready``); ``possible_duplicates`` (an open duplicate suggestion).
+SavedFilter = Literal[
+    "incomplete", "stale_90d", "human_needed_could_be_ready", "possible_duplicates"
+]
 SAVED_FILTERS: tuple[SavedFilter, ...] = get_args(SavedFilter)
 _VIEWS: tuple[ViewName, ...] = get_args(ViewName)
 STALE_AFTER = timedelta(days=90)
@@ -91,13 +96,24 @@ class IssueFilters:
         parse_saved_filter(self.saved)
 
 
+def content_hash(title: str, body: str, labels: Iterable[str]) -> str:
+    """A digest of what an issue *says*: its title, body and labels (compared as label names
+    compare). GitHub bumps ``updated_at`` for comments, assignees and milestones too; only a
+    change of this digest is an edit worth re-suggesting for."""
+    names = sorted({label_key(label) for label in labels})
+    text = json.dumps([title, body, names], ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class PreviousTriage:
-    """What the cache knew about an issue before this sync."""
+    """What the cache knew about an issue before this sync; ``content`` is its
+    ``content_hash``."""
 
     complete: bool
     inbox: bool
     is_open: bool = True
+    content: str | None = None
 
 
 def is_inbox(

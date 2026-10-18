@@ -91,6 +91,16 @@ def issue(
     )
 
 
+async def wait_until(condition: Callable[[], bool], timeout: float = 10.0) -> None:
+    """Wait for background work by condition, with a deadline, never by a count of loop turns:
+    suggestion runs hand work to threads, so how many turns they need depends on the machine."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition() and loop.time() < deadline:
+        await asyncio.sleep(0.005)
+    assert condition(), "timed out waiting for the condition"
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.now = T0
@@ -435,10 +445,9 @@ async def test_list_serves_cache_while_github_is_unreachable(
 
     clock.now += timedelta(minutes=5)
     github.gate = asyncio.Event()
+    lists = github.call_names().count("list_issues")
     running = asyncio.create_task(service.sync(REPO))
-    await asyncio.sleep(0)
-    while "list_issues" not in github.call_names()[-1:]:
-        await asyncio.sleep(0)
+    await wait_until(lambda: github.call_names().count("list_issues") > lists)
 
     view = queries.view("backlog", IssueFilters())
     assert sorted(row.number for row in view.rows) == [1, 2]
@@ -928,8 +937,7 @@ async def test_recompute_during_a_sync_ends_with_the_new_schema(
     # Hold the second page: the first is saved with the old schema, the rest come after.
     github.gate, github.gate_call = asyncio.Event(), 2
     running = asyncio.create_task(service.sync(REPO))
-    while github.call_names().count("list_issues") < 2:
-        await asyncio.sleep(0)
+    await wait_until(lambda: github.call_names().count("list_issues") >= 2)
 
     overlay = replace(
         DEFAULT_SCHEMA, readiness=(*DEFAULT_SCHEMA.readiness, Canonical("design needed"))

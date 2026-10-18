@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Issues routes under ``/api/issues``: watched repos and their Settings, the Inbox and
-Backlog, one issue, and the label setup and migration batches.
+Backlog, one issue, the label setup and migration batches, suggestion drafts (list, edit,
+dismiss, approve, and runs on demand), and the pending-changes tray with its applied batches.
 
 Every route needs the owner: the app mounts module routers behind ``require_owner``, so agent
-session tokens are refused (IR2); applying a label batch, the one approval here, also declares
-it itself. Every write takes an ``Idempotency-Key``. GET routes serve ``issues.sqlite`` only and
-never await GitHub (spec §6.3). A preview is a POST only for its body and isn't keyed: it reads
+session tokens are refused (IR2); the routes that change GitHub (applying a label batch,
+approving a suggestion, applying or retrying a batch) also declare it themselves. Every write
+takes an ``Idempotency-Key``. GET routes serve ``issues.sqlite`` only and never await GitHub
+(spec §6.3). A preview is a POST only for its body and isn't keyed: it reads
 GitHub and keeps a plan, and repeating it is harmless. Typed errors become ``{"error",
 "detail"}`` JSON with their status; a GitHub rate limit is a 503 with ``Retry-After`` (so the
 response is never stored under the key) wherever it happens.
@@ -25,20 +27,43 @@ from pydantic import BaseModel
 
 from jesinia.apps.issues.api.schemas import (
     REPO_MAX,
+    ApplyBatchOut,
     IssueDetailOut,
+    IssuePriorityRunOut,
     IssuesErrorOut,
     IssuesRepoIn,
     IssuesRepoOut,
     IssuesReposOut,
+    IssueSuggestionEditIn,
+    IssueSuggestionOut,
+    IssueSuggestionRunIn,
+    IssueSuggestionRunOut,
+    IssueSuggestionRunsOut,
+    IssueSuggestionsOut,
     IssueViewOut,
     LabelApplyIn,
     LabelApplyOut,
     LabelPlanIn,
     LabelPlanOut,
+    PendingApplyIn,
+    PendingIn,
+    PendingListOut,
+    PendingOut,
+    SuggestionApproveOut,
+    body_change,
 )
 from jesinia.apps.issues.application.labels import LabelSetupService
+from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.reads import IssueQueries
+from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.domain.changes import (
+    BatchNotFoundError,
+    BatchRunningError,
+    ChangeDomainError,
+    NothingPendingError,
+    PendingNotFoundError,
+)
 from jesinia.apps.issues.domain.labels import (
     LabelNameCollisionError,
     LabelPlanError,
@@ -48,6 +73,19 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlanOutdatedError,
 )
 from jesinia.apps.issues.domain.schema import InvalidSettingsSchemaError, validate_settings_schema
+from jesinia.apps.issues.domain.suggestions import (
+    OPEN_STATES,
+    DuplicateNotCachedError,
+    SuggestionDomainError,
+    SuggestionFilters,
+    SuggestionNotFoundError,
+    SuggestionRunError,
+    SuggestionRunnerUnavailableError,
+    SuggestionStaleError,
+    SuggestionStateError,
+    parse_kind,
+    parse_state,
+)
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
     IssueNotCachedError,
@@ -80,6 +118,15 @@ class IssuesHost(Protocol):
     def queries(self) -> IssueQueries: ...
 
     @property
+    def suggest(self) -> SuggestService: ...
+
+    @property
+    def pending(self) -> PendingService: ...
+
+    @property
+    def apply(self) -> ApplyService: ...
+
+    @property
     def idempotency(self) -> IdempotencyStore: ...
 
     def clock(self) -> datetime:
@@ -94,6 +141,17 @@ _STATUS: dict[type[Exception], int] = {
     LabelPlanKindMismatchError: status.HTTP_409_CONFLICT,
     LabelPlanOutdatedError: status.HTTP_409_CONFLICT,
     LabelNameCollisionError: status.HTTP_409_CONFLICT,
+    SuggestionNotFoundError: status.HTTP_404_NOT_FOUND,
+    SuggestionStateError: status.HTTP_409_CONFLICT,
+    SuggestionStaleError: status.HTTP_409_CONFLICT,
+    DuplicateNotCachedError: status.HTTP_409_CONFLICT,
+    # The agent, not the request, failed or is away: suggestions wait, manual triage carries on.
+    SuggestionRunnerUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+    SuggestionRunError: status.HTTP_502_BAD_GATEWAY,
+    PendingNotFoundError: status.HTTP_404_NOT_FOUND,
+    NothingPendingError: status.HTTP_409_CONFLICT,
+    BatchRunningError: status.HTTP_409_CONFLICT,
+    BatchNotFoundError: status.HTTP_404_NOT_FOUND,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -101,13 +159,18 @@ _STATUS: dict[type[Exception], int] = {
     # Anything else the request itself got wrong.
     TriageDomainError: status.HTTP_400_BAD_REQUEST,
     LabelPlanError: status.HTTP_400_BAD_REQUEST,
+    SuggestionDomainError: status.HTTP_400_BAD_REQUEST,
+    ChangeDomainError: status.HTTP_400_BAD_REQUEST,
     InvalidSettingsSchemaError: status.HTTP_400_BAD_REQUEST,
     GitHubReferenceError: status.HTTP_400_BAD_REQUEST,
     IssueDomainError: status.HTTP_400_BAD_REQUEST,
 }
 _TYPED = (
     TriageDomainError,
+    ChangeDomainError,
     LabelPlanError,
+    SuggestionDomainError,
+    SuggestionRunError,
     InvalidSettingsSchemaError,
     GitHubError,
     GitHubReferenceError,
@@ -121,6 +184,8 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
 Owner = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Name = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Number = Annotated[int, Path(ge=1, le=999_999_999)]
+SuggestionId = Annotated[str, Path(min_length=1, max_length=64)]
+ItemId = Annotated[str, Path(min_length=1, max_length=64)]
 
 
 def retry_after(reset_at: datetime | None, now: datetime) -> int:
@@ -160,6 +225,22 @@ async def _respond(
 
 def _repo(owner: str, repo: str) -> str:
     return f"{owner}/{repo}"
+
+
+def _started(batch_id: str, body: BaseModel) -> Response:
+    """A started batch's answer: 202, with the batch to poll as ``Location`` (IR45). It is
+    stored under the idempotency key like any answer, and the batch keeps the key too, so a
+    replay always answers this batch (IR46)."""
+    return JSONResponse(
+        jsonable_encoder(body),
+        status_code=status.HTTP_202_ACCEPTED,
+        headers={"Location": f"/api/issues/pending/{batch_id}"},
+    )
+
+
+def _request_key(route: str, idem: IdempotentCall) -> str | None:
+    """The key a batch keeps, by route (one key on two routes is two requests)."""
+    return None if idem.key is None else f"{route}:{idem.key}"
 
 
 def build_router(host: IssuesHost) -> APIRouter:
@@ -277,6 +358,222 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run, host.clock))
 
+    @r.get("/suggestions", response_model=IssueSuggestionsOut)
+    async def get_suggestions(
+        repo: Annotated[str | None, Query(max_length=REPO_MAX)] = None,
+        n: Annotated[int | None, Query(ge=1, le=999_999_999)] = None,
+        state: Annotated[list[str] | None, Query(max_length=4)] = None,
+        kind: Annotated[str | None, Query(max_length=32)] = None,
+        scope: Annotated[str | None, Query(min_length=1, max_length=8000)] = None,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+    ) -> Response:
+        """Suggestions from the cache: one issue (``repo`` and ``n``, with its latest run), one
+        repo, one batch ``scope`` (with its latest priority ask), or all, oldest first and at
+        most ``limit``. ``state`` may repeat (default: the
+        open ones, ``draft`` and ``edited``)."""
+
+        async def run() -> IssueSuggestionsOut:
+            states = OPEN_STATES if not state else tuple(parse_state(s) for s in state)
+            parsed = None if kind is None else parse_kind(kind)
+            filters = SuggestionFilters(repo, n, states, parsed, scope)
+            latest = None
+            if repo is not None and n is not None:
+                found = host.suggest.run_state(repo, n)
+                latest = None if found is None else IssueSuggestionRunOut.of(found)
+            asked = None if scope is None else host.suggest.priority_run(scope)
+            return IssueSuggestionsOut(
+                suggestions=[
+                    IssueSuggestionOut.of(s) for s in host.suggest.suggestions(filters, limit)
+                ],
+                run=latest,
+                priority_run=None if asked is None else IssuePriorityRunOut.of(asked),
+            )
+
+        return await _respond(run, host.clock)
+
+    @r.post(
+        "/suggestions/run",
+        response_model=IssueSuggestionRunsOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def run_suggestions(body: IssueSuggestionRunIn, idem: IdempotentCall = keyed) -> Response:
+        """Ask the agent for suggestions on these cached issues now; the runs start in the
+        background (two at a time) and their drafts appear as each one finishes. The only way
+        a Backlog issue gets suggestions."""
+
+        async def run() -> Response:
+            runs = await host.suggest.suggest_backlog([(ref.repo, ref.n) for ref in body.refs])
+            out = IssueSuggestionRunsOut(runs=[IssueSuggestionRunOut.of(r) for r in runs])
+            return JSONResponse(jsonable_encoder(out), status_code=status.HTTP_202_ACCEPTED)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        "/suggestions/priority",
+        response_model=IssuePriorityRunOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def suggest_priority(
+        body: IssueSuggestionRunIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Ask the agent to prioritise these cached open issues. The ask runs in the background
+        (the request never waits for the agent); poll ``GET /suggestions?scope=`` with the
+        answer's ``scope`` (its ``priority_run``). When it is ``done`` there is one draft
+        (``kind`` ``priority``, ``scope`` the batch) with a priority, a rank and a reason per
+        issue; approving it (``/suggestions/{id}/approve``) sets the priorities. Asking for a
+        batch that is already being asked returns that run."""
+
+        async def run() -> Response:
+            started = await host.suggest.start_priority([(r.repo, r.n) for r in body.refs])
+            out = IssuePriorityRunOut.of(started)
+            return JSONResponse(jsonable_encoder(out), status_code=status.HTTP_202_ACCEPTED)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.patch("/suggestions/{suggestion_id}", response_model=IssueSuggestionOut)
+    async def edit_suggestion(
+        suggestion_id: SuggestionId, body: IssueSuggestionEditIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Edit a draft (it becomes ``edited``); the payload is checked against the repo's
+        schema. Nothing changes on GitHub. An approved or dismissed one is a 409."""
+
+        async def run() -> IssueSuggestionOut:
+            edited = host.suggest.edit(suggestion_id, body.payload, body.reason)
+            return IssueSuggestionOut.of(edited)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post("/suggestions/{suggestion_id}/dismiss", response_model=IssueSuggestionOut)
+    async def dismiss_suggestion(
+        suggestion_id: SuggestionId, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Dismiss a draft; a rerun won't propose the same advice again. Dismissing it twice
+        changes nothing; an approved one is a 409."""
+
+        async def run() -> IssueSuggestionOut:
+            return IssueSuggestionOut.of(host.suggest.dismiss(suggestion_id))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        "/suggestions/{suggestion_id}/approve",
+        response_model=SuggestionApproveOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def approve_suggestion(
+        suggestion_id: SuggestionId,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Approve a suggestion: it applies to GitHub at once, as one ordered series, in the
+        background. The answer is a 202 with the batch (``running``) and ``Location`` to poll;
+        the suggestion is ``approved`` once its batch completes, or stays approvable with
+        ``apply_error`` (a conflict with GitHub's fresh read included). Refused with a 409 when
+        its premise is gone in the cache (nothing applied), when it was approved or dismissed
+        or is being approved, or for a duplicate whose original isn't cached."""
+
+        async def run() -> Response:
+            approval = host.apply.start_approval(suggestion_id, _request_key("approve", idem))
+            out = SuggestionApproveOut(
+                suggestion=IssueSuggestionOut.of(approval.suggestion),
+                batch=ApplyBatchOut.of(approval.batch),
+            )
+            return _started(approval.batch.id, out)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get("/pending", response_model=PendingListOut)
+    async def get_pending() -> Response:
+        """The pending-changes tray, in the order staged (no GitHub)."""
+
+        async def run() -> PendingListOut:
+            return PendingListOut(changes=[PendingOut.of(p) for p in host.pending.pending()])
+
+        return await _respond(run, host.clock)
+
+    @r.post("/pending", response_model=PendingOut, status_code=status.HTTP_201_CREATED)
+    async def stage_pending(body: PendingIn, idem: IdempotentCall = keyed) -> Response:
+        """Stage a change for a cached issue (a drag, a picker, a menu, the bulk bar or a queue
+        move); nothing reaches GitHub until Apply."""
+
+        async def run() -> Response:
+            change = body_change(body.change, host.pending.original)
+            staged = host.pending.stage(body.repo, body.n, change, body.source)
+            return JSONResponse(
+                jsonable_encoder(PendingOut.of(staged)), status_code=status.HTTP_201_CREATED
+            )
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.delete("/pending/{pending_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def unstage_pending(pending_id: ItemId, idem: IdempotentCall = keyed) -> Response:
+        """Undo one staged change."""
+
+        async def run() -> Response:
+            host.pending.unstage(pending_id)
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.delete("/pending", status_code=status.HTTP_204_NO_CONTENT)
+    async def clear_pending(idem: IdempotentCall = keyed) -> Response:
+        """Undo every staged change."""
+
+        async def run() -> Response:
+            host.pending.clear()
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post("/pending/apply", response_model=ApplyBatchOut, status_code=status.HTTP_202_ACCEPTED)
+    async def apply_pending(
+        body: PendingApplyIn,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Apply the staged changes (or only ``ids``) as one batch: per issue, one ordered
+        series against a fresh read. They leave the tray at once, into a stored batch that runs
+        in the background: the answer is a 202 with it (``running``) and ``Location`` to poll.
+        A replay of the same request answers the same batch and never applies the tray
+        again."""
+
+        async def run() -> Response:
+            started = host.apply.start_pending(body.ids, _request_key("apply", idem))
+            return _started(started.id, ApplyBatchOut.of(started))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get("/pending/{batch}", response_model=ApplyBatchOut)
+    async def get_batch(batch: ItemId) -> Response:
+        """A batch and its result, step by step (no GitHub): poll it while ``running``. A
+        ``finished`` batch that GitHub stopped says so in ``stopped`` (and
+        ``rate_limited_until``); resume it, or an ``interrupted`` one, with Retry."""
+
+        async def run() -> ApplyBatchOut:
+            return ApplyBatchOut.of(host.pending.batch(batch))
+
+        return await _respond(run, host.clock)
+
+    @r.post(
+        "/pending/{batch}/retry",
+        response_model=ApplyBatchOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def retry_batch(
+        batch: ItemId,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Run again only the steps of a batch that didn't apply (failed or skipped), in the
+        background: a 202 with the batch and ``Location`` to poll. A batch still running is a
+        409."""
+
+        async def run() -> Response:
+            again = host.apply.start_retry(batch)
+            return _started(again.id, ApplyBatchOut.of(again))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
     # Last: ``/{view}`` would otherwise also match ``/repos``.
     @r.get("/{view}", response_model=IssueViewOut)
     async def get_view(
@@ -286,7 +583,8 @@ def build_router(host: IssuesHost) -> APIRouter:
     ) -> Response:
         """The cached Inbox or Backlog, at once, even without the github service;
         ``syncing`` and ``sync_error`` report GitHub. ``filter`` is a saved filter
-        (``incomplete``, ``stale_90d``)."""
+        (``incomplete``, ``stale_90d``, ``human_needed_could_be_ready``,
+        ``possible_duplicates``)."""
 
         async def run() -> IssueViewOut:
             filters = IssueFilters(repo, parse_saved_filter(saved))
