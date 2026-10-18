@@ -32,7 +32,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 
 from jesinia.apps.issues.application.agent_output import parse_agent_json, schema_for
@@ -463,7 +463,7 @@ class SuggestService:
 
     async def start_priority(self, refs: Sequence[Ref]) -> PriorityRun:
         """Start the priority ask for ``refs`` in the background (ruling IR43) and return its
-        run at once; ``priority_run`` tells how it goes. An ask for the batch already running
+        run at once; ``ask_run`` tells how it goes. An ask for the batch already running
         is returned as it is, so concurrent asks for the same issues call the agent once.
 
         Raises:
@@ -472,37 +472,68 @@ class SuggestService:
         """
         asked = self._priority_asked(refs)
         scope = priority_scope([(c.issue.repo, c.issue.number) for c in asked])
+
+        async def job() -> str:
+            return (await self.suggest_priority(refs)).id
+
+        return self.start_ask(scope, job)
+
+    def start_ask(self, scope: str, job: Callable[[], Awaitable[str | None]]) -> PriorityRun:
+        """Run an agent ask about ``scope`` in the background (its drafts carry that scope) and
+        return its run at once; ``ask_run`` tells how it goes. ``job`` asks (through ``ask``)
+        and stores its drafts, returning the draft's id. The ask shares the ``CONCURRENCY``
+        agent slots with every other run. An ask for a scope already running is returned as it
+        is, so concurrent asks call the agent once. Never raises for the ask's failure: the run
+        records it (``waiting`` without a runner, ``failed`` with the cause)."""
         running = self._priority_runs.get(scope)
         if running is not None and running.status == "running":
             return running
         run = PriorityRun(scope, "running", None, self._clock())
         self._priority_runs[scope] = run
-        task = asyncio.create_task(self._priority_job(scope, refs))
+        task = asyncio.create_task(self._ask_job(scope, job))
         self._priority_tasks.add(task)
         task.add_done_callback(self._priority_tasks.discard)
         return run
 
-    def priority_run(self, scope: str) -> PriorityRun | None:
-        """The latest priority ask for ``scope`` since the server started."""
+    def ask_run(self, scope: str) -> PriorityRun | None:
+        """The latest background ask about ``scope`` (priority, groups, split or brief) since
+        the server started."""
         return self._priority_runs.get(scope)
 
-    async def _priority_job(self, scope: str, refs: Sequence[Ref]) -> None:
+    async def _ask_job(self, scope: str, job: Callable[[], Awaitable[str | None]]) -> None:
         status: PriorityRunStatus
         cause: str | None = None
         made: str | None = None
         try:
             async with self._agents:
-                made = (await self.suggest_priority(refs)).id
+                made = await job()
             status = "done"
         except SuggestionRunnerUnavailableError as exc:
             status, cause = "waiting", str(exc)
         except SuggestionRunError as exc:
-            log.warning("issues: the priority ask for %s failed: %s", scope, exc)
+            log.warning("issues: the ask about %s failed: %s", scope, exc)
             status, cause = "failed", f"{type(exc).__name__}: {exc}"
         except Exception as exc:  # error isolation: a background ask never raises
-            log.exception("issues: the priority ask for %s failed unexpectedly", scope)
+            log.exception("issues: the ask about %s failed unexpectedly", scope)
             status, cause = "failed", f"unexpected {type(exc).__name__} (see the server log)"
         self._priority_runs[scope] = PriorityRun(scope, status, cause, self._clock(), made)
+
+    async def ask(self, pack: ContextPack, schema_name: str) -> dict[str, object]:
+        """One validated ask of the agent: the reply as JSON valid against
+        ``schemas/<schema_name>.json`` (one retry for an invalid reply). The pack's untrusted
+        docs reach the agent fenced as data; the agent has no tools.
+
+        Raises:
+            SuggestionRunnerUnavailableError: no runner to ask.
+            SuggestionJobFailedError: an invalid reply after one retry, a timeout or a failed
+                turn (the cause is kept).
+        """
+        asker, runner = self._asker(), self._runner()
+        if asker is None or runner is None:
+            raise SuggestionRunnerUnavailableError(
+                "no agent runner is available; suggestions are waiting"
+            )
+        return await self._ask(asker, runner, pack, schema_for(schema_name))
 
     def _priority_asked(self, refs: Sequence[Ref]) -> list[CachedIssue]:
         if not refs or len(refs) > MAX_BACKLOG_REFS:

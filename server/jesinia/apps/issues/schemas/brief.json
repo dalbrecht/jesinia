@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "$id": "https://jesinia.local/issues/schemas/brief.json",
+  "title": "brief",
+  "description": "An epic's delivery brief (Task 8): the scope paragraph and acceptance criteria drawn from its children. Jesinia adds the children in order and the links itself.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scope", "acceptance_criteria"],
+  "properties": {
+    "scope": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "acceptance_criteria": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {"type": "string", "minLength": 1, "maxLength": 300}
+    }
+  }
+}

@@ -6,17 +6,23 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
+from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
+from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.application.themes import ThemeService
+from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA
 from jesinia.apps.issues.domain.suggestions import SuggestionFilters
-from jesinia.apps.issues.domain.triage import IssueFilters
+from jesinia.apps.issues.domain.themes import ThemesUnavailableError
+from jesinia.apps.issues.domain.triage import IssueFilters, triage
 from jesinia.apps.issues.module import (
     IDEMPOTENCY_PRUNE_JOB,
     ISSUES_DB,
@@ -32,6 +38,12 @@ from jesinia.core.module import AppContext
 from jesinia.core.scheduler import Job, Scheduler
 from jesinia.registry import DATABASES, modules
 from jesinia.services.github.application.service import GitHubService, GitHubUnavailable
+from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.tags import TagService
+from jesinia.services.kb.infrastructure.fs import LocalFiles
+from jesinia.services.kb.infrastructure.index import SqliteIndex
+from tests.apps.issues.test_sync import issue
+from tests.services.kb.conftest import KB_DB
 
 
 def test_issues_db_is_history_and_registered_after_its_services() -> None:
@@ -44,7 +56,12 @@ def test_issues_db_is_history_and_registered_after_its_services() -> None:
 async def test_start_opens_the_db_and_wires_idempotency(cfg: Config) -> None:
     module = IssuesModule()
     assert module.router() is not None
-    assert [tool.name for tool in module.mcp_tools()] == ["issues_search", "issues_get"]
+    assert [tool.name for tool in module.mcp_tools()] == [
+        "issues_search",
+        "issues_get",
+        "queues_list",
+        "queue_get",
+    ]
     assert not module.health().ok
     with pytest.raises(HTTPException, match="not started") as caught:
         _ = module.idempotency
@@ -107,7 +124,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     module = IssuesModule()
     with pytest.raises(HTTPException, match="not started"):
         _ = module.sync
-    for name in ("labels", "queries", "pending", "apply"):
+    for name in ("labels", "queries", "pending", "apply", "epics", "briefs", "queues"):
         with pytest.raises(HTTPException, match="not started"):
             getattr(module, name)
     await module.sync_repos()  # nothing to sync before start
@@ -120,8 +137,12 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
         _ = module.labels
     with pytest.raises(HTTPException, match="require the github service"):
         _ = module.apply
+    with pytest.raises(HTTPException, match="require the github service"):
+        _ = module.briefs  # posting a brief needs GitHub, ...
+    assert isinstance(module.epics, EpicService)  # ... the epic views don't
     assert isinstance(module.queries, IssueQueries)  # the cache reads need no GitHub
     assert isinstance(module.pending, PendingService)  # so does the tray
+    assert isinstance(module.queues, QueueService)  # queues are local
     assert module.clock().tzinfo is not None
     await module.stop()
 
@@ -152,6 +173,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     assert isinstance(module.sync, SyncService)
     assert isinstance(module.labels, LabelSetupService)
     assert isinstance(module.apply, ApplyService)
+    assert isinstance(module.briefs, BriefService)
     assert module.pending.batch("b").status == "interrupted"
     # Without a token a repo can't be added (GitHub names it), ...
     with pytest.raises(GitHubUnavailable):
@@ -280,3 +302,76 @@ async def test_suggestions_start_with_the_module_and_ask_the_agents_service(
     run = module.suggest.run_state("acme/web", 1)
     assert run is not None and run.status == "waiting"
     await module.stop()
+
+
+async def test_the_triage_hook_marks_closed_queue_items_done(cfg: Config) -> None:
+    closed = issue(1, state="closed")
+    triaged = [(closed, triage(closed.labels, 0, DEFAULT_SCHEMA))]
+    module = IssuesModule()
+    module.on_triaged("acme/web", triaged)  # before start: nothing to tell
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    queue = module.queues.create("Mine").queue.id
+    conn = open_db(cfg.data_dir, ISSUES_DB)
+    conn.execute(
+        "INSERT INTO queue_items (queue_id, kind, ref, position, added_at) "
+        "VALUES (?, 'issue', 'acme/web#1', 0, '2026-10-01T00:00:00+00:00')",
+        (queue,),
+    )
+    conn.commit()
+    conn.close()
+    module.on_triaged("acme/web", triaged)
+    assert [d.item.ref.n for d in module.queues.queue(queue).done] == [1]
+    await module.stop()
+
+
+async def test_themes_start_with_the_module_and_use_the_kb_tag_catalog(
+    cfg: Config, tmp_path: Path
+) -> None:
+    module = IssuesModule()
+    with pytest.raises(HTTPException, match="not started"):
+        _ = module.themes
+    conn = open_db(cfg.data_dir, ISSUES_DB)
+    conn.execute(
+        "INSERT INTO repos (repo, added_at) VALUES ('acme/web', '2026-10-01T00:00:00+00:00')"
+    )
+    found = issue(1)
+    stored = {
+        "repo": found.repo, "number": 1, "id": found.id, "title": found.title, "body": "",
+        "state": "open", "state_reason": None, "labels": [], "milestone": None, "parent": None,
+        "created_at": "2026-10-02T00:00:00.000000+00:00",
+        "updated_at": "2026-10-02T00:00:00.000000+00:00", "url": found.url, "author": "a",
+        "linked_pr_state": None, "sub_issue_count": 0,
+    }  # fmt: skip
+    triaged = {
+        "complete": False, "missing": ["readiness", "priority", "type", "area"],
+        "conflicts": [], "is_epic": False, "readiness": None, "priority": None, "type": None,
+        "areas": [],
+    }  # fmt: skip
+    conn.execute(
+        "INSERT INTO issues (repo, number, json, complete, missing_json, triage_json, is_epic, "
+        "state, created_at, updated_at, first_seen_at, inbox) VALUES ('acme/web', 1, ?, 0, '[]', "
+        "?, 0, 'open', 'x', 'x', 'x', 0)",
+        (json.dumps(stored), json.dumps(triaged)),
+    )
+    conn.commit()
+    conn.close()
+
+    # Without the kb service, new themes wait; reads carry on.
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    assert isinstance(module.themes, ThemeService) and await module.themes.themes() == []
+    with pytest.raises(ThemesUnavailableError):
+        await module.themes.add([("acme/web", 1)], "sync")
+    await module.stop()
+
+    # With it, a theme is checked against (and added to) the catalog.
+    root = tmp_path / "kb"
+    root.mkdir()
+    kb_conn = open_db(tmp_path / "kb-data", KB_DB)
+    ctx = AppContext(cfg, EventBus(), Scheduler())
+    kb = KbService(LocalFiles(root), SqliteIndex(kb_conn), ctx.bus)
+    ctx.services["tags"] = TagService(kb, None)
+    await module.start(ctx)
+    added = await module.themes.add([("acme/web", 1)], "#Sync")
+    assert added.tag == "sync" and await module.themes.of_issue("acme/web", 1) == ["sync"]
+    await module.stop()
+    kb_conn.close()

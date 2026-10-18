@@ -6,18 +6,28 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import cast
 
-from jesinia.apps.issues.application.ports import AppliedBatch, ApplyOrigin
+from jesinia.apps.issues.application.ports import (
+    AppliedBatch,
+    ApplyOrigin,
+    CreationState,
+    OriginBatch,
+    creation_state,
+)
 from jesinia.apps.issues.domain.changes import (
+    CreatedIssue,
+    EnsureLabel,
     Existing,
+    IssueChange,
     PendingChange,
     batch_json,
     change_json,
     parse_batch,
     parse_batch_status,
+    parse_change,
     parse_issue_change,
     parse_result,
     parse_source,
@@ -30,24 +40,63 @@ _BATCH_COLUMNS = (
     "id, origin, suggestion_id, batch_json, result_json, created_at, updated_at, status, "
     "request_key"
 )
-_ORIGINS: tuple[ApplyOrigin, ...] = ("pending", "suggestion")
+_ORIGINS: tuple[ApplyOrigin, ...] = ("pending", "suggestion", "epic")
+
+
+_STATES: tuple[CreationState, ...] = ("running", "complete", "incomplete", "abandoned")
+
+
+def _state(value: object) -> CreationState:
+    return next(s for s in _STATES if s == value)
+
+
+def _created(text: str) -> dict[str, tuple[str, int]]:
+    data = json.loads(text)
+    return {temp: (str(ref[0]), int(ref[1])) for temp, ref in data.items()}
+
+
+def _created_refs_json(created: Mapping[str, tuple[str, int]]) -> str:
+    return json.dumps(
+        {temp: [repo, n] for temp, (repo, n) in created.items()}, ensure_ascii=False, sort_keys=True
+    )
+
+
+def _created_json(created: Mapping[str, CreatedIssue]) -> str:
+    return _created_refs_json({temp: (c.repo, c.n) for temp, c in created.items()})
+
+
+def _origin(batch_id: object, state: object, created: object, notes: object) -> OriginBatch:
+    found = json.loads(str(notes))
+    return OriginBatch(
+        str(batch_id),
+        _state(state),
+        _created(str(created)),
+        {str(k): str(v) for k, v in found.items()},
+    )
 
 
 def _time(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="microseconds")
 
 
-def _ref(target: Existing) -> str:
-    return json.dumps({"repo": target.repo, "n": target.n})
+def _ref(change: PendingChange) -> str:
+    """The row's ``ref``: the issue, or (a label setup step) only its repo."""
+    if change.target is None:
+        return json.dumps({"repo": change.repo})
+    return json.dumps({"repo": change.target.repo, "n": change.target.n})
 
 
 def _pending(row: tuple[object, ...]) -> PendingChange:
     pid, ref, change, created, source = row
-    target = json.loads(str(ref))
+    where = json.loads(str(ref))
+    data = json.loads(str(change))
+    target = Existing(str(where["repo"]), int(where["n"])) if "n" in where else None
+    staged = parse_change(data) if target is None else parse_issue_change(data)
     return PendingChange(
         id=str(pid),
-        target=Existing(str(target["repo"]), int(target["n"])),
-        change=parse_issue_change(json.loads(str(change))),
+        target=target,
+        # ``PendingChange`` refuses anything but a label setup step without an issue.
+        change=cast(IssueChange | EnsureLabel, staged),
         created_at=datetime.fromisoformat(str(created)),
         source=parse_source(str(source)),
     )
@@ -80,7 +129,7 @@ class SqliteApplyStore:
             f"INSERT INTO pending ({_PENDING_COLUMNS}) VALUES (?, ?, ?, ?, ?)",
             (
                 change.id,
-                _ref(change.target),
+                _ref(change),
                 json.dumps(change_json(change.change), ensure_ascii=False),
                 _time(change.created_at),
                 change.source,
@@ -107,13 +156,25 @@ class SqliteApplyStore:
 
     def start_batch(self, applied: AppliedBatch, taken: Sequence[str]) -> None:
         with transaction(self._conn):
-            self.save_batch(applied)
+            self._save(applied)
             self._delete(taken)
 
-    def clear_pending(self) -> None:
-        self._conn.execute("DELETE FROM pending")
-
     def save_batch(self, applied: AppliedBatch) -> None:
+        with transaction(self._conn):
+            self._save(applied)
+            # The ledger of an origin that may create issues follows its batch (IR56).
+            self._conn.execute(
+                "UPDATE batch_origins SET state = ?, created_json = ?, updated_at = ? "
+                "WHERE batch_id = ?",
+                (
+                    creation_state(applied),
+                    _created_json(applied.result.created),
+                    _time(applied.updated_at),
+                    applied.id,
+                ),
+            )
+
+    def _save(self, applied: AppliedBatch) -> None:
         self._conn.execute(
             f"INSERT INTO apply_batches ({_BATCH_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET result_json = excluded.result_json, "
@@ -144,9 +205,80 @@ class SqliteApplyStore:
         return None if row is None else _batch(row)
 
     def interrupt_running(self) -> int:
-        return self._conn.execute(
-            "UPDATE apply_batches SET status = 'interrupted' WHERE status = 'running'"
-        ).rowcount
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE batch_origins SET state = 'incomplete' WHERE batch_id IN "
+                "(SELECT id FROM apply_batches WHERE status = 'running')"
+            )
+            return self._conn.execute(
+                "UPDATE apply_batches SET status = 'interrupted' WHERE status = 'running'"
+            ).rowcount
+
+    def begin_batch(self, applied: AppliedBatch, origin_key: str, notes: Mapping[str, str]) -> None:
+        with transaction(self._conn):
+            self._save(applied)
+            self._insert_origin(origin_key, applied, notes)
+
+    def _insert_origin(
+        self, origin_key: str, applied: AppliedBatch, notes: Mapping[str, str]
+    ) -> None:
+        self._conn.execute(
+            "INSERT OR IGNORE INTO batch_origins "
+            "(origin_key, batch_id, state, created_json, notes_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                origin_key,
+                applied.id,
+                creation_state(applied),
+                _created_json(applied.result.created),
+                json.dumps(dict(notes), ensure_ascii=False, sort_keys=True),
+                _time(applied.created_at),
+                _time(applied.updated_at),
+            ),
+        )
+
+    def origin_batches(self, origin_key: str) -> list[OriginBatch]:
+        rows = self._conn.execute(
+            "SELECT batch_id, state, created_json, notes_json FROM batch_origins "
+            "WHERE origin_key = ? ORDER BY created_at, rowid",
+            (origin_key,),
+        )
+        return [_origin(*row) for row in rows]
+
+    def origin_of(self, batch_id: str) -> tuple[str, OriginBatch] | None:
+        row = self._conn.execute(
+            "SELECT origin_key, batch_id, state, created_json, notes_json FROM batch_origins "
+            "WHERE batch_id = ? LIMIT 1",
+            (batch_id,),
+        ).fetchone()
+        return None if row is None else (str(row[0]), _origin(*row[1:]))
+
+    def forget_epic(self, batch_id: str) -> None:
+        self._conn.execute(
+            "UPDATE batch_origins SET created_json = json_remove(created_json, '$.epic') "
+            "WHERE batch_id = ?",
+            (batch_id,),
+        )
+
+    def origins(self, prefix: str) -> list[tuple[str, OriginBatch]]:
+        rows = self._conn.execute(
+            "SELECT origin_key, batch_id, state, created_json, notes_json FROM batch_origins "
+            "WHERE substr(origin_key, 1, ?) = ? ORDER BY created_at, rowid",
+            (len(prefix), prefix),
+        )
+        return [(str(row[0]), _origin(*row[1:])) for row in rows]
+
+    def abandon(self, batch_id: str, created: Mapping[str, tuple[str, int]], now: datetime) -> None:
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE batch_origins SET state = 'abandoned', created_json = ?, updated_at = ? "
+                "WHERE batch_id = ?",
+                (_created_refs_json(created), _time(now), batch_id),
+            )
+            self._conn.execute(
+                "UPDATE apply_batches SET status = 'abandoned', updated_at = ? WHERE id = ?",
+                (_time(now), batch_id),
+            )
 
     def prune_batches(self, before: datetime) -> int:
         return self._conn.execute(

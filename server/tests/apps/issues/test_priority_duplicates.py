@@ -200,9 +200,9 @@ async def test_a_priority_ask_runs_in_the_background_and_reports_its_status(
     asking.agent.replies = [reply((1, "priority: high", 1), (2, "priority: high", 2))]
     run = await asking.suggest.start_priority([(REPO, 2), (REPO, 1)])
     assert run.status == "running" and run.scope == priority_scope([(REPO, 1), (REPO, 2)])
-    assert asking.suggest.priority_run(run.scope) == run
+    assert asking.suggest.ask_run(run.scope) == run
     await asking.suggest.drain()
-    done = asking.suggest.priority_run(run.scope)
+    done = asking.suggest.ask_run(run.scope)
     assert done is not None and done.status == "done" and done.cause is None
     stored = asking.world.drafts.suggestions(SuggestionFilters(kind="priority"))
     assert [s.id for s in stored] == [done.suggestion_id]
@@ -229,12 +229,12 @@ async def test_a_failed_priority_ask_records_its_cause_and_can_be_asked_again(
     asking.agent.replies = ["nope", "still nope", reply((1, "priority: high", 1))]
     run = await asking.suggest.start_priority([(REPO, 1)])
     await asking.suggest.drain()
-    failed = asking.suggest.priority_run(run.scope)
+    failed = asking.suggest.ask_run(run.scope)
     assert failed is not None and failed.status == "failed"
     assert "SuggestionJobFailedError" in (failed.cause or "")
     await asking.suggest.start_priority([(REPO, 1)])
     await asking.suggest.drain()
-    again = asking.suggest.priority_run(run.scope)
+    again = asking.suggest.ask_run(run.scope)
     assert again is not None and again.status == "done"
 
 
@@ -243,7 +243,7 @@ async def test_a_priority_ask_without_a_runner_is_waiting(asking: Asking) -> Non
     asking.available["runner"] = False
     run = await asking.suggest.start_priority([(REPO, 1)])
     await asking.suggest.drain()
-    waiting = asking.suggest.priority_run(run.scope)
+    waiting = asking.suggest.ask_run(run.scope)
     assert waiting is not None and waiting.status == "waiting" and waiting.cause
 
 
@@ -254,7 +254,7 @@ async def test_an_unexpected_error_in_a_priority_ask_is_recorded_without_its_mes
     asking.agent.replies = [RuntimeError("secret internals")]
     run = await asking.suggest.start_priority([(REPO, 1)])
     await asking.suggest.drain()
-    failed = asking.suggest.priority_run(run.scope)
+    failed = asking.suggest.ask_run(run.scope)
     assert failed is not None and failed.status == "failed"
     assert "RuntimeError" in (failed.cause or "") and "secret" not in (failed.cause or "")
 
@@ -267,7 +267,7 @@ async def test_starting_a_priority_ask_validates_its_refs_before_anything_starts
         await asking.suggest.start_priority([(REPO, 99)])
     with pytest.raises(InvalidSuggestionFilterError):
         await asking.suggest.start_priority([])
-    assert asking.suggest.priority_run(f"{REPO}#99") is None
+    assert asking.suggest.ask_run(f"{REPO}#99") is None
 
 
 async def test_stopping_cancels_a_running_priority_ask(asking: Asking) -> None:
@@ -593,7 +593,7 @@ async def test_a_priority_reply_after_its_inputs_changed_is_discarded(asking: As
     asking.agent.gate.set()
     await asking.suggest.drain()
 
-    done = asking.suggest.priority_run(run.scope)
+    done = asking.suggest.ask_run(run.scope)
     assert done is not None and done.status == "failed" and done.suggestion_id is None
     assert "inputs changed, ask again" in (done.cause or "")
     assert world.drafts.suggestions(SuggestionFilters(kind="priority")) == []

@@ -3,7 +3,7 @@
 
 The Issues app helps you triage GitHub issues across the repos you watch. New issues go to an
 Inbox and existing ones to a Backlog, and every issue is checked against a per-repo label
-convention. Later it adds suggestions, epics and work queues. The design is in
+convention. Later it adds suggestions, epics, work queues and themes. The design is in
 `docs/specs/2026-10-16-issues-design.md`, and the plan is
 `docs/superpowers/plans/2026-10-16-issues.md`.
 
@@ -43,7 +43,64 @@ Task 7 adds the priority and duplicate actions:
 - accepting a duplicate closes it as a duplicate of the original (by its database id) and
   comments `Duplicate of owner/repo#n`, always fully qualified.
 
-Epics, queues and themes come in PR 3, and the web app in PR 4.
+PR 3 (Tasks 8–10) adds epics, work queues and themes. Task 8 adds epics:
+
+- the Epics list and an epic's page, from the cache: progress (closed children of all),
+  readiness from the direct children with what blocks each (a child that is itself an epic counts
+  by its own children, ruling IR51), a "won't fit one PR" warning for
+  children in another repo, and a suggestion to add the `epic` label to an issue that has
+  children without it;
+- drop checks: an issue can't contain itself or one of its ancestors, another owner's issue, or
+  an initiative inside an epic (ruling IR17). A refused parent link is never staged;
+- checklist conversion: a plan from the epic's task list (linked items matched, unlinked open
+  items drafted as new issues with no labels), approved as **one batch** of `CreateIssue` then
+  `SetParent` through the apply engine;
+- agent proposals, all drafts: groups of related issues as candidate epics, additions to
+  existing epics (`kind` `group`), splits of an issue too big for one PR (`split`) and an epic's
+  delivery brief (`brief`). Approving a group or split applies it through the engine;
+- the delivery brief: approving it posts the epic's `<!-- jesinia:brief -->` comment once and
+  edits it in place afterwards;
+- milestones as queue items: each stands for its open issues, with readiness rolled up and a
+  brief built from them (Task 9's queues hold them).
+
+Task 9 adds work queues (spec §5.2, ruling IR15):
+
+- named, ordered queues of issues, epics and milestones, kept in `issues.sqlite` only. Creating,
+  renaming and ordering queues, and adding, moving, noting and removing items, are local and
+  apply at once; nothing of it is a GitHub change;
+- each open item shows its readiness (an epic's rolled up from its children, a milestone's from
+  its open issues) and a warning saying why it isn't ready. It is warned, never hidden;
+- a queue grouped by priority (bands). Dropping an item into another band reorders it at once and
+  stages the priority label in the pending tray (`source` `queue`);
+- Done: the item moves to the Done group at once (with Undo), and closing the issue (with the
+  author's optional comment) or setting it `agent-ready` is staged in the tray. Milestones
+  can't be done or moved between bands (Jesinia never writes them);
+- items close themselves: when sync (or an applied batch) sees an issue, epic or milestone
+  closed, its open queue items are marked done. One already closed when it is added goes straight
+  into the Done group;
+- the agent's queue proposals, all drafts: what to add next (`queue_next`), an order
+  (`queue_order`) and which queue each item fits (`queue_split`). Approving one changes only the
+  local queues;
+- a priority draft's order (Task 7) can make a new queue or fill one.
+
+Task 10 adds themes (spec §5.1, §6.2, rulings IR15, IR22, IR27):
+
+- a theme is a tag from the KB-wide catalog (the same `#tags` as notes and kept posts), kept
+  locally per issue in `issues.sqlite`. Adding one (a drop onto a theme, one issue or a
+  multi-selection) and removing one are local and immediate, never a staged change;
+- a new tag passes the catalog's instant, catalog-only near-duplicate check
+  (`TagService.check(tag, advise=False)`, no agent) and is added with `TagService.ensure`, as
+  Notes' Save note does; a near-duplicate is refused and nothing is stored;
+- Undo of an add (or removing the theme) takes the local theme off only: the catalog entry
+  `ensure` added stays, as it does for a note's tags (IR22);
+- publishing a theme in a repo stages in the pending tray (`source` `theme`) the label setup step
+  (an `EnsureLabel` for `theme:<tag>`) and an `add_label` change for each of the theme's cached
+  issues there that lacks it. They apply with the tray, through the write-ahead engine;
+- turning a theme into an epic is one approved batch, planned like a checklist conversion
+  (`ConversionPlan`, IR27): the epic is created in one of its issues' repos and the theme's
+  issues are linked under it.
+
+The web app comes in PR 4.
 
 ## Layout
 
@@ -55,6 +112,9 @@ domain/           pure rules, 100% covered
   labels.py       LabelOp (CreateLabel, DeleteLabel), setup and migration plans, plan checks
   suggestions.py  Suggestion drafts: what a triage reply may draft, edits, dismissals
   changes.py      Change, ChangeBatch, the ordered series, label edits, results, approvals
+  epics.py        is_epic, can_contain, readiness, checklist plans, proposals, briefs
+  queues.py       queue items and their local order, bands, warnings, queue proposals
+  themes.py       theme tags, the theme: label and its setup step, the theme-to-epic plan
   similarity.py   the local TF-IDF that pre-filters duplicate candidates
 application/      orchestration over ports
   ports.py        what the app needs: IssueReads, LabelWrites, AgentAsker, the store protocols
@@ -65,16 +125,22 @@ application/      orchestration over ports
   agent_output.py an agent's JSON reply, bounded and validated against schemas/*.json
   apply.py        ApplyEngine: runs a batch's series against fresh reads (paced, rate-limit safe)
   pending.py      PendingService (the tray) and ApplyService (apply, retry, approve)
+  epics.py        EpicService (views, plans, milestones, asks) and BriefService (the comment)
+  queues.py       QueueService: queues, items, Done and band moves (staged), auto-done, asks
+  themes.py       ThemeService: themes (local, via the KB catalog), publishing (staged), epics
 infrastructure/
   store.py        SqliteIssuesStore over issues.sqlite
   suggestion_store.py  SqliteSuggestionStore: drafts, runs, the similarity corpus
   apply_store.py  SqliteApplyStore: the pending tray and the applied batches
+  brief_store.py  SqliteBriefStore: each epic's brief comment
+  queue_store.py  SqliteQueueStore: the work queues and their items
+  theme_store.py  SqliteThemeStore: each issue's themes and the theme epics' batches
 api/
   routes.py       REST under /api/issues
   schemas.py      request and response bodies (the generated web client's types)
   tools.py        the MCP tools
 migrations/       issues.sqlite schema
-schemas/          JSON schemas of the agent jobs' replies (triage and priority now; the rest for Tasks 8–9)
+schemas/          JSON schemas of the agent jobs' replies (triage, priority, grouping, brief, queue)
 module.py         IssuesModule: wiring, jobs, the 503 guards
 ```
 
@@ -97,19 +163,45 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   drafts about several issues or a queue have `scope` instead.
 - `suggestion_runs`: each issue's latest suggestion run, with its status, when it is due, and
   the cause of a failure.
-- `pending`: the pending-changes tray, in the order staged.
-- `apply_batches`: every batch (from the tray or an approval), stored `running` before its first
-  GitHub write and updated after every step, then `finished` (or `interrupted` by a stop), with
-  the Idempotency-Key that started it. Kept 30
-  days for Retry (pruned by the daily job).
+- `pending`: the pending-changes tray, in the order staged. A row is a change to one issue, or
+  (its `ref` names only the repo) a repo's label setup step, which a published theme stages.
+- `apply_batches`: every batch (from the tray, an approval or a checklist conversion, its
+  `origin`), stored `running` before its first
+  GitHub write and updated after every step, then `finished` (or `interrupted` by a stop, or
+  `abandoned` by the author), with the Idempotency-Key that started it. Kept 30 days for Retry
+  (pruned by the daily job). Pruning never forgets what a batch of an origin that creates
+  issues did: that is in `batch_origins`, and a pruned unfinished one is abandoned through it.
 - `schema_overlay`: schema entries the author approved (a new area). They are merged over the
   repo's schema on every read, a read-only labels.yml included, so a sync never drops them.
 - A suggestion's `apply_error` says why its last approval didn't apply.
+- `epic_briefs`: each epic's brief comment, by its GitHub comment id, with the body posted. It is
+  `in_flight` from right before a new comment is posted until its id is stored (ruling IR8), with
+  the attempt's nonce (IR48), and the body an edit is on its way with (`pending_body`).
+- `batch_origins`: every batch that may create issues, by its origin, which is its semantic
+  target, never a draft id (ruling IR57): `split:<repo>#<n>` (the issue split), `group:<hash of
+  the sorted members>` (a new epic), `conversion:<repo>#<n>` (the epic) and `theme:<tag>:<repo>`.
+  It is written in the same transaction as the batch's first save and kept current with each
+  later save: the state (`running`, `complete`, `incomplete`, or `abandoned`, IR58), the issues
+  created by temp id, and a conversion's items (each unlinked item's hash, by its normalised text
+  and repeat, to its temp id: the checklist stays in the body, so this is what stops a second
+  conversion creating the item again). Never pruned (IR56).
+- `queues` and `queue_items`: the work queues, in the author's order, and each queue's items
+  (`issue`, `epic` or `milestone`, by `owner/repo#n`) with their position, note, when they were
+  added and, once done, when and the pending change Done staged. A done item keeps its position,
+  so Undo puts it back where it was.
+- `issue_themes`: each issue's themes, by the catalog's canonical tag. The catalog itself is the
+  KB's `Tags.md`, which this module never writes except through `TagService.ensure`.
+- `theme_epics`: the batches that turned a theme into an epic, with the epic each made or
+  linked under, so issues added to the theme later link under it (an unfinished batch refuses a
+  new approval through `batch_origins`: retry or abandon it).
 
 ## Jobs
 
 - `issues.sync` runs every 5 minutes, and once at start, when the `github` service exists.
   - It syncs each watched repo incrementally and can resume after an interruption.
+  - Each stored page marks done the open queue items whose issue closed, and those of the repo's
+    closed milestones. This is best effort: a failure is logged with its cause and the sync goes
+    on.
   - On a repo's first sync, its existing issues go to the Backlog, and nothing is fetched per
     issue.
   - Any failure is recorded in that repo's `sync_error`, an unexpected one included, and the
@@ -162,7 +254,7 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     issues now, in the background (202).
   - `POST /suggestions/priority` with `{refs: [{repo, n}]}`: ask the agent, in the background
     (202), to prioritise those open cached issues. The answer names the batch's `scope`; poll
-    `GET /suggestions?scope=` for its `priority_run` (`running`, `done`, `waiting` or `failed`
+    `GET /suggestions?scope=` for its `ask_run` (`running`, `done`, `waiting` or `failed`
     with a cause; kept until the server restarts) and the draft. Asking for a batch already being
     asked returns that run.
   - `PATCH /suggestions/{id}` with `{payload, reason?}` edits a draft, checked against the
@@ -184,17 +276,91 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
       is no 503 and no `Retry-After`.
     - `POST /pending/{batch}/retry` (202) resumes a finished or interrupted batch, and never
       repeats a recorded step. A comment or new issue cut off mid-write is never re-sent blindly
-      (see below). A batch still running is a 409.
+      (see below). A batch still running, or abandoned, is a 409.
+    - `POST /pending/{batch}/abandon` with `{created?: [{temp_id, repo, n}]}` gives up on an
+      unfinished batch of an origin that creates issues, even a pruned one (found through its
+      origin's ledger): it never runs again, and the issues it created, plus `created` (issues
+      found on GitHub for a create that was sent but not recorded done: cut off mid-write, or
+      its answer lost to a timeout or a dropped connection; for a pruned batch, a temp id of
+      its origin's kind), are reused by the next approval for
+      that origin, which creates only what is missing (ruling IR58). Reused split parts must be
+      the parts the abandoned batch made, in the same places (the refusal names them, to link
+      by hand). It answers the origin and those
+      issues. A running batch is a 409, a complete one a 400.
   - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
     same batch. The batch keeps the key too, so a replay never applies the tray again, even
     across a crash (ruling IR46).
+  - `GET /epics?repo`: the open epics and initiatives with progress and readiness.
+    `GET /epics/{owner}/{repo}/{n}`: one epic, its children in order (each with what blocks it),
+    the approved brief and a brief composed from the cache (`default_brief`, for Copy brief);
+    404 for an issue that isn't an epic.
+  - `GET /epics/{owner}/{repo}/{n}/accepts?child_repo&child_n`: whether a drop may happen, with
+    the refusal's code and reason, or the "won't fit one PR" warning.
+  - `GET /epics/{owner}/{repo}/{n}/conversion`: the checklist conversion plan and its `digest`;
+    nothing is written. `POST` the same path with `{digest}` to approve it: a 202 with the batch
+    (`origin` `epic`) and `Location` to poll. A plan changed since is a 409
+    (`ConversionOutdatedError`), and so is one with nothing to do, or one while an earlier
+    conversion of the epic is running or didn't finish (`EarlierBatchError`: retry that batch).
+  - `POST /epics/proposals` with `{repo?}`, `POST /suggestions/split` with `{repo, n}` and
+    `POST /epics/{owner}/{repo}/{n}/brief/draft` ask the agent in the background (202 with the
+    `scope`); poll `GET /suggestions?scope=` for its `ask_run` and the drafts.
+  - `POST /epics/{owner}/{repo}/{n}/brief` with `{text, suggestion_id?, overwrite?}` posts the
+    brief, or edits the stored comment in place (a 409 when it was edited on GitHub since,
+    unless `overwrite`), and marks the brief draft approved.
+  - `GET /milestones?repo` and `GET /milestones/{owner}/{repo}/{number}`: milestones with their
+    open issues, rolled-up readiness and brief.
+  - `GET /queues`: the work queues with their open, done and warned counts.
+    `POST /queues` with `{name, description?}` makes one (201; a name taken, without case, is a
+    409). `GET /queues/{id}`: its open items in order (each with its readiness and warning), the
+    Done group and the priority bands. `PATCH /queues/{id}` with `{name?, description?,
+    position?}` and `DELETE /queues/{id}`. `GET /queues/{id}/warnings`: the items that aren't
+    ready, with why.
+  - `POST /queues/{id}/items` with `{kind, repo, n, position?, note?}` adds a cached issue, epic
+    or milestone (201). Under `/queues/{id}/items/{kind}/{owner}/{repo}/{n}`: `PATCH` with
+    `{position?, note?}` and `DELETE` (local, at once); `POST …/done` with `{then: close |
+    agent_ready, comment?}` and `POST …/band` with `{band, position?}` answer the queue and the
+    change staged in the tray (`staged`); `POST …/undo` reopens a done item and unstages its
+    change.
+  - `POST /queues/{id}/suggestions/next`, `POST /queues/{id}/suggestions/order` and
+    `POST /queues/suggestions/split` with `{queue_ids}` ask the agent in the background (202
+    with the `scope`). `POST /queues/suggestions/{id}/approve` approves a queue draft: the local
+    queues change at once, and what changed since is listed in `skipped`. The engine's
+    `/suggestions/{id}/approve` refuses queue drafts (400).
+  - `POST /queues/from-priority` with `{suggestion_id, queue_id | name, description?}` (exactly
+    one of `queue_id` and `name`, else 422) turns a priority draft's order into a new queue, or
+    appends it to one.
+  - `GET /themes`: every theme with its number of issues and `publishable`, by catalog tag.
+    `GET /themes/{tag}`: its issues, from the cache (the theme as a filter; 404 when no issue
+    has it; an old name of a renamed tag answers under the new one).
+  - `POST /themes/{tag}/issues` with `{issues: [{repo, n}]}` gives cached issues the theme (201
+    with the catalog `tag` and the issues `added`, for Undo). A near-duplicate of a catalog tag
+    is a 409 (`ThemeNearDuplicateError`); without the kb service it is a 503
+    (`ThemesUnavailableError`). `POST /themes/{tag}/issues/remove` with the same body takes it
+    off (local; the catalog keeps the tag).
+  - `POST /themes/{tag}/publish` with `{repo}` stages the label setup step and the label
+    additions (201 with the staged changes; steps already in the tray are reused). A theme no
+    issue has is a 404; a repo where no cached issue of the theme lacks the label is a 409
+    (`NothingToPublishError`).
+  - `GET /themes/{tag}/epic?repo&new_epic`: the plan turning the theme into an epic in `repo`,
+    with its `epic` (`{kind: "create", title, body}`, or `{kind: "existing", repo, n}` when it
+    reuses the theme's epic), children, what is skipped and `digest`; nothing is written. `POST`
+    the same path with `{repo, digest, new_epic?}` approves it: a 202 with the batch (`origin`
+    `epic`) and `Location`. A plan changed since, or with no children, is a 409, and so is an
+    approval while an earlier epic batch for the theme is running or didn't finish
+    (`EarlierBatchError`: retry or abandon that batch). Once the theme has an epic, the plan
+    links under its latest one; a new epic is planned only with `new_epic` (ruling IR59), and
+    without it a closed epic is a 409 (`ThemeEpicClosedError`: reopen it, or ask for a new one).
+  - The tray (`GET /pending`) shows a label setup step with `n` `null` and
+    `change.kind` `ensure_label`, and a label addition as `add_label`.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
     `possible_duplicates`. The last two read the open suggestions.
   - Typed errors come back as `{error, detail}`. A GitHub rate limit met by a request itself
     (a sync or a preview, not a batch) is a 503 with `Retry-After`, so the response is never
     stored under the key.
-- **MCP, read-only:** `issues_search {q, repo?}` and `issues_get {repo, n}`. Both read the
-  cache only. Every value an issue's author wrote comes back inside `<untrusted-data>` fences.
+- **MCP, read-only:** `issues_search {q, repo?}`, `issues_get {repo, n}`, `queues_list {}` and
+  `queue_get {queue}` (an id or a name). They read the cache and the local queues only; agents
+  can't change GitHub or queues. Every value an issue's author wrote comes back inside
+  `<untrusted-data>` fences, and so do queue names, descriptions, notes and warnings.
 
 ## How the label batches stay safe
 
@@ -241,8 +407,9 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   setup's executor (ruling IR12).
 - **Conflicts:** a staged parent move records the parent the author saw. If GitHub's parent
   differs at apply time, the step fails as a conflict (`conflict: true`, "moved on GitHub") and
-  nothing moves (ruling IR39). A reorder whose child has left the epic is skipped with a cause,
-  never sent to GitHub (IR41).
+  nothing moves (ruling IR39). A link already in place on GitHub ("already the parent") is
+  done, never a conflict: nothing changes, so nothing is overwritten. A reorder whose child has
+  left the epic is skipped with a cause, never sent to GitHub (IR41).
 - **Close comments:** a close's own comment is posted only when the close happened. A staged
   comment is always posted.
 - **Failures:** an issue stops at its first failed step, and its other steps are skipped. Other
@@ -264,7 +431,9 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
     it (IR40).
     Claims a stop cut off are released at start.
   - A complete apply marks the suggestion approved. A failed one leaves it approvable, with the
-    cause.
+    cause, except a group or split draft, which creates issues: its batch is retried or abandoned
+    (approving it, or a re-asked draft for the same target, again is a 409, `EarlierBatchError`,
+    IR56, IR57).
 - **Write-ahead, in the background (ruling IR45):**
   - A batch is stored `running` before its first GitHub write and updated after every step.
   - One task per batch runs it in the background, and batches still run one at a time, in the
@@ -289,6 +458,153 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
 - **Cache:** afterwards the touched issues, the labels and (for a new area) the recomputed triage
   are written to the cache, best effort. A failure there, or in storing the batch, is logged with
   its cause and never fails the writes. Issues the batch created arrive with the next sync.
+
+## How epics stay safe
+
+- **Containment (IR17):** `can_contain` returns a refusal or nothing, never a string-or-bool. It
+  refuses an issue into itself, into one of its own descendants (a cycle, from the cached parent
+  chain), another owner's issue (GitHub's sub-issues need the same owner) and an initiative into
+  an epic. Staging such a parent link is refused with the reason (`ContainmentRefusedError`), and
+  nothing is staged.
+- **One batch (IR27):** a conversion, an approved group and an approved split each apply as one
+  batch through the engine: the new issues first (`CreateIssue`), then each `SetParent` naming
+  them by temp id. Every link is made against "no parent", so a parent set on GitHub since is a
+  conflict, never a move. New issues carry no labels: a label is never created implicitly (IR4).
+- **Created once (IR56–IR58):** every origin that creates issues records its batches in
+  `batch_origins`, keyed by the target (the issue split, the group's members, the epic, the theme
+  and repo), so re-asking the agent for a new draft about the same target meets the same ledger.
+  The row is written with the batch's first save, in one transaction. While an earlier batch for
+  the target is running or didn't finish, approving again is refused (409, "retry batch X, or
+  abandon it"): Retry resumes it without repeating a create, and Abandon gives up on it (for one
+  that can't complete, or was pruned) while keeping what it created. A complete batch's issues
+  are reused and the origin settled: the draft whose batch it was is marked approved, and
+  another draft for the same target is refused ("split already by batch X") and left open. An
+  abandoned batch's issues are reused by the next approval, which creates only what is missing.
+- **One epic per group of issues (IR60):** a new group that shares issues with another group
+  is refused while that group's batch is running or unfinished (409, `EarlierBatchError`: it may
+  have made an epic; retry or abandon it), and when that group's epic exists and is open (409,
+  `GroupEpicExistsError`: add the issues to that epic), so overlapping members never get a
+  second epic. A blocking epic is read live first: one deleted or transferred on GitHub is
+  forgotten and blocks no more. An abandoned group that made no epic, or whose epic is closed,
+  doesn't block.
+- **Never twice:** the checklist stays in the body, so each item a conversion creates is
+  recorded, before any GitHub write. A later preview matches it to the issue it became ("already
+  converted"), or holds it back while that is unknown: an earlier batch still running, one that
+  didn't create it (retry that batch), or one whose record is gone (check GitHub). An item an
+  abandoned batch never created is planned anew. Conversions of one epic run one at a time.
+- **Approve what was shown:** a conversion is approved by the digest of the plan the author saw;
+  a plan that changed since (an edited checklist, a linked issue moved) is refused. A group or
+  split draft is re-checked against the cache when approved: an issue closed, gone or under a
+  parent since makes it stale (409), and nothing is applied.
+- **Untrusted text is posted as code (IR49):** every piece of text taken from issues or written
+  by the agent that Jesinia posts (a brief's titles, scope, readiness and criteria; the title and
+  body of an epic or part an approved group or split creates) goes inside a CommonMark code span
+  (one line) or fenced code block (several), whose fence is longer than any backtick run in the
+  text, so the text can't close it. GitHub makes no mention, link, issue reference or entity of
+  anything in code, however it is encoded (`@x`, `&#64;x`, `&commat;x`). Checklist items keep
+  their words as the titles of the issues a conversion creates (titles never notify anyone).
+- **Drop checks see the cached chain:** when an ancestor isn't cached (or the chain is deeper than
+  8), the drop check warns "ancestors beyond … aren't cached; GitHub will check".
+- **Agent asks (IR37):** grouping, splitting and briefs ask through `SuggestService`'s one-shot
+  facility, with the issues fenced as untrusted data. Replies are validated against
+  `schemas/grouping.json` or `schemas/brief.json`, with one retry. Jesinia keeps only issues it
+  listed, and a reply about issues that changed during the ask is discarded ("inputs changed,
+  ask again"). A brief's children, their order and links are Jesinia's own; the agent writes only
+  the scope and the acceptance criteria.
+- **The brief comment (IR8, IR48):** each attempt's marker carries a fresh nonce
+  (`<!-- jesinia:brief:<nonce> -->`). Posting a new brief comment is checkpointed `in_flight`,
+  with that nonce, first. If that can't be saved, nothing is sent. A post a stop or crash cut off
+  is found again among the epic's comments, and only a comment by the signed-in gh user carrying
+  that exact nonce is adopted (the earliest), then edited. Another user's marker, or another
+  attempt's, is never adopted. If the comments can't all be read, nothing is posted
+  (`BriefRecoveryIncompleteError`, 409: check GitHub).
+- **Briefs edited on GitHub (M1):** before editing the stored comment, it is read live. One
+  edited on GitHub since it was posted is refused (409, `BriefEditedOnGitHubError`) unless the
+  approval says `overwrite`; one gone is posted anew. The body an edit is on its way with is
+  checkpointed first (if that can't be saved, nothing is sent), so an edit GitHub took whose
+  answer was lost reads as ours, not as an edit on GitHub, and is settled on the next approval. A stored comment deleted on GitHub
+  (404) is posted anew and its id kept. A rate limit refuses the write, backs syncs off, and is a
+  503 with `Retry-After`.
+
+## How queues stay safe
+
+- **Local means local (IR15):** a queue, its order, its notes and approved queue proposals never
+  reach GitHub. `QueueService` holds no GitHub client.
+- **What reaches GitHub goes through the tray:** Done and band moves stage ordinary changes
+  (`Close`, or a `SetDimension` of readiness or priority) with `source` `queue`. They apply only
+  when the author applies the tray, through the write-ahead engine. A band move is made against
+  the priority the cache shows (filling a gap, or replacing that one value), so a change on
+  GitHub since is a conflict at apply time, not an overwrite. A second band move before the
+  tray is applied replaces the first one's staged priority (keeping its precondition), and a
+  move back to the issue's own band undoes it, so the issue gets one priority change. A band
+  move into another band never overrides a priority the author staged from the tray (a picker,
+  a menu): it is refused (409, `TrayChangeStagedError`: undo that change there first). A move
+  within the item's band only reorders, locally, and is always allowed.
+- **Undone from the queue:** the tray refuses to undo a change a queue item's Done holds (409,
+  `PendingHeldError`), and "undo all" leaves those; undo the Done in its queue. If the tray's
+  apply fails for that change (a conflict, a lost permission), the item still shows Done: undo
+  it in its queue, and Done it again once the cause is fixed.
+- **One action:** Done (and a band move) stages first and keeps the change only if the queue
+  is saved; if it can't be, the change is unstaged.
+- **One close per issue:** the engine applies one close and one comment per issue, so Done in a
+  second queue shares the close another queue already staged for that issue (and agent-ready
+  likewise). A second, different comment is refused (409) rather than silently replacing the
+  first, and so is Done on an issue whose close the author staged from the tray. A queue only
+  ever shares or unstages changes a queue staged (`source` `queue`).
+- **Guards:** agent-ready is staged against the readiness the cache shows, like a band move's
+  priority: a change on GitHub since is a conflict at apply time, not an overwrite.
+- **Staged changes follow their items:** Undo, removing a done item and deleting a queue take the
+  change Done staged out of the tray, unless another queue's done item still shares it.
+- **Approvals are atomic:** an approved split saves every queue it touches in one transaction.
+- **Posted text:** the only text a queue posts is the author's own Done comment, as written. No
+  issue text or agent text is posted from a queue.
+- **Auto-done never breaks sync:** it runs inside sync's (and the engine's) best-effort hook and
+  catches its own failures, logging the cause.
+- **Agent asks (IR37):** issue text and the author's queue names are fenced as untrusted data;
+  replies are validated against `schemas/queue.json` with one retry; only items and queues
+  Jesinia listed are kept, and a reply is discarded when a queue or one of its issues changed
+  during the ask ("inputs changed, ask again").
+
+## How themes stay safe
+
+- **Local means local (IR15):** a theme is not a `Change`. Adding and removing one write only
+  `issue_themes` (and, for a new tag, the KB catalog); `ThemeService` holds no GitHub client.
+- **A drop never waits on an agent:** a new tag is checked against the catalog alone
+  (`advise=False`); the tag advisor (an agent run) is never asked.
+- **All or nothing:** every issue must be cached, and the tag must pass the check, before
+  anything is stored or catalogued. A catalog failure keeps its cause
+  (`ThemeCatalogError`, chained).
+- **Undo is local (IR22):** it removes the theme from the issues only. The catalog entry stays,
+  consistent with Notes.
+- **Labels go through the tray:** publishing stages the `theme:<tag>` setup step and the label
+  additions; nothing reaches GitHub until the author applies the tray. The write-ahead engine
+  applies them with its guards (a fresh read per issue, an add/remove against it, the label read
+  live before each add). The label is created only by the staged setup step: if the author undoes
+  it, the additions fail with `MissingLabelError` and nothing is created (IR4). A publish that
+  can't stage every change takes back what it staged.
+- **One epic per theme (IR56, IR59):** a theme epic is one approved batch keyed by the digest of
+  the plan the author saw (IR27, IR45, IR46). The epic is created with no labels. Another repo's
+  issue gets the "won't fit one PR" warning and another owner's is refused (IR17). An earlier
+  epic batch for the theme (in that repo) that is running or didn't finish refuses a new approval
+  (409): it may have made the epic, so it is retried or abandoned (an abandon may confirm an epic
+  found on GitHub, which is then reused). Once a batch made the epic (recorded in
+  `theme_epics` and the ledger, so pruning doesn't forget it), issues added to the theme later
+  link under the theme's latest epic, made by its newest complete or abandoned batch (read from
+  the ledger, so a lost `theme_epics` record never hides it). A new epic is made only when the
+  author asks for one (`new_epic`); a closed latest epic without it is refused, never replaced
+  silently. Asking `new_epic` again after an abandoned batch made an epic that is still open
+  reuses that epic: only what is missing is created. The batch is recorded for the theme on a replay of the
+  key too, so a record the first request couldn't write isn't lost.
+- **Catalog renames and merges (IR54):** every theme call resolves the stored tags through the
+  KB catalog's aliases and rewrites the rows to the canonical name, so a renamed or merged tag
+  lists and filters under its new name, and the old name still finds it. A theme's epic history
+  (`theme_epics` and its ledger origins) is renamed too, even after its last issue left it, so a
+  renamed theme reuses the epic it made. Without the catalog (or when it can't be read, logged
+  with the cause) the stored names are used.
+- **Long tags:** a tag whose `theme:<tag>` is longer than GitHub's 50-character label limit is a
+  local theme and filter only: `publishable` is false in `GET /themes`, and publishing it is a
+  400.
+- **Posted text (IR49):** the epic's title and body carry the tag only as code.
 
 ## How suggestions stay safe
 
@@ -327,5 +643,6 @@ make ci           # the full gate
 ```
 
 Tests use in-memory GitHub doubles (`tests/apps/issues/test_sync.py` `FakeIssues`,
-`test_labels.py` `FakeGitHub`, `test_apply.py` `FakeWrites`) and a scripted agent (`test_suggest.py` `FakeAgent`), with a
-fake clock, so they make no network calls and never sleep.
+`test_labels.py` `FakeGitHub`, `test_apply.py` `FakeWrites`) and a scripted agent
+(`test_suggest.py` `FakeAgent`), with a fake clock, so they make no network calls and never
+sleep.

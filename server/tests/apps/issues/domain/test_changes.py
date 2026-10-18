@@ -10,6 +10,7 @@ import pytest
 
 from jesinia.apps.issues.domain.changes import (
     AddArea,
+    AddLabel,
     BatchResult,
     Change,
     ChangeBatch,
@@ -499,3 +500,64 @@ def test_batch_statuses_parse_or_refuse() -> None:
     assert parse_batch_status("interrupted") == "interrupted"
     with pytest.raises(InvalidChangeError):
         parse_batch_status("exploded")
+
+
+# --- free-form labels and repo-level tray rows (plan Task 10) -----------------------------------
+
+
+def test_add_label_takes_only_a_free_prefix_label() -> None:
+    check_change(AddLabel("theme:sync"), DEFAULT_SCHEMA)
+    check_change(AddLabel("Review:Later"), DEFAULT_SCHEMA)
+    for name in ("bug", "theme:", "area:web", "priority: high"):
+        with pytest.raises(InvalidChangeError, match="free-form"):
+            check_change(AddLabel(name), DEFAULT_SCHEMA)
+    with pytest.raises(InvalidChangeError):
+        AddLabel("")
+
+
+def test_label_edit_adds_a_free_label_as_github_spells_it_or_reports_it_missing() -> None:
+    edit = label_edit([AddLabel("theme:sync")], ["bug"], ["bug", "Theme:Sync"], DEFAULT_SCHEMA)
+    assert edit.add == ("Theme:Sync",) and edit.remove == ()
+    assert label_edit(
+        [AddLabel("theme:sync")], ["theme:sync"], ["theme:sync"], DEFAULT_SCHEMA
+    ).is_empty
+    with pytest.raises(MissingLabelError, match="theme:sync"):
+        label_edit([AddLabel("theme:sync")], [], ["bug"], DEFAULT_SCHEMA)
+
+
+def test_add_label_is_a_labels_step_and_round_trips() -> None:
+    batch = ChangeBatch.of({E1: [AddLabel("theme:a"), AddLabel("theme:a"), AddLabel("theme:b")]})
+    (step,) = series(batch)
+    assert step.kind == "labels" and step.changes == (AddLabel("theme:a"), AddLabel("theme:b"))
+    assert parse_change(change_json(AddLabel("theme:a"))) == AddLabel("theme:a")
+    assert parse_batch(batch_json(batch)) == batch
+    assert labels_needed([AddLabel("Theme:A")], DEFAULT_SCHEMA) == {"theme:a"}
+
+
+def test_a_tray_row_is_an_issue_change_or_a_repo_label() -> None:
+    at = datetime(2026, 10, 18, tzinfo=UTC)
+    ensure = EnsureLabel(REPO, "theme:sync", "fbca04", "Theme #sync")
+    row = PendingChange("p1", None, ensure, at, "theme")
+    assert row.repo == REPO and row.key is None
+    issue_row = PendingChange("p2", E1, AddLabel("theme:sync"), at, "theme")
+    assert issue_row.repo == REPO and issue_row.key == E1.key
+    with pytest.raises(InvalidChangeError):
+        PendingChange("p3", E1, ensure, at, "theme")
+    with pytest.raises(InvalidChangeError):
+        PendingChange("p4", None, AddLabel("theme:sync"), at, "theme")
+    assert parse_source("theme") == "theme"
+
+
+def test_pending_batches_run_staged_labels_first_once_each() -> None:
+    at = datetime(2026, 10, 18, tzinfo=UTC)
+    ensure = EnsureLabel(REPO, "theme:sync", "fbca04", "Theme #sync")
+    again = EnsureLabel("ACME/web", "Theme:Sync", "fbca04", "Theme #sync")
+    batch = pending_batch(
+        [
+            PendingChange("a", E1, AddLabel("theme:sync"), at, "theme"),
+            PendingChange("b", None, ensure, at, "theme"),
+            PendingChange("c", None, again, at, "theme"),
+        ]
+    )
+    assert batch.repo == (ensure,)
+    assert [s.kind for s in series(batch)] == ["ensure_label", "labels"]
