@@ -4,7 +4,16 @@
 Verified against Claude Code 2.1.301: ``-p`` (prompt on stdin), ``--output-format
 stream-json`` (requires ``--verbose``), ``--include-partial-messages`` (text deltas),
 ``--resume <id>``, ``--mcp-config`` + ``--strict-mcp-config``, ``--allowedTools`` /
-``--disallowedTools``, ``--append-system-prompt``, ``--model``.
+``--disallowedTools``, ``--append-system-prompt``, ``--model``, ``--tools``,
+``--setting-sources``, ``--disable-slash-commands``, ``--no-chrome``.
+
+Isolation: a session reads untrusted text, so it gets no tool beyond Read (scoped to the
+session dir) and Jesinia's MCP server. ``--tools Read`` drops every other built-in tool
+(Artifact, Cron, Workflow, Skill, ToolSearch, ...); ``--setting-sources ""`` skips the user's
+settings files, so their hooks, permission rules and enabled plugins (with the plugins'
+skills, agents and hooks) never load; ``--strict-mcp-config`` keeps only our MCP server.
+``--safe-mode`` and ``--bare`` are not usable: safe mode also drops the ``--mcp-config``
+server, and bare mode refuses OAuth logins.
 """
 
 from __future__ import annotations
@@ -121,6 +130,12 @@ class ClaudeCodeRunner(CliRunner):
             "--strict-mcp-config",
             "--mcp-config",
             str(req.mcp_config),
+            "--tools",
+            "Read",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--no-chrome",
             "--allowedTools",
             ",".join(allowed),
             "--disallowedTools",
