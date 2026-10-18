@@ -171,7 +171,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `apply_batches`: every batch (from the tray, an approval or a checklist conversion, its
   `origin`), stored `running` before its first
   GitHub write and updated after every step, then `finished` (or `interrupted` by a stop, or
-  `abandoned` by the author), with the Idempotency-Key that started it. Kept 30 days for Retry
+  `abandoned` by the author), with the Idempotency-Key that started it, and when the author
+  dismissed it from the tray (`dismissed_at`, cleared by a retry). Kept 30 days for Retry
   (pruned by the daily job). Pruning never forgets what a batch of an origin that creates
   issues did: that is in `batch_origins`, and a pruned unfinished one is abandoned through it.
 - `schema_overlay`: schema entries the author approved (a new area). They are merged over the
@@ -251,7 +252,9 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     sync (IR20), and an apply's fresh read keeps what sync found.
   - `GET /batches`: the batches that didn't finish (running, interrupted, or finished with a
     step not applied), newest first, so the tray offers Retry or Abandon after a reload. An
-    `EarlierBatchError` names its batch in `batch_id`.
+    `EarlierBatchError` names its batch in `batch_id`. `POST /pending/{batch}/dismiss` (keyed,
+    204) takes a settled batch out of that list for good; a retry puts it back; a running one is
+    a 409.
   - `GET /item/{owner}/{repo}/{n}` and `POST …/refresh`: one issue, and a fetch of its
     comments and timeline.
   - `POST /labels/{owner}/{repo}/preview` with `{kind}`. It isn't keyed, on purpose: it writes

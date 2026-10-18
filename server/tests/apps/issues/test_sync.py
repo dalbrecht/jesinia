@@ -19,6 +19,7 @@ from jesinia.apps.issues.application.sync import (
     DETAIL_PAGE_CAP,
     EPIC_BACKFILL_PER_SYNC,
     LABELS_YML,
+    LINKED_PRS_PER_SYNC,
     SYNC_INTERVAL,
     SyncService,
 )
@@ -1302,3 +1303,36 @@ async def test_should_fill_linked_pr_state_for_changed_open_issues_after_the_fir
     store.refresh_issue(replace(found, linked_pr_state=None), cached.triage)
     again = store.issue(REPO, 1)
     assert again is not None and again.linked_pr_state == "open"
+
+
+async def test_should_keep_the_stored_linked_pr_state_when_its_read_fails_or_is_over_the_cap(
+    service: SyncService,
+    github: FakeIssues,
+    clock: FakeClock,
+    queries: IssueQueries,
+) -> None:
+    """Derived data is best effort (re-review N8): a failing read never fails the sync, and a
+    sync reads at most LINKED_PRS_PER_SYNC issues' links."""
+    count = LINKED_PRS_PER_SYNC + 2
+    github.put(*(issue(n) for n in range(1, count + 1)))
+    await watched(service, clock)
+    await service.sync(REPO)
+    clock.now += timedelta(minutes=5)
+    github.put(*(issue(n, updated=clock.now) for n in range(1, count + 1)))
+    pr = LinkedPr(REPO, 50, "open", "https://github.com/acme/app/pull/50")
+    for n in range(1, count + 1):
+        github.links[(REPO, n)] = [pr]
+    failing = github.timeline_links
+
+    async def flaky(repo: str, n: int) -> list[LinkedPr]:
+        if n == 1:
+            raise GitHubRequestError(502, "bad gateway")
+        return await failing(repo, n)
+
+    github.timeline_links = flaky  # type: ignore[method-assign]
+    await service.sync(REPO)
+    assert service.state(REPO).sync_error is None
+    rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
+    assert rows[1].linked_pr_state is None  # its read failed: unchanged
+    filled = [n for n, r in rows.items() if r.linked_pr_state == "open"]
+    assert len(filled) == LINKED_PRS_PER_SYNC - 1

@@ -508,7 +508,11 @@ class ApplyStore(Protocol):
         """The batch a request with this Idempotency-Key started."""
 
     def recent_batches(self, limit: int) -> list[AppliedBatch]:
-        """The ``limit`` most recently updated batches, newest first (abandoned ones left out)."""
+        """The ``limit`` most recently updated batches, newest first (abandoned and dismissed
+        ones left out)."""
+
+    def dismiss_batch(self, batch_id: str, now: datetime) -> bool:
+        """Mark the batch dismissed from the tray (kept if already); False: no such batch."""
 
     def interrupt_running(self) -> int:
         """Mark every ``running`` batch ``interrupted`` (at start nothing runs yet)."""

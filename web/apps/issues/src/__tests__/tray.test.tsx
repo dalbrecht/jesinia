@@ -151,6 +151,7 @@ describe("apply", () => {
           return json(batch("b1"), 202, { Location: "/api/issues/pending/b1" });
         },
         "GET /api/issues/pending/b1": () => json(current),
+        "POST /api/issues/pending/b1/dismiss": () => json(null, 204),
         "POST /api/issues/pending/b1/retry": () => {
           current = batch("b1");
           return json(current, 202, { Location: "/api/issues/pending/b1" });

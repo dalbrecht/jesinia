@@ -18,6 +18,7 @@ import {
   clearPending,
   createsIssues,
   describeChange,
+  dismissBatch,
   describeSuggestion,
   errorCause,
   getBatch,
@@ -307,7 +308,14 @@ export function TrayProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const dismiss = (batch: ApplyBatch) => {
+  // Dismissed on the server, so a reload never brings it back (re-review N2).
+  const dismiss = async (batch: ApplyBatch) => {
+    try {
+      await keyed(`dismiss:${batch.id}`, (key) => dismissBatch(client, batch.id, key));
+    } catch (e) {
+      fail("dismiss the batch", e);
+      return;
+    }
     setTracked((prev) => prev.filter((t) => t.batch.id !== batch.id));
     setFocusFix((n) => n + 1);
   };
@@ -401,7 +409,7 @@ export function TrayProvider({ children }: { children: ReactNode }) {
                   busy={busy}
                   onRetry={() => void retry(t.batch)}
                   onAbandon={() => void abandon(t.batch)}
-                  onDismiss={() => dismiss(t.batch)}
+                  onDismiss={() => void dismiss(t.batch)}
                 />
               ))}
             </ul>
@@ -462,7 +470,7 @@ function BatchResult({
           </Button>
         ) : null}
         {isRunning ? null : (
-          <Button size="sm" variant="ghost" onClick={onDismiss}>
+          <Button size="sm" variant="ghost" loading={busy.has(`dismiss:${batch.id}`)} onClick={onDismiss}>
             Dismiss
           </Button>
         )}

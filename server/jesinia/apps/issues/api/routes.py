@@ -695,6 +695,17 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         return await _respond(run, host.clock)
 
+    @r.post("/pending/{batch}/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+    async def dismiss_batch(batch: ItemId, idem: IdempotentCall = keyed) -> Response:
+        """Take a batch the author is done with out of the tray: ``GET /batches`` never lists it
+        again (unless a retry runs it). Nothing changes on GitHub. A running batch is a 409."""
+
+        async def run() -> Response:
+            host.apply.dismiss(batch)
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
     @r.post(
         "/pending/{batch}/retry",
         response_model=ApplyBatchOut,

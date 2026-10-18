@@ -139,25 +139,24 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
     }
   }, [client, repo, number, ref, fail]);
 
-  // The cache read and the refresh can resolve in either order: only a newer answer than the one
-  // shown replaces it (a slow cache read never hides fresh comments).
-  const loads = useRef({ issued: 0, shown: 0 });
-  const load = useCallback(
-    (read: () => Promise<IssueDetail>) => {
-      const id = ++loads.current.issued;
-      return read().then((found) => {
-        if (id < loads.current.shown) return;
-        loads.current.shown = id;
-        shown(found);
-      });
-    },
-    [shown],
-  );
+  // Cache reads and the refresh resolve in any order. The refresh fetched from GitHub and wrote the
+  // cache, so its answer is always shown, and it outdates every cache read issued before it
+  // answered. A cache read is shown unless a newer one was, or the refresh answered after it was
+  // sent: an answer is only ever dropped for a newer one (re-review N1).
+  const reads = useRef({ issued: 0, shown: 0 });
+  const readCache = useCallback(() => {
+    const id = ++reads.current.issued;
+    return getItem(client, repo, number).then((found) => {
+      if (id <= reads.current.shown) return;
+      reads.current.shown = id;
+      shown(found);
+    });
+  }, [client, repo, number, shown]);
 
   useEffect(() => {
-    load(() => getItem(client, repo, number)).catch((e: unknown) => setProblem(errorCause(e)));
+    readCache().catch((e: unknown) => setProblem(errorCause(e)));
     void readSuggestions();
-  }, [client, repo, number, load, readSuggestions, tray.revision]);
+  }, [readCache, readSuggestions, tray.revision]);
 
   // While Claude is suggesting, its drafts are read again until the run settles.
   const runStatus = list?.run?.status ?? null;
@@ -170,25 +169,45 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
 
   // Opening an issue fetches its comments and timeline once (the cache shows meanwhile).
   useEffect(() => {
-    load(() => keyed(`refresh:${ref}`, (key) => refreshItem(client, repo, number, key))).then(
-      () => setRefreshProblem(null),
+    keyed(`refresh:${ref}`, (key) => refreshItem(client, repo, number, key)).then(
+      (found) => {
+        reads.current.shown = reads.current.issued;
+        shown(found);
+        setRefreshProblem(null);
+      },
       (e: unknown) => setRefreshProblem(errorCause(e)),
     );
-  }, [client, repo, number, ref, keyed, load]);
+  }, [client, repo, number, ref, keyed, shown]);
 
   // A suggestion that held focus is gone (accepted, dismissed, or its editor saved): focus the
   // one now in its place, or the Suggestions heading when none are left.
   const sugList = useRef<HTMLUListElement>(null);
   const sugHeading = useRef<HTMLHeadingElement>(null);
-  const focusAt = useRef<number | null>(null);
+  // The suggestion the author acted on, while its row may still go (an approval's row goes when
+  // its batch settles). It is forgotten as soon as focus is anywhere but that row, so a later
+  // render never pulls focus back (re-review N5).
+  const focusAt = useRef<{ id: string; index: number } | null>(null);
+  // A saved edit unmounts its editor, which held focus: its row's first button takes it.
+  const focusRow = useRef<string | null>(null);
+  useEffect(() => {
+    const id = focusRow.current;
+    if (id === null) return;
+    focusRow.current = null;
+    sugList.current?.querySelector<HTMLElement>(`[data-sug-id="${CSS.escape(id)}"] button`)?.focus();
+  });
   useEffect(() => {
     const at = focusAt.current;
     if (at === null) return;
+    const rows = [...(sugList.current?.querySelectorAll<HTMLElement>(":scope > li") ?? [])];
+    const row = rows.find((li) => li.dataset.sugId === at.id);
     const active = document.activeElement;
-    if (active !== null && active !== document.body && document.contains(active)) return;
+    if (row) {
+      if (active === null || !row.contains(active)) focusAt.current = null;
+      return; // still there: focus stays where it is
+    }
     focusAt.current = null;
-    const items = sugList.current?.querySelectorAll<HTMLElement>(":scope > li") ?? [];
-    const target = items[Math.min(at, items.length - 1)]?.querySelector<HTMLElement>("button");
+    if (active !== null && active !== document.body && document.contains(active)) return;
+    const target = rows[Math.min(at.index, rows.length - 1)]?.querySelector<HTMLElement>("button");
     (target ?? sugHeading.current)?.focus();
   });
 
@@ -218,16 +237,18 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
     void tray.stage(repo, number, { kind: "set_dimension", dimension, value }, "picker");
   };
 
-  const indexOf = (suggestion: Suggestion) => open.findIndex((sug) => sug.id === suggestion.id);
+  const mark = (suggestion: Suggestion) => {
+    focusAt.current = { id: suggestion.id, index: open.findIndex((sug) => sug.id === suggestion.id) };
+  };
 
   const accept = async (suggestion: Suggestion) => {
-    focusAt.current = indexOf(suggestion);
+    mark(suggestion);
     await tray.approve(suggestion);
     await readSuggestions();
   };
 
   const dismiss = async (suggestion: Suggestion) => {
-    focusAt.current = indexOf(suggestion);
+    mark(suggestion);
     try {
       await keyed(`dismiss:${suggestion.id}`, (key) => dismissSuggestion(client, suggestion.id, key));
     } catch (e) {
@@ -238,11 +259,11 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
 
   const save = async (suggestion: Suggestion) => {
     const dimension = String(suggestion.payload.dimension);
-    focusAt.current = indexOf(suggestion);
     try {
       await keyed(`edit:${suggestion.id}`, (key) =>
         editSuggestion(client, suggestion.id, { dimension, value: draft.trim() }, key),
       );
+      focusRow.current = suggestion.id;
       setEditing(null);
     } catch (e) {
       fail(`edit "${describeSuggestion(suggestion)}"`, e);
@@ -254,12 +275,10 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
     setApprovingAll(true);
     for (const suggestion of open) await tray.approve(suggestion);
     setApprovingAll(false);
-    focusAt.current = 0;
     await readSuggestions();
   };
 
   const dismissAll = async () => {
-    focusAt.current = 0;
     for (const suggestion of open) {
       try {
         await keyed(`dismiss:${suggestion.id}`, (key) => dismissSuggestion(client, suggestion.id, key));
@@ -408,7 +427,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
               const dimension = String(sug.payload.dimension ?? "");
               const isEditing = editing === sug.id;
               return (
-                <li key={sug.id} className={s.suggestion}>
+                <li key={sug.id} className={s.suggestion} data-sug-id={sug.id}>
                   <div className={s.sugMain}>
                     <span className={s.sugWhat}>
                       <VisibleText text={describeSuggestion(sug)} />

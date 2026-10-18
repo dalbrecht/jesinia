@@ -719,6 +719,19 @@ class ApplyService:
         self._store.save_batch(again)
         return again
 
+    def dismiss(self, batch_id: str) -> None:
+        """Take a settled batch out of the tray for good: ``unfinished`` never lists it again,
+        unless a retry runs it. Its result is kept (Retry and polling still work).
+
+        Raises:
+            BatchNotFoundError: no such batch.
+            BatchRunningError: it is still running.
+        """
+        found = applied_batch(self._store, batch_id)
+        if found.status == "running" or batch_id in self._tasks:
+            raise BatchRunningError(f"batch {batch_id} is still running; poll it")
+        self._store.dismiss_batch(batch_id, self._clock())
+
     def start_retry(self, batch_id: str) -> AppliedBatch:
         """``begin_retry``, then run it in the background."""
         again = self.begin_retry(batch_id)

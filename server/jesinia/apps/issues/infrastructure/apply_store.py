@@ -178,7 +178,10 @@ class SqliteApplyStore:
         self._conn.execute(
             f"INSERT INTO apply_batches ({_BATCH_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET result_json = excluded.result_json, "
-            "updated_at = excluded.updated_at, status = excluded.status",
+            "updated_at = excluded.updated_at, status = excluded.status, "
+            # Running it again (a retry) puts a dismissed batch back in the tray.
+            "dismissed_at = CASE WHEN excluded.status = 'running' THEN NULL "
+            "ELSE apply_batches.dismissed_at END",
             (
                 applied.id,
                 applied.origin,
@@ -206,11 +209,21 @@ class SqliteApplyStore:
 
     def recent_batches(self, limit: int) -> list[AppliedBatch]:
         rows = self._conn.execute(
-            f"SELECT {_BATCH_COLUMNS} FROM apply_batches WHERE status != 'abandoned' "
+            f"SELECT {_BATCH_COLUMNS} FROM apply_batches "
+            "WHERE status != 'abandoned' AND dismissed_at IS NULL "
             "ORDER BY updated_at DESC, rowid DESC LIMIT ?",
             (limit,),
         )
         return [_batch(row) for row in rows]
+
+    def dismiss_batch(self, batch_id: str, now: datetime) -> bool:
+        return (
+            self._conn.execute(
+                "UPDATE apply_batches SET dismissed_at = COALESCE(dismissed_at, ?) WHERE id = ?",
+                (_time(now), batch_id),
+            ).rowcount
+            > 0
+        )
 
     def interrupt_running(self) -> int:
         with transaction(self._conn):

@@ -83,34 +83,44 @@ function holdEarlyKeys(activator: Event): () => void {
   const doc = target?.ownerDocument ?? document;
   const held: KeyboardEvent[] = [];
   const timers: ReturnType<typeof setTimeout>[] = [];
-  const hold = (e: KeyboardEvent) => {
-    if (e === activator || !DRAG_KEYS.has(e.code)) return;
+  const replayed = new WeakSet<Event>();
+  let isListening = false; // the sensor's listener is attached: replaying now
+  const stop = () => doc.removeEventListener("keydown", hold, true);
+  function hold(e: KeyboardEvent) {
+    if (e === activator || replayed.has(e) || !DRAG_KEYS.has(e.code)) return;
+    // Until every held key has replayed, a new one queues behind them (never overtakes).
     e.preventDefault();
     e.stopImmediatePropagation();
     held.push(e);
-  };
-  const replay = () => {
+    if (isListening && held.length === 1) timers.push(setTimeout(replay));
+  }
+  function replay() {
     const next = held.shift();
-    if (!next) return;
+    if (!next) {
+      stop();
+      return;
+    }
     const at = doc.activeElement ?? doc.body;
     const { key, code, shiftKey, altKey, ctrlKey, metaKey } = next;
-    at.dispatchEvent(new KeyboardEvent("keydown", { key, code, shiftKey, altKey, ctrlKey, metaKey, bubbles: true, cancelable: true })); // prettier-ignore
+    const again = new KeyboardEvent("keydown", { key, code, shiftKey, altKey, ctrlKey, metaKey, bubbles: true, cancelable: true }); // prettier-ignore
+    replayed.add(again);
+    at.dispatchEvent(again);
     timers.push(setTimeout(replay));
-  };
+  }
   doc.addEventListener("keydown", hold, true);
   // The sensor's timer was set after this one, in the same task: two hops land after it.
   timers.push(
     setTimeout(() =>
       timers.push(
         setTimeout(() => {
-          doc.removeEventListener("keydown", hold, true);
+          isListening = true;
           replay();
         }),
       ),
     ),
   );
   return () => {
-    doc.removeEventListener("keydown", hold, true);
+    stop();
     held.length = 0;
     for (const timer of timers) clearTimeout(timer);
   };

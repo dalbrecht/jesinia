@@ -251,6 +251,7 @@ async def env(cfg: Config, conn: sqlite3.Connection, tags: TagService) -> AsyncI
 READS = [
     ("GET", f"{API}/pending", None),
     ("GET", f"{API}/pending/x", None),
+    ("GET", f"{API}/batches", None),
     ("GET", f"{API}/repos", None),
     ("GET", f"{API}/inbox", None),
     ("GET", f"{API}/backlog", None),
@@ -287,6 +288,7 @@ WRITES: list[tuple[str, str, dict[str, object] | None]] = [
     ("POST", f"{API}/pending/apply", {"ids": None}),
     ("POST", f"{API}/pending/x/retry", None),
     ("POST", f"{API}/pending/x/abandon", {"created": []}),
+    ("POST", f"{API}/pending/x/dismiss", None),
     ("POST", f"{EPIC}/conversion", {"digest": "0" * 64}),
     ("POST", f"{EPIC}/brief/draft", None),
     ("POST", f"{EPIC}/brief", {"text": "x"}),
@@ -1139,6 +1141,41 @@ async def test_should_list_unfinished_batches_so_a_reload_can_retry_them(env: En
     listed = (await env.client.get(f"{API}/batches")).json()
     assert [b["id"] for b in listed["batches"]] == [stopped["id"]]
     assert listed["batches"][0]["stopped"]
+
+    # Dismissed from the tray: it never comes back on a reload (re-review N2), and a replay of
+    # the key changes nothing; a running batch or an unknown one is refused.
+    key = keyed()
+    dismissed = await env.client.post(f"{PENDING}/{stopped['id']}/dismiss", headers=key)
+    assert dismissed.status_code == 204
+    assert (
+        await env.client.post(f"{PENDING}/{stopped['id']}/dismiss", headers=key)
+    ).status_code == 204
+    assert (await env.client.get(f"{API}/batches")).json()["batches"] == []
+    unknown = await env.client.post(f"{PENDING}/nope/dismiss", headers=keyed())
+    assert unknown.status_code == 404
+    # A retry brings it back into the tray (it is the author's again), until it settles.
+    env.github.fail.clear()
+    retried = await env.client.post(f"{PENDING}/{stopped['id']}/retry", headers=keyed())
+    assert (await _polled(env, retried))["complete"]
+    assert (await env.client.get(f"{API}/batches")).json()["batches"] == []
+
+
+async def test_a_running_batch_cant_be_dismissed(env: Env) -> None:
+    await env.watch_and_sync()
+    held = asyncio.Event()
+    add = env.github.add_labels
+
+    async def gated(repo: str, n: int, names: Sequence[str]) -> tuple[str, ...]:
+        await held.wait()
+        return await add(repo, n, names)
+
+    env.github.add_labels = gated  # type: ignore[method-assign]
+    await env.client.post(PENDING, json=_staged(1, PRIORITY_HIGH), headers=keyed())
+    started = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
+    refused = await env.client.post(f"{PENDING}/{started.json()['id']}/dismiss", headers=keyed())
+    held.set()
+    assert refused.status_code == 409 and refused.json()["error"] == "BatchRunningError"
+    await _polled(env, started)
 
 
 async def test_a_replayed_apply_answers_its_batch_and_never_applies_the_tray_again(

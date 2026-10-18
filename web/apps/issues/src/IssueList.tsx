@@ -83,6 +83,8 @@ export function IssueList({ view, repos, onOpen, active }: IssueListProps) {
       setReadError(null);
       setFailedReads(0);
     } catch (e) {
+      // An older read failing after a newer one answered changes nothing (re-review N7).
+      if (id < reads.current.shown) return;
       // Whatever was shown stays; say why.
       setReadError(errorCause(e));
       setFailedReads((n) => n + 1);

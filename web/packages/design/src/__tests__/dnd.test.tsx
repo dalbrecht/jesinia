@@ -137,6 +137,65 @@ describe("DndProvider with Draggable and DropTarget (keyboard)", () => {
     expect(onDrop.mock.calls[0]?.[1]).toMatchObject({ id: "epic-b" });
   });
 
+  it("a held Escape cancels, and the keys held after it never reach the next drag", async () => {
+    const onDrop = vi.fn<OnDrop>();
+    render(<Board onDrop={onDrop} />);
+    const handle = screen.getByRole("button", { name: "Fix sync" });
+    handle.focus();
+    act(() => {
+      fireEvent.keyDown(handle, { key: " ", code: "Space" });
+      fireEvent.keyDown(handle, { key: "Escape", code: "Escape" });
+      fireEvent.keyDown(handle, { key: "ArrowDown", code: "ArrowDown" });
+      fireEvent.keyDown(handle, { key: " ", code: "Space" });
+    });
+    await waitFor(() => expect(said()).toBe("Drag cancelled. Nothing changed."));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(said()).toBe("Drag cancelled. Nothing changed.");
+    expect(onDrop).not.toHaveBeenCalled();
+    const user = await pickUp("Fix sync");
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(said()).toBe("Over Epic A."));
+  });
+
+  it("a key pressed while held keys replay waits its turn", async () => {
+    const onDrop = vi.fn<OnDrop>();
+    render(<Board onDrop={onDrop} />);
+    const handle = screen.getByRole("button", { name: "Fix sync" });
+    handle.focus();
+    act(() => {
+      fireEvent.keyDown(handle, { key: " ", code: "Space" });
+      fireEvent.keyDown(handle, { key: "ArrowDown", code: "ArrowDown" });
+      fireEvent.keyDown(handle, { key: "ArrowDown", code: "ArrowDown" });
+    });
+    // Two hops later the sensor listens and the first held arrow replays; a real Space now
+    // must not drop before the second held arrow has moved on to Epic B.
+    await new Promise<void>((resolve) => {
+      // Fires right after the first replay (this timer is queued behind the provider's hops).
+      setTimeout(() => setTimeout(() => setTimeout(resolve)));
+    });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: " ", code: "Space" });
+    await waitFor(() => expect(onDrop).toHaveBeenCalledOnce());
+    expect(onDrop.mock.calls[0]?.[1]).toMatchObject({ id: "epic-b" });
+  });
+
+  it("unmounting while keys are held leaves nothing behind", async () => {
+    const onDrop = vi.fn<OnDrop>();
+    const { unmount } = render(<Board onDrop={onDrop} />);
+    const handle = screen.getByRole("button", { name: "Fix sync" });
+    handle.focus();
+    act(() => {
+      fireEvent.keyDown(handle, { key: " ", code: "Space" });
+      fireEvent.keyDown(handle, { key: "ArrowDown", code: "ArrowDown" });
+    });
+    unmount();
+    const seen = vi.fn();
+    document.addEventListener("keydown", seen);
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    document.removeEventListener("keydown", seen);
+    expect(seen).not.toHaveBeenCalled(); // no held key was replayed after unmount
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+
   it("drops with Enter too, and says so when dropped outside any target", async () => {
     const onDrop = vi.fn<OnDrop>();
     render(<Board onDrop={onDrop} />);

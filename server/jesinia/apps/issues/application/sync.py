@@ -17,7 +17,8 @@ What a sync asks GitHub (ruling IR20):
   ``parent_issue_url``.
 - **Later syncs:** an epic (it has sub-issues) that changed since the last sync has its children
   fetched. Up to ``EPIC_BACKFILL_PER_SYNC`` unchanged epics whose children were never fetched are
-  backfilled per sync, so links arrive without a first-sync spike.
+  backfilled per sync, so links arrive without a first-sync spike. Up to
+  ``LINKED_PRS_PER_SYNC`` changed open issues get their linked PRs read (best effort).
 - **Comments and timeline** are never fetched by sync: ``refresh_details`` fetches them (and an
   epic's children) on demand, when an issue is opened.
 
@@ -73,6 +74,8 @@ log = logging.getLogger(__name__)
 SYNC_INTERVAL = timedelta(minutes=5)
 LABELS_YML = ".jesinia/labels.yml"
 EPIC_BACKFILL_PER_SYNC = 10
+# Changed open issues whose linked PRs one sync reads (the board's status view, IR62).
+LINKED_PRS_PER_SYNC = 20
 # Pages of comments (and of timeline events) ``refresh_details`` reads for one issue.
 DETAIL_PAGE_CAP = 10
 
@@ -292,6 +295,7 @@ class SyncService:
         self._store.replace_labels(repo, await self._github.labels(repo))
         self._store.replace_milestones(repo, await self._github.milestones(repo))
         is_first = state.synced_at is None
+        budget = [LINKED_PRS_PER_SYNC]  # linked-PR reads this sync may still make
         cursor = state.cursor
         done = False
         while not done:
@@ -311,7 +315,7 @@ class SyncService:
             ]
             links = {} if is_first else await self._children(repo, fresh)
             if not is_first:
-                fresh = [await self._with_linked_prs(repo, i) for i in fresh]
+                fresh = [await self._with_linked_prs(repo, i, budget) for i in fresh]
             stored, entered, edited = self._triaged(state, schema, fresh)
             cursor, done = cursor.after_page(
                 [(i.updated_at, i.id) for i in page.items], page.next_token
@@ -327,13 +331,27 @@ class SyncService:
                 children = await self._github.sub_issues(repo, n)
                 self._store.set_sub_issue_links(repo, n, children, self._clock())
 
-    async def _with_linked_prs(self, repo: str, issue: Issue) -> Issue:
+    async def _with_linked_prs(self, repo: str, issue: Issue, budget: list[int]) -> Issue:
         """``issue`` with its linked PRs summed up (the board's status view, IR62). Only issues
-        a later sync sees change are read, and only open ones (a closed issue is Done anyway),
-        so a big first sync costs no per-issue calls (IR20)."""
+        a later sync sees change are read, only open ones (a closed issue is Done anyway), and
+        at most ``LINKED_PRS_PER_SYNC`` a sync, so a big first sync or a long gap costs few
+        per-issue calls (IR20). It is derived data, so best effort: past the budget, or when the
+        read fails (logged with its cause), the stored value is kept and the sync goes on.
+        A rate limit still stops the sync, as every GitHub read does."""
         if issue.state != "open":
             return issue
-        links = await self._github.timeline_links(repo, issue.number)
+        stored = self._store.issue(repo, issue.number)
+        kept = replace(issue, linked_pr_state=None if stored is None else stored.linked_pr_state)
+        if budget[0] <= 0:
+            return kept
+        budget[0] -= 1
+        try:
+            links = await self._github.timeline_links(repo, issue.number)
+        except GitHubRateLimitedError:
+            raise
+        except GitHubError as exc:
+            log.warning("issues: linked PRs of %s#%s unread, kept: %s", repo, issue.number, exc)
+            return kept
         return replace(issue, linked_pr_state=summarize_linked_prs(links))
 
     async def _children(

@@ -335,6 +335,15 @@ export function revealLines(value: string, reveal: (line: string) => string): st
     .join("");
 }
 
+/** Take a settled batch out of the tray for good (a reload won't list it again). */
+export async function dismissBatch(client: JesiniaClient, id: string, key: string): Promise<void> {
+  unwrap(
+    await client.POST("/api/issues/pending/{batch}/dismiss", {
+      params: { path: { batch: id }, header: withIdempotency(key) },
+    }),
+  );
+}
+
 /** The batches the server says didn't finish (for the tray after a reload). */
 export async function getUnfinishedBatches(client: JesiniaClient): Promise<ApplyBatch[]> {
   return unwrap(await client.GET("/api/issues/batches")).batches;
