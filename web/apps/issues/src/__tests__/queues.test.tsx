@@ -21,6 +21,7 @@ import {
   readiness,
   renderApp,
   ROW_1,
+  said,
   settleDrag,
   stagingRoutes,
   suggestion,
@@ -502,5 +503,38 @@ describe("fix round 1: kinds, Undo for adds and removes, focus after Done", () =
     expect(await toast(/Removed acme\/app#1 from Next up/)).toBe(true);
     await userEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(await toast(/Couldn't put acme\/app#1 back: full/)).toBe(true);
+  });
+});
+
+describe("Codex round 1 on PR #72", () => {
+  it("a done item says what is so: waiting in the tray, closed on GitHub, or done here", async () => {
+    const q = queue("q1", [queueItem(3, { title: "Open one" })], {
+      done: [
+        queueItem(1, { title: "Waiting", done_at: "2026-10-18T12:00:00Z", done_pending: "p1" }),
+        queueItem(2, { title: "Closed", state: "closed", done_at: "2026-10-18T12:00:00Z" }),
+        queueItem(4, { title: "Handed over", state: "open", done_at: "2026-10-18T12:00:00Z" }),
+      ],
+    });
+    renderApp(routesFor(q).routes, "/issues/queues");
+    const done = await screen.findByRole("group", { name: "Done (3)" });
+    const rows = within(done).getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("its change waits in Pending changes");
+    expect(rows[1]).toHaveTextContent("closed on GitHub");
+    expect(rows[2]).toHaveTextContent("done here");
+    expect(rows[2]).not.toHaveTextContent("closed on GitHub");
+  });
+
+  it("the Done zone refuses a milestone, with the reason, and never says it dropped", async () => {
+    const q = queue("q1", [queueItem(5, { kind: "milestone", title: "v1" }), queueItem(1, { title: "Fix login" })]);
+    const { calls } = renderApp(routesFor(q).routes, "/issues/queues");
+    await screen.findByRole("list", { name: "Next up" });
+    const user = await pickUp("Move acme/app#5 v1");
+    expect(await moveTo(user, "Mark done in Next up")).toMatch(
+      /^Can't drop on Mark done in Next up: A milestone isn't yours to close/,
+    );
+    await user.keyboard("[Space]");
+    await waitFor(() => expect(said()).toMatch(/Nothing changed\.$/));
+    expect(said()).not.toMatch(/^Dropped/);
+    expect(calls.filter((c) => new URL(c.url).pathname.endsWith("/done"))).toHaveLength(0);
   });
 });

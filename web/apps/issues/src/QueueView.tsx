@@ -7,7 +7,7 @@
 // group at once and stages closing the issue, or handing it to an agent (agent-ready). Every item
 // shows its readiness and a warning when it isn't ready, and has Copy brief. The agent's
 // proposals (suggest next, order) show as a draft diff to approve, changing only the queue.
-import { Badge, Button, DropTarget, SortableList, useToast, type DragItem } from "@jesinia/design";
+import { Badge, Button, DropTarget, SortableList, useToast, type DragItem, type Refusal } from "@jesinia/design";
 import { useClient, VisibleText, visibleText } from "@jesinia/shell";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { ActionMenu } from "./ActionMenu";
@@ -441,6 +441,12 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
   const inTurn = (rows: readonly DragItem[], each: (item: QueueItem) => Promise<void>) =>
     void itemsOf(rows).reduce((prev, item) => prev.then(() => each(item)), Promise.resolve());
   const doneZone: DropAction = { drop: (rows) => inTurn(rows.filter((r) => canBeDone(r.data as QueueItem)), (i) => done(i, "close")) }; // prettier-ignore
+  // Like the checkbox and the x key: a milestone has no Done, so a drag holding one is refused
+  // up front (with why) and never announced as dropped.
+  const doneRefusal = (rows: readonly DragItem[]): Refusal | null =>
+    rows.some((r) => !canBeDone(r.data as QueueItem))
+      ? { code: "milestone", reason: "A milestone isn't yours to close: Jesinia never writes milestones" }
+      : null;
   const removeZone: DropAction = { drop: (rows) => inTurn(rows, remove) };
   const warned = queue.items.filter((i) => i.warning !== null).length;
   const order = queue.items.map((i) => refOfItem(i).toLowerCase());
@@ -543,6 +549,7 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
           id={`done:${id}`}
           label={`Mark done in ${name}`}
           data={doneZone}
+          accepts={doneRefusal}
           className={s.zone}
           role="group"
           aria-label={`Mark done in ${name}`}
@@ -571,7 +578,11 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
                 {item.title === null ? "Not cached" : <VisibleText text={item.title} />}
               </span>
               <span className={s.muted}>
-                {item.done_pending ? "its change waits in Pending changes" : "closed on GitHub"}
+                {item.done_pending
+                  ? "its change waits in Pending changes"
+                  : item.state === "closed"
+                    ? "closed on GitHub"
+                    : "done here"}
               </span>
               <span className={s.spacer} />
               <Button
