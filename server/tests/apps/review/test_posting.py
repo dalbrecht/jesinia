@@ -274,6 +274,7 @@ async def test_post_is_one_atomic_review(env: Env) -> None:
         Draft("src/app.py", "First.", line=2, side="RIGHT"),
         Draft("src/app.py", "Second.", line=11, side="LEFT"),
     ]
+    await env.service.drafts(env.round_id)  # the client reads (and sees the seeds) first
     await env.service.save_drafts(env.round_id, "Summary.", drafts)
     preview = await env.service.preview(env.round_id, "REQUEST_CHANGES")
     assert preview.body == "Summary."
@@ -336,6 +337,7 @@ async def test_multi_line_draft_round_trips_its_start_line_and_side(env: Env) ->
     ranged = Draft(
         "src/app.py", "Across lines.", line=4, side="RIGHT", start_line=2, start_side="RIGHT"
     )
+    await env.service.drafts(env.round_id)  # the client reads (and sees the seeds) first
     await env.service.save_drafts(env.round_id, "Ranged.", [ranged])
     stored = (await env.service.drafts(env.round_id)).drafts
     assert len(stored) == 1 and stored[0].id is not None
@@ -416,6 +418,7 @@ async def test_a_stale_preview_is_refused(env: Env) -> None:
 
 
 async def test_a_comment_needs_a_body_or_comments(env: Env) -> None:
+    await env.service.drafts(env.round_id)  # the client reads (and sees the seeds) first
     await env.service.save_drafts(env.round_id, "   ", [])
     preview = await env.service.preview(env.round_id, "COMMENT")
     assert "needs a summary or an inline comment" in " ".join(preview.notes)
@@ -427,6 +430,7 @@ async def test_a_comment_needs_a_body_or_comments(env: Env) -> None:
 
 async def test_an_inline_only_request_changes_posts(env: Env) -> None:
     only = [Draft("src/app.py", "Fix this line.", line=3, side="RIGHT")]
+    await env.service.drafts(env.round_id)  # the client reads (and sees the seeds) first
     await env.service.save_drafts(env.round_id, "", only)
     preview = await env.service.preview(env.round_id, "REQUEST_CHANGES")
     assert (
@@ -440,6 +444,7 @@ async def test_an_inline_only_request_changes_posts(env: Env) -> None:
 
 
 async def test_a_draft_outside_githubs_diff_moves_to_the_body(env: Env) -> None:
+    await env.service.drafts(env.round_id)  # the client reads (and sees the seeds) first
     await env.service.save_drafts(
         env.round_id,
         "",
@@ -981,6 +986,23 @@ async def test_drafts_opened_early_get_the_findings_when_they_arrive(env: Env) -
     assert len((await env.service.drafts(round_id)).drafts) == 1
 
 
+async def test_a_save_that_triggers_seeding_keeps_the_findings(env: Env) -> None:
+    """PR 3 final I2: an autosave that is the first request after the findings land must not
+    delete the drafts it seeds (the client never saw them)."""
+    round_id = _running_round(env)
+    assert (await env.service.drafts(round_id)).findings_pending
+    env.store.put_artifact(round_id, "correctness", {"findings": []})
+    env.store.put_artifact(round_id, "findings", {"findings": [finding(2, 3, "Swallowed.")]})
+    mine = Draft(path="src/app.py", body="My own note.", line=4, side="RIGHT")
+    saved = await env.service.save_drafts(round_id, "Notes.", [mine])
+    assert not saved.findings_pending
+    assert [d.body for d in saved.drafts][0] == "My own note."
+    assert ["Swallowed." in d.body for d in saved.drafts] == [False, True]
+    # Seen now: a later save that leaves the finding draft out deletes it, as before.
+    await env.service.save_drafts(round_id, "Notes.", [saved.drafts[0]])
+    assert len((await env.service.drafts(round_id)).drafts) == 1
+
+
 async def test_a_failed_findings_job_still_seeds_what_there_is(env: Env) -> None:
     round_id = _running_round(env)
     env.store.put_artifact(round_id, "correctness", {"findings": [finding(2, 3, "Bug.")]})
@@ -1040,3 +1062,22 @@ async def test_approving_an_approve_verdict_needs_no_extra_confirmation(env: Env
     preview = await env.service.preview(env.round_id, "APPROVE")
     assert "approve_against_evidence" not in preview.warnings
     assert await env.post("APPROVE") == URL
+
+
+async def test_seeds_that_would_pass_the_draft_limit_are_capped_and_counted(env: Env) -> None:
+    """Codex round 2 on PR #58: the author's drafts come first; seeds fill only what is left
+    of DRAFTS_MAX, the rest are counted, and the next save is accepted."""
+    from jesinia.apps.review.domain.posting import DRAFTS_MAX
+
+    round_id = _running_round(env)
+    assert (await env.service.drafts(round_id)).findings_pending
+    env.store.put_artifact(round_id, "correctness", {"findings": []})
+    many = [finding(2, 3, f"Finding {i}.") for i in range(400)]
+    env.store.put_artifact(round_id, "findings", {"findings": many})
+    mine = [Draft(path="src/app.py", body=f"Mine {i}.", line=4, side="RIGHT") for i in range(150)]
+    saved = await env.service.save_drafts(round_id, "Notes.", mine)
+    assert len(saved.drafts) == DRAFTS_MAX
+    assert [d.body for d in saved.drafts[:150]] == [f"Mine {i}." for i in range(150)]
+    assert saved.seeds_dropped == 400 - (DRAFTS_MAX - 150)
+    again = await env.service.save_drafts(round_id, "Notes.", list(saved.drafts))
+    assert len(again.drafts) == DRAFTS_MAX and again.seeds_dropped == 0

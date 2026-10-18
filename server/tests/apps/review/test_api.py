@@ -173,6 +173,7 @@ READS = [("GET", f"{API}/queue"), ("GET", PR), ("GET", f"{PR}/drafts"), ("GET", 
 WRITES = [
     ("POST", f"{API}/load", {"ref": "acme/web#1"}),
     ("POST", f"{API}/queue/acme/web/1/dismiss", None),
+    ("POST", f"{API}/repos/acme/other/confirm", None),
     ("POST", f"{PR}/open", None),
     ("POST", f"{PR}/retry", None),
     ("POST", f"{PR}/review-anyway", None),
@@ -303,6 +304,17 @@ async def test_load_and_dismiss(env: Env) -> None:
     assert gone.status_code == 404
 
 
+async def test_confirming_a_suggested_repo_watches_it(env: Env) -> None:
+    env.store.suggest_repos(["stranger/lib"])
+    assert (await env.client.get(f"{API}/queue")).json()["suggested_repos"] == ["stranger/lib"]
+    confirmed = await env.client.post(f"{API}/repos/stranger/lib/confirm", headers=keyed())
+    assert confirmed.status_code == 204
+    assert (await env.client.get(f"{API}/queue")).json()["suggested_repos"] == []
+    assert env.store.repo_configs()["stranger/lib"].watched is True
+    bad = await env.client.post(f"{API}/repos/str%20anger/lib/confirm", headers=keyed())
+    assert bad.status_code == 400 and bad.json()["error"] == "InvalidPrRefError"
+
+
 async def test_open_retry_and_review_anyway(env: Env) -> None:
     env.store.apply_sync(
         [snapshot_of(pull(1), ci_state="failing", reviews=[], automated_reviewer=None,
@@ -317,7 +329,8 @@ async def test_open_retry_and_review_anyway(env: Env) -> None:
     assert "correctness" in anyway.json()["jobs"]
     await env.host.pipeline.drain()
     retry = await env.client.post(f"{PR}/retry", headers=keyed())
-    assert retry.status_code == 200 and retry.json()["state"] == "ci_failing"
+    # Review anyway sticks for the head (final I3): Retry acts instead of answering the gate.
+    assert retry.status_code == 200 and retry.json()["state"] == "up_to_date"
     missing = await env.client.post(f"{API}/prs/acme/web/42/open", headers=keyed())
     assert missing.status_code == 404
 
@@ -354,6 +367,7 @@ async def test_drafts_round_trip_with_multi_line_ranges(env: Env) -> None:
 
 async def test_preview_and_post_shapes(env: Env) -> None:
     env.round()
+    await env.client.get(f"{PR}/drafts")  # the client reads (and sees the seeds) first
     await env.client.put(
         f"{PR}/drafts",
         json={"summary": "Fine, but BLOCKING: see below.",
@@ -634,7 +648,6 @@ class _TripwireError(Exception):
 
 async def test_no_get_route_ever_calls_github(env: Env) -> None:
     env.round()
-    env.store._conn.execute("DELETE FROM pr_files")  # drafts would need GitHub's file list
     calls: list[str] = []
 
     def trip(name: str) -> _TripwireError:
@@ -656,6 +669,13 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
         if "GET" in getattr(route, "methods", set())
     ]
     assert len(gets) == 4  # queue, the PR, its drafts, settings
+    # M4: walked with the head's files cached (the PR view's diff) and without (drafts
+    # would need GitHub's file list).
+    for path in gets:
+        response = await env.client.get(path)
+        assert response.status_code == 200, path
+    assert (await env.client.get(PR)).json()["files"] is not None
+    env.store._conn.execute("DELETE FROM pr_files")
     for path in gets:
         response = await env.client.get(path)
         assert response.status_code == 200, path
@@ -672,6 +692,7 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
 
 async def test_drafts_say_where_each_one_posts_once_files_are_cached(env: Env) -> None:
     env.round()
+    await env.client.get(f"{PR}/drafts")  # the client reads (and sees the seeds) first
     body = {"summary": "", "drafts": [
         {"path": "src/app.py", "body": "In.", "line": 3, "side": "RIGHT"},
         {"path": "src/app.py", "body": "Out.", "line": 40, "side": "RIGHT"},
@@ -726,3 +747,99 @@ def test_drafts_out_says_when_findings_are_pending() -> None:
 
     out = DraftsOut.of(DraftSet(3, "", (), None, findings_pending=True))
     assert out.findings_pending is True and out.files_pending is True
+
+
+# --- the PR view's diff, depth and "Walk everything" (plan Task 9) -------------------------------
+
+
+async def test_pr_view_carries_the_cached_files_of_the_reviewed_head(env: Env) -> None:
+    assert (await env.client.get(PR)).json()["files"] is None  # no round yet
+    env.round()
+    env.prs.error = GitHubUnavailable("no token")  # never asked
+    body = (await env.client.get(PR)).json()
+    assert body["files"] == [
+        {
+            "path": "src/app.py",
+            "status": "modified",
+            "additions": 3,
+            "deletions": 2,
+            "patch": PATCH,
+            "previous_path": None,
+        }
+    ]
+    # A newer round's head has no cached file list yet: null, never another head's diff.
+    env.store.start_round(env.ref, "c" * 40, "b" * 40, "quick", env.clock())
+    assert (await env.client.get(PR)).json()["files"] is None
+
+
+async def test_open_takes_the_authors_depth_and_walk_everything(env: Env) -> None:
+    deep = await env.client.post(f"{PR}/open", json={"depth": "deep"}, headers=keyed())
+    assert deep.status_code == 202
+    assert {"background", "metrics", "quiz"} <= set(deep.json()["jobs"])
+    await env.host.pipeline.drain()
+    walk = await env.client.post(f"{PR}/open", json={"walk_everything": True}, headers=keyed())
+    assert walk.status_code == 202 and walk.json()["jobs"] == ["walkthrough"]
+    await env.host.pipeline.drain()
+    bad = await env.client.post(f"{PR}/open", json={"depth": "huge"}, headers=keyed())
+    assert bad.status_code == 422
+
+
+async def test_open_refuses_unknown_or_lax_fields(env: Env) -> None:
+    """M5: the body is strict."""
+    for body in ({"walk_everything": "yes"}, {"walk_everything": 1}, {"depht": "deep"}):
+        bad = await env.client.post(f"{PR}/open", json=body, headers=keyed())
+        assert bad.status_code == 422, body
+
+
+async def test_preview_names_the_live_head_and_refusals_name_the_draft(env: Env) -> None:
+    """M3: the newer-head warning shows GitHub's head; M6: a refused draft is named by
+    index, not by parsing prose."""
+    env.round()
+    preview = (await env.client.post(f"{PR}/post/preview", json={"event": "COMMENT"})).json()
+    assert preview["pr_head_sha"] == env.poster.pr.head_sha
+    body = {"summary": "", "drafts": [
+        {"path": "src/app.py", "body": "fine", "line": 3, "side": "RIGHT"},
+        {"path": "src/app.py", "body": "x <!-- jesinia-posting:1 -->", "line": 3, "side": "RIGHT"},
+    ]}  # fmt: skip
+    refused = await env.client.put(f"{PR}/drafts", json=body, headers=keyed())
+    assert refused.status_code == 422 and refused.json()["error"] == "InvalidDraftContent"
+    assert refused.json()["draft_index"] == 1
+    summary = await env.client.put(
+        f"{PR}/drafts",
+        json={"summary": "<!-- jesinia-posting:2 -->", "drafts": []},
+        headers=keyed(),
+    )
+    assert summary.status_code == 422 and summary.json()["field"] == "summary"
+
+
+async def test_saves_previews_and_posts_are_bound_to_the_round_shown(env: Env) -> None:
+    """Codex P1 on PR #58: a save, preview or post names the round the author was looking at;
+    once a newer round is current it is refused with a typed 409, never retargeted."""
+    old = env.round()
+    await env.client.get(f"{PR}/drafts")
+    current = {"summary": "Mine.", "drafts": [], "round_id": old}
+    assert (await env.client.put(f"{PR}/drafts", json=current, headers=keyed())).status_code == 200
+    new = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
+    assert new != old
+    stale = await env.client.put(f"{PR}/drafts", json=current, headers=keyed())
+    assert stale.status_code == 409 and stale.json()["error"] == "RoundChanged"
+    assert env.store.review_summary(new) != "Mine."  # never retargeted onto the new round
+    preview = await env.client.post(
+        f"{PR}/post/preview", json={"event": "COMMENT", "round_id": old}
+    )
+    assert preview.status_code == 409 and preview.json()["error"] == "RoundChanged"
+    post = {"event": "COMMENT", "confirm": [], "digest": "d", "round_id": old}
+    refused = await env.client.post(f"{PR}/post", json=post, headers=keyed())
+    assert refused.status_code == 409 and refused.json()["error"] == "RoundChanged"
+
+
+async def test_done_is_bound_to_the_round_shown(env: Env) -> None:
+    """Codex round 2 on PR #58: Done names its round; a newer one refuses it (409)."""
+    old = env.round()
+    new = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
+    stale = await env.client.post(f"{PR}/done", json={"round_id": old}, headers=keyed())
+    assert stale.status_code == 409 and stale.json()["error"] == "RoundChanged"
+    shown = env.store.round(new)
+    assert shown is not None and not shown.done
+    current = await env.client.post(f"{PR}/done", json={"round_id": new}, headers=keyed())
+    assert current.status_code == 200 and current.json()["done"] is True

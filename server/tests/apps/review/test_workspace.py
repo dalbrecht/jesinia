@@ -887,8 +887,7 @@ async def test_binding_a_tree_waits_for_its_repos_lock(tmp_path: Path, fixture: 
 
     async with lock:
         binding = asyncio.create_task(sessions.attach("s", tree))
-        for _ in range(5):
-            await asyncio.sleep(0)
+        await asyncio.sleep(0.05)  # real time for it to (wrongly) bind past the lock
         assert sessions.worktree_for("s") is None
     await binding
 
@@ -991,8 +990,7 @@ async def test_a_fresh_tree_is_bound_before_a_prune_can_remove_it(
     )
     await moving.wait()
     pruning = asyncio.create_task(ws.prune(keep))
-    for _ in range(5):
-        await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # real time for the prune to reach the repo's lock
     release.set()
     tree = await creating
 

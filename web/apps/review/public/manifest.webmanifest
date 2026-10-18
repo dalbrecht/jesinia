@@ -1,0 +1,17 @@
+{
+  "name": "Jesinia Review",
+  "short_name": "Review",
+  "id": "/review/",
+  "start_url": "/review/",
+  "scope": "/review/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay"],
+  "theme_color": "#f8d1e9",
+  "background_color": "#f3f5f0",
+  "icons": [
+    { "src": "/review/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/review/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/review/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/review/icons/monochrome.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "monochrome" }
+  ]
+}

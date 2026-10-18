@@ -204,6 +204,8 @@ class DraftSet:
     drafts: tuple[Draft, ...]
     in_body: tuple[bool, ...] | None = None
     findings_pending: bool = False
+    # Finding drafts a save couldn't keep under DRAFTS_MAX (the author's come first).
+    seeds_dropped: int = 0
 
     @property
     def files_pending(self) -> bool:
@@ -225,6 +227,8 @@ class PostPreview:
     allowed_events: tuple[ReviewEvent, ...]
     digest: str
     notes: tuple[str, ...] = ()
+    # The PR's head on GitHub when previewed (the newer-head warning names it, M3).
+    pr_head_sha: str = ""
 
 
 class PostingService:
@@ -298,9 +302,15 @@ class PostingService:
         check_review_text(summary, drafts)
         # Findings already in are seeded first, so this edit (deletions included) replaces
         # them; findings still running are added next to it when they arrive.
-        settled = self._seed(rnd)
-        self._store.save_drafts(round_id, summary, drafts)
-        return self._draft_set(rnd, pending=not settled)
+        settled, seeded = self._seed_claim(rnd)
+        # Drafts this call just seeded were never seen by the client (PR 3 final I2): the
+        # author's list replaces what they had, and the new ones are kept after it, as many
+        # as fit under DRAFTS_MAX; the rest are counted so the UI can say so.
+        kept = seeded[: max(0, DRAFTS_MAX - len(drafts))]
+        self._store.save_drafts(round_id, summary, [*drafts, *kept])
+        return replace(
+            self._draft_set(rnd, pending=not settled), seeds_dropped=len(seeded) - len(kept)
+        )
 
     def _draft_set(self, rnd: RoundRecord, *, pending: bool) -> DraftSet:
         """The drafts from the store, each placed against the cached file list (never
@@ -331,16 +341,22 @@ class PostingService:
         """Seed the round's drafts from its findings, once, as soon as they are all in
         (Codex round 2: seeding earlier would miss them for good). Returns whether they
         are in."""
+        return self._seed_claim(rnd)[0]
+
+    def _seed_claim(self, rnd: RoundRecord) -> tuple[bool, tuple[Draft, ...]]:
+        """``_seed``, also returning the drafts this call seeded (empty unless it claimed
+        the seeding)."""
         if not self._findings_settled(rnd):
-            return False
+            return False, ()
         found = self._store.artifact(rnd.id, "findings")
         correctness = self._store.artifact(rnd.id, "correctness")
         findings = [
             *_findings_of(correctness),
             *_findings_of(found),
         ]
-        self._store.seed_drafts(rnd.id, seed_drafts(_unique(findings)))
-        return True
+        generated = tuple(seed_drafts(_unique(findings)))
+        claimed = self._store.seed_drafts(rnd.id, generated)
+        return True, generated if claimed else ()
 
     async def _commentable(self, rnd: RoundRecord) -> tuple[CommentableLines, list[str]]:
         """Where GitHub takes comments on the round's head: its cached file list, read once
@@ -408,6 +424,7 @@ class PostingService:
             allowed_events=("COMMENT",) if own_pr else REVIEW_EVENTS,
             digest=review_digest(round_id, rnd.head_sha, event, review),
             notes=tuple(notes),
+            pr_head_sha=live.head_sha,
         )
 
     def _against_evidence(self, rnd: RoundRecord) -> str | None:

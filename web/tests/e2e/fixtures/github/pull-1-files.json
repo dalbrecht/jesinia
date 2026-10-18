@@ -1,0 +1,20 @@
+[
+  {
+    "sha": "1111111111111111111111111111111111111111",
+    "filename": "src/greeter.py",
+    "status": "modified",
+    "additions": 2,
+    "deletions": 0,
+    "changes": 2,
+    "patch": "@@ -2,6 +2,8 @@\n \n \n def greet(name):\n+    if not name:\n+        return \"Hello, stranger\"\n     return \"Hello, \" + name\n \n "
+  },
+  {
+    "sha": "2222222222222222222222222222222222222222",
+    "filename": "tests/test_greeter.py",
+    "status": "added",
+    "additions": 5,
+    "deletions": 0,
+    "changes": 5,
+    "patch": "@@ -0,0 +1,5 @@\n+from src.greeter import greet\n+\n+\n+def test_greet_handles_an_empty_name():\n+    assert greet(\"\") == \"Hello, stranger\""
+  }
+]

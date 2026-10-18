@@ -1,0 +1,66 @@
+{
+  "url": "https://api.github.com/repos/e2e-dev/greeter/pulls/2",
+  "id": 1002,
+  "node_id": "PR_2",
+  "html_url": "https://github.com/e2e-dev/greeter/pull/2",
+  "number": 2,
+  "state": "open",
+  "locked": false,
+  "title": "Shout farewells",
+  "user": {
+    "login": "teammate",
+    "id": 57,
+    "type": "User",
+    "site_admin": false
+  },
+  "body": "Farewells are louder now.",
+  "created_at": "2026-10-15T08:00:00Z",
+  "updated_at": "2026-10-16T10:00:00Z",
+  "closed_at": null,
+  "merged_at": null,
+  "requested_reviewers": [
+    {
+      "login": "e2e-dev",
+      "id": 9,
+      "type": "User"
+    }
+  ],
+  "requested_teams": [],
+  "head": {
+    "label": "e2e-dev:farewell-shout",
+    "ref": "farewell-shout",
+    "sha": "{{sha:farewell-shout}}",
+    "user": {
+      "login": "e2e-dev",
+      "type": "User"
+    },
+    "repo": {
+      "full_name": "e2e-dev/greeter",
+      "name": "greeter"
+    }
+  },
+  "base": {
+    "label": "e2e-dev:main",
+    "ref": "main",
+    "sha": "{{sha:main}}",
+    "user": {
+      "login": "e2e-dev",
+      "type": "User"
+    },
+    "repo": {
+      "full_name": "e2e-dev/greeter",
+      "name": "greeter"
+    }
+  },
+  "draft": false,
+  "merged": false,
+  "mergeable": true,
+  "rebaseable": true,
+  "mergeable_state": "clean",
+  "comments": 0,
+  "review_comments": 0,
+  "commits": 1,
+  "additions": 1,
+  "deletions": 1,
+  "changed_files": 1
+}

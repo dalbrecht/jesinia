@@ -104,12 +104,14 @@ class Runner:
         return [request.ref.number for request in self.started]
 
 
-async def until(condition: Callable[[], bool]) -> None:
-    for _ in range(200):
-        if condition():
-            return
-        await asyncio.sleep(0)
-    raise AssertionError("condition never became true")
+async def until(condition: Callable[[], bool], timeout: float = 10.0) -> None:
+    """Wait by condition and real time, never by a count of loop turns."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition():
+        if loop.time() >= deadline:
+            raise AssertionError("condition never became true")
+        await asyncio.sleep(0.005)
 
 
 async def states(queue: QueueService) -> dict[int, str]:
@@ -136,8 +138,7 @@ async def test_scheduler_priority_and_concurrency_two(
     await scheduler.tick()
     await until(lambda: len(runner.started) == 2)
     await scheduler.tick()  # a second tick while both slots are busy starts nothing
-    for _ in range(10):
-        await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # real time for it to (wrongly) start one
 
     assert runner.numbers == [4, 3]
     assert (await states(queue)) == {4: "running", 3: "running", 2: "queued", 1: "queued"}

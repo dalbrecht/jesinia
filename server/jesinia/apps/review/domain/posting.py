@@ -101,6 +101,11 @@ class PreviewOutdated(PostingDomainError):  # noqa: N818 - the error code client
     """What would be posted changed since the preview the author confirmed."""
 
 
+class RoundChanged(PostingDomainError):  # noqa: N818 - the error code clients see
+    """The round a save, preview or post names is no longer the PR's current round: it is
+    refused, never moved onto the new round (the author's text stays with them)."""
+
+
 class EarlierReviewPosted(PostingDomainError):  # noqa: N818 - the error code clients see
     """An earlier attempt whose response was lost turned out to be on GitHub, and it isn't
     the review now being posted (another digest or event): that earlier version is what
@@ -118,7 +123,13 @@ class EarlierReviewPosted(PostingDomainError):  # noqa: N818 - the error code cl
 
 class InvalidDraftContent(PostingDomainError):  # noqa: N818 - the error code clients see
     """A draft or the summary carries Jesinia's posting marker text (in any spelling); it
-    would let a review pass for another attempt's, so it is refused, never stripped."""
+    would let a review pass for another attempt's, so it is refused, never stripped.
+    ``field`` says which (``summary`` or ``draft``); ``draft_index`` is the draft's (0-based)."""
+
+    def __init__(self, message: str, *, field: str = "draft", draft_index: int | None = None):
+        super().__init__(message)
+        self.field = field
+        self.draft_index = draft_index
 
 
 class PostingInProgress(PostingDomainError):  # noqa: N818 - the error code clients see
@@ -322,11 +333,14 @@ def check_review_text(summary: str, drafts: Sequence[Draft]) -> None:
         InvalidDraftContent: naming the summary or the draft (1-based).
     """
     if carries_marker_text(summary):
-        raise InvalidDraftContent("the summary contains Jesinia's posting marker text")
+        raise InvalidDraftContent(
+            "the summary contains Jesinia's posting marker text", field="summary"
+        )
     for number, draft in enumerate(drafts, start=1):
         if carries_marker_text(draft.body) or carries_marker_text(draft.path):
             raise InvalidDraftContent(
-                f"draft {number} contains Jesinia's posting marker text; remove it"
+                f"draft {number} contains Jesinia's posting marker text; remove it",
+                draft_index=number - 1,
             )
 
 

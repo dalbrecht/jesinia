@@ -218,6 +218,8 @@ class FakeJobs:
     reads: dict[str, object] | None = None
     # Jobs that never finish (until cancelled): a stop or crash lands while they run.
     stuck: set[JobKind] = field(default_factory=set)
+    depth_hold: asyncio.Event | None = None
+    depth_asked: bool = False
 
     in_flight: int = 0
     peak: int = 0
@@ -247,6 +249,9 @@ class FakeJobs:
         return output
 
     async def correctness_depth(self, round: Round) -> Depth:
+        self.depth_asked = True
+        if self.depth_hold is not None:  # holds a preparation after it has read its depth
+            await self.depth_hold.wait()
         return "deep" if self.agent_authored else round.depth
 
 
@@ -825,9 +830,14 @@ async def test_a_failed_open_finishes_its_round_with_the_cause(env: Env) -> None
     assert status[1].error is not None and "Not Found" in status[1].error
     stored = env.store.pr(ref)
     assert stored is not None and stored.state == "failed"
-    # A failed round is retried by opening again: a new round.
+    # R60: opening again (a tab switch, a reload) never reruns it; only Retry does.
     env.github.error = None
-    retry = await env.pipeline.open(ref)
+    again = await env.pipeline.open(ref)
+    assert again.state == "failed" and again.jobs == () and again.round_id == result.round_id
+    assert "Not Found" in again.reason and "Retry" in again.reason
+    await env.pipeline.drain()
+    assert env.store.latest_round_on_head(ref, HEAD) == status
+    retry = await env.pipeline.retry(ref)
     assert retry.state == "started" and retry.round_id != result.round_id
     await env.pipeline.drain()
 
@@ -843,8 +853,7 @@ async def test_an_open_during_an_everything_pre_review_runs_each_job_once(env: E
     ref = env.add(env.github.pr)
     env.workspace.fetch_hold = asyncio.Event()
     await env.scheduler.tick()
-    for _ in range(50):
-        await asyncio.sleep(0)
+    await wait_until(lambda: "started" in env.states())  # the pre-review is preparing
     result = await env.pipeline.open(ref)
     # Everything it lacks is already planned by the pre-review: nothing new starts.
     assert result.state == "running" and result.jobs == ()
@@ -879,8 +888,7 @@ async def test_a_second_open_while_the_first_runs_says_running(env: Env) -> None
     ref = env.add()
     env.jobs.hold = asyncio.Event()
     first = await env.pipeline.open(ref)
-    for _ in range(50):
-        await asyncio.sleep(0)
+    await wait_until(lambda: bool(env.jobs.ran))  # the first open's jobs are running
     second = await env.pipeline.open(ref)
     assert second.state == "running" and second.round_id == first.round_id
     env.jobs.hold.set()
@@ -1064,8 +1072,7 @@ async def test_opens_go_through_the_schedulers_two_slots(env: Env) -> None:
     await wait_until(lambda: len(env.jobs.rounds) == 2)
     opened = await env.pipeline.open(opened_ref)
     assert opened.state == "started"
-    for _ in range(50):
-        await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # real time for it to (wrongly) start, were the slots not full
     assert opened.round_id not in {round.id for round in env.jobs.rounds}  # it waits
     env.jobs.hold.set()
     await env.pipeline.drain()
@@ -1085,8 +1092,7 @@ async def test_an_open_stopped_while_it_waits_for_a_slot_gives_it_back(env: Env)
     running = [await env.pipeline.open(ref) for ref in refs[:2]]
     await wait_until(lambda: len(env.jobs.rounds) == 2)
     waiting = await env.pipeline.open(refs[2])
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # real time for the third open to reach its slot wait
     await env.pipeline.stop()  # cancels all three, one of them still waiting
     for result in (*running, waiting):
         found = env.store.latest_round_on_head(refs[(*running, waiting).index(result)], HEAD)
@@ -1284,3 +1290,216 @@ async def test_an_honest_pass_still_approves(env: Env) -> None:
     assert isinstance(evidence, dict) and isinstance(evidence["correctness_coverage"], dict)
     claimed = evidence["correctness_coverage"]
     assert claimed["claimed_reviewable_pct"] == claimed["reviewable_pct"] == 100.0
+
+
+# --- the author's depth and "Walk everything" (plan Task 9) --------------------------------------
+
+
+async def test_open_at_a_chosen_depth_runs_that_depths_jobs_and_keeps_it(env: Env) -> None:
+    ref = env.add()
+    await prereview(env)  # triage, at the proposed (quick) depth
+    env.jobs.ran.clear()
+    result = await env.pipeline.open(ref, depth="deep")
+    assert result.state == "started" and result.jobs == ON_OPEN_JOBS["deep"]
+    await env.pipeline.drain()
+    assert tuple(env.jobs.ran) == ON_OPEN_JOBS["deep"]
+    # The jobs run at the author's depth, and the queue row keeps it (not the proposal).
+    assert {r.depth for r in env.jobs.rounds[-len(ON_OPEN_JOBS["deep"]) :]} == {"deep"}
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.pr.depth == "deep"
+    assert (await env.pipeline.open(ref)).state == "up_to_date"
+    # Back to quick: nothing is missing, and the row says quick again.
+    quick = await env.pipeline.open(ref, depth="quick")
+    assert quick.state == "up_to_date"
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.pr.depth == "quick"
+
+
+async def test_walk_everything_runs_the_walkthrough_again_for_every_hunk(env: Env) -> None:
+    ref = env.add()
+    first = await env.pipeline.open(ref)
+    await env.pipeline.drain()
+    round_id = first.round_id or 0
+    coverage = env.artifacts(round_id)["coverage"]
+    assert isinstance(coverage, dict) and coverage["pct"] == pytest.approx(42.9)
+    env.jobs.outputs[JobKind.WALKTHROUGH] = {
+        "steps": [
+            {"title": "t", "body": "b", "hunks": [{"path": "src/app.py", "hunk": 0}]},
+            {"title": "rest", "body": "b", "hunks": [{"path": "src/app.py", "hunk": 1}]},
+        ],
+        "skipped": [],
+    }
+    env.jobs.ran.clear()
+    again = await env.pipeline.open(ref, walk_everything=True)
+    assert again.state == "started" and again.jobs == (JobKind.WALKTHROUGH,)
+    assert again.round_id == round_id
+    await env.pipeline.drain()
+    assert env.jobs.ran == [JobKind.WALKTHROUGH]
+    assert env.jobs.rounds[-1].walk_everything is True
+    walked = env.artifacts(round_id)["coverage"]
+    assert isinstance(walked, dict) and walked["pct"] == pytest.approx(
+        71.4
+    )  # the lockfile stays out
+    # A plain open afterwards has nothing to run, and never walks everything again.
+    assert (await env.pipeline.open(ref)).state == "up_to_date"
+
+
+async def test_a_chosen_depth_is_stored_and_survives_a_restart(env: Env) -> None:
+    """R57: the author's depth lives in review.sqlite, not in the process."""
+    ref = env.add()
+    await env.pipeline.open(ref, depth="deep")
+    await env.pipeline.drain()
+    assert env.store.chosen_depth(ref, HEAD) == "deep"
+    restarted = Pipeline(
+        github=env.github,
+        files=env.files,
+        workspace=env.workspace,
+        jobs=env.jobs,
+        store=env.store,
+        bus=EventBus(),
+        clock=env.clock,
+    )
+    result = await restarted.open(ref, walk_everything=True)
+    assert result.state == "started"
+    await restarted.drain()
+    assert env.jobs.rounds[-1].depth == "deep"  # prepared again at the author's depth
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.pr.depth == "deep"
+
+
+async def test_a_depth_chosen_while_a_gate_holds_the_pr_is_kept(env: Env) -> None:
+    """M2: the choice is stored before the gate answers, and Review anyway uses it."""
+    ref = env.add(ci="failing")
+    held = await env.pipeline.open(ref, depth="deep")
+    assert held.state == "ci_failing"
+    assert env.store.chosen_depth(ref, HEAD) == "deep"
+    stored = env.store.pr(ref)
+    assert stored is not None and stored.pr.depth == "deep"
+    anyway = await env.pipeline.review_anyway(ref)
+    assert set(ON_OPEN_JOBS["deep"]) <= set(anyway.jobs)
+    await env.pipeline.drain()
+
+
+# --- PR 3 final fix wave ------------------------------------------------------------------------
+
+
+async def test_review_anyway_sticks_for_later_actions_on_the_head(env: Env) -> None:
+    """I3: once a round exists on a failing-CI head (Review anyway), opening it again or
+    asking to walk everything acts instead of answering the CI gate."""
+    ref = env.add(ci="failing")
+    assert (await env.pipeline.open(ref)).state == "ci_failing"
+    anyway = await env.pipeline.review_anyway(ref)
+    await env.pipeline.drain()
+    again = await env.pipeline.open(ref)
+    assert again.state == "up_to_date" and again.round_id == anyway.round_id
+    walk = await env.pipeline.open(ref, walk_everything=True)
+    assert walk.state == "started" and walk.jobs == (JobKind.WALKTHROUGH,)
+    await env.pipeline.drain()
+
+
+async def test_a_plain_open_never_reruns_a_failed_job(env: Env) -> None:
+    """M1: a failed job reruns only through Retry, like a failed round (R60)."""
+    ref = env.add()
+    env.jobs.failing[JobKind.WALKTHROUGH] = RuntimeError("boom")
+    first = await env.pipeline.open(ref)
+    await env.pipeline.drain()
+    env.jobs.failing.clear()
+    env.jobs.ran.clear()
+    again = await env.pipeline.open(ref)
+    assert JobKind.WALKTHROUGH not in again.jobs
+    await env.pipeline.drain()
+    assert JobKind.WALKTHROUGH not in env.jobs.ran
+    retry = await env.pipeline.retry(ref)
+    assert retry.round_id == first.round_id and JobKind.WALKTHROUGH in retry.jobs
+    await env.pipeline.drain()
+    assert JobKind.WALKTHROUGH in env.jobs.ran
+
+
+async def test_walk_everything_while_a_walkthrough_runs_says_running(env: Env) -> None:
+    """M6: never answer started for a walk-everything that would only join the running walk."""
+    ref = env.add()
+    env.jobs.hold = asyncio.Event()
+    await env.pipeline.open(ref)
+    await wait_until(lambda: bool(env.jobs.ran))  # prepared; the walkthrough is planned
+    walk = await env.pipeline.open(ref, walk_everything=True)
+    assert walk.state == "running" and walk.jobs == ()
+    env.jobs.hold.set()
+    await env.pipeline.drain()
+
+
+# --- R66: Review anyway is an explicit, persisted override per head ---------------------------
+
+
+async def test_a_background_round_never_lets_a_failing_ci_through(env: Env) -> None:
+    """R66: a round on the head isn't an override. CI turning failing after a background
+    round holds open, Retry and a depth switch at the gate; nothing starts."""
+    ref = env.add()
+    await prereview(env)
+    env.add(ci="failing")  # the same head; CI now fails
+    env.jobs.ran.clear()
+    assert (await env.pipeline.open(ref)).state == "ci_failing"
+    assert (await env.pipeline.retry(ref)).state == "ci_failing"
+    assert (await env.pipeline.open(ref, depth="deep")).state == "ci_failing"
+    assert (await env.pipeline.open(ref, walk_everything=True)).state == "ci_failing"
+    await env.pipeline.drain()
+    assert env.jobs.ran == []
+
+
+async def test_review_anyway_is_kept_across_a_restart_and_not_for_a_new_head(env: Env) -> None:
+    ref = env.add(ci="failing")
+    await env.pipeline.review_anyway(ref)
+    await env.pipeline.drain()
+    assert env.store.gates_overridden(ref, HEAD)
+    restarted = Pipeline(
+        github=env.github,
+        files=env.files,
+        workspace=env.workspace,
+        jobs=env.jobs,
+        store=env.store,
+        bus=EventBus(),
+        clock=env.clock,
+    )
+    walk = await restarted.open(ref, walk_everything=True)
+    assert walk.state == "started" and walk.jobs == (JobKind.WALKTHROUGH,)
+    await restarted.drain()
+    # A new head has no override: the gate holds again.
+    newer = replace(env.github.pr, head_sha=NEW_HEAD)
+    env.github.pr = newer
+    env.add(newer, ci="failing")
+    assert not env.store.gates_overridden(ref, NEW_HEAD)
+    assert (await restarted.open(ref)).state == "ci_failing"
+
+
+async def test_a_depth_switch_while_the_round_runs_reaches_the_new_jobs(env: Env) -> None:
+    """Codex round 2 on PR #58: the round prepared at quick is cached while it runs; a switch
+    to deep must give the deep-only jobs a deep Round, not the cached quick one."""
+    ref = env.add()
+    env.jobs.hold = asyncio.Event()
+    await env.pipeline.open(ref)  # quick: prepared and running, held
+    await wait_until(lambda: bool(env.jobs.ran))
+    deep = await env.pipeline.open(ref, depth="deep")
+    assert set(deep.jobs) >= {JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ}
+    env.jobs.hold.set()
+    await env.pipeline.drain()
+    by_kind = dict(zip(env.jobs.ran, env.jobs.rounds, strict=True))
+    for kind in (JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ):
+        assert by_kind[kind].depth == "deep", kind
+
+
+async def test_a_depth_switch_while_the_round_is_still_preparing_reaches_the_new_jobs(
+    env: Env,
+) -> None:
+    """Codex round 3 on PR #58 (the CI flake's real cause): a quick open's preparation can
+    read the depth before a switch stores deep, and the deep runner joins that preparation.
+    The deep-only jobs must still get a deep Round."""
+    ref = env.add()
+    env.jobs.depth_hold = asyncio.Event()
+    await env.pipeline.open(ref)  # quick; preparation held after reading its depth
+    await wait_until(lambda: env.jobs.depth_asked)
+    deep = await env.pipeline.open(ref, depth="deep")
+    assert set(deep.jobs) >= {JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ}
+    env.jobs.depth_hold.set()
+    await env.pipeline.drain()
+    by_kind = dict(zip(env.jobs.ran, env.jobs.rounds, strict=True))
+    for kind in (JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ):
+        assert by_kind[kind].depth == "deep", kind

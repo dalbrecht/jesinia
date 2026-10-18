@@ -167,6 +167,8 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByText("Open Settings"), { metaKey: true });
     expect(open).toHaveBeenCalledWith("/settings/", "_blank", "noopener");
     openPalette();
+    // Seven commands now that Review is built: the group shows six and "Show all".
+    await userEvent.click(screen.getByText("Show all 7"));
     await userEvent.click(screen.getByText("Toggle theme"));
     expect(document.documentElement.dataset.theme).toBe("light");
     openPalette();

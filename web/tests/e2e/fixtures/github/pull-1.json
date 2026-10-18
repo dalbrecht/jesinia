@@ -1,0 +1,66 @@
+{
+  "url": "https://api.github.com/repos/e2e-dev/greeter/pulls/1",
+  "id": 1001,
+  "node_id": "PR_1",
+  "html_url": "https://github.com/e2e-dev/greeter/pull/1",
+  "number": 1,
+  "state": "open",
+  "locked": false,
+  "title": "Handle empty names in greet",
+  "user": {
+    "login": "teammate",
+    "id": 57,
+    "type": "User",
+    "site_admin": false
+  },
+  "body": "greet() crashed the caller's formatting on an empty name; it now says hello to a stranger.",
+  "created_at": "2026-10-14T09:30:00Z",
+  "updated_at": "2026-10-16T10:00:00Z",
+  "closed_at": null,
+  "merged_at": null,
+  "requested_reviewers": [
+    {
+      "login": "e2e-dev",
+      "id": 9,
+      "type": "User"
+    }
+  ],
+  "requested_teams": [],
+  "head": {
+    "label": "e2e-dev:greeter-empty-name",
+    "ref": "greeter-empty-name",
+    "sha": "{{sha:greeter-empty-name}}",
+    "user": {
+      "login": "e2e-dev",
+      "type": "User"
+    },
+    "repo": {
+      "full_name": "e2e-dev/greeter",
+      "name": "greeter"
+    }
+  },
+  "base": {
+    "label": "e2e-dev:main",
+    "ref": "main",
+    "sha": "{{sha:main}}",
+    "user": {
+      "login": "e2e-dev",
+      "type": "User"
+    },
+    "repo": {
+      "full_name": "e2e-dev/greeter",
+      "name": "greeter"
+    }
+  },
+  "draft": false,
+  "merged": false,
+  "mergeable": true,
+  "rebaseable": true,
+  "mergeable_state": "clean",
+  "comments": 0,
+  "review_comments": 0,
+  "commits": 1,
+  "additions": 7,
+  "deletions": 0,
+  "changed_files": 2
+}

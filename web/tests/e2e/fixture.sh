@@ -63,3 +63,57 @@ git -C "$home/kb" add -A
 git -C "$home/kb" commit -qm "fixture"
 git -C "$home/kb" remote add origin "$home/remote.git"
 git -C "$home/kb" push -q -u origin main
+
+# The fake GitHub's repository (web/tests/e2e/fixtures/github/server.py serves its API; the
+# review workspace fetches these commits from this bare repo instead of github.com). Two PR
+# branches off main: a small fix with a test (#1, CI passing) and a feature still on CI (#2).
+gh_remote="$home/github-repos/e2e-dev/greeter.git"
+gh_work="$home/github-work"
+mkdir -p "$(dirname "$gh_remote")"
+git init -q --bare -b main "$gh_remote"
+git init -q -b main "$gh_work"
+mkdir -p "$gh_work/src"
+cat > "$gh_work/src/greeter.py" <<'PY'
+"""Greetings."""
+
+
+def greet(name):
+    return "Hello, " + name
+
+
+def farewell(name):
+    return "Bye, " + name
+PY
+git -C "$gh_work" add -A
+git -C "$gh_work" commit -qm "Add greeter"
+git -C "$gh_work" checkout -q -b greeter-empty-name
+cat > "$gh_work/src/greeter.py" <<'PY'
+"""Greetings."""
+
+
+def greet(name):
+    if not name:
+        return "Hello, stranger"
+    return "Hello, " + name
+
+
+def farewell(name):
+    return "Bye, " + name
+PY
+mkdir -p "$gh_work/tests"
+cat > "$gh_work/tests/test_greeter.py" <<'PY'
+from src.greeter import greet
+
+
+def test_greet_handles_an_empty_name():
+    assert greet("") == "Hello, stranger"
+PY
+git -C "$gh_work" add -A
+git -C "$gh_work" commit -qm "Handle empty names in greet"
+git -C "$gh_work" checkout -q main
+git -C "$gh_work" checkout -q -b farewell-shout
+sed -i.bak 's/return "Bye, " + name/return "BYE, " + name.upper()/' "$gh_work/src/greeter.py"
+rm "$gh_work/src/greeter.py.bak"
+git -C "$gh_work" commit -qam "Shout farewells"
+git -C "$gh_work" push -q "$gh_remote" main greeter-empty-name farewell-shout
+rm -rf "$gh_work"

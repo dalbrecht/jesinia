@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import cast
 
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 
 from jesinia.apps.review.application.pipeline import OpenResult
 from jesinia.apps.review.application.posting import DraftSet, PostPreview
@@ -33,7 +33,7 @@ from jesinia.apps.review.domain.queue import (
     RoundRecord,
     SyncStatus,
 )
-from jesinia.services.github.domain.pr import DraftComment, ReviewEvent, ReviewSide
+from jesinia.services.github.domain.pr import DraftComment, PrFile, ReviewEvent, ReviewSide
 
 REF_MAX = 500
 REPO_MAX = 140
@@ -191,6 +191,29 @@ class RoundOut(BaseModel):
         )
 
 
+class PrFileOut(BaseModel):
+    """A changed file as GitHub lists it; ``patch`` (the file's unified diff hunks, PR
+    content) is null when GitHub doesn't show it (binary, or too large)."""
+
+    path: str
+    status: str
+    additions: int
+    deletions: int
+    patch: str | None
+    previous_path: str | None
+
+    @classmethod
+    def of(cls, file: PrFile) -> PrFileOut:
+        return cls(
+            path=file.filename,
+            status=file.status,
+            additions=file.additions,
+            deletions=file.deletions,
+            patch=file.patch,
+            previous_path=file.previous_filename,
+        )
+
+
 class PrOut(BaseModel):
     """An opened PR from the cache: its row, its latest round and every artifact of it."""
 
@@ -202,6 +225,10 @@ class PrOut(BaseModel):
     stale: bool = Field(description="The PR has moved past the head this review covers")
     nothing_to_walk: bool
     sync: SyncOut
+    files: list[PrFileOut] | None = Field(
+        description="GitHub's cached files of the round's head, for the walkthrough's diff; "
+        "null before any round or while that head's list isn't cached"
+    )
 
     @classmethod
     def of(cls, view: PrView) -> PrOut:
@@ -212,12 +239,31 @@ class PrOut(BaseModel):
             stale=view.stale,
             nothing_to_walk=view.nothing_to_walk,
             sync=SyncOut.of(view.sync),
+            files=None if view.files is None else [PrFileOut.of(f) for f in view.files],
         )
 
 
 def _json(artifacts: Mapping[str, object]) -> dict[str, JsonValue]:
     # Artifacts are stored as JSON and decoded with json.loads: JSON values already.
     return cast(dict[str, JsonValue], dict(artifacts))
+
+
+class DoneIn(BaseModel):
+    """Optional: the round the author was shown (the PWA always sends it)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_id: int | None = None
+
+
+class OpenIn(BaseModel):
+    """What the author asks of opening (both optional): their ``depth`` in place of
+    Jesinia's proposal, or ``walk_everything`` to walk the rest of the change too."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    depth: Depth | None = None
+    walk_everything: StrictBool = False
 
 
 class OpenOut(BaseModel):
@@ -293,6 +339,11 @@ class DraftBody(BaseModel):
 class DraftsIn(BaseModel):
     summary: str = Field(default="", max_length=BODY_MAX, description="The review body")
     drafts: list[DraftBody] = Field(default_factory=list, max_length=DRAFTS_MAX)
+    round_id: int | None = Field(
+        default=None,
+        description="The round the author was shown; refused with 409 RoundChanged once a "
+        "newer round is current (the PWA always sends it)",
+    )
 
 
 class DraftsOut(BaseModel):
@@ -308,6 +359,11 @@ class DraftsOut(BaseModel):
         description="the correctness pass or the findings job is still running; their "
         "drafts are added (next to the author's) when both have finished",
     )
+    seeds_dropped: int = Field(
+        default=0,
+        description="Finding drafts this save couldn't keep: a review takes at most "
+        f"{DRAFTS_MAX} drafts, and the author's come first",
+    )
 
     @classmethod
     def of(cls, drafts: DraftSet) -> DraftsOut:
@@ -318,11 +374,17 @@ class DraftsOut(BaseModel):
             drafts=[DraftBody.of(d, where) for d, where in zip(drafts.drafts, placed, strict=True)],
             files_pending=drafts.files_pending,
             findings_pending=drafts.findings_pending,
+            seeds_dropped=drafts.seeds_dropped,
         )
 
 
 class PreviewIn(BaseModel):
     event: ReviewEvent
+    round_id: int | None = Field(
+        default=None,
+        description="The round the author was shown; refused with 409 RoundChanged once a "
+        "newer round is current (the PWA always sends it)",
+    )
 
 
 class CommentOut(BaseModel):
@@ -357,6 +419,7 @@ class PreviewOut(BaseModel):
     allowed_events: list[ReviewEvent]
     digest: str
     notes: list[str]
+    pr_head_sha: str = Field(description="The PR's head on GitHub now (newer_head names it)")
 
     @classmethod
     def of(cls, preview: PostPreview) -> PreviewOut:
@@ -370,6 +433,7 @@ class PreviewOut(BaseModel):
             allowed_events=list(preview.allowed_events),
             digest=preview.digest,
             notes=list(preview.notes),
+            pr_head_sha=preview.pr_head_sha,
         )
 
 
@@ -380,6 +444,11 @@ class PostIn(BaseModel):
     )
     digest: str = Field(
         min_length=1, max_length=128, description="The digest of the preview being confirmed"
+    )
+    round_id: int | None = Field(
+        default=None,
+        description="The round the author was shown; refused with 409 RoundChanged once a "
+        "newer round is current (the PWA always sends it)",
     )
 
 
@@ -442,6 +511,12 @@ class ReviewErrorOut(BaseModel):
     )
     event: ReviewEvent | None = Field(
         default=None, description="For EarlierReviewPosted: that review's event"
+    )
+    draft_index: int | None = Field(
+        default=None, description="For InvalidDraftContent: the refused draft (0-based)"
+    )
+    field: str | None = Field(
+        default=None, description="For InvalidDraftContent: 'summary' or 'draft'"
     )
     retry_after: int | None = Field(
         default=None,

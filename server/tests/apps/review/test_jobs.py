@@ -25,6 +25,7 @@ from jesinia.apps.review.application.jobs import (
     DEFAULT_RUNNER,
     MAX_REPLY_CHARS,
     REPO_TOOL_NAMES,
+    WALK_EVERYTHING_INSTRUCTION,
     JobRunner,
     parse_job_output,
     schema_for,
@@ -991,3 +992,16 @@ async def test_non_finite_numbers_go_to_retry_and_are_never_stored(env: Env, con
     assert constant in env.prompts()[1] and "reply again" in env.prompts()[1].lower()
     stored = json.dumps(list(env.store.artifacts.values()), allow_nan=False)
     assert constant not in stored
+
+
+async def test_walk_everything_asks_the_walkthrough_for_every_hunk(env: Env) -> None:
+    """Spec §3.1 "Walk everything": the author asked for the rest, so the walkthrough job is
+    told to leave nothing out but what Jesinia skips itself."""
+    env.capture_pack()
+    env.script(json.dumps({"steps": [], "skipped": []}))
+    await env.jobs.run(JobKind.WALKTHROUGH, replace(a_round(), walk_everything=True))
+    prompt = env.runner.requests[0].system_prompt
+    assert WALK_EVERYTHING_INSTRUCTION in prompt
+    env.script(json.dumps({"steps": [], "skipped": []}))
+    await env.jobs.run(JobKind.WALKTHROUGH, a_round())
+    assert WALK_EVERYTHING_INSTRUCTION not in env.runner.requests[-1].system_prompt

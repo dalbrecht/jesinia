@@ -9,6 +9,9 @@
   gap: var(--jx-space-2);
   width: min(var(--jx-toast-width), calc(100vw - 2 * var(--jx-space-4)));
   outline: none;
+  /* Even with no toast the region keeps the gap between its two live regions (8px), which
+     would swallow clicks on a bottom-right control; only a toast itself takes the pointer. */
+  pointer-events: none;
 }
 @media (max-width: 480px) {
   .region {
@@ -17,6 +20,7 @@
   }
 }
 .toast {
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: var(--jx-space-3);
