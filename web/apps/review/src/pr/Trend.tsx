@@ -4,6 +4,7 @@
 // the design tokens (no chart library): the chart is an image with a spoken summary, and the
 // numbers are in a table beside it. Criteria are agent text: shown as text, hidden characters
 // as visible tokens.
+import { Button } from "@jesinia/design";
 import { VisibleText, useClient } from "@jesinia/shell";
 import { useEffect, useState } from "react";
 import { errorCause, getMetricsHistory, type TrendPoint } from "../api";
@@ -14,6 +15,18 @@ const HEIGHT = 160;
 const PAD = { top: 12, right: 16, bottom: 20, left: 28 };
 const MAX = 10;
 const GRID = [0, 5, 10];
+/** Rows the table lists before "Show all": the chart always draws every point. */
+export const TABLE_ROWS = 20;
+/** Where a repo's metric set is edited (Settings → Review). */
+const EDIT_METRICS = "/settings/#review";
+
+function EditMetrics() {
+  return (
+    <p className={s.trendEdit}>
+      <a href={EDIT_METRICS}>Edit this repo's metrics</a>
+    </p>
+  );
+}
 
 const day = (iso: string) => new Date(iso).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
 const num = (n: number) => String(Math.round(n * 100) / 100);
@@ -31,6 +44,9 @@ function summary(repo: string, points: TrendPoint[]): string {
 
 /** The chart and its table for `points` (oldest first); empty and single-point series say so. */
 export function TrendChart({ repo, points }: { repo: string; points: TrendPoint[] }) {
+  const [all, setAll] = useState(false);
+  const newest = [...points].reverse();
+  const rows = all ? newest : newest.slice(0, TABLE_ROWS);
   return (
     <figure className={s.trend} aria-label={`Quality trend for ${repo}`}>
       <figcaption className={s.trendTitle}>Quality trend</figcaption>
@@ -43,6 +59,7 @@ export function TrendChart({ repo, points }: { repo: string; points: TrendPoint[
           ) : null}
           <Chart repo={repo} points={points} />
           <table className={s.table}>
+            <caption className={s.visuallyHidden}>{`Scores per review of ${repo}, newest first`}</caption>
             <thead>
               <tr>
                 <th scope="col">Review</th>
@@ -52,7 +69,7 @@ export function TrendChart({ repo, points }: { repo: string; points: TrendPoint[
               </tr>
             </thead>
             <tbody>
-              {[...points].reverse().map((p) => (
+              {rows.map((p) => (
                 <tr key={p.round_id}>
                   <td className={s.tabular}>{`#${p.number}`}</td>
                   <td>{day(p.at)}</td>
@@ -71,8 +88,14 @@ export function TrendChart({ repo, points }: { repo: string; points: TrendPoint[
               ))}
             </tbody>
           </table>
+          {rows.length < newest.length ? (
+            <Button size="sm" variant="secondary" onClick={() => setAll(true)}>
+              {`Show all ${newest.length} reviews`}
+            </Button>
+          ) : null}
         </>
       )}
+      <EditMetrics />
     </figure>
   );
 }
@@ -134,6 +157,7 @@ export function Trend({ repo }: { repo: string }) {
     <figure className={s.trend} aria-label={`Quality trend for ${repo}`}>
       <figcaption className={s.trendTitle}>Quality trend</figcaption>
       <p className={s.muted}>{error === null ? "Loading the trend…" : `Couldn't load the trend: ${error}`}</p>
+      <EditMetrics />
     </figure>
   );
 }

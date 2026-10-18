@@ -31,6 +31,7 @@ import { Background } from "./Background";
 import { DraftsEditor, useDrafts } from "./Drafts";
 import { Findings } from "./Findings";
 import { Metrics } from "./Metrics";
+import { Trend } from "./Trend";
 import {
   coverageLine,
   findingsByStep,
@@ -608,7 +609,16 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       case "findings":
         return artifacts.findings ? <Findings findings={artifacts.findings} /> : pendingPage("Findings");
       case "metrics":
-        return artifacts.metrics ? <Metrics scores={artifacts.metrics} repo={repo} /> : pendingPage("Metrics");
+        // The repo's trend shows even before (or without) this PR's own scores (M7).
+        return artifacts.metrics ? (
+          <Metrics scores={artifacts.metrics} repo={repo} />
+        ) : (
+          <article className={s.page} aria-label="Metrics">
+            <h2>Metrics</h2>
+            {pendingNote("Metrics")}
+            <Trend repo={repo} />
+          </article>
+        );
       case "quiz":
         if (artifacts.quiz)
           return <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} onFinish={quizFinished} />;

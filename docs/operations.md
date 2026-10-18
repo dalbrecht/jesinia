@@ -179,9 +179,12 @@ picks it up (no restart). `/healthz` reports the `github` module as "no token: r
     login such as `copilot`: Jesinia waits up to 30 minutes for its review on a new head);
     and its **metrics**, one criterion per line. Leave the metrics empty to let the standards
     decide what is scored. A change to a repo's metrics applies from its next review round:
-    rounds already started keep the set they began with.
+    rounds already started keep the set they began with. Each save sends only what it
+    changes, so a repo confirmed in the queue or edited in another tab is never put back.
   - **Standards:** your coding-standards checkout (the base layer) and an optional folder of
-    your own standards documents (the last layer), each an absolute path or `~/…`.
+    your own standards documents (the last layer), each an absolute path or `~/…` (not `/`
+    or your home folder itself). Only the `*.md` files directly in a folder are read;
+    subfolders and symlinks are skipped.
   - **What Jesinia thinks you know:** each folder and topic Jesinia has a record of, how
     familiar it thinks you are, and why (your commits, the reviews you finished, quiz
     results). Mark one **I know this** or **I don't know this**, or clear the mark; a mark on a

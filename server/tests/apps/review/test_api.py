@@ -1053,3 +1053,11 @@ async def test_a_quiz_result_is_recorded_once_for_its_own_round(env: Env) -> Non
     assert refused.status_code == 400 and refused.json()["error"] == "KnowledgeInputError"
     too_many = {"round_id": round_id, "right": 1, "answered": 11}
     assert (await env.client.post(f"{PR}/quiz", json=too_many, headers=keyed())).status_code == 422
+
+
+async def test_a_metric_of_any_size_is_bounded_before_the_domain_sees_it(env: Env) -> None:
+    """Fix round 1 M3: each criterion is capped at the schema (422) as well as the domain."""
+    body = {"prereview": "triage", "runner": "codex",
+            "repos": [{"repo": "acme/web", "watched": True, "metrics": ["x" * 2000]}]}  # fmt: skip
+    response = await env.client.put(f"{API}/settings", json=body, headers=keyed())
+    assert response.status_code == 422

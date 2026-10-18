@@ -98,7 +98,7 @@ const lastPut = async (calls: Request[]) => {
   expect(put.headers.get("Idempotency-Key")).toMatch(/^[0-9a-f-]{36}$/);
   return (await put.clone().json()) as Settings;
 };
-const toast = async (text: string) =>
+const toast = async (text: string | RegExp) =>
   (await screen.findAllByText(text)).find((el) => el.closest("[data-toast]") !== null);
 
 afterEach(() => window.history.replaceState(null, "", "/settings/"));
@@ -131,11 +131,12 @@ describe("Settings → Review", () => {
     const review = await loaded();
     await userEvent.selectOptions(review.getByRole("combobox", { name: "Pre-review" }), "on_open");
     await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(1));
-    expect(await lastPut(calls)).toEqual({ ...SETTINGS, prereview: "on_open" });
+    // Only what changed (with the two required fields): no repo, no folder rides along (I1).
+    expect(await lastPut(calls)).toEqual({ prereview: "on_open", runner: "codex", repos: [] });
     expect(await toast("Pre-review: on open only.")).toBeDefined();
     await userEvent.selectOptions(review.getByRole("combobox", { name: "Agent" }), "claude");
     await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(2));
-    expect(await lastPut(calls)).toEqual({ ...SETTINGS, prereview: "on_open", runner: "claude" });
+    expect(await lastPut(calls)).toEqual({ prereview: "on_open", runner: "claude", repos: [] });
     const keys = sent(calls, "PUT", "/api/review/settings").map((c) => c.headers.get("Idempotency-Key"));
     expect(new Set(keys).size).toBe(2);
   });
@@ -149,7 +150,13 @@ describe("Settings → Review", () => {
     await userEvent.paste("~/my-standards");
     await userEvent.click(review.getByRole("button", { name: "Save folders" }));
     await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(1));
-    expect(await lastPut(calls)).toEqual({ ...SETTINGS, standards_user_dir: "~/my-standards" });
+    expect(await lastPut(calls)).toEqual({
+      prereview: "triage",
+      runner: "codex",
+      repos: [],
+      standards_dir: "/Users/me/coding-standards",
+      standards_user_dir: "~/my-standards",
+    });
     expect(await toast("Standards folders saved.")).toBeDefined();
 
     answer = async () =>
@@ -181,6 +188,8 @@ describe("Settings → Review", () => {
     await userEvent.click(web.getByRole("button", { name: "Save acme/web" }));
     await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(1));
     const body = await lastPut(calls);
+    expect(body).not.toHaveProperty("standards_dir");
+    expect(body).not.toHaveProperty("standards_user_dir");
     expect(body.repos).toEqual([
       {
         repo: "acme/web",
@@ -192,6 +201,44 @@ describe("Settings → Review", () => {
       },
     ]);
     expect(await toast("acme/web saved.")).toBeDefined();
+  });
+
+  it("a change made elsewhere while the page is open survives a save here (I1)", async () => {
+    // The server, as the real one: repos not listed and folders left out keep their values.
+    let server: Settings = structuredClone(SETTINGS);
+    const calls = renderReview({
+      "GET /api/review/settings": () => Response.json(server),
+      "PUT /api/review/settings": async (req: Request) => {
+        const body = (await req.clone().json()) as Settings;
+        const repos = new Map((server.repos ?? []).map((r) => [r.repo, r]));
+        for (const r of body.repos ?? []) repos.set(r.repo, { ...repos.get(r.repo), ...r });
+        server = {
+          ...server,
+          prereview: body.prereview,
+          runner: body.runner,
+          ...("standards_dir" in body ? { standards_dir: body.standards_dir } : {}),
+          ...("standards_user_dir" in body ? { standards_user_dir: body.standards_user_dir } : {}),
+          repos: [...repos.values()],
+        };
+        return Response.json(server);
+      },
+    });
+    const review = await loaded();
+    // Confirmed in the queue (or another tab) after the page loaded.
+    server = {
+      ...server,
+      standards_dir: "/Users/me/elsewhere",
+      repos: (server.repos ?? []).map((r) => (r.repo === "other/lib" ? { ...r, watched: true, suggested: false } : r)),
+    };
+    await userEvent.selectOptions(review.getByRole("combobox", { name: "Pre-review" }), "everything");
+    await waitFor(() => expect(sent(calls, "PUT", "/api/review/settings")).toHaveLength(1));
+    expect(server.prereview).toBe("everything");
+    expect(server.standards_dir).toBe("/Users/me/elsewhere");
+    expect(server.repos?.find((r) => r.repo === "other/lib")).toMatchObject({ watched: true, suggested: false });
+    // The page shows the server's answer, the other change included.
+    const lib = within(review.getByRole("group", { name: "other/lib" }));
+    await waitFor(() => expect(lib.getByRole("checkbox", { name: "Watched" })).toBeChecked());
+    await waitFor(() => expect(review.getByLabelText("Coding-standards checkout")).toHaveValue("/Users/me/elsewhere"));
   });
 
   it("watching a suggested repo confirms it", async () => {
@@ -360,6 +407,46 @@ describe("What Jesinia thinks you know", () => {
     const keys = puts.map((p) => p.headers.get("Idempotency-Key"));
     expect(keys.every((k) => /^[0-9a-f-]{36}$/.test(k ?? ""))).toBe(true);
     expect(new Set(keys).size).toBe(2);
+  });
+
+  it("never lets an older reload overwrite a newer one, and keeps the list when a reload fails (M6)", async () => {
+    const billing = (over: Partial<Unit>) => unit({ unit: "repo/acme/api/billing", repo: "acme/api", path: "billing", ...over }); // prettier-ignore
+    const payments = (over: Partial<Unit>) => unit({ unit: "tag/payments", kind: "tag", repo: null, path: "", tag: "payments", exposures: {}, ...over }); // prettier-ignore
+    const billingKnown = billing({ familiarity: 1, override: "known", override_unit: "repo/acme/api/billing" });
+    const paymentsKnown = payments({ familiarity: 1, override: "known", override_unit: "tag/payments" });
+    const first = { units: [billing({}), payments({ override: "unknown", override_unit: "tag/payments" })], total: 2, truncated: false }; // prettier-ignore
+    let release: () => void = () => undefined;
+    const answers: (() => Response | Promise<Response>)[] = [
+      () => Response.json(first),
+      // The first correction's reload answers late, with only that correction.
+      () =>
+        new Promise<Response>((done) => {
+          release = () => done(Response.json({ ...first, units: [billingKnown, first.units[1]] }));
+        }),
+      () => Response.json({ ...first, units: [billingKnown, paymentsKnown] }),
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ];
+    renderReview({
+      "GET /api/review/knowledge": () => (answers.shift() as () => Response)(),
+      "PUT /api/review/knowledge/repo/acme/api/billing": () => Response.json(billingKnown),
+      "PUT /api/review/knowledge/tag/payments": () => Response.json(paymentsKnown),
+    });
+    const known = await knowledge();
+    const topic = within(await known.findByRole("listitem", { name: "#payments" }));
+    const bill = within(known.getByRole("listitem", { name: "acme/api / billing" }));
+    await userEvent.selectOptions(bill.getByRole("combobox", { name: "Correct acme/api / billing" }), "known");
+    await waitFor(() => expect(bill.getByText("Known: you marked it")).toBeInTheDocument());
+    await userEvent.selectOptions(topic.getByRole("combobox", { name: "Correct #payments" }), "known");
+    await waitFor(() => expect(topic.getByText("Known: you marked it")).toBeInTheDocument());
+    release();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(topic.getByText("Known: you marked it")).toBeInTheDocument();
+    // A failed reload after a correction keeps the list and says why.
+    await userEvent.selectOptions(bill.getByRole("combobox", { name: "Correct acme/api / billing" }), "");
+    expect(await toast(/Couldn't read the knowledge model again: Failed to fetch/)).toBeDefined();
+    expect(known.getAllByRole("listitem")).toHaveLength(2);
   });
 
   it("puts a correction back and says why when it is refused", async () => {

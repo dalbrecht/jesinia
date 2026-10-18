@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import cast
+from typing import Annotated, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 
@@ -58,6 +58,7 @@ RUNNER_MAX = 64
 REVIEWER_MAX = 100
 # Generous bounds on what a request may carry; the domain checks the real limits (400).
 METRICS_MAX_SENT = 200
+METRIC_MAX_SENT = 1000
 FOLDER_MAX_SENT = 4096
 
 
@@ -517,7 +518,7 @@ class ReviewRepoSettingBody(BaseModel):
     suggested: bool = False
     prereview: PreReviewMode | None = None
     automated_reviewer: str | None = Field(default=None, min_length=1, max_length=REVIEWER_MAX)
-    metrics: list[str] | None = Field(
+    metrics: list[Annotated[str, Field(max_length=METRIC_MAX_SENT)]] | None = Field(
         default=None,
         max_length=METRICS_MAX_SENT,
         description="The criteria this repo's reviews are scored on, from the next round on; "

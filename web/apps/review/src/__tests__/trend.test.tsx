@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "../App";
 import { TrendChart } from "../pr/Trend";
 import { queue, routes } from "./fixtures";
-import { API, drafts, PATH, reviewed } from "./pr-fixtures";
+import { API, ARTIFACTS, drafts, PATH, reviewed } from "./pr-fixtures";
 
 type Point = components["schemas"]["PointOut"];
 const METRICS = "/api/review/metrics";
@@ -23,9 +23,8 @@ const point = (round: number, number: number, mean: number, criterion = "Error h
   scores: [{ criterion, score: mean }],
 });
 
-function setup(over: Routes = {}) {
+function setup(over: Routes = {}, view = reviewed()) {
   window.history.replaceState(null, "", PATH);
-  const view = reviewed();
   const env = fakeClient(
     routes(queue([view.pr]), {
       [`GET ${API}`]: () => Response.json(view),
@@ -92,7 +91,41 @@ describe("the trend under Metrics", () => {
   });
 });
 
+describe("the trend without this PR's own metrics (M7)", () => {
+  it("still shows the repo's trend while the metrics job is pending, with a way to edit the set", async () => {
+    const { metrics, ...rest } = ARTIFACTS;
+    void metrics;
+    const jobs = { ...ARTIFACTS.jobs, metrics: { state: "running", error: null } };
+    setup(
+      { [`GET ${METRICS}`]: () => Response.json({ repo: "acme/web", points: [point(1, 1, 6)] }) },
+      reviewed({ artifacts: { ...rest, jobs } }),
+    );
+    await screen.findByRole("heading", { level: 2, name: "Overview" });
+    await userEvent.click(within(outline()).getByRole("link", { name: /Metrics/ }));
+    const page = screen.getByRole("article", { name: "Metrics" });
+    expect(within(page).getByText("Metrics is being generated: it shows here when it finishes.")).toBeInTheDocument();
+    const figure = await within(page).findByRole("figure", { name: "Quality trend for acme/web" });
+    await waitFor(() => expect(pointTitles(figure)).toHaveLength(1));
+    expect(within(figure).getByRole("link", { name: "Edit this repo's metrics" })).toHaveAttribute(
+      "href",
+      "/settings/#review",
+    );
+  });
+});
+
 describe("TrendChart", () => {
+  it("lists the latest 20 reviews and shows the rest on request, in a named table (M8)", async () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({ ...point(1, i + 1, i % 11), round_id: i + 1 }));
+    render(<TrendChart repo="acme/web" points={many} />);
+    const table = screen.getByRole("table", { name: "Scores per review of acme/web, newest first" });
+    expect(within(table).getAllByRole("row")).toHaveLength(21); // the header and 20 reviews
+    expect(within(table).getAllByRole("row")[1]).toHaveTextContent(/^#25/);
+    expect(pointTitles(screen.getByRole("figure"))).toHaveLength(25); // the chart draws them all
+    await userEvent.click(screen.getByRole("button", { name: "Show all 25 reviews" }));
+    expect(within(table).getAllByRole("row")).toHaveLength(26);
+    expect(screen.queryByRole("button", { name: /Show all/ })).toBeNull();
+  });
+
   it("draws a single review as one point and no line", () => {
     render(<TrendChart repo="acme/web" points={[point(1, 12, 7.5)]} />);
     const figure = screen.getByRole("figure", { name: "Quality trend for acme/web" });

@@ -7,6 +7,7 @@ GitHub's own spelling is kept only as ``display_repo`` for the UI.
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -131,11 +132,13 @@ FOLDER_SETTING_CHARS = 1024
 
 def parse_folder_setting(value: str | None, home: Path) -> Path | None:
     """A folder setting (the standards checkout, the author's own standards): an absolute
-    path, or ``~/…`` under ``home``; ``None`` (or blank) clears it. Whether it exists is
-    read when it is used: a missing folder is skipped then, never an error here.
+    path, or ``~/…`` under ``home``, normalised (``..`` resolved lexically); ``None`` (or
+    blank) clears it. Whether it exists is read when it is used: a missing folder is skipped
+    then, never an error here.
 
     Raises:
-        InvalidSettingError: a relative path, or one with a control character.
+        InvalidSettingError: a relative path, one with a control character, or the
+            filesystem root or ``home`` itself.
     """
     text = (value or "").strip()
     if not text:
@@ -147,6 +150,11 @@ def parse_folder_setting(value: str | None, home: Path) -> Path | None:
     path = home / text[2:] if text == "~" or text.startswith("~/") else Path(text)
     if not path.is_absolute():
         raise InvalidSettingError(f"a folder must be an absolute path or start with ~/: {text!r}")
+    # Lexical only (no filesystem read): the path stored, shown and read is the same one.
+    path = Path(os.path.normpath(path))
+    if path in (Path(path.anchor), home):
+        # Every Markdown file directly in it would become trusted standards for the agent.
+        raise InvalidSettingError(f"choose a folder of standards documents, not {path}")
     return path
 
 

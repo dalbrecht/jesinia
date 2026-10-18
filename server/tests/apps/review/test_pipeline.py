@@ -1557,3 +1557,15 @@ async def test_a_repo_without_metric_overrides_leaves_the_criteria_to_the_standa
     round_id, _ = latest(env, ref)
     assert env.artifacts(round_id)["metric_criteria"] is None
     assert {r.metric_criteria for r in env.jobs.rounds} == {None}
+
+
+async def test_a_round_keeps_the_metric_set_in_force_when_it_started(env: Env) -> None:
+    """Fix round 1 M2: the set is taken when the round starts, so a change saved between a
+    round's start and its preparation still waits for the next round."""
+    env.store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Security",)))
+    ref = env.add()
+    request = env.request(ref, "everything")
+    env.store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Docs",)))
+    await env.pipeline.prereview(request)
+    assert env.artifacts(request.round_id)["metric_criteria"] == ["Security"]
+    assert {r.metric_criteria for r in env.jobs.rounds} == {("Security",)}

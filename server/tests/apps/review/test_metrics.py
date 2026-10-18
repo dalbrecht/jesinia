@@ -9,9 +9,11 @@ a change applies to the next round and never rewrites a round that already exist
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -31,7 +33,7 @@ from jesinia.apps.review.domain.queue import (
 )
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.module import REVIEW_DB
-from jesinia.core.db import open_db
+from jesinia.core.db import DbClass, ModuleDb, open_db
 
 AT = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
@@ -95,7 +97,8 @@ def test_a_repo_config_keeps_its_parsed_criteria() -> None:
     [
         ("/Users/me/coding-standards", Path("/Users/me/coding-standards")),
         ("  ~/projects/standards  ", Path("/home/me/projects/standards")),
-        ("~", Path("/home/me")),
+        ("/Users/me/standards/../../../etc", Path("/etc")),
+        ("~/a/./b/", Path("/home/me/a/b")),
         ("", None),
         ("   ", None),
         (None, None),
@@ -107,7 +110,10 @@ def test_a_folder_setting_is_absolute_or_under_home(
     assert parse_folder_setting(given, Path("/home/me")) == expected
 
 
-@pytest.mark.parametrize("given", ["relative/path", "~other/x", "/tmp/a\nb", "/" + "x" * 1024])
+@pytest.mark.parametrize(
+    "given",
+    ["relative/path", "~other/x", "/tmp/a\nb", "/" + "x" * 1024, "/", "~", "/home/me/x/.."],
+)
 def test_a_folder_setting_that_is_relative_or_odd_is_refused(given: str) -> None:
     with pytest.raises(InvalidSettingError):
         parse_folder_setting(given, Path("/home/me"))
@@ -216,3 +222,53 @@ def test_a_repos_criteria_survive_the_store(store: SqliteReviewStore) -> None:
     assert configs["acme/other"].metrics is None
     store.upsert_repo(RepoConfig("acme/web", watched=True))
     assert store.repo_configs()["acme/web"].metrics is None
+
+
+def test_a_bad_stored_metric_set_degrades_to_none_and_says_why(
+    store: SqliteReviewStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fix round 1 M4: one unreadable row never takes down every reader of the repo configs."""
+    store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Security",)))
+    store.upsert_repo(RepoConfig("acme/api", watched=True, metrics=("Tests",)))
+    store.upsert_repo(RepoConfig("acme/lib", watched=True))
+    conn = store._conn
+    conn.execute("UPDATE repos SET metrics = '{\"not\": \"a list\"}' WHERE repo = 'acme/web'")
+    conn.execute("UPDATE repos SET metrics = ? WHERE repo = 'acme/api'", ('["' + "x" * 500 + '"]',))
+    conn.execute("UPDATE repos SET metrics = 'not json' WHERE repo = 'acme/lib'")
+    with caplog.at_level(logging.WARNING):
+        configs = store.repo_configs()
+    assert {repo: c.metrics for repo, c in configs.items()} == {
+        "acme/web": None,
+        "acme/api": None,
+        "acme/lib": None,
+    }
+    assert configs["acme/web"].watched is True
+    assert "acme/api" in caplog.text and "metric" in caplog.text
+
+
+def test_rounds_from_before_0010_are_scored_on_the_standards(tmp_path: Path) -> None:
+    """Fix round 1 M2: an install upgraded from 0009 keeps every existing round on the
+    standards' criteria, whatever set a repo is given later."""
+    old_schema = tmp_path / "migrations-0009"
+    old_schema.mkdir()
+    shipped = Path(str(files("jesinia.apps.review.migrations")))
+    for sql in sorted(shipped.glob("000[1-9]_*.sql")):
+        (old_schema / sql.name).write_text(sql.read_text())
+    data = tmp_path / "data"
+    before = open_db(data, ModuleDb("review", DbClass.HISTORY, old_schema))
+    before.execute(
+        "INSERT INTO rounds (repo, number, head_sha, base_sha, depth, started_at) "
+        "VALUES ('acme/web', 1, ?, ?, 'deep', '2026-10-01T00:00:00+00:00')",
+        ("a" * 40, "b" * 40),
+    )
+    before.close()
+    after = open_db(data, REVIEW_DB)
+    try:
+        store = SqliteReviewStore(after)
+        store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Docs",)))
+        assert "metric_criteria" in store.artifact_kinds(1)
+        assert store.artifact(1, "metric_criteria") is None
+        fresh = store.start_round(PrRef("acme/web", 1), "c" * 40, "b" * 40, "deep", AT)
+        assert store.artifact(fresh, "metric_criteria") == ["Docs"]
+    finally:
+        after.close()

@@ -200,7 +200,7 @@ function FoldersForm({
         value={mine}
         onChange={(e) => setMine(e.target.value)}
         placeholder="~/standards"
-        help="Markdown documents of your own rules (the last layer). Leave empty for none."
+        help="Markdown documents of your own rules (the last layer), read from the folder itself: subfolders and symlinks are skipped. Leave empty for none."
       />
       {error ? (
         <p className={s.error} role="alert">
@@ -236,21 +236,22 @@ function SettingsPanel() {
     );
   }, [client, attemptNo]);
 
-  // Writes go one at a time, each built on the settings the server last confirmed.
+  // Writes go one at a time, and each sends only what it changes (I1): the server keeps every
+  // repo not listed and each folder left out, so a repo confirmed in the queue or edited in
+  // another tab since this page loaded is never put back. `prereview` and `runner` are
+  // required: they come from the server's latest answer.
   const saved = useRef<Settings | null>(null);
   useEffect(() => {
     if (settings) saved.current = settings;
   }, [settings]);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const write = useCallback(
-    (change: (current: Settings) => Settings) => {
-      const run = () =>
-        attempt(() =>
-          client.PUT("/api/review/settings", {
-            params: { header: withIdempotency() },
-            body: change(saved.current as Settings),
-          }),
-        );
+    (patch: Partial<Settings>) => {
+      const run = () => {
+        const latest = saved.current as Settings;
+        const body: Settings = { prereview: latest.prereview, runner: latest.runner, repos: [], ...patch };
+        return attempt(() => client.PUT("/api/review/settings", { params: { header: withIdempotency() }, body }));
+      };
       const result = queue.current.then(run, run);
       queue.current = result;
       return result.then((outcome) => {
@@ -265,20 +266,20 @@ function SettingsPanel() {
   );
 
   const change = async (patch: Partial<Settings>, done: (s: Settings) => string) => {
-    const outcome = await write((current) => ({ ...current, ...patch }));
+    const outcome = await write(patch);
     if ("data" in outcome) toast.show({ tone: "success", message: done(outcome.data) });
     else toast.show({ tone: "danger", message: `Couldn't save: ${outcome.error}` });
   };
 
   const saveFolders = async (patch: Partial<Settings>) => {
-    const outcome = await write((current) => ({ ...current, ...patch }));
+    const outcome = await write(patch);
     if ("error" in outcome) return outcome.error;
     toast.show({ tone: "success", message: "Standards folders saved." });
     return null;
   };
 
   const saveRepo = async (repo: RepoSetting) => {
-    const outcome = await write((current) => ({ ...current, repos: [repo] }));
+    const outcome = await write({ repos: [repo] });
     if ("data" in outcome) {
       toast.show({ tone: "success", message: `${repo.repo} saved.` });
       return true;
@@ -366,7 +367,12 @@ function SettingsPanel() {
               </p>
             </div>
           </div>
-          <FoldersForm settings={settings} save={saveFolders} />
+          {/* Starts again from what the server kept (a ~/ expanded, a change made elsewhere). */}
+          <FoldersForm
+            key={`${settings.standards_dir ?? ""}|${settings.standards_user_dir ?? ""}`}
+            settings={settings}
+            save={saveFolders}
+          />
           <div className={s.form}>
             <div>
               <h3 className={s.settingTitle}>Repos</h3>
@@ -485,16 +491,27 @@ function KnowledgePanel() {
   const [loadError, setLoadError] = useState<Load | null>(null);
   const [attemptNo, setAttemptNo] = useState(0);
 
+  // Only the newest read lands: a reload that answers late never overwrites a newer list.
+  const latestRead = useRef(0);
+  /** Read the model; `again`: after a correction, when a failure keeps the list shown. */
   const load = useCallback(
-    () =>
-      client.GET("/api/review/knowledge").then(
-        (r) => {
-          if (r.data) setKnowledge(r.data);
-          else setLoadError({ cause: errorText(r.error, `HTTP ${r.response.status}`), answered: true });
-        },
-        (e: unknown) => setLoadError({ cause: unreachable(e), answered: false }),
-      ),
-    [client],
+    async (again = false) => {
+      const read = ++latestRead.current;
+      const fail = (load: Load) => {
+        if (read !== latestRead.current) return;
+        if (again) toast.show({ tone: "danger", message: `Couldn't read the knowledge model again: ${load.cause}` });
+        else setLoadError(load);
+      };
+      try {
+        const r = await client.GET("/api/review/knowledge");
+        if (r.data) {
+          if (read === latestRead.current) setKnowledge(r.data);
+        } else fail({ cause: errorText(r.error, `HTTP ${r.response.status}`), answered: true });
+      } catch (e) {
+        fail({ cause: unreachable(e), answered: false });
+      }
+    },
+    [client, toast],
   );
   useEffect(() => {
     setLoadError(null);
@@ -518,7 +535,7 @@ function KnowledgePanel() {
     }
     setKnowledge((k) => k && { ...k, units: k.units.map((u) => (u.unit === outcome.data.unit ? outcome.data : u)) });
     // A folder's mark reaches everything beneath it: read the model again.
-    void load();
+    void load(true);
   };
 
   return (

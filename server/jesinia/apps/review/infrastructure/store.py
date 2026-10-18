@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
@@ -20,6 +21,7 @@ from jesinia.apps.review.domain.posting import Draft, Posting, PostingState, Rou
 from jesinia.apps.review.domain.queue import (
     DEFAULT_PREREVIEW,
     AutoReviewState,
+    InvalidSettingError,
     PreReviewMode,
     PreReviewState,
     PrKind,
@@ -33,11 +35,14 @@ from jesinia.apps.review.domain.queue import (
     coverage_from_json,
     evidence_from_json,
     nothing_to_walk_from_json,
+    parse_metric_criteria,
     parse_prereview_mode,
 )
 from jesinia.apps.review.domain.standards import Override
 from jesinia.core.db import transaction
 from jesinia.services.github.domain.pr import PrFile, ReviewEvent, ReviewSide
+
+log = logging.getLogger(__name__)
 
 _PREREVIEW_KEY = "prereview"
 _STANDARDS_DIR_KEY = "standards.dir"
@@ -290,6 +295,22 @@ def _followup(row: tuple[object, ...]) -> FollowUp:
     )
 
 
+def _stored_metrics(repo: str, stored: str | None) -> tuple[str, ...] | None:
+    """A repo's stored metric set; one that can't be read (or no longer passes the rules)
+    becomes ``None``, the standards' criteria, with the cause logged: one bad row never stops
+    the queue, the pipeline or Settings from reading every repo."""
+    if stored is None:
+        return None
+    try:
+        values = json.loads(stored)
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+            raise InvalidSettingError("the stored metric set is not a list of text")
+        return parse_metric_criteria(values)
+    except (ValueError, InvalidSettingError) as exc:
+        log.warning("review: %s's metric set is unreadable, so the standards decide: %s", repo, exc)
+        return None
+
+
 class SqliteReviewStore:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -437,7 +458,7 @@ class SqliteReviewStore:
                 automated_reviewer=reviewer,
                 prereview=None if prereview is None else parse_prereview_mode(prereview),
                 suggested=bool(suggested),
-                metrics=None if metrics is None else tuple(json.loads(metrics)),
+                metrics=_stored_metrics(repo, metrics),
             )
             for repo, watched, reviewer, prereview, suggested, metrics in rows
         }
@@ -566,6 +587,13 @@ class SqliteReviewStore:
                 (ref.repo, ref.number, head_sha, base_sha, depth, _time(started_at)),
             )
             round_id = cast(int, cursor.lastrowid)
+            # The repo's metric set as it is now: the round is scored on it, whatever is saved
+            # later (spec §5.2, "from the next round"). No repo row: the standards decide.
+            self._conn.execute(
+                "INSERT INTO artifacts (round_id, kind, json) "
+                "SELECT ?, 'metric_criteria', COALESCE(metrics, 'null') FROM repos WHERE repo = ?",
+                (round_id, ref.repo),
+            )
             if row is not None:
                 self._replace(_round(row), round_id, head_sha, started_at)
         return round_id
