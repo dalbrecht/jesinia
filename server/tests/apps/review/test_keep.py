@@ -25,7 +25,7 @@ from fastapi import HTTPException
 
 from jesinia.apps.review.application.keep import KeepService
 from jesinia.apps.review.application.pipeline import Pipeline
-from jesinia.apps.review.application.posting import PostingService
+from jesinia.apps.review.application.posting import PostingFailed, PostingService
 from jesinia.apps.review.domain.jobs import JobKind
 from jesinia.apps.review.domain.kept import (
     KEPT,
@@ -49,8 +49,10 @@ from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.events import EventBus
 from jesinia.core.module import AppContext
 from jesinia.core.scheduler import Scheduler
+from jesinia.services.github.application.service import GitHubRequestError
 from jesinia.services.github.domain.pr import ReviewEvent
-from jesinia.services.kb.application.service import KbService, PageDraft
+from jesinia.services.kb.application.errors import KbUnavailable
+from jesinia.services.kb.application.service import KbService, PageDraft, PageWithRev
 from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.domain.frontmatter import page_from, parse_document
 from jesinia.services.kb.domain.page import PageId
@@ -188,7 +190,7 @@ async def test_keep_writes_review_page_with_front_matter(kenv: KEnv) -> None:
     assert meta["source"] == PR_URL
     assert meta["repo"] == "acme/web" and meta["pr"] == 1 and meta["head"] == HEAD
     assert meta["verdict"] == "approve" and meta["outcome"] == "approve"
-    assert meta["reviewed"] == kenv.clock().astimezone().isoformat(timespec="seconds")
+    assert meta["reviewed"] == "2026-10-16T09:00:00Z"  # UTC, whatever the host's zone
     assert meta["code"] == [
         {"repo": "acme/web", "path": "src/sync.py"},
         {"repo": "acme/web", "path": "tests/test_sync.py"},
@@ -258,8 +260,7 @@ async def test_system_page_update_only_on_accept(kenv: KEnv) -> None:
     assert "My own edit." in kenv.page_text(system) and "What #1" not in kenv.page_text(system)
     assert (await kenv.kb.read(written.page.id)).rev == edited.rev
 
-    # A fresh draft (a retried keep) is made against the edited page and can be accepted.
-    await kenv.keeper.retry_keep(kenv.ref, second)
+    # The refusal drafts again against the edited page, so the author has a draft to accept.
     fresh = SystemDraft.from_json(kenv.store.artifact(second, SYSTEM_DRAFT))
     assert fresh is not None and fresh.base_rev == edited.rev
     with pytest.raises(SystemPageChanged):  # the client still holds the old draft's revision
@@ -652,7 +653,18 @@ def test_titles_folders_and_section_merges() -> None:
     assert merge_round_section(old, 3, section) == f"Top\n\n{section}\n\nEnd\n"
     # An opening marker the author left without its end: the section is added, not lost.
     broken = "<!-- jesinia:review-round 3 -->\nhalf\n"
-    assert merge_round_section(broken, 3, section).endswith(f"\n\n{section}\n")
+    appended = merge_round_section(broken, 3, section)
+    assert appended.endswith(f"\n\n{section}\n")
+    # A later merge replaces only the complete pair, never the author's text after the
+    # broken marker.
+    mine = appended.replace("half\n", "half\nMy words.\n")
+    newer = "<!-- jesinia:review-round 3 -->\nNewer\n<!-- /jesinia:review-round 3 -->"
+    merged = merge_round_section(mine, 3, newer)
+    assert "My words." in merged and "Newer" in merged and "\nNew\n" not in merged
+    # A close marker beyond another round's section doesn't pair with an open one.
+    other = "<!-- jesinia:review-round 4 -->\nFour\n<!-- /jesinia:review-round 4 -->"
+    split = f"<!-- jesinia:review-round 3 -->\nMine\n\n{other}\n<!-- /jesinia:review-round 3 -->\n"
+    assert "Four" in merge_round_section(split, 3, section)
 
 
 def test_kept_state_and_drafts_read_back_only_what_they_wrote() -> None:
@@ -802,3 +814,178 @@ async def test_a_repo_name_that_cant_be_a_tag_is_left_out(kenv: KEnv) -> None:
     kenv.store.mark_round_done(round_id)
     kept = await kenv.keeper.keep_review(round_id)
     assert "Tags: #code-review\n" in kept.page.body
+
+
+# --- fix round 1 -------------------------------------------------------------------------------
+
+
+async def test_provenance_names_the_runner_model_and_session_of_each_part(kenv: KEnv) -> None:
+    round_id = kenv.round()
+    put = kenv.store.put_artifact
+    put(round_id, "overview_agent", {"runner": "claude", "model": "claude-opus-5-5[1m]",
+                                     "session": "s-overview"})  # fmt: skip
+    put(round_id, "walkthrough_agent", {"runner": "codex", "model": None, "session": "s-walk"})
+    put(round_id, "findings_agent", {"runner": "claude", "model": "m2", "session": "s-find"})
+    kenv.store.mark_round_done(round_id)
+    body = (await kenv.keeper.keep_review(round_id)).page.body
+    stamp = "at=2026-10-16T09:00:00Z"
+    assert f"agent=claude model=claude-opus-5-5 {stamp} session=s-overview -->\nMerges" in body
+    assert f"agent=codex model=unknown {stamp} session=s-walk -->\n1. Merge" in body
+    assert f"agent=claude model=m2 {stamp} session=s-find -->\n- **correctness" in body
+
+
+async def test_a_first_keep_reads_no_unrelated_page(kenv: KEnv) -> None:
+    folder = repo_folder("acme/web")
+    others = {
+        (
+            await kenv.kb.write(PageDraft(None, f"Other {n}", folder, "x", {"kind": "review/pr"}))
+        ).page.id
+        for n in range(5)
+    }
+    round_id = kenv.round()
+    kenv.store.mark_round_done(round_id)
+    reads: list[str] = []
+    real_read = kenv.kb.read
+
+    async def counting(page_id: PageId) -> PageWithRev:
+        reads.append(page_id)
+        return await real_read(page_id)
+
+    kenv.kb.read = counting  # type: ignore[method-assign,assignment]
+    await kenv.keeper.keep_review(round_id)
+    assert others.isdisjoint(reads)  # (the tag catalog is read, nothing in the folder)
+
+
+async def test_a_stale_seed_is_withdrawn_once_the_page_exists(kenv: KEnv) -> None:
+    round_id = kenv.round()
+    kenv.store.mark_round_done(round_id)
+    await kenv.keeper.keep_finished(round_id)
+    await kenv.kb.write(PageDraft(None, "How it works", repo_folder("acme/web"), "Theirs.\n", {}))
+    with pytest.raises(SystemPageChanged):
+        await kenv.keeper.accept_system_update(kenv.ref, round_id, None)
+    draft = SystemDraft.from_json(kenv.store.artifact(round_id, SYSTEM_DRAFT))
+    assert draft is not None and draft.state == "withdrawn"
+    with pytest.raises(NoSystemDraft):
+        await kenv.keeper.accept_system_update(kenv.ref, round_id, None)
+
+
+async def test_another_repos_how_it_works_in_the_same_folder_is_ignored(
+    kenv: KEnv, caplog: pytest.LogCaptureFixture
+) -> None:
+    # `a-b/c` and `a/b-c` share `Reviews/a-b-c`: the page says whose it is.
+    await kenv.kb.write(
+        PageDraft(None, "How it works", repo_folder("a/b-c"), "B-c's.\n", {"repo": "a/b-c"})
+    )
+    with caplog.at_level(logging.WARNING):
+        assert await kenv.keeper.system_notes("a-b/c") == ""
+    assert "a/b-c" in caplog.text
+    assert await kenv.keeper.system_notes("a/b-c") == "B-c's.\n"
+
+
+async def test_accepting_or_reading_notes_without_the_kb_says_so(kenv: KEnv) -> None:
+    await kenv.kb.write(PageDraft(None, "How it works", repo_folder("acme/web"), "N.\n", {}))
+    round_id = kenv.round()
+    kenv.post(round_id, "APPROVE")
+    await kenv.keeper.keep_finished(round_id)
+    draft = SystemDraft.from_json(kenv.store.artifact(round_id, SYSTEM_DRAFT))
+    assert draft is not None
+    kenv.kb.set_files(None, "the KB folder is missing")
+    with pytest.raises(KbUnavailable):
+        await kenv.keeper.accept_system_update(kenv.ref, round_id, draft.base_rev)
+    with pytest.raises(KbUnavailable):
+        await kenv.keeper.system_notes("acme/web")
+
+
+async def test_two_accepts_at_once_write_once(kenv: KEnv) -> None:
+    round_id = kenv.round()
+    kenv.store.mark_round_done(round_id)
+    await kenv.keeper.keep_finished(round_id)
+    first, second = await asyncio.gather(
+        kenv.keeper.accept_system_update(kenv.ref, round_id, None),
+        kenv.keeper.accept_system_update(kenv.ref, round_id, None),
+    )
+    assert first.page.id == second.page.id and first.rev == second.rev
+
+
+async def test_an_adopted_posting_is_handed_on_too(tmp_path: Path) -> None:
+    conn = open_db(tmp_path / "adopted", REVIEW_DB)
+    try:
+        posting = test_posting._env(conn, [test_posting.finding(2, 3, "The error is swallowed.")])
+        heard: list[int] = []
+
+        async def hook(round_id: int) -> None:
+            heard.append(round_id)
+
+        service = PostingService(
+            github=posting.github, writer=posting.github, files=posting.source,
+            store=posting.store, clock=posting.clock, on_posted=hook,
+        )  # fmt: skip
+        posting.github.error = GitHubRequestError(None, "ReadTimeout")
+        posting.github.lose_response = True
+        preview = await service.preview(posting.round_id, "COMMENT")
+        with pytest.raises(PostingFailed):
+            await service.post(posting.round_id, "COMMENT", (), key="k", digest=preview.digest)
+        posting.github.error, posting.github.lose_response = None, False
+        assert heard == []
+        assert await service.reconcile_unsettled() == 1
+        assert heard == [posting.round_id]
+    finally:
+        conn.close()
+
+
+async def test_a_slow_keep_never_holds_the_request_and_still_finishes(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jesinia.apps.review.module as review_module
+
+    monkeypatch.setattr(review_module, "KEEP_WAIT_SECONDS", 0.01)
+    module = ReviewModule()
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    release = asyncio.Event()
+    finished: list[int] = []
+
+    class Slow:
+        async def keep_finished(self, round_id: int) -> None:
+            await release.wait()
+            finished.append(round_id)
+
+    module._keeper = Slow()  # type: ignore[assignment]
+    await module.keep_finished(7)  # returns once the wait is over; the keep goes on
+    assert finished == []
+    release.set()
+    await module.stop()  # waits for keeps in flight
+    assert finished == [7]
+
+
+async def test_a_job_records_the_runner_model_and_session_that_ran_it(env: Env) -> None:  # noqa: F811
+    env.script(json.dumps({"summary": "s", "purpose": "p", "sources": []}))
+    await env.jobs.run(JobKind.OVERVIEW, a_round())
+    record = env.store.artifacts[(11, "overview_agent")]
+    assert isinstance(record, dict) and record["runner"] == "scripted"
+    assert record["model"] == "model"  # what the runner reported at the end of its turn
+    assert env.sessions.get(str(record["session"])).runner == "scripted"
+
+
+async def test_a_session_that_cant_be_read_records_no_model(
+    env: Env,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    real = env.jobs._sessions
+
+    class Forgetful:
+        """The sessions, except that none can be read back."""
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real, name)
+
+        def get(self, session_id: str) -> None:
+            raise KeyError(session_id)
+
+    monkeypatch.setattr(env.jobs, "_sessions", Forgetful())
+    env.script(json.dumps({"summary": "s", "purpose": "p", "sources": []}))
+    with caplog.at_level(logging.WARNING):
+        await env.jobs.run(JobKind.OVERVIEW, a_round())
+    record = env.store.artifacts[(11, "overview_agent")]
+    assert isinstance(record, dict) and record["model"] is None
+    assert "couldn't read session" in caplog.text

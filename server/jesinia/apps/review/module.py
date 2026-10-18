@@ -5,6 +5,7 @@ the repo workspace, the repo tools and the agent jobs. Starts last (after ``agen
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from collections.abc import Callable, Sequence
@@ -61,6 +62,9 @@ KNOWLEDGE_JOB = "review.knowledge-ingest"
 KNOWLEDGE_INTERVAL = timedelta(minutes=30)
 # How often postings a crash or a lost response left unsettled are checked against GitHub.
 RECONCILE_INTERVAL = timedelta(minutes=5)
+# How long a post or Done waits for its review page before answering; the keep goes on in
+# the background past that (the PWA reads the round's ``kept`` record when it re-reads).
+KEEP_WAIT_SECONDS = 10.0
 
 
 def _not_started() -> HTTPException:
@@ -93,6 +97,7 @@ class ReviewModule:
         self._stacks: StackReviews | None = None
         self._knowledge: KnowledgeService | None = None
         self._keeper: KeepService | None = None
+        self._keeps: set[asyncio.Task[object]] = set()
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -195,9 +200,18 @@ class ReviewModule:
 
     async def keep_finished(self, round_id: int) -> None:
         """Keep a finished deep round's KB page (spec §8): best effort, so posting and Done
-        never fail on it; without the KB nothing is kept."""
-        if self._keeper is not None:
-            await self._keeper.keep_finished(round_id)
+        never fail on it, and bounded, so they never wait on a slow KB for more than
+        ``KEEP_WAIT_SECONDS`` (the keep then finishes in the background). Without the KB
+        nothing is kept."""
+        if self._keeper is None:
+            return
+        task: asyncio.Task[object] = asyncio.create_task(self._keeper.keep_finished(round_id))
+        self._keeps.add(task)
+        task.add_done_callback(self._keeps.discard)
+        try:
+            await asyncio.wait_for(asyncio.shield(task), KEEP_WAIT_SECONDS)
+        except TimeoutError:
+            log.info("review.keep round=%d goes on in the background", round_id)
 
     async def ingest_knowledge(self) -> None:
         """Read the knowledge model's signals (the ``review.knowledge-ingest`` job); failures
@@ -390,6 +404,8 @@ class ReviewModule:
                     log.info("marked stack jobs of %d stack reviews interrupted", swept)
 
     async def stop(self) -> None:
+        if self._keeps:  # a keep in flight finishes (each is bounded by the KB's own I/O)
+            await asyncio.gather(*self._keeps, return_exceptions=True)
         if self._scheduler is not None:
             self._scheduler.pause()  # cancelling an open frees a slot: nothing may take it
         if self._stacks is not None:

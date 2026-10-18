@@ -74,7 +74,7 @@ describe("the kept review page", () => {
   });
 
   it("a failed keep says why; Retry keeps it again under one key", async () => {
-    const failed = { state: "failed", page_id: null, path: null, error: "the KB folder is missing" };
+    const failed = { state: "failed", page_id: null, path: null, error: `the KB folder ${RLO}is missing` };
     let attempt = 0;
     const { calls } = setup([finished({ kept: failed }), finished({ kept: KEPT })], (next) => ({
       [`POST ${API}/keep`]: () => {
@@ -85,7 +85,10 @@ describe("the kept review page", () => {
       },
     }));
     await recommendation();
-    expect(within(await kept()).getByText("Couldn't keep the review page (the KB folder is missing).")).toBeVisible();
+    // KB causes can carry a PR's title: hidden characters are made visible (R62).
+    expect(within(await kept()).getByText(/Couldn't keep the review page/).textContent).toBe(
+      "Couldn't keep the review page (the KB folder ⟪U+202E⟫is missing).",
+    );
     await userEvent.click(within(await kept()).getByRole("button", { name: "Retry" }));
     expect(await within(await kept()).findByRole("alert")).toHaveTextContent("Couldn't keep the review page: down.");
     await userEvent.click(within(await kept()).getByRole("button", { name: "Retry" }));
@@ -138,19 +141,55 @@ describe("How it works", () => {
     expect(await accept?.json()).toEqual({ round_id: 3, base_rev: null });
   });
 
-  it("an edit since the draft is refused and says so; Not now hides the draft", async () => {
-    const update = { ...SEED, kind: "update", base_rev: "a".repeat(64), page_id: "p" };
-    setup([finished({ kept: KEPT, system_draft: update })], () => ({
-      [`POST ${API}/system/accept`]: () => error(409, "SystemPageChanged", "changed"),
+  it("an edit since the draft is refused, the fresh draft is shown and can be accepted", async () => {
+    const stale = { ...SEED, kind: "update", base_rev: "a".repeat(64), page_id: "p", text: "Old draft." };
+    const fresh = { ...stale, base_rev: "b".repeat(64), text: "Fresh draft." };
+    let attempt = 0;
+    const views: [PrView, PrView] = [
+      finished({ kept: KEPT, system_draft: stale }),
+      finished({ kept: KEPT, system_draft: fresh }),
+    ];
+    const { calls } = setup(views, (next) => ({
+      [`POST ${API}/system/accept`]: () => {
+        attempt += 1;
+        if (attempt > 1) return Response.json({ page_id: "p", path: "x", rev: "c" });
+        next(); // the server drafted again against the edited page
+        return error(409, "SystemPageChanged", "changed");
+      },
     }));
     await recommendation();
     const draft = await screen.findByRole("region", { name: "Update How it works" });
     await userEvent.click(within(draft).getByRole("button", { name: "Accept" }));
     expect(await within(await kept()).findByRole("alert")).toHaveTextContent(
-      /changed since this draft was made, so nothing was written/,
+      /changed since that draft was made, so nothing was written and the edit is kept\. Jesinia drafted it again/,
     );
+    expect(await within(draft).findByText("Fresh draft.")).toBeVisible();
+    await userEvent.click(within(draft).getByRole("button", { name: "Accept" }));
+    await waitFor(() => expect(sent(calls, "POST", `${API}/system/accept`)).toHaveLength(2));
+    const [, second] = sent(calls, "POST", `${API}/system/accept`);
+    expect(await second?.json()).toEqual({ round_id: 3, base_rev: "b".repeat(64) });
+  });
+
+  it("Not now hides the draft", async () => {
+    const update = { ...SEED, kind: "update", base_rev: "a".repeat(64), page_id: "p" };
+    setup([finished({ kept: KEPT, system_draft: update })]);
+    await recommendation();
+    const draft = await screen.findByRole("region", { name: "Update How it works" });
     await userEvent.click(within(draft).getByRole("button", { name: "Not now" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Update How it works" })).toBeNull());
+  });
+
+  it("a withdrawn draft offers nothing to accept", async () => {
+    setup([finished({ kept: KEPT, system_draft: { ...SEED, state: "withdrawn", text: "" } })]);
+    await recommendation();
+    expect(await within(await kept()).findByText(/there is nothing new to add/)).toBeVisible();
+    expect(within(await kept()).queryByRole("button", { name: "Accept" })).toBeNull();
+  });
+
+  it("a rebase round offers no keeping", async () => {
+    setup([finished({ followup: { kind: "still_approved" } })]);
+    await recommendation();
+    expect(screen.queryByRole("region", { name: "Kept in your KB" })).toBeNull();
   });
 
   it("another failure to accept says why", async () => {

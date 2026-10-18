@@ -699,7 +699,9 @@ class PostingService:
         try:
             await self._on_posted(round_id)
         except Exception as exc:  # secondary: the review is on GitHub whatever happens here
-            log.warning("review.post round=%d after-post work failed: %s", round_id, exc)
+            log.warning(
+                "review.post round=%d after-post work failed: %s", round_id, exc, exc_info=exc
+            )
 
     async def _reconcile(self, rnd: RoundRecord) -> Posting | None:
         """Settle the round's attempts whose outcome isn't known (a crash leaves
@@ -744,6 +746,8 @@ class PostingService:
             self._store.finish_posting(attempt.id, url)
             adopted = replace(attempt, state="posted", review_url=url)
             log.info("review.post round=%d posting=%d adopted %s", rnd.id, attempt.id, url)
+        if adopted is not None:  # posted after all: as after a post that answered (spec §8)
+            await self._after_post(rnd.id)
         return adopted
 
 

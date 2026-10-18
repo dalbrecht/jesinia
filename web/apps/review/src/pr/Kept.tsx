@@ -50,9 +50,15 @@ export function KeptReview({ kept, draft, onKeep, onAccept }: Props) {
       ) : (
         <div className={s.row}>
           <p className={s.muted}>
-            {kept?.state === "failed"
-              ? `Couldn't keep the review page (${kept.error ?? "no cause given"}).`
-              : "This review isn't kept in your KB yet."}
+            {kept?.state === "failed" ? (
+              <>
+                {"Couldn't keep the review page ("}
+                <Visible text={kept.error ?? "no cause given"} />
+                {")."}
+              </>
+            ) : (
+              "This review isn't kept in your KB yet."
+            )}
           </p>
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(onKeep)}>
             {kept?.state === "failed" ? "Retry" : "Keep it"}
@@ -60,7 +66,16 @@ export function KeptReview({ kept, draft, onKeep, onAccept }: Props) {
         </div>
       )}
       {draft?.state === "failed" ? (
-        <p className={s.muted}>{`Couldn't draft How it works (${draft.error ?? "no cause given"}).`}</p>
+        <p className={s.muted}>
+          {"Couldn't draft How it works ("}
+          <Visible text={draft.error ?? "no cause given"} />
+          {")."}
+        </p>
+      ) : null}
+      {draft?.state === "withdrawn" ? (
+        <p className={s.muted}>
+          How it works changed since this review was drafted, and there is nothing new to add to it.
+        </p>
       ) : null}
       {draft?.state === "accepted" ? <p>How it works is updated with this review.</p> : null}
       {draft?.state === "proposed" && !later ? (

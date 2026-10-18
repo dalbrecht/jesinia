@@ -34,6 +34,9 @@ def test_inert_neutralises_comment_markers() -> None:
 
 def test_provenance_label_is_one_safe_token() -> None:
     assert provenance_label("claude-opus-5-5") == "claude-opus-5-5"
+    # Issue #15: a bracketed context suffix isn't part of the model's name.
+    assert provenance_label("claude-opus-5-5[1m]") == "claude-opus-5-5"
+    assert provenance_label("[1m]") == "unknown"
     assert provenance_label("gpt 5 -->") == "gpt-5----"
     assert provenance_label("") == "unknown"
     assert len(provenance_label("x" * 200)) == 80

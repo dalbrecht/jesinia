@@ -21,6 +21,8 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Protocol
 
+from jesinia.apps.review.application.jobs import agent_artifact
+from jesinia.apps.review.domain.jobs import JobKind
 from jesinia.apps.review.domain.kept import (
     KEPT,
     REBASE_KINDS,
@@ -29,6 +31,7 @@ from jesinia.apps.review.domain.kept import (
     SYSTEM_DRAFT,
     SYSTEM_KIND,
     SYSTEM_PAGE_TITLE,
+    Authors,
     KeptComment,
     KeptRound,
     KeptState,
@@ -176,7 +179,7 @@ class KeepService:
         kept = self._kept_round(rnd)
         self._kb.require_available()
         tags = await self._tags_for(kept.repo)
-        section = round_section(kept, self._provenance(rnd), tags)
+        section = round_section(kept, self._authors(rnd), tags)
         async with self._lock(kept.url):
             page_id = await self._review_page(round_id, kept)
             if page_id is None:
@@ -271,12 +274,24 @@ class KeepService:
             ),
         )
 
-    def _provenance(self, rnd: RoundRecord) -> Provenance:
-        return Provenance(
-            self._store.job_runner(),
-            UNKNOWN_MODEL,
-            f"review-round-{rnd.id}",
-            rnd.finished_at or rnd.started_at,
+    def _author(self, rnd: RoundRecord, *jobs: JobKind) -> Provenance:
+        """Who wrote a part: the runner, model and session of the first of ``jobs`` that
+        recorded them (``<job>_agent``). A round from before that record names the runner
+        configured now, an unknown model and the round."""
+        at = rnd.finished_at or rnd.started_at
+        for job in jobs:
+            record = self._store.artifact(rnd.id, agent_artifact(job))
+            runner, session = _field(record, "runner"), _field(record, "session")
+            if isinstance(runner, str) and isinstance(session, str):
+                model = _field(record, "model")
+                return Provenance(runner, model if isinstance(model, str) else "", session, at)
+        return Provenance(self._store.job_runner(), UNKNOWN_MODEL, f"review-round-{rnd.id}", at)
+
+    def _authors(self, rnd: RoundRecord) -> Authors:
+        return Authors(
+            overview=self._author(rnd, JobKind.OVERVIEW),
+            walkthrough=self._author(rnd, JobKind.WALKTHROUGH),
+            findings=self._author(rnd, JobKind.FINDINGS, JobKind.CORRECTNESS),
         )
 
     async def _tags_for(self, repo: str) -> list[str]:
@@ -300,16 +315,12 @@ class KeepService:
         return names
 
     async def _review_page(self, round_id: int, kept: KeptRound) -> PageId | None:
-        """The PR's review page: the one this round was kept in, else the review page whose
-        source is the PR's URL (a page of another kind with that URL is never touched)."""
+        """The PR's review page: the one this round was kept in, else a review page whose
+        source is the PR's URL. Only those pages are read (a page of another kind with the
+        URL is never touched), so a first keep reads nothing."""
         recorded = KeptState.from_json(self._store.artifact(round_id, KEPT))
         candidates = [recorded.page_id] if recorded is not None and recorded.page_id else []
-        if (by_source := self._kb.index.by_source(kept.url)) is not None:
-            candidates.append(by_source)
-        # The index keeps one page per source: another page with the PR's URL may hide the
-        # review page, so the repo's review folder is looked through last.
-        folder = repo_folder(kept.repo)
-        candidates += [row.id for row in self._kb.index.all() if row.path.parent == folder]
+        candidates += self._kb.index.pages_by_source(kept.url)
         for candidate in dict.fromkeys(candidates):
             page_id = PageId(candidate)
             if self._kb.index.get(page_id) is None:
@@ -335,15 +346,28 @@ class KeepService:
 
     async def system_page(self, repo: str) -> PageWithRev | None:
         """The repo's ``Reviews/<owner>-<repo>/How it works.md``, if it exists and the KB
-        can be read."""
+        can be read. Two repos can share that folder (``a-b/c`` and ``a/b-c``): a page that
+        names another repo in ``jesinia.repo`` isn't this repo's."""
         if self._kb.files is None:
             return None
         row = self._kb.index.by_path(system_page_path(repo))
-        return None if row is None else await self._kb.read(row.id)
+        if row is None:
+            return None
+        page = await self._kb.read(row.id)
+        owner = page.page.jesinia.get("repo")
+        if isinstance(owner, str) and owner.lower() != canonical_repo(repo):
+            log.warning("review.keep %s is %s's How it works, not %s's", row.path, owner, repo)
+            return None
+        return page
 
     async def system_notes(self, repo: str) -> str:
         """The "How it works" body for a deep review's pack (``""`` when there is none). It
-        is anyone's to edit, so the jobs fence it as untrusted."""
+        is anyone's to edit, so the jobs fence it as untrusted.
+
+        Raises:
+            KbUnavailable: there is no KB to read (the round says so in a warning).
+        """
+        self._kb.require_available()
         page = await self.system_page(repo)
         return "" if page is None else page.page.body
 
@@ -351,7 +375,8 @@ class KeepService:
         """Draft the repo's "How it works": a seed when there is no page yet, or (once the
         round was posted as an approval) an update. The draft is stored with the round for
         the author to accept; nothing is written to the KB. Returns the draft's text, or
-        ``""`` when there is nothing to draft.
+        ``""`` when there is nothing to draft, in which case a draft still on offer is
+        withdrawn (a seed once someone made the page, say), so it stops offering Accept.
 
         Raises:
             NoReviewRound: no such round.
@@ -361,19 +386,24 @@ class KeepService:
         kept = self._kept_round(rnd)
         self._kb.require_available()
         current = await self.system_page(kept.repo)
-        provenance = self._provenance(rnd)
+        text, draft = "", None
         if current is None:
             background = _mappings(_field(self._store.artifact(rnd.id, "background"), "sections"))
-            text = system_seed(kept, background, provenance)
+            author = self._author(rnd, JobKind.BACKGROUND, JobKind.OVERVIEW)
+            text = system_seed(kept, background, author)
             draft = SystemDraft("seed", text, None, None, "proposed")
         elif kept.outcome == "approve":
-            text = system_update(current.page.body, kept, provenance)
+            author = self._author(rnd, JobKind.OVERVIEW, JobKind.WALKTHROUGH)
+            text = system_update(current.page.body, kept, author)
             draft = SystemDraft("update", text, current.rev, current.page.id, "proposed")
-        else:
-            return ""
-        if text:
+        if text and draft is not None:
             self._store.put_artifact(round_id, SYSTEM_DRAFT, draft.as_json())
-        return text
+            return text
+        stored = SystemDraft.from_json(self._store.artifact(round_id, SYSTEM_DRAFT))
+        if stored is not None and stored.state == "proposed":
+            withdrawn = SystemDraft(stored.kind, "", None, None, "withdrawn")
+            self._store.put_artifact(round_id, SYSTEM_DRAFT, withdrawn.as_json())
+        return ""
 
     async def _draft_quietly(self, round_id: int) -> None:
         """``propose_system_update`` unless the round's draft was accepted; a failure is
@@ -396,21 +426,27 @@ class KeepService:
     ) -> PageWithRev:
         """Write the round's drafted "How it works" (the author accepted it). ``base_rev``
         is the page revision of the draft the author was shown (``None`` for a seed). A
-        replay of an accepted draft writes nothing.
+        replay of an accepted draft writes nothing. When the page changed since the draft
+        was made, the draft is made again against the page as it is (or withdrawn, when
+        there is nothing left to offer) before the refusal, so the author's next look shows
+        a draft that can be accepted.
 
         Raises:
             NoReviewRound: the PR has no such round.
+            KbUnavailable: there is no KB to write.
             NoSystemDraft: the round has no draft to accept.
             SystemPageChanged: the page changed since the draft was made, or the author was
                 shown another draft; nothing was written.
             KbError: the KB couldn't be written.
         """
         rnd = self._round_of(ref, round_id)
-        draft = SystemDraft.from_json(self._store.artifact(rnd.id, SYSTEM_DRAFT))
-        if draft is None or draft.state == "failed" or not draft.text:
-            raise NoSystemDraft(f"round {rnd.id} has no drafted How it works to accept")
+        self._kb.require_available()
         repo = canonical_repo(rnd.ref.repo)
         async with self._lock(f"system:{repo}"):
+            # Read under the lock: a concurrent accept of the same draft may have written it.
+            draft = SystemDraft.from_json(self._store.artifact(rnd.id, SYSTEM_DRAFT))
+            if draft is None or draft.state not in ("proposed", "accepted"):
+                raise NoSystemDraft(f"round {rnd.id} has no drafted How it works to accept")
             current = await self.system_page(repo)
             if draft.state == "accepted" and current is not None:
                 return current
@@ -418,17 +454,21 @@ class KeepService:
                 raise SystemPageChanged(
                     "this draft of How it works was replaced by a newer one; review it again"
                 )
-            page = await self._write_system(repo, draft, current)
-        accepted = SystemDraft(draft.kind, draft.text, page.rev, page.page.id, "accepted")
-        self._record(rnd.id, SYSTEM_DRAFT, accepted.as_json())
+            try:
+                page = await self._write_system(repo, draft, current)
+            except SystemPageChanged:
+                await self._draft_quietly(rnd.id)
+                raise
+            accepted = SystemDraft(draft.kind, draft.text, page.rev, page.page.id, "accepted")
+            self._record(rnd.id, SYSTEM_DRAFT, accepted.as_json())
         return page
 
     async def _write_system(
         self, repo: str, draft: SystemDraft, current: PageWithRev | None
     ) -> PageWithRev:
         changed = SystemPageChanged(
-            "How it works changed since this draft was made; nothing was written, so your "
-            "edit is kept. Open the page to update it yourself."
+            "How it works changed since this draft was made, so nothing was written and the "
+            "edit is kept; the draft was made again against the page as it is now"
         )
         if draft.base_rev is None:  # a seed: there must still be no page
             if current is not None:

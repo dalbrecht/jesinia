@@ -516,20 +516,24 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       },
     );
   /** Write the drafted How it works the author accepted (spec §6.2); never over an edit. */
-  const acceptDraft = (draft: SystemDraft) =>
+  const acceptDraft = (roundId: number, draft: SystemDraft) =>
     keyed(`system:${repo}#${number}`, (key) =>
-      acceptSystemUpdate(client, repo, number, key, { roundId: round?.id ?? 0, baseRev: draft.base_rev }),
+      acceptSystemUpdate(client, repo, number, key, { roundId, baseRev: draft.base_rev }),
     ).then(
       () => {
         toast.show({ tone: "success", message: "How it works is updated." });
         reread();
       },
       (e: unknown) => {
-        if (e instanceof ReviewRequestError && e.code === "SystemPageChanged")
+        if (e instanceof ReviewRequestError && e.code === "SystemPageChanged") {
+          // The server drafted again against the page as it is (or withdrew the draft):
+          // the next read shows what can be accepted now.
+          reread();
           throw new Error(
-            "How it works changed since this draft was made, so nothing was written and the edit is kept. " +
-              "Choose Keep it again for a fresh draft, or edit the page in Notes.",
+            "How it works changed since that draft was made, so nothing was written and the edit is kept. " +
+              "Jesinia drafted it again against the page as it is now.",
           );
+        }
         throw new Error(`Couldn't update How it works: ${errorCause(e)}`);
       },
     );
@@ -692,12 +696,12 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
                 </Button>
               </div>
             ) : null}
-            {round?.done && round.depth === "deep" ? (
+            {round?.done && round.depth === "deep" && !artifacts.isRebase ? (
               <KeptReview
                 kept={artifacts.kept}
                 draft={artifacts.systemDraft}
                 onKeep={keepAgain}
-                onAccept={acceptDraft}
+                onAccept={(draft) => acceptDraft(round.id, draft)}
               />
             ) : null}
           </Recommendation>

@@ -366,7 +366,9 @@ async def test_invalid_agent_output_retries_once_then_fails_visibly(env: Env) ->
     env.script('{"verdict": "approve"}', f"```json\n{json.dumps(good)}\n```")
     assert await env.jobs.run(JobKind.RECOMMENDATION, a_round()) == good
     assert "reasoning" in env.prompts()[1]  # the validation error names the missing field
-    assert env.store.artifacts == {(11, "recommendation"): good}
+    # The output, and who wrote it (for a kept page's provenance).
+    assert env.store.artifacts[(11, "recommendation")] == good
+    assert set(env.store.artifacts) == {(11, "recommendation"), (11, "recommendation_agent")}
 
 
 HOSTILE_REPLIES = {

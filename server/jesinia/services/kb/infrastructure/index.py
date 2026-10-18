@@ -113,6 +113,12 @@ class SqliteIndex:
         )
         return [PageId(r[0]) for r in rows]
 
+    def pages_by_source(self, url: str) -> list[PageId]:
+        rows = self.conn.execute(
+            "SELECT page_id FROM page_sources WHERE url = ? ORDER BY page_id", (url,)
+        )
+        return [PageId(str(page_id)) for (page_id,) in rows]
+
     def by_source(self, url: str) -> PageId | None:
         r = self.conn.execute(
             "SELECT page_id FROM page_sources WHERE url = ? ORDER BY page_id LIMIT 1", (url,)

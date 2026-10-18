@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Final, Literal, cast
 
@@ -59,7 +59,8 @@ _GITHUB_URL = re.compile(r"https://github\.com/[^\s<>()\[\]`]+")
 
 KeptOutcome = Literal["kept", "failed"]
 DraftKind = Literal["seed", "update"]
-DraftState = Literal["proposed", "accepted", "failed"]
+# ``withdrawn``: nothing to offer any more (a seed once the page exists, or no update).
+DraftState = Literal["proposed", "accepted", "failed", "withdrawn"]
 
 
 class KeptPageError(ReviewError):
@@ -97,6 +98,15 @@ class Provenance:
             at=self.at,
             session=provenance_label(self.session),
         )
+
+
+@dataclass(frozen=True)
+class Authors:
+    """Who wrote each agent-written part of a round's section: the jobs that produced it."""
+
+    overview: Provenance
+    walkthrough: Provenance
+    findings: Provenance
 
 
 @dataclass(frozen=True)
@@ -193,7 +203,12 @@ class SystemDraft:
         if not isinstance(data, Mapping):
             return None
         kind, state = data.get("kind"), data.get("state")
-        if kind not in ("seed", "update") or state not in ("proposed", "accepted", "failed"):
+        if kind not in ("seed", "update") or state not in (
+            "proposed",
+            "accepted",
+            "failed",
+            "withdrawn",
+        ):
             return None
         text = data.get("text")
         return cls(
@@ -237,6 +252,11 @@ def review_title(number: int, title: str) -> str:
 # --- the kept page ------------------------------------------------------------------------------
 
 
+def _utc_stamp(at: datetime) -> str:
+    """``at`` in UTC, like the provenance stamps: the page reads the same on any host."""
+    return at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _one_line(text: str) -> str:
     return " ".join(inert(text).split())
 
@@ -265,7 +285,7 @@ def review_front_matter(
             "head": kept.head_sha,
             "verdict": kept.verdict,
             "outcome": kept.outcome,
-            "reviewed": kept.reviewed.astimezone().isoformat(timespec="seconds"),
+            "reviewed": _utc_stamp(kept.reviewed),
             "code": [{"repo": kept.repo, "path": path} for path in kept.paths[:CODE_MAX]],
         }
     )
@@ -298,9 +318,9 @@ def _close_marker(round_id: int) -> str:
     return f"<!-- /jesinia:review-round {round_id} -->"
 
 
-def round_section(kept: KeptRound, provenance: Provenance, tags: Sequence[str]) -> str:
+def round_section(kept: KeptRound, authors: Authors, tags: Sequence[str]) -> str:
     """The round's section of the page, between its markers."""
-    day = kept.reviewed.astimezone().date().isoformat()
+    day = kept.reviewed.astimezone(UTC).date().isoformat()
     outcome = _OUTCOME_WORDS.get(kept.outcome, _one_line(kept.outcome))
     verdict = _VERDICT_WORDS.get(kept.verdict or "", "none")
     facts = f"Head {_code(kept.head_sha[:12])} · Jesinia's verdict: {verdict}"
@@ -308,17 +328,17 @@ def round_section(kept: KeptRound, provenance: Provenance, tags: Sequence[str]) 
         facts += f" · <{kept.review_url}>"
     parts = [_open_marker(kept.round_id), f"## Round {kept.round_id}: {outcome}, {day}", facts]
     if kept.overview.strip():
-        parts += ["### Overview", provenance.wrap(kept.overview)]
+        parts += ["### Overview", authors.overview.wrap(kept.overview)]
     if kept.steps:
         listed = "\n".join(
             f"{n}. {_one_line(step)}" for n, step in enumerate(kept.steps[:STEPS_MAX], 1)
         )
-        parts += ["### Walkthrough", provenance.wrap(listed)]
+        parts += ["### Walkthrough", authors.walkthrough.wrap(listed)]
     mattered = findings_that_mattered(kept.findings)
     if mattered:
         parts += [
             "### Findings that mattered",
-            provenance.wrap("\n".join(_finding_line(item) for item in mattered)),
+            authors.findings.wrap("\n".join(_finding_line(item) for item in mattered)),
         ]
     notes = [inert(kept.summary.strip())] if kept.summary.strip() else []
     notes += [
@@ -333,14 +353,24 @@ def round_section(kept: KeptRound, provenance: Provenance, tags: Sequence[str]) 
     return "\n\n".join(parts)
 
 
+_ANY_OPEN = re.compile(r"<!-- jesinia:review-round \d+ -->")
+
+
 def merge_round_section(body: str, round_id: int, section: str) -> str:
-    """``body`` with the round's section replaced (between its markers), or appended."""
-    start = body.find(_open_marker(round_id))
-    if start != -1:
-        close = _close_marker(round_id)
+    """``body`` with the round's section replaced, or appended. A pair counts only when the
+    close marker comes before the next open marker of any round, and with more than one pair
+    the last wins: a marker the author broke never swallows the text after it."""
+    opening, close = _open_marker(round_id), _close_marker(round_id)
+    pair: tuple[int, int] | None = None
+    start = body.find(opening)
+    while start != -1:
         end = body.find(close, start)
-        if end != -1:
-            return body[:start] + section + body[end + len(close) :]
+        following = _ANY_OPEN.search(body, start + len(opening))
+        if end != -1 and (following is None or end < following.start()):
+            pair = (start, end + len(close))
+        start = body.find(opening, start + len(opening))
+    if pair is not None:
+        return body[: pair[0]] + section + body[pair[1] :]
     if not body.strip():
         return f"{section}\n"
     return f"{body.rstrip()}\n\n{section}\n"
@@ -380,7 +410,7 @@ def system_update(current: str, kept: KeptRound, provenance: Provenance) -> str:
         items.append("\n".join(f"- {_one_line(step)}" for step in kept.steps[:STEPS_MAX]))
     if not items:
         return ""
-    day = kept.reviewed.astimezone().date().isoformat()
+    day = kept.reviewed.astimezone(UTC).date().isoformat()
     heading = f"## What {_one_line(review_title(kept.number, kept.title))} changed ({day})"
     text = provenance.wrap("\n\n".join(items))
     return (

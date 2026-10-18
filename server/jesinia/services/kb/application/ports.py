@@ -103,6 +103,10 @@ class PageIndex(Protocol):
 
     def by_source(self, url: str) -> PageId | None: ...
 
+    def pages_by_source(self, url: str) -> list[PageId]:
+        """Every page whose source is ``url``, by id (``by_source`` gives only the first)."""
+        ...
+
     def reset(self) -> None:
         """Forget everything (a different KB root)."""
         ...

@@ -107,7 +107,7 @@ export type SystemDraft = {
   kind: "seed" | "update";
   text: string;
   base_rev: string | null;
-  state: "proposed" | "accepted" | "failed";
+  state: "proposed" | "accepted" | "failed" | "withdrawn";
   error: string | null;
 };
 
@@ -133,9 +133,12 @@ export type Artifacts = {
   rereview: Rereview | null;
   kept: KeptPage | null;
   systemDraft: SystemDraft | null;
+  /** A rebase round (spec §8): Jesinia never keeps it as a page. */
+  isRebase: boolean;
 };
 
 const REREVIEW_KINDS = new Set(["rereview", "changed_hunks_only"]);
+const REBASE_KINDS = new Set(["still_approved", "changed_hunks_only"]);
 
 type Json = Record<string, unknown>;
 const record = (x: unknown): Json | null =>
@@ -191,9 +194,11 @@ export function readArtifacts(view: PrView): Artifacts {
     rereview: rereviewOf(a.rereview),
     kept: keptOf(a.kept),
     systemDraft: systemDraftOf(a.system_draft),
+    isRebase: REBASE_KINDS.has(String(record(a.followup)?.kind)),
   };
 }
 
+const DRAFT_STATES = new Set<SystemDraft["state"]>(["proposed", "accepted", "failed", "withdrawn"]);
 const text = (x: unknown): string | null => (typeof x === "string" ? x : null);
 
 function keptOf(x: unknown): KeptPage | null {
@@ -205,8 +210,9 @@ function keptOf(x: unknown): KeptPage | null {
 function systemDraftOf(x: unknown): SystemDraft | null {
   const d = record(x);
   if (!d || (d.kind !== "seed" && d.kind !== "update")) return null;
-  if (d.state !== "proposed" && d.state !== "accepted" && d.state !== "failed") return null;
-  return { kind: d.kind, text: text(d.text) ?? "", base_rev: text(d.base_rev), state: d.state, error: text(d.error) };
+  if (!DRAFT_STATES.has(d.state as SystemDraft["state"])) return null;
+  const state = d.state as SystemDraft["state"];
+  return { kind: d.kind, text: text(d.text) ?? "", base_rev: text(d.base_rev), state, error: text(d.error) };
 }
 
 function previousOf(x: unknown): PreviousReview | null {

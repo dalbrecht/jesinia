@@ -99,6 +99,13 @@ COMMIT_MESSAGE_CHARS = 4_000
 KNOWLEDGE_CHARS = 8_000
 KNOWLEDGE_SOURCE = "jesinia:knowledge-model"
 SYSTEM_NOTES_CHARS = 16_000
+
+
+def agent_artifact(job: JobKind) -> str:
+    """The round artifact that names who ran ``job``."""
+    return f"{job.value}_agent"
+
+
 SYSTEM_NOTES_SOURCE = "kb:How it works"
 # Jesinia's own words (trusted), sent only when a deep findings job has the repo's notes.
 SYSTEM_NOTES_INSTRUCTION: Final = (
@@ -265,6 +272,8 @@ class JobSessions(Protocol):
     ) -> Session: ...
 
     async def ask(self, session_id: str, prompt: str, *, timeout: float = 45.0) -> str: ...
+
+    def get(self, session_id: str) -> Session: ...
 
     async def close(self, session_id: str) -> None: ...
 
@@ -597,6 +606,8 @@ class JobRunner:
             except WorkspaceError as exc:
                 raise JobFailed(job, exc) from exc
             output = await self._ask(job, session.id, schema, _request(job, depth, schema))
+            if round_id is not None:
+                self._record_agent(job, round_id, session.id, runner)
             # Before the unbind drops it: what the tools really returned to this session,
             # against which the pass's claimed ranges are checked (M7). Stored first, so a
             # stored pass always has its record.
@@ -610,6 +621,18 @@ class JobRunner:
             self._registry.unbind(session.id)
             await self._sessions.close(session.id)
         return output
+
+    def _record_agent(self, job: JobKind, round_id: int, session_id: str, runner: str) -> None:
+        """Who wrote the job's output (``<job>_agent``): the runner, the model it reported at
+        the end of its turn (``None`` when it reports none) and the session, for the
+        provenance of a kept page (spec §8)."""
+        try:
+            model = self._sessions.get(session_id).model
+        except Exception as exc:  # the record is secondary to the output
+            log.warning("review job %s: couldn't read session %s: %s", job.value, session_id, exc)
+            model = None
+        record = {"runner": runner, "model": model, "session": session_id}
+        self._store.put_artifact(round_id, agent_artifact(job), record)
 
     async def correctness_depth(self, round: Round) -> Depth:
         """The correctness pass's depth: the round's, except deep for agent-written PRs."""
