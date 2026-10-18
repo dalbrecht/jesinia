@@ -19284,14 +19284,20 @@
           "count": {
             "type": "integer",
             "title": "Count"
+          },
+          "publishable": {
+            "type": "boolean",
+            "title": "Publishable"
           }
         },
         "type": "object",
         "required": [
           "tag",
-          "count"
+          "count",
+          "publishable"
         ],
-        "title": "ThemeSummaryOut"
+        "title": "ThemeSummaryOut",
+        "description": "A theme; ``publishable`` is false when ``theme:<tag>`` is too long for a GitHub label (it\nstays a local theme and filter)."
       },
       "ThemedIssueOut": {
         "properties": {

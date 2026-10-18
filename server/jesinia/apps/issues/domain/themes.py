@@ -24,7 +24,10 @@ from jesinia.apps.issues.domain.changes import EnsureLabel, InvalidChangeError
 from jesinia.apps.issues.domain.epics import (
     ConversionPlan,
     Facts,
+    Key,
+    Node,
     SkippedItem,
+    existing_epic_plan,
     inline_code,
     new_epic_plan,
 )
@@ -117,6 +120,16 @@ def theme_label_change(repo: str, tag: str) -> EnsureLabel:
     return EnsureLabel(repo, f"{THEME_PREFIX}{tag}", THEME_COLOR, f"Theme #{tag} (Jesinia)")
 
 
+def is_publishable(tag: str) -> bool:
+    """Whether the theme's ``theme:<tag>`` fits a GitHub label. A longer tag still works as a
+    local theme and filter; only publishing it is refused."""
+    try:
+        theme_label(tag)
+    except InvalidThemeError:
+        return False
+    return True
+
+
 def has_theme_label(labels: Iterable[str], tag: str) -> bool:
     """Whether an issue's ``labels`` already include the theme's label."""
     wanted = label_key(f"{THEME_PREFIX}{tag}")
@@ -128,10 +141,14 @@ def theme_epic_plan(
     repo: str,
     members: Sequence[Facts],
     uncached: Sequence[tuple[str, int]],
+    existing: Node | None = None,
+    ancestors: Sequence[Key] = (),
 ) -> ConversionPlan:
     """The plan turning the theme into an epic created in ``repo``: its cached issues
     (``members``, in order) become children unless ``new_epic_plan`` skips them (another
-    owner's, under a parent already, listed twice); its ``uncached`` ones are skipped.
+    owner's, under a parent already, listed twice); its ``uncached`` ones are skipped. With
+    ``existing`` (the epic an unfinished batch for the theme created, whose ``ancestors`` are
+    given, ruling IR53) nothing is created: only the children it lacks are linked under it.
 
     Raises:
         InvalidThemeError: ``repo`` isn't one of the theme's issues' repos.
@@ -142,8 +159,11 @@ def theme_epic_plan(
         raise InvalidThemeError(
             f"the epic goes in one of the theme's repos: {', '.join(sorted(repos.values()))}"
         )
-    title = EPIC_TITLE_PREFIX + inline_code(tag, limit=TITLE_LIMIT - len(EPIC_TITLE_PREFIX))
-    body = f"Grouped by Jesinia from the theme {inline_code(f'#{tag}')}."
-    plan = new_epic_plan(home, title, body, members)
+    if existing is not None:
+        plan = existing_epic_plan(existing, ancestors, members)
+    else:
+        title = EPIC_TITLE_PREFIX + inline_code(tag, limit=TITLE_LIMIT - len(EPIC_TITLE_PREFIX))
+        body = f"Grouped by Jesinia from the theme {inline_code(f'#{tag}')}."
+        plan = new_epic_plan(home, title, body, members)
     missing = tuple(SkippedItem(f"{r}#{n}", NOT_CACHED) for r, n in uncached)
     return replace(plan, skipped=(*plan.skipped, *missing))

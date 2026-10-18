@@ -358,7 +358,7 @@ async def test_themes_start_with_the_module_and_use_the_kb_tag_catalog(
 
     # Without the kb service, new themes wait; reads carry on.
     await module.start(AppContext(cfg, EventBus(), Scheduler()))
-    assert isinstance(module.themes, ThemeService) and module.themes.themes() == []
+    assert isinstance(module.themes, ThemeService) and await module.themes.themes() == []
     with pytest.raises(ThemesUnavailableError):
         await module.themes.add([("acme/web", 1)], "sync")
     await module.stop()
@@ -372,6 +372,6 @@ async def test_themes_start_with_the_module_and_use_the_kb_tag_catalog(
     ctx.services["tags"] = TagService(kb, None)
     await module.start(ctx)
     added = await module.themes.add([("acme/web", 1)], "#Sync")
-    assert added.tag == "sync" and module.themes.of_issue("acme/web", 1) == ["sync"]
+    assert added.tag == "sync" and await module.themes.of_issue("acme/web", 1) == ["sync"]
     await module.stop()
     kb_conn.close()

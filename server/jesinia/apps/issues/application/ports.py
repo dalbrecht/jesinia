@@ -42,7 +42,7 @@ from jesinia.services.github.domain.issue import (
     Page,
     TimelineEvent,
 )
-from jesinia.services.kb.application.tags import TagCheck
+from jesinia.services.kb.application.tags import TagCheck, TagInfo
 
 SchemaSource = Literal["default", "repo", "settings"]
 
@@ -668,8 +668,13 @@ class ThemeStore(Protocol):
     def of_issue(self, repo: str, n: int) -> list[str]:
         """The issue's themes, by tag."""
 
+    def retag(self, old: str, new: str) -> None:
+        """Rename a theme on every issue (a catalog rename or merge), merging into ``new`` where
+        an issue has both, in one transaction; its epic batches follow."""
+
     def record_epic(self, tag: str, batch_id: str, now: datetime) -> None:
-        """Keep a batch that turns the theme into an epic."""
+        """Keep a batch that turns the theme into an epic (once; recording it again is a
+        no-op)."""
 
     def epic_batches(self, tag: str) -> list[str]:
         """The batches that turned the theme into an epic, oldest first."""
@@ -684,3 +689,6 @@ class ThemeTags(Protocol):
 
     async def ensure(self, tags: Iterable[str]) -> list[str]:
         """The canonical catalog names for ``tags``, adding new ones all-or-nothing."""
+
+    async def catalog(self) -> list[TagInfo]:
+        """The approved and retired tags, with their aliases."""

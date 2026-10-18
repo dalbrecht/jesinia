@@ -602,26 +602,44 @@ def _reconverted(
     return Existing(found.repo, found.n), already
 
 
-def new_epic_plan(
-    repo: str, title: str, body: str, members: Sequence[Facts], temp_id: str = "epic"
-) -> ConversionPlan:
-    """A plan creating the epic itself (in ``repo``, with no labels: its children make it an
-    epic) and linking ``members`` under it, each checked as ``plan_conversion`` checks links."""
-    create = CreateIssue(temp_id, repo, _title(title), body)
-    parent = Node(repo, 0)
+def _member_children(
+    parent: Node, ancestors: Sequence[Key], members: Sequence[Facts]
+) -> tuple[list[PlannedChild], list[SkippedItem]]:
+    """``members`` as the children of ``parent``, each checked as ``plan_conversion`` checks
+    links, and those skipped with why."""
     planned: list[PlannedChild] = []
     skipped: list[SkippedItem] = []
     seen: set[Key] = set()
     for found in members:
         name = f"{found.repo}#{found.n}"
-        reason = _linkable(parent, (), found, seen, found.key)
+        reason = _linkable(parent, ancestors, found, seen, found.key)
         if reason is not None:
             skipped.append(SkippedItem(name, reason))
             continue
         seen.add(found.key)
         warning = CROSS_REPO_WARNING if is_cross_repo(parent, found.node) else None
         planned.append(PlannedChild(name, Existing(found.repo, found.n), name, False, warning))
+    return planned, skipped
+
+
+def new_epic_plan(
+    repo: str, title: str, body: str, members: Sequence[Facts], temp_id: str = "epic"
+) -> ConversionPlan:
+    """A plan creating the epic itself (in ``repo``, with no labels: its children make it an
+    epic) and linking ``members`` under it, each checked as ``plan_conversion`` checks links."""
+    create = CreateIssue(temp_id, repo, _title(title), body)
+    planned, skipped = _member_children(Node(repo, 0), (), members)
     return _plan(create, New(temp_id), planned, [create], skipped)
+
+
+def existing_epic_plan(
+    epic: Node, ancestors: Sequence[Key], members: Sequence[Facts]
+) -> ConversionPlan:
+    """A plan linking ``members`` under an epic that already exists (one an unfinished batch
+    created), each checked as ``plan_conversion`` checks links: one already under it is
+    skipped ("already under …"), so only the missing children are linked."""
+    planned, skipped = _member_children(epic, ancestors, members)
+    return _plan(IssueRef(epic.repo, epic.n), Existing(epic.repo, epic.n), planned, [], skipped)
 
 
 # Proposals -----------------------------------------------------------------------------------

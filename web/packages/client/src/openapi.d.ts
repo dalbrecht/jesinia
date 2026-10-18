@@ -4708,12 +4708,18 @@ export interface components {
             /** Removed */
             removed: number;
         };
-        /** ThemeSummaryOut */
+        /**
+         * ThemeSummaryOut
+         * @description A theme; ``publishable`` is false when ``theme:<tag>`` is too long for a GitHub label (it
+         *     stays a local theme and filter).
+         */
         ThemeSummaryOut: {
             /** Tag */
             tag: string;
             /** Count */
             count: number;
+            /** Publishable */
+            publishable: boolean;
         };
         /**
          * ThemedIssueOut

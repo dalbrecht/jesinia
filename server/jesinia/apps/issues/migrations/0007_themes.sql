@@ -16,8 +16,8 @@ CREATE TABLE issue_themes (
 -- A theme's issues, for its drop target, its filter, publishing and its epic.
 CREATE INDEX issue_themes_by_tag ON issue_themes (tag);
 
--- The batches that turned a theme into an epic: while one runs, or one created the epic and
--- didn't finish, approving again is refused (it would create a second epic).
+-- The batches that turned a theme into an epic: while one runs, approving again is refused;
+-- when one created the epic and didn't finish, the next plan links under that epic (IR53).
 CREATE TABLE theme_epics (
     tag TEXT NOT NULL,
     batch_id TEXT NOT NULL,

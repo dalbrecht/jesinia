@@ -1647,7 +1647,7 @@ async def test_theme_routes_add_locally_publish_to_the_tray_and_make_an_epic(env
     replay = await env.client.post(f"{THEMES}/Sync Reliability/issues", json=issues, headers=key)
     assert replay.json() == added.json()
     listed = (await env.client.get(THEMES)).json()
-    assert listed == {"themes": [{"tag": "sync-reliability", "count": 2}]}
+    assert listed == {"themes": [{"tag": "sync-reliability", "count": 2, "publishable": True}]}
     theme = (await env.client.get(f"{THEMES}/sync-reliability")).json()
     assert [(i["n"], i["state"]) for i in theme["issues"]] == [(1, "open"), (2, "open")]
     assert env.github.writes == []  # local and immediate

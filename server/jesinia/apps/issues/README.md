@@ -188,7 +188,7 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `issue_themes`: each issue's themes, by the catalog's canonical tag. The catalog itself is the
   KB's `Tags.md`, which this module never writes except through `TagService.ensure`.
 - `theme_epics`: the batches that turned a theme into an epic, so a second approval is refused
-  while one runs or didn't finish.
+  while one runs, and an unfinished one's epic is reused.
 
 ## Jobs
 
@@ -313,22 +313,24 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - `POST /queues/from-priority` with `{suggestion_id, queue_id | name, description?}` (exactly
     one of `queue_id` and `name`, else 422) turns a priority draft's order into a new queue, or
     appends it to one.
-  - `GET /themes`: every theme with its number of issues, by tag. `GET /themes/{tag}`: its
-    issues, from the cache (the theme as a filter; 404 when no issue has it).
+  - `GET /themes`: every theme with its number of issues and `publishable`, by catalog tag.
+    `GET /themes/{tag}`: its issues, from the cache (the theme as a filter; 404 when no issue
+    has it; an old name of a renamed tag answers under the new one).
   - `POST /themes/{tag}/issues` with `{issues: [{repo, n}]}` gives cached issues the theme (201
     with the catalog `tag` and the issues `added`, for Undo). A near-duplicate of a catalog tag
     is a 409 (`ThemeNearDuplicateError`); without the kb service it is a 503
     (`ThemesUnavailableError`). `POST /themes/{tag}/issues/remove` with the same body takes it
     off (local; the catalog keeps the tag).
   - `POST /themes/{tag}/publish` with `{repo}` stages the label setup step and the label
-    additions (201 with the staged changes; steps already in the tray are reused). A repo where
-    no cached issue of the theme lacks the label is a 409 (`NothingToPublishError`).
+    additions (201 with the staged changes; steps already in the tray are reused). A theme no
+    issue has is a 404; a repo where no cached issue of the theme lacks the label is a 409
+    (`NothingToPublishError`).
   - `GET /themes/{tag}/epic?repo`: the plan turning the theme into an epic created in `repo`,
     with its `title`, `body`, children, what is skipped and `digest`; nothing is written. `POST`
     the same path with `{repo, digest}` approves it: a 202 with the batch (`origin` `epic`) and
     `Location`. A plan changed since, or with no children, is a 409, and so is a second
-    approval while an earlier epic for the theme runs or didn't finish
-    (`ThemeEpicRunningError`: retry that batch).
+    approval while an earlier epic for the theme still runs (`ThemeEpicRunningError`). After
+    an unfinished one, the plan links the missing children under the epic it created.
   - The tray (`GET /pending`) shows a label setup step with `n` `null` and
     `change.kind` `ensure_label`, and a label addition as `add_label`.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
@@ -527,11 +529,21 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   live before each add). The label is created only by the staged setup step: if the author undoes
   it, the additions fail with `MissingLabelError` and nothing is created (IR4). A publish that
   can't stage every change takes back what it staged.
-- **One epic per theme at a time:** a theme epic is one approved batch keyed by the digest of the
+- **Never a second epic (IR53):** a theme epic is one approved batch keyed by the digest of the
   plan the author saw (IR27, IR45, IR46). The epic is created with no labels. Another repo's
-  issue gets the "won't fit one PR" warning and another owner's is refused (IR17). While an
-  earlier epic for the theme runs, or didn't finish, a new approval is refused: retry that batch
-  instead, so a second epic is never created.
+  issue gets the "won't fit one PR" warning and another owner's is refused (IR17). Only an
+  earlier epic for the theme that is still running refuses a new approval (409). When one
+  finished incomplete, the next plan reuses the epic it created (from the stored batch result)
+  and links only the missing children. One cut off while the epic itself was being sent may have
+  created it, so that one asks to check GitHub and retry it. The batch is recorded for the
+  theme on a replay of the key too, so a record the first request couldn't write isn't lost.
+- **Catalog renames and merges (IR54):** every theme call resolves the stored tags through the
+  KB catalog's aliases and rewrites the rows to the canonical name, so a renamed or merged tag
+  lists and filters under its new name, and the old name still finds it. Without the catalog
+  (or when it can't be read, logged with the cause) the stored names are used.
+- **Long tags:** a tag whose `theme:<tag>` is longer than GitHub's 50-character label limit is a
+  local theme and filter only: `publishable` is false in `GET /themes`, and publishing it is a
+  400.
 - **Posted text (IR49):** the epic's title and body carry the tag only as code.
 
 ## How suggestions stay safe

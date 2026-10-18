@@ -1574,12 +1574,16 @@ class ThemeRemoveOut(BaseModel):
 
 
 class ThemeSummaryOut(BaseModel):
+    """A theme; ``publishable`` is false when ``theme:<tag>`` is too long for a GitHub label (it
+    stays a local theme and filter)."""
+
     tag: str
     count: int
+    publishable: bool
 
     @classmethod
     def of(cls, theme: ThemeSummary) -> ThemeSummaryOut:
-        return cls(tag=theme.tag, count=theme.count)
+        return cls(tag=theme.tag, count=theme.count, publishable=theme.publishable)
 
 
 class ThemesOut(BaseModel):

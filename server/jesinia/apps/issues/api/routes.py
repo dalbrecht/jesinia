@@ -158,7 +158,6 @@ from jesinia.apps.issues.domain.themes import (
     ThemeNearDuplicateError,
     ThemeNotFoundError,
     ThemesUnavailableError,
-    theme_tag,
 )
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
@@ -1133,7 +1132,7 @@ def build_router(host: IssuesHost) -> APIRouter:
         of drop targets (local; no GitHub)."""
 
         async def run() -> ThemesOut:
-            return ThemesOut(themes=[ThemeSummaryOut.of(t) for t in host.themes.themes()])
+            return ThemesOut(themes=[ThemeSummaryOut.of(t) for t in await host.themes.themes()])
 
         return await _respond(run, host.clock)
 
@@ -1143,8 +1142,9 @@ def build_router(host: IssuesHost) -> APIRouter:
         when no issue has it."""
 
         async def run() -> ThemeOut:
-            found = [ThemedIssueOut.of(i) for i in host.themes.issues(tag)]
-            return ThemeOut(tag=theme_tag(tag), issues=found)
+            name = await host.themes.canonical(tag)
+            found = [ThemedIssueOut.of(i) for i in await host.themes.issues(name)]
+            return ThemeOut(tag=name, issues=found)
 
         return await _respond(run, host.clock)
 
@@ -1169,7 +1169,7 @@ def build_router(host: IssuesHost) -> APIRouter:
         catalog."""
 
         async def run() -> ThemeRemoveOut:
-            return ThemeRemoveOut(removed=host.themes.remove(body.refs(), tag))
+            return ThemeRemoveOut(removed=await host.themes.remove(body.refs(), tag))
 
         return await idem.run(lambda: _respond(run, host.clock))
 
@@ -1187,7 +1187,7 @@ def build_router(host: IssuesHost) -> APIRouter:
         and the label is created only by that setup step. 409 when no issue there needs it."""
 
         async def run() -> Response:
-            published = host.themes.publish(tag, body.repo)
+            published = await host.themes.publish(tag, body.repo)
             return JSONResponse(
                 jsonable_encoder(ThemePublishOut.of(published)),
                 status_code=status.HTTP_201_CREATED,
@@ -1204,7 +1204,8 @@ def build_router(host: IssuesHost) -> APIRouter:
         another owner's refused), and what is skipped and why. Writes nothing."""
 
         async def run() -> ThemeEpicPlanOut:
-            return ThemeEpicPlanOut.of(theme_tag(tag), host.themes.to_epic(tag, repo))
+            name = await host.themes.canonical(tag)
+            return ThemeEpicPlanOut.of(name, await host.themes.to_epic(name, repo))
 
         return await _respond(run, host.clock)
 
@@ -1225,7 +1226,7 @@ def build_router(host: IssuesHost) -> APIRouter:
         epic for the theme runs or didn't finish (retry that batch)."""
 
         async def run() -> Response:
-            started = host.themes.start_epic(
+            started = await host.themes.start_epic(
                 tag, body.repo, body.digest, _request_key("theme-epic", idem), host.apply
             )
             return _started(started.id, ApplyBatchOut.of(started))

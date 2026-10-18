@@ -13,17 +13,19 @@ from jesinia.apps.issues.domain.changes import (
     New,
     SetParent,
 )
-from jesinia.apps.issues.domain.epics import CROSS_REPO_WARNING, Facts
+from jesinia.apps.issues.domain.epics import CROSS_REPO_WARNING, Facts, Node
 from jesinia.apps.issues.domain.themes import (
     THEME_PREFIX,
     InvalidThemeError,
     ThemeDomainError,
     has_theme_label,
+    is_publishable,
     theme_epic_plan,
     theme_label,
     theme_label_change,
     theme_tag,
 )
+from jesinia.services.github.domain.issue import IssueRef
 
 REPO, OTHER, ELSEWHERE = "acme/web", "acme/api", "globex/web"
 
@@ -91,3 +93,20 @@ def test_theme_epic_plan_goes_in_one_of_the_tags_repos() -> None:
     # An uncached issue's repo counts too.
     plan = theme_epic_plan("sync", OTHER, [facts(1)], uncached=[(OTHER, 4)])
     assert isinstance(plan.epic, CreateIssue) and plan.epic.repo == OTHER
+
+
+def test_theme_epic_plan_reuses_an_epic_an_unfinished_batch_created() -> None:
+    epic = Node(REPO, 50)
+    members = [facts(1, parent=(REPO, 50)), facts(2), facts(3, parent=(REPO, 9))]
+    plan = theme_epic_plan("sync", REPO, members, uncached=[], existing=epic, ancestors=())
+    assert plan.epic == IssueRef(REPO, 50) and plan.changes.repo == ()
+    assert [c.target for c in plan.children] == [Existing(REPO, 2)]
+    assert dict(plan.changes.issues)[Existing(REPO, 2)][0] == SetParent(
+        Existing(REPO, 50), True, None
+    )
+    assert {s.item for s in plan.skipped} == {f"{REPO}#1", f"{REPO}#3"}
+
+
+def test_a_theme_is_publishable_only_when_its_label_fits() -> None:
+    assert is_publishable("sync")
+    assert not is_publishable("a" * 45)

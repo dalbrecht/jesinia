@@ -66,6 +66,16 @@ class SqliteThemeStore:
         )
         return [str(tag) for (tag,) in rows]
 
+    def retag(self, old: str, new: str) -> None:
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE OR IGNORE issue_themes SET tag = ? WHERE tag = ?", (new, old)
+            )
+            # What is left had both: the issue keeps ``new``.
+            self._conn.execute("DELETE FROM issue_themes WHERE tag = ?", (old,))
+            self._conn.execute("UPDATE OR IGNORE theme_epics SET tag = ? WHERE tag = ?", (new, old))
+            self._conn.execute("DELETE FROM theme_epics WHERE tag = ?", (old,))
+
     def record_epic(self, tag: str, batch_id: str, now: datetime) -> None:
         self._conn.execute(
             "INSERT OR IGNORE INTO theme_epics (tag, batch_id, created_at) VALUES (?, ?, ?)",

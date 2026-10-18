@@ -16,7 +16,13 @@ A theme is a tag from the KB-wide catalog, kept locally per issue (``issue_theme
   the label read live before each add); the label is created only by the setup step (IR4).
 - **Turning one into an epic** (``to_epic``, ``start_epic``) is the Task 8 ``ConversionPlan``
   (IR27), applied as one approved batch in the background (IR45, IR46): the epic is created
-  (no labels) and the theme's issues are linked under it.
+  (no labels) and the theme's issues are linked under it. Only a theme epic still running
+  blocks another approval; when an earlier one didn't finish, the next plan reuses the epic it
+  created and links only the missing children (IR53), so a second epic is never made.
+- **Catalog renames and merges** are followed (IR54): every call resolves the stored tags
+  through the catalog's aliases and rewrites the rows to the canonical name, so a renamed tag
+  lists, and filters, under its new name (and the old name still finds it). Without the
+  catalog the stored names are used as they are.
 
 The catalog is looked up per call (the kb service starts first, but may be stopped): without
 it new themes wait (``ThemesUnavailableError``) while reads, removing, publishing and epics
@@ -29,7 +35,12 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from jesinia.apps.issues.application.epics import BatchStarter, FactsCache, facts_of
+from jesinia.apps.issues.application.epics import (
+    BatchStarter,
+    FactsCache,
+    ancestors_of,
+    facts_of,
+)
 from jesinia.apps.issues.application.labels import Clock
 from jesinia.apps.issues.application.pending import PendingService
 from jesinia.apps.issues.application.ports import (
@@ -40,6 +51,8 @@ from jesinia.apps.issues.application.ports import (
     ThemeTags,
 )
 from jesinia.apps.issues.domain.changes import (
+    IN_FLIGHT,
+    UNSURE,
     AddLabel,
     ChangeBatch,
     EnsureLabel,
@@ -49,6 +62,8 @@ from jesinia.apps.issues.domain.epics import (
     ConversionOutdatedError,
     ConversionPlan,
     Facts,
+    Key,
+    Node,
     NothingToConvertError,
 )
 from jesinia.apps.issues.domain.schema import label_key
@@ -61,6 +76,7 @@ from jesinia.apps.issues.domain.themes import (
     ThemeNotFoundError,
     ThemesUnavailableError,
     has_theme_label,
+    is_publishable,
     theme_epic_plan,
     theme_label,
     theme_label_change,
@@ -90,8 +106,12 @@ class ThemeAdded:
 
 @dataclass(frozen=True)
 class ThemeSummary:
+    """A theme, its number of issues, and whether its ``theme:<tag>`` fits a GitHub label (a
+    longer tag is a local theme only)."""
+
     tag: str
     count: int
+    publishable: bool
 
 
 @dataclass(frozen=True)
@@ -148,21 +168,76 @@ class ThemeService:
         self._clock = clock
         self._batches = batches
 
+    # The catalog's names (IR54) -------------------------------------------------------
+
+    async def _names(self) -> dict[str, str]:
+        """Each catalog tag and alias, mapped to its canonical tag (tags win over aliases, as
+        in the catalog's own ``resolve``). Empty without the catalog: best effort, a failure is
+        logged with its cause and the stored names are used."""
+        catalog = self._tags()
+        if catalog is None:
+            return {}
+        try:
+            infos = await catalog.catalog()
+        except (KbError, OSError) as exc:
+            log.warning(
+                "issues.themes: reading the tag catalog failed (%s: %s); using stored names",
+                type(exc).__name__,
+                exc,
+            )
+            return {}
+        names = {alias: info.tag for info in infos for alias in info.aliases}
+        names.update({info.tag: info.tag for info in infos})
+        return names
+
+    async def _reconcile(self) -> dict[str, str]:
+        """Rewrite stored themes whose tag the catalog now names otherwise (renamed, or merged
+        into another), and answer the catalog's names."""
+        names = await self._names()
+        for stored, _ in self._store.themes():
+            canonical = names.get(stored, stored)
+            if canonical != stored:
+                self._store.retag(stored, canonical)
+        return names
+
+    async def canonical(self, raw: str) -> str:
+        """``raw`` as a theme's tag, by its catalog name (an old name of a renamed tag gives
+        the new one).
+
+        Raises:
+            InvalidThemeError: not a tag.
+        """
+        return await self._tag(raw)
+
+    async def _tag(self, raw: str) -> str:
+        """``raw`` as a tag, by its catalog name, after the stored themes are reconciled.
+
+        Raises:
+            InvalidThemeError: not a tag.
+        """
+        tag = theme_tag(raw)
+        names = await self._reconcile()
+        return names.get(tag, tag)
+
     # Reads ------------------------------------------------------------------------------
 
-    def themes(self) -> list[ThemeSummary]:
+    async def themes(self) -> list[ThemeSummary]:
         """Every theme with its number of issues, by tag (the column of drop targets)."""
-        return [ThemeSummary(tag, count) for tag, count in self._store.themes()]
+        await self._reconcile()
+        return [
+            ThemeSummary(tag, count, is_publishable(tag)) for tag, count in self._store.themes()
+        ]
 
-    def issues(self, raw: str) -> list[ThemedIssue]:
-        """The theme's issues, by repo and number (the theme as a filter).
+    async def issues(self, raw: str) -> list[ThemedIssue]:
+        """The theme's issues, by repo and number (the theme as a filter). An old name of a
+        renamed tag finds them too.
 
         Raises:
             InvalidThemeError: not a tag.
             ThemeNotFoundError: no issue carries it.
         """
         found = []
-        for repo, n in self._refs(theme_tag(raw)):
+        for repo, n in self._refs(await self._tag(raw)):
             cached = self._cache.cached_issue(repo, n)
             if cached is None:
                 found.append(ThemedIssue(repo, n, None, None, None))
@@ -171,9 +246,11 @@ class ThemeService:
             found.append(ThemedIssue(issue.repo, n, issue.title, issue.state, issue.url))
         return found
 
-    def of_issue(self, repo: str, n: int) -> list[str]:
+    async def of_issue(self, repo: str, n: int) -> list[str]:
         """The issue's themes, by tag."""
-        return self._store.of_issue(validate_repo(repo), n)
+        checked = validate_repo(repo)
+        await self._reconcile()
+        return self._store.of_issue(checked, n)
 
     def _refs(self, tag: str) -> list[Ref]:
         refs = self._store.issues(tag)
@@ -233,7 +310,7 @@ class ThemeService:
         added = self._store.add(issues, canonical, self._clock())
         return ThemeAdded(canonical, tuple(added))
 
-    def remove(self, refs: Sequence[Ref], raw: str) -> int:
+    async def remove(self, refs: Sequence[Ref], raw: str) -> int:
         """Take the theme off these issues, locally (an Undo of an add too); how many had it.
         The catalog entry stays (IR22).
 
@@ -242,12 +319,12 @@ class ThemeService:
             InvalidRepoError: a repo isn't ``owner/name``.
         """
         self._bounded(refs)
-        tag = theme_tag(raw)
-        return self._store.remove([(validate_repo(r), n) for r, n in refs], tag)
+        checked = [(validate_repo(r), n) for r, n in refs]
+        return self._store.remove(checked, await self._tag(raw))
 
     # Publishing (staged, IR4) -----------------------------------------------------------
 
-    def publish(self, raw: str, repo: str) -> ThemePublish:
+    async def publish(self, raw: str, repo: str) -> ThemePublish:
         """Stage the theme's label in ``repo``: the setup step creating ``theme:<tag>`` and the
         label addition for each of the theme's cached issues there that lacks it. A step the
         tray already holds is reused, so publishing twice stages nothing more. Nothing reaches
@@ -256,14 +333,15 @@ class ThemeService:
         Raises:
             InvalidThemeError: not a tag, or one too long for a GitHub label.
             InvalidRepoError: ``repo`` isn't ``owner/name``.
+            ThemeNotFoundError: no issue carries it.
             NothingToPublishError: no cached issue of the theme in ``repo`` lacks the label.
         """
-        tag = theme_tag(raw)
-        label = theme_label(tag)
         home = validate_repo(repo).casefold()
+        tag = await self._tag(raw)
+        label = theme_label(tag)
         lacking: list[CachedIssue] = []
         already: list[Ref] = []
-        for ref in self._store.issues(tag):
+        for ref in self._refs(tag):
             cached = self._cache.cached_issue(*ref)
             if cached is None or cached.issue.repo.casefold() != home:
                 continue
@@ -340,13 +418,14 @@ class ThemeService:
 
     # An epic (one approved batch, IR27) -------------------------------------------------
 
-    def to_epic(self, raw: str, repo: str, digest: str | None = None) -> ConversionPlan:
+    async def to_epic(self, raw: str, repo: str, digest: str | None = None) -> ConversionPlan:
         """The plan turning the theme into an epic created in ``repo`` (one of its issues'
         repos): its cached issues become the children (those in ``repo`` first, then by repo
-        and number), each checked
-        like a conversion's link (another owner's refused, another repo warned, one with a
-        parent skipped). With ``digest`` (an approval) the plan must still be the one the
-        author saw and must have children.
+        and number), each checked like a conversion's link (another owner's refused, another
+        repo warned, one with a parent skipped). When an earlier epic for the theme didn't
+        finish, the plan reuses the epic it created and links only the missing children
+        (IR53). With ``digest`` (an approval) the plan must still be the one the author saw and
+        must have children.
 
         Raises:
             InvalidThemeError: not a tag, or ``repo`` isn't one of the theme's repos.
@@ -354,8 +433,10 @@ class ThemeService:
             ConversionOutdatedError: the plan changed since ``digest``.
             NothingToConvertError: approving a plan with no children.
         """
-        tag = theme_tag(raw)
         home = validate_repo(repo)
+        return self._plan(await self._tag(raw), home, digest)
+
+    def _plan(self, tag: str, home: str, digest: str | None) -> ConversionPlan:
         members: list[Facts] = []
         uncached: list[Ref] = []
         # The epic's own repo first, then the others, each by number.
@@ -369,7 +450,8 @@ class ThemeService:
                 uncached.append(ref)
             else:
                 members.append(found)
-        plan = theme_epic_plan(tag, home, members, uncached)
+        existing, ancestors = self._reusable_epic(tag)
+        plan = theme_epic_plan(tag, home, members, uncached, existing, ancestors)
         if digest is not None:
             if plan.digest != digest:
                 raise ConversionOutdatedError(
@@ -380,31 +462,47 @@ class ThemeService:
                 raise NothingToConvertError(f"the theme #{tag} has no issue left to link")
         return plan
 
-    def start_epic(
+    def _reusable_epic(self, tag: str) -> tuple[Node | None, tuple[Key, ...]]:
+        """The epic the latest unfinished (finished incomplete, or interrupted) batch for the
+        theme created, with its ancestors, or ``None``: the next plan links under it rather
+        than creating a second epic (IR53)."""
+        for batch_id in reversed(self._store.epic_batches(tag)):
+            earlier = self._batches.batch(batch_id)
+            if earlier is None or earlier.status == "running" or earlier.result.complete:
+                continue
+            made = earlier.result.created.get("epic")
+            if made is None:
+                continue
+            found = facts_of(self._cache, made.repo, made.n)
+            node = Node(made.repo, made.n) if found is None else found.node
+            return node, ancestors_of(self._cache, made.repo, made.n)
+        return None, ()
+
+    async def start_epic(
         self, raw: str, repo: str, digest: str, key: str | None, starter: BatchStarter
     ) -> AppliedBatch:
         """Approve the epic previewed with ``digest``: one batch through the apply engine, in
-        the background (IR45); a replay of ``key`` answers its batch (IR46). Refused while an
-        earlier epic for the theme runs or didn't finish, which approving again could repeat.
+        the background (IR45); a replay of ``key`` answers its batch (IR46). Refused only while
+        an earlier epic for the theme is still running, or was cut off while creating the epic
+        (it may exist: check GitHub, then retry that batch). The batch is recorded for the
+        theme on a replay too, so a record the first request couldn't write is never lost.
 
         Raises:
-            ThemeEpicRunningError: see above (retry that batch instead).
+            ThemeEpicRunningError: see above.
             Others: as ``to_epic``.
         """
-        tag = theme_tag(raw)
-        made: list[ChangeBatch] = []
+        home = validate_repo(repo)
+        tag = await self._tag(raw)
 
         def make() -> ChangeBatch:
-            self._check_earlier(tag)
-            made.append(self.to_epic(tag, repo, digest).changes)
-            return made[0]
+            self._check_running(tag)
+            return self._plan(tag, home, digest).changes
 
         started = starter.start_batch(make, "epic", key)
-        if made:  # a new batch, not a replay: nothing awaited since it was stored
-            self._store.record_epic(tag, started.id, self._clock())
+        self._store.record_epic(tag, started.id, self._clock())
         return started
 
-    def _check_earlier(self, tag: str) -> None:
+    def _check_running(self, tag: str) -> None:
         for batch_id in self._store.epic_batches(tag):
             earlier = self._batches.batch(batch_id)
             if earlier is None:  # pruned with the batches it outlived
@@ -414,8 +512,12 @@ class ThemeService:
                     f"an epic for the theme #{tag} is still being made (batch {batch_id}); "
                     "wait for it"
                 )
-            if not earlier.result.complete:
+            unsure = any(
+                r.step.kind == "create_issue" and r.cause in (IN_FLIGHT, UNSURE)
+                for r in earlier.result.results
+            )
+            if unsure:
                 raise ThemeEpicRunningError(
-                    f"an earlier epic for the theme #{tag} didn't finish; retry batch "
-                    f"{batch_id} rather than making a second epic"
+                    f"batch {batch_id} was cut off while creating the theme #{tag}'s epic, so "
+                    f"it may exist; check GitHub, then retry batch {batch_id}"
                 )
