@@ -1117,6 +1117,10 @@ def test_parse_commit_log_drops_a_cut_last_record() -> None:
     cut_files = record + _record("b" * 40, "1\t1\tpartial")[:-1]
     assert len(parse_commit_log(cut_files.encode(), complete=False)) == 1
     assert len(parse_commit_log(cut_files.encode())) == 2  # complete: the last is whole
+    # N3: cut exactly on a NUL boundary, the last record can't prove it ended: dropped.
+    assert len(parse_commit_log((record * 2).encode(), complete=False)) == 1
+    header_only = record + _record("b" * 40)
+    assert len(parse_commit_log(header_only.encode(), complete=False)) == 1
 
 
 def test_parse_commit_log_reads_by_structure_and_skips_what_it_cannot(
@@ -1209,3 +1213,23 @@ async def test_identity_email_reads_the_global_git_identity(
     config.write_text("[[[ not a config\n")
     with pytest.raises(GitCommandError):
         await ws.identity_email()
+
+
+async def test_commit_log_reads_a_rename_as_delete_plus_add(
+    tmp_path: Path, history: tuple[Path, list[str]]
+) -> None:
+    """N4: ``--no-renames`` keeps a rename parseable (a delete and an add); a binary file
+    counts 0 lines."""
+    remote, _ = history
+    work = tmp_path / "renames"
+    subprocess.run(["git", "clone", "-q", str(remote), str(work)], check=True, capture_output=True)
+    git(work, "mv", "src/sync/a.py", "src/sync/moved.py")
+    (work / "more.bin").write_bytes(b"\0\1\2\3")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "move", "--author", "Me <me@example.com>")
+    git(work, "push", "-q", "origin", "main")
+    ws = GitWorkspace(tmp_path / "repos", lambda repo: str(remote))
+    await ws.ensure_mirror(REPO)
+    tip = await ws.fetch_default_branch(REPO)
+    newest = (await ws.commit_log(REPO, tip, after=None, since=None, limit=1)).commits[0]
+    assert dict(newest.files) == {"src/sync/a.py": 3, "src/sync/moved.py": 3, "more.bin": 0}

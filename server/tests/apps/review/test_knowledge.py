@@ -19,6 +19,7 @@ from jesinia.apps.review.application.errors import (
     KnowledgeSourceError,
 )
 from jesinia.apps.review.application.knowledge import (
+    LEGACY_ROUND_GRACE,
     CommitLog,
     KnowledgeService,
     PendingRound,
@@ -135,6 +136,18 @@ def test_familiarity(
 ) -> None:
     record = UnitRecord(Unit.path_unit("acme/web", "src"), exposures(*seen), override)
     assert familiarity(record, NOW, changes, dist, prior=prior) == pytest.approx(expected)
+
+
+def test_commits_never_tip_a_weak_signal_over_the_quick_line() -> None:
+    """N2: commits are anyone's to claim, so they can't be what crosses ``LOW_FAMILIARITY``."""
+    weak: list[tuple[ExposureKind, timedelta]] = [("review_quick", 30 * DAY)]
+    commits: list[tuple[ExposureKind, timedelta]] = [("commit", 0 * DAY)] * 50
+    alone = recency(exposures(*weak), NOW)
+    assert alone < LOW_FAMILIARITY
+    tipped = recency(exposures(*weak, *commits), NOW)
+    assert alone <= tipped < LOW_FAMILIARITY
+    strong: list[tuple[ExposureKind, timedelta]] = [("review_deep", 1 * DAY)]
+    assert recency(exposures(*strong, *commits), NOW) > recency(exposures(*strong), NOW)
 
 
 def test_commits_alone_never_propose_quick() -> None:
@@ -332,13 +345,15 @@ def test_summary_labels_outside_the_safe_charset_become_opaque(unit: Unit) -> No
     """R79: names reach agents only in ``[A-Za-z0-9._/-]`` and short; else a short hash."""
     entry = SummaryEntry(unit, 0.5, None, "review_deep", NOW, 0)
     text = render_summary(WEB, [entry], unknown=0, topics=[(unit, 0.5)], now=NOW)
-    assert summary_label(unit) == f"area-{hashlib.sha256(unit.id.encode()).hexdigest()[:8]}"
+    # N6: a form the safe charset can't produce, so no folder can imitate it.
+    assert summary_label(unit) == f"(area {hashlib.sha256(unit.id.encode()).hexdigest()[:8]})"
     assert summary_label(unit) in text
     for word in ("Ignore", "quoted", "xxxxxxxxxx", "naïve", "café"):
         assert word not in text
     assert summary_label(Unit.path_unit(WEB, "src/a-b_c.d")) == "src/a-b_c.d"
     assert summary_label(Unit.path_unit(WEB, "")) == "(repo root)"
     assert summary_label(Unit.tag_unit("ops")) == "#ops"
+    assert summary_label(Unit.path_unit(WEB, "area-deadbeef")) == "area-deadbeef"
 
 
 def test_summary_stops_at_its_budget_and_lines_without_history() -> None:
@@ -1063,3 +1078,33 @@ async def test_a_new_folder_in_a_well_known_repo_still_proposes_deep(kenv: KEnv)
     novel = kenv.service.familiarity(WEB, ["src/a.py", "src/brand_new/x.py"])
     assert novel is not None and novel < LOW_FAMILIARITY
     assert propose_depth(10, 1, novel) == "deep"
+
+
+async def test_a_legacy_round_without_paths_is_settled_after_a_while(kenv: KEnv) -> None:
+    """N7: a round from before paths were stored, whose PR has left the queue, isn't asked
+    about forever: past ``LEGACY_ROUND_GRACE`` it is settled with nothing to count."""
+    kenv.done_round(1, "deep", ["src/a.py"], stored_paths=False)
+    kenv.conn.execute("DELETE FROM pr_files")
+    assert (await kenv.service.ingest()).reviews == 0
+    assert len(kenv.store.pending_rounds()) == 1
+    kenv.clock.now = NOW + LEGACY_ROUND_GRACE + DAY
+    assert (await kenv.service.ingest()).reviews == 0
+    assert kenv.store.pending_rounds() == []
+
+
+async def test_a_page_with_no_commit_under_the_cut_is_warned(
+    kenv: KEnv, caplog: pytest.LogCaptureFixture
+) -> None:
+    """N3: one commit bigger than the read limit gives an empty, cut page: said, not silent."""
+
+    @dataclass
+    class Huge(FakeWorkspace):
+        async def commit_log(self, repo: str, tip: str, **kwargs: object) -> CommitLog:
+            return CommitLog((), truncated=True)
+
+    service = KnowledgeService(
+        store=kenv.store, clock=kenv.clock, workspace=Huge(), identity=FakeIdentity(),
+        repos=lambda: [WEB],
+    )  # fmt: skip
+    await service.ingest()
+    assert "is over the read limit" in caplog.text

@@ -811,8 +811,8 @@ def parse_commit_log(data: bytes, *, complete: bool = True) -> list[LoggedCommit
     and the email, then one token per file (``added\tdeleted\tpath``, the first after a
     newline) up to the next empty token. Paths can hold anything but NUL. A record that
     doesn't parse, and anything between records, is skipped and logged; nothing raises.
-    When the output was cut (``complete`` false), a last record running to the cut is
-    dropped."""
+    When the output was cut (``complete`` false), the last record is dropped: nothing
+    after it proves it ended."""
     tokens = data.split(b"\0")
     count = len(tokens)
     commits: list[LoggedCommit] = []
@@ -824,8 +824,9 @@ def parse_commit_log(data: bytes, *, complete: bool = True) -> list[LoggedCommit
                 break  # a header cut short
             while end < count and tokens[end]:
                 end += 1
-            if end >= count and not complete:
-                break  # the last record runs to where the output was cut: dropped
+            if end >= count - 1 and not complete:
+                # The last record: a cut, even on a NUL boundary, can't prove it ended (N3).
+                break
             parsed = _parse_record(tokens[position + 1 : end])
             if parsed is not None:
                 commits.append(parsed)

@@ -18,7 +18,7 @@ import hashlib
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from jesinia.apps.review.application.errors import KnowledgeSourceError
@@ -59,6 +59,9 @@ VIEW_LIMIT = 500
 LOG_PAGES = 10
 # Churn rows stored per write, yielding to the event loop between writes (M4).
 CHURN_CHUNK = 5_000
+# A round from before rounds kept their paths, with no cached file list left, is settled
+# with nothing to count after this long, rather than asked about at every ingest (N7).
+LEGACY_ROUND_GRACE = timedelta(days=30)
 
 
 @dataclass(frozen=True)
@@ -304,7 +307,10 @@ class KnowledgeService:
         added = 0
         for item in pending:
             if item.files is None:
-                continue  # counted once its PR's file list is cached
+                # Counted once its PR's file list is cached; settled empty when it never is.
+                if self._clock() - item.at > LEGACY_ROUND_GRACE:
+                    self._store.add_exposures(f"{prefix}:{item.round_id}", [])
+                continue
             rows = [(unit, item.kind, item.at) for unit in _round_units(item.repo, item.files)]
             added += self._store.add_exposures(f"{prefix}:{item.round_id}", rows)
         return added
@@ -391,7 +397,14 @@ class KnowledgeService:
                 repo, tip, after=after, since=since, limit=COMMIT_LOG_LIMIT, skip=len(commits)
             )
             commits += read.commits
-            if not read.truncated or not read.commits:
+            if read.truncated and not read.commits:
+                log.warning(
+                    "knowledge ingest: a commit of %s is over the read limit; its history "
+                    "from there is not read",
+                    repo,
+                )
+                return commits
+            if not read.truncated:
                 return commits
         log.warning("knowledge ingest: %s's history was cut at %d commits", repo, len(commits))
         return commits
@@ -534,6 +547,7 @@ class KnowledgeService:
 
 __all__ = [
     "COMMIT_LOG_LIMIT",
+    "LEGACY_ROUND_GRACE",
     "CommitLog",
     "IngestReport",
     "KnowledgeService",

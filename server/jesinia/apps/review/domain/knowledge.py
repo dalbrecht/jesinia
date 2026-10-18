@@ -273,7 +273,8 @@ def _aware(now: datetime) -> None:
 def recency(exposures: Iterable[Exposure], now: datetime) -> float:
     """How recently and how much the author engaged: ``1 - Π(1 - weight · decay)``, the
     decay halving every ``HALF_LIFE`` (an exposure in the future counts as now); commits
-    together count at most ``COMMIT_RECENCY_CAP`` (R80)."""
+    together count at most ``COMMIT_RECENCY_CAP`` (R80), and never lift the rest of the
+    evidence from below ``LOW_FAMILIARITY`` to above it (N2)."""
     _aware(now)
     unseen, commits_unseen = 1.0, 1.0
     for exposure in exposures:
@@ -284,7 +285,12 @@ def recency(exposures: Iterable[Exposure], now: datetime) -> float:
         else:
             unseen *= miss
     commits = min(1.0 - commits_unseen, COMMIT_RECENCY_CAP)
-    return 1.0 - unseen * (1.0 - commits)
+    combined = 1.0 - unseen * (1.0 - commits)
+    own = 1.0 - unseen
+    if own >= LOW_FAMILIARITY:
+        return combined
+    # Commits are anyone's to claim, so they never carry a unit over the quick line (N2).
+    return min(combined, max(own, COMMIT_RECENCY_CAP))
 
 
 def last_exposure(exposures: Iterable[Exposure]) -> datetime | None:
@@ -366,13 +372,14 @@ def familiarity(
 
 def summary_label(unit: Unit) -> str:
     """A unit's name as agents see it (R79): only ``[A-Za-z0-9._/-]`` and short, or else an
-    opaque ``area-<hash>``. Folder names and tags are anyone's to write."""
+    opaque ``(area <hash>)``. Folder names and tags are anyone's to write."""
     if unit.tag is None and not unit.path:
         return _ROOT_LABEL
     name = unit.tag if unit.tag is not None else unit.path
     if _SAFE_LABEL.fullmatch(name):
         return f"#{name}" if unit.tag is not None else name
-    return f"area-{hashlib.sha256(unit.id.encode()).hexdigest()[:8]}"
+    # A space and parentheses: a form no folder name in the safe charset can imitate (N6).
+    return f"(area {hashlib.sha256(unit.id.encode()).hexdigest()[:8]})"
 
 
 def churn_by_prefix(files: Iterable[tuple[str, int]]) -> dict[str, int]:
