@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from jesinia.apps.issues.application.ports import CachedIssue, IssueCache, RepoState, ViewCache
+from jesinia.apps.issues.domain.schema import unmapped_labels
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
     IssueNotCachedError,
@@ -84,6 +85,13 @@ class IssueQueries:
     def repos(self) -> list[RepoState]:
         """Every repo the author added, watched or not."""
         return self._cache.all_repos()
+
+    def unmapped(self, state: RepoState) -> list[str]:
+        """The repo's cached labels its effective schema doesn't map (see ``unmapped_labels``),
+        for Settings to offer as aliases."""
+        return unmapped_labels(
+            (label.name for label in self._cache.labels(state.repo)), state.schema
+        )
 
     def detail(self, repo: str, n: int) -> IssueDetail:
         """Any cached issue, its repo watched or not: an opened issue's tab keeps working after

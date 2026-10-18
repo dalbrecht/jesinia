@@ -505,6 +505,16 @@ async def test_should_refuse_a_patch_that_names_nothing_or_a_null_watched(env: E
     assert bad.status_code == 400 and bad.json()["error"] == "InvalidSettingsSchemaError"
 
 
+async def test_should_list_each_repos_labels_its_schema_does_not_map(env: Env) -> None:
+    env.github.set_labels("design needed", "bug", "wontfix", "review:bot", "area:web")
+    await env.watch_and_sync()
+    repo = (await env.client.get(f"{API}/repos")).json()["repos"][0]
+    # "design needed" is an alias in labels.yml; review: is free-form; area:web is an area.
+    assert repo["unmapped_labels"] == ["wontfix"]
+    patched = await env.client.patch(REPO_PATH, json={"watched": True}, headers=keyed())
+    assert patched.json()["unmapped_labels"] == ["wontfix"]
+
+
 async def test_should_round_trip_the_suggestion_runner(env: Env) -> None:
     got = await env.client.get(f"{API}/settings")
     assert got.status_code == 200 and got.json() == {"runner": None}

@@ -4,7 +4,7 @@ titles, bodies, labels and comments are the issue authors' text: the PWA shows i
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
@@ -183,7 +183,8 @@ class IssuesRepoOut(BaseModel):
     """A repo the author added. ``label_schema`` is the effective one and ``schema_source`` where
     it came from: ``repo`` (its ``.jesinia/labels.yml``, which wins while it exists),
     ``settings`` (``settings_schema``) or ``default``. ``schema_errors`` lists what labels.yml
-    couldn't use."""
+    couldn't use. ``unmapped_labels`` are the repo's cached labels that schema doesn't map (not a
+    value, an alias, an area or a free-form prefix), as GitHub spells them: aliases to pick."""
 
     repo: str
     watched: bool
@@ -195,9 +196,10 @@ class IssuesRepoOut(BaseModel):
     migrated: bool
     synced_at: datetime | None
     sync_error: str | None
+    unmapped_labels: list[str]
 
     @classmethod
-    def of(cls, state: RepoState) -> IssuesRepoOut:
+    def of(cls, state: RepoState, unmapped: Sequence[str]) -> IssuesRepoOut:
         settings = state.settings_schema
         return cls(
             repo=state.repo,
@@ -210,6 +212,7 @@ class IssuesRepoOut(BaseModel):
             migrated=state.migrated,
             synced_at=state.synced_at,
             sync_error=state.sync_error,
+            unmapped_labels=list(unmapped),
         )
 
 

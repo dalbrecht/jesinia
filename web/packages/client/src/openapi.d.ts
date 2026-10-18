@@ -3793,7 +3793,8 @@ export interface components {
          * @description A repo the author added. ``label_schema`` is the effective one and ``schema_source`` where
          *     it came from: ``repo`` (its ``.jesinia/labels.yml``, which wins while it exists),
          *     ``settings`` (``settings_schema``) or ``default``. ``schema_errors`` lists what labels.yml
-         *     couldn't use.
+         *     couldn't use. ``unmapped_labels`` are the repo's cached labels that schema doesn't map (not a
+         *     value, an alias, an area or a free-form prefix), as GitHub spells them: aliases to pick.
          */
         IssuesRepoOut: {
             /** Repo */
@@ -3820,6 +3821,8 @@ export interface components {
             synced_at: string | null;
             /** Sync Error */
             sync_error: string | null;
+            /** Unmapped Labels */
+            unmapped_labels: string[];
         };
         /**
          * IssuesRepoPatch

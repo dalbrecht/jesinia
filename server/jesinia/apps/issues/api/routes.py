@@ -396,7 +396,9 @@ def build_router(host: IssuesHost) -> APIRouter:
         """Every repo added in Settings → Issues, with its schema and sync state."""
 
         async def run() -> IssuesReposOut:
-            return IssuesReposOut(repos=[IssuesRepoOut.of(s) for s in host.queries.repos()])
+            return IssuesReposOut(
+                repos=[IssuesRepoOut.of(s, host.queries.unmapped(s)) for s in host.queries.repos()]
+            )
 
         return await _respond(run, host.clock)
 
@@ -413,7 +415,7 @@ def build_router(host: IssuesHost) -> APIRouter:
             state = await host.sync.configure(
                 _repo(owner, repo), watched=body.watched, settings_schema=schema
             )
-            return IssuesRepoOut.of(state)
+            return IssuesRepoOut.of(state, host.queries.unmapped(state))
 
         return await idem.run(lambda: _respond(run, host.clock))
 
@@ -433,7 +435,7 @@ def build_router(host: IssuesHost) -> APIRouter:
             state = await host.sync.update(
                 _repo(owner, repo), watched=body.watched, settings_schema=schema
             )
-            return IssuesRepoOut.of(state)
+            return IssuesRepoOut.of(state, host.queries.unmapped(state))
 
         return await idem.run(lambda: _respond(run, host.clock))
 
@@ -465,7 +467,8 @@ def build_router(host: IssuesHost) -> APIRouter:
         async def run() -> IssuesRepoOut:
             name = _repo(owner, repo)
             await host.sync.sync(name)
-            return IssuesRepoOut.of(host.sync.state(name))
+            state = host.sync.state(name)
+            return IssuesRepoOut.of(state, host.queries.unmapped(state))
 
         return await idem.run(lambda: _respond(run, host.clock))
 

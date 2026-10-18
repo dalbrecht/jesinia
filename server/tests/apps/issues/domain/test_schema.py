@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 import tracemalloc
 import unicodedata
+from dataclasses import replace
 
 import pytest
 
@@ -20,6 +21,7 @@ from jesinia.apps.issues.domain.schema import (
     classify,
     parse_labels_yml,
     schema_from_mapping,
+    unmapped_labels,
     validate_settings_schema,
     write_name,
 )
@@ -362,3 +364,21 @@ def test_nfd_label_on_github_classifies() -> None:
     classified = classify(["agent-ready", nfd], schema)
     assert classified.areas == [unicodedata.normalize("NFC", "area:café")]
     assert classified.readiness == "agent-ready" and classified.unknown == []
+
+
+def test_should_list_the_labels_the_schema_does_not_map_in_their_github_spelling() -> None:
+    schema = replace(
+        DEFAULT_SCHEMA,
+        readiness=(*DEFAULT_SCHEMA.readiness[:3], Canonical("design-needed", ("design needed",))),
+    )
+    labels = [
+        "Design Needed",  # an alias, in another case
+        "bug",  # canonical
+        "area:web",  # an area by its prefix
+        "review:bot",  # a free-form prefix
+        "wontfix",
+        "Good First Issue",
+        "wontfix",  # listed once
+        "b‮ug",  # not "bug": kept as it is, for the UI's visible tokens
+    ]
+    assert unmapped_labels(labels, schema) == ["wontfix", "Good First Issue", "b‮ug"]

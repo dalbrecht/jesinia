@@ -210,6 +210,9 @@ class IssueCache(ViewCache, Protocol):
     def all_repos(self) -> list[RepoState]:
         """Every repo the author added, watched or not, by name."""
 
+    def labels(self, repo: str) -> list[Label]:
+        """The repo's labels as last synced."""
+
     def cached_issue(self, repo: str, n: int) -> CachedIssue | None: ...
 
     def comments(self, repo: str, n: int) -> list[IssueComment]: ...
