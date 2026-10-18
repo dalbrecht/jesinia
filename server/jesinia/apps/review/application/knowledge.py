@@ -4,11 +4,11 @@ keep their corrections, and answer the pipeline: the familiarity a depth is prop
 and the summary in every agent's ContextPack.
 
 Ingest is a secondary subsystem: best-effort and error-isolated. Each source (finished
-rounds, quiz results, KB pages, each repo's history) runs on its own; a failure is logged
+rounds, quiz results, each repo's history) runs on its own; a failure is logged
 with its cause and reported, and never stops another source, a round or a posting. Every
 signal is stored once, keyed by its source id (``commit:<repo>:<sha>``, ``round:<id>``,
-``quiz:<id>``, ``kb:<page>``, whose newest revision replaces the last), so running it
-again changes nothing.
+``quiz:<id>``), so running it again changes nothing. KB pages are left out (R84): a page
+in the KB isn't necessarily the author's, so it isn't evidence of what they know.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ from jesinia.apps.review.domain.knowledge import (
     Unit,
     UnitRecord,
     churn_by_prefix,
-    code_units,
     distance,
     familiarity,
     last_exposure,
@@ -48,8 +47,6 @@ from jesinia.apps.review.domain.knowledge import (
 from jesinia.apps.review.domain.queue import PrRef
 from jesinia.apps.review.domain.stacks import RoundNotOfPr
 from jesinia.apps.review.domain.workspace import WorkspaceError, canonical_repo
-from jesinia.services.kb.domain.tag_catalog import indexed_tags
-from jesinia.services.kb.domain.tags import is_valid_tag
 
 log = logging.getLogger(__name__)
 
@@ -58,8 +55,6 @@ Clock = Callable[[], datetime]
 COMMIT_LOG_LIMIT = 20_000
 # Units GET /knowledge lists at most.
 VIEW_LIMIT = 500
-# Tags one KB page adds as topics at most.
-PAGE_TAGS_MAX = 20
 # Pages of ``COMMIT_LOG_LIMIT`` commits one history read goes through (M2).
 LOG_PAGES = 10
 # Churn rows stored per write, yielding to the event loop between writes (M4).
@@ -72,23 +67,6 @@ class CommitLog:
 
     commits: tuple[LoggedCommit, ...]
     truncated: bool = False
-
-
-@dataclass(frozen=True)
-class PageRev:
-    """A KB page's id and revision, and when it last changed."""
-
-    page_id: str
-    rev: str
-    changed_at: datetime
-
-
-@dataclass(frozen=True)
-class PageContent:
-    """A KB page's front matter (``jesinia``) and body: untrusted data, only read."""
-
-    jesinia: Mapping[str, object]
-    body: str
 
 
 @dataclass(frozen=True)
@@ -160,15 +138,6 @@ class KnowledgeStore(Protocol):
         """Keep a round's quiz result; ``False`` when it already has one (the first counts)."""
         ...
 
-    def page_revs(self) -> dict[str, str]:
-        """The revision each KB page was last read at."""
-        ...
-
-    def record_page(self, page_id: str, rev: str, rows: Sequence[ExposureRow]) -> bool:
-        """Replace the page's exposures with this revision's (M8) and remember the revision
-        as read. ``True`` when it has any."""
-        ...
-
     def prune(self, before: datetime) -> None:
         """Forget churn and exposures older than ``before`` (their weight is negligible)."""
         ...
@@ -207,14 +176,6 @@ class ViewerEmails(Protocol):
     async def viewer_emails(self) -> list[str]: ...
 
 
-class KnowledgePages(Protocol):
-    """KB pages, read through the KB service."""
-
-    def page_revs(self) -> list[PageRev]: ...
-
-    async def page(self, page_id: str) -> PageContent | None: ...
-
-
 @dataclass(frozen=True)
 class IngestReport:
     """What one ingest added (new sources) and each failure, with its cause."""
@@ -222,7 +183,6 @@ class IngestReport:
     commits: int = 0
     reviews: int = 0
     quizzes: int = 0
-    pages: int = 0
     errors: tuple[str, ...] = ()
 
 
@@ -280,15 +240,10 @@ def _round_units(repo: str, files: Iterable[str]) -> list[Unit]:
     return list(found.values())
 
 
-def _page_tags(content: PageContent) -> list[Unit]:
-    tags = [t for t in indexed_tags(content.body, content.jesinia) if is_valid_tag(t)]
-    return [Unit.tag_unit(tag) for tag in dict.fromkeys(tags)][:PAGE_TAGS_MAX]
-
-
 class KnowledgeService:
     """The knowledge model over ``store``. Without ``workspace`` no history is read, without
-    ``identity`` only the local git identity's email is matched, without ``pages`` no KB
-    page is read. ``repos`` lists the repos whose history is read (those with a mirror)."""
+    ``identity`` only the local git identity's email is matched. ``repos`` lists the repos
+    whose history is read (those with a mirror)."""
 
     def __init__(
         self,
@@ -297,14 +252,12 @@ class KnowledgeService:
         clock: Clock,
         workspace: KnowledgeWorkspace | None = None,
         identity: ViewerEmails | None = None,
-        pages: KnowledgePages | None = None,
         repos: Callable[[], Iterable[str]] = _no_repos,
     ) -> None:
         self._store = store
         self._clock = clock
         self._workspace = workspace
         self._identity = identity
-        self._pages = pages
         self._repos = repos
         self._lock = asyncio.Lock()
 
@@ -316,10 +269,9 @@ class KnowledgeService:
             errors: list[str] = []
             reviews = self._guard("finished rounds", self._ingest_rounds, errors, 0)
             quizzes = self._guard("quiz results", self._ingest_quizzes, errors, 0)
-            pages = await self._guard_async("KB pages", self._ingest_pages, errors)
             commits = await self._guard_async("commits", self._ingest_commits_all, errors)
             self._guard("pruning", self._prune, errors, None)
-            return IngestReport(commits, reviews, quizzes, pages, tuple(errors))
+            return IngestReport(commits, reviews, quizzes, tuple(errors))
 
     def _guard[T](self, what: str, step: Callable[[], T], errors: list[str], fallback: T) -> T:
         try:
@@ -355,27 +307,6 @@ class KnowledgeService:
                 continue  # counted once its PR's file list is cached
             rows = [(unit, item.kind, item.at) for unit in _round_units(item.repo, item.files)]
             added += self._store.add_exposures(f"{prefix}:{item.round_id}", rows)
-        return added
-
-    async def _ingest_pages(self, errors: list[str]) -> int:
-        if self._pages is None:
-            return 0
-        known = self._store.page_revs()
-        added = 0
-        for rev in self._pages.page_revs():
-            if known.get(rev.page_id) == rev.rev:
-                continue
-            try:
-                content = await self._pages.page(rev.page_id)
-            except Exception as exc:  # secondary: one unreadable page never stops the rest
-                self._failed(f"KB page {rev.page_id}", exc, errors)
-                continue
-            units = [] if content is None else list(code_units(content.jesinia))
-            if units and content is not None:
-                units += _page_tags(content)
-            rows: list[ExposureRow] = [(unit, "kb_page", rev.changed_at) for unit in units]
-            if self._store.record_page(rev.page_id, rev.rev, rows):
-                added += 1
         return added
 
     async def _emails(self, workspace: KnowledgeWorkspace) -> set[str]:
@@ -605,13 +536,10 @@ __all__ = [
     "COMMIT_LOG_LIMIT",
     "CommitLog",
     "IngestReport",
-    "KnowledgePages",
     "KnowledgeService",
     "KnowledgeStore",
     "KnowledgeView",
     "KnowledgeWorkspace",
-    "PageContent",
-    "PageRev",
     "PendingRound",
     "RepoState",
     "UnitView",

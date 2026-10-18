@@ -33,7 +33,6 @@ from jesinia.apps.review.application.scheduler import (
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.queue import SyncStatus
-from jesinia.apps.review.infrastructure.kb_pages import KbKnowledgePages
 from jesinia.apps.review.infrastructure.knowledge_store import SqliteKnowledgeStore
 from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
@@ -44,7 +43,6 @@ from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
-from jesinia.services.kb.application.service import KbService
 
 log = logging.getLogger(__name__)
 
@@ -185,8 +183,8 @@ class ReviewModule:
         if self._knowledge is not None:
             report = await self._knowledge.ingest()
             log.info(
-                "knowledge ingest: %d commits, %d reviews, %d quizzes, %d KB pages, %d errors",
-                report.commits, report.reviews, report.quizzes, report.pages, len(report.errors),
+                "knowledge ingest: %d commits, %d reviews, %d quizzes, %d errors",
+                report.commits, report.reviews, report.quizzes, len(report.errors),
             )  # fmt: skip
 
     @property
@@ -265,7 +263,6 @@ class ReviewModule:
         self._reviews = ReviewReads(store, cached_status)
         agents = ctx.services.get("agents")
         github = ctx.services.get("github")
-        kb = ctx.services.get("kb")
 
         def knowledge_repos() -> list[str]:
             return [*store.watched_repos(), *(stored.pr.ref.repo for stored in store.prs())]
@@ -275,7 +272,6 @@ class ReviewModule:
             clock=_utc_now,
             workspace=self._workspace,
             identity=PrClient(github) if isinstance(github, GitHubService) else None,
-            pages=KbKnowledgePages(kb) if isinstance(kb, KbService) else None,
             repos=knowledge_repos,
         )
         ctx.scheduler.every(KNOWLEDGE_JOB, KNOWLEDGE_INTERVAL, self.ingest_knowledge, at_start=True)

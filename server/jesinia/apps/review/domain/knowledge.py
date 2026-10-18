@@ -4,7 +4,8 @@
 Pure: exposures, the clock and counts in, a score out.
 
 - **Units:** a repo directory up to ``MAX_UNIT_DEPTH`` folders deep (``(repo, path_prefix)``,
-  the repo root included), or a KB tag topic.
+  the repo root included), or a KB tag topic (known only through the author's overrides
+  for now).
 - **Signals:** ``Exposure(kind, at)``; a file a signal touches exposes every prefix of its
   folder, so knowing ``src/sync/a`` also counts towards ``src/sync``, ``src`` and the repo.
 - **Familiarity** (the plan's formula, spec §12) in [0, 1]:
@@ -40,14 +41,13 @@ from jesinia.apps.review.domain.gates import LOW_FAMILIARITY
 from jesinia.apps.review.domain.workspace import WorkspaceError, canonical_repo
 from jesinia.services.kb.domain.tags import is_valid_tag
 
-ExposureKind = Literal["commit", "review_quick", "review_deep", "quiz_pass", "quiz_fail", "kb_page"]
+ExposureKind = Literal["commit", "review_quick", "review_deep", "quiz_pass", "quiz_fail"]
 EXPOSURE_KINDS: tuple[ExposureKind, ...] = (
     "commit",
     "review_quick",
     "review_deep",
     "quiz_pass",
     "quiz_fail",
-    "kb_page",
 )
 Override = Literal["known", "unknown"]
 OVERRIDES: tuple[Override, ...] = ("known", "unknown")
@@ -60,9 +60,11 @@ KIND_WEIGHTS: Mapping[ExposureKind, float] = {
     "review_quick": 0.4,
     "commit": 0.8,
     "quiz_pass": 0.6,
-    "kb_page": 0.5,
     "quiz_fail": 0.0,
 }
+# The plan's weight for a KB page, deferred (R84): a page in the KB isn't necessarily the
+# author's (clipped articles, other people's notes, agent output), so no page is evidence.
+DEFERRED_KIND_WEIGHTS: Mapping[str, float] = {"kb_page": 0.5}
 CHANGE_SCALE = 200
 # What commits alone can add up to: below the quick threshold (R80).
 COMMIT_RECENCY_CAP = LOW_FAMILIARITY - 0.05
@@ -76,8 +78,6 @@ QUIZ_PASS_SHARE = 0.6
 QUIZ_MAX_QUESTIONS = 10
 # History older than this adds less than 1/256 of a weight: it is neither read nor kept.
 HISTORY_HORIZON = timedelta(days=730)
-# Entries of one KB page's ``jesinia.code`` read (the page is untrusted).
-CODE_ENTRIES_MAX = 50
 COMPONENT_MAX = 100
 # The summary is trusted text in every agent's ContextPack: bounded in size.
 SUMMARY_CHARS = 2_000
@@ -95,7 +95,6 @@ _KIND_WORDS: Mapping[ExposureKind, str] = {
     "review_deep": "a deep review",
     "quiz_pass": "a passed quiz",
     "quiz_fail": "a failed quiz",
-    "kb_page": "a KB page",
 }
 
 
@@ -230,35 +229,6 @@ def units_of_file(repo: str, file_path: str) -> tuple[Unit, ...]:
 def unit_of_file(repo: str, file_path: str) -> Unit:
     """The deepest unit of a file: the one its familiarity is read from."""
     return units_of_file(repo, file_path)[-1]
-
-
-def code_units(jesinia: Mapping[str, object]) -> tuple[Unit, ...]:
-    """The units a KB page's ``jesinia.code`` declares (spec §6.1), each with its parents.
-
-    The page is untrusted data: only ``{repo, path?}`` mappings with a valid repo and a
-    valid path are read (at most ``CODE_ENTRIES_MAX``), and nothing in them is run.
-    """
-    entries = jesinia.get("code")
-    if not isinstance(entries, list):
-        return ()
-    found: dict[str, Unit] = {}
-    for entry in entries[:CODE_ENTRIES_MAX]:
-        if not isinstance(entry, Mapping):
-            continue
-        repo, path = entry.get("repo"), entry.get("path", "")
-        if not isinstance(repo, str) or not isinstance(path, str):
-            continue
-        parts = [part for part in path.strip("/").split("/") if part]
-        if not all(map(_component_ok, parts)):
-            continue
-        try:
-            canonical = _canonical(repo)
-        except InvalidUnitError:
-            continue
-        for prefix in _folder_prefixes(parts):
-            unit = Unit(canonical, prefix, None)
-            found.setdefault(unit.id, unit)
-    return tuple(found.values())
 
 
 @dataclass(frozen=True)

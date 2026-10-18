@@ -107,7 +107,7 @@ class SqliteKnowledgeStore:
         return int(row[0])
 
     def known_repos(self) -> set[str]:
-        """Repos whose history was read; an exposure alone (a round, a KB page) doesn't make
+        """Repos whose history was read; an exposure alone (a round, a quiz) doesn't make
         the rest of a repo known (M5). An override is the author's word: it does."""
         known = {str(repo) for (repo,) in self._conn.execute("SELECT repo FROM knowledge_repos")}
         overridden = (_unit(text) for (text,) in self._conn.execute(
@@ -234,24 +234,6 @@ class SqliteKnowledgeStore:
             (round_id, right, answered, _time(at)),
         )
         return cursor.rowcount == 1
-
-    # --- KB pages ---------------------------------------------------------------------------
-
-    def page_revs(self) -> dict[str, str]:
-        return dict(self._conn.execute("SELECT page_id, rev FROM knowledge_pages").fetchall())
-
-    def record_page(self, page_id: str, rev: str, rows: Sequence[ExposureRow]) -> bool:
-        source = f"kb:{page_id}"
-        with transaction(self._conn):
-            # One set per page (M8): a new revision replaces the last one's exposures.
-            self._conn.execute("DELETE FROM knowledge_sources WHERE source = ?", (source,))
-            added = bool(rows) and self._add(source, rows, _time(datetime.now(UTC)))
-            self._conn.execute(
-                "INSERT INTO knowledge_pages (page_id, rev) VALUES (?, ?) "
-                "ON CONFLICT (page_id) DO UPDATE SET rev = excluded.rev",
-                (page_id, rev),
-            )
-        return added
 
     def prune(self, before: datetime) -> None:
         cutoff = _time(before)

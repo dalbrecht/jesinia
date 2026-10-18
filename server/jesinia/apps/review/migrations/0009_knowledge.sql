@@ -4,8 +4,8 @@
 -- `tag/<tag>`. Times are ISO 8601 UTC text with microseconds, so they sort as text.
 
 -- Each signal is stored once, keyed by its source (`commit:<repo>:<sha>`, `round:<id>`,
--- `quiz:<id>`, `kb:<page>`: a page's newest revision replaces its last), even when it
--- exposed no unit.
+-- `quiz:<id>`), even when it exposed no unit. KB pages are left out for now (R84): their
+-- authorship is unknown, so they aren't evidence of the author's knowledge.
 CREATE TABLE knowledge_sources (
     source TEXT PRIMARY KEY,
     recorded_at TEXT NOT NULL
@@ -17,7 +17,7 @@ CREATE TABLE knowledge_exposures (
     source TEXT NOT NULL REFERENCES knowledge_sources (source) ON DELETE CASCADE,
     unit TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (
-        kind IN ('commit', 'review_quick', 'review_deep', 'quiz_pass', 'quiz_fail', 'kb_page')
+        kind IN ('commit', 'review_quick', 'review_deep', 'quiz_pass', 'quiz_fail')
     ),
     at TEXT NOT NULL,
     repo TEXT,
@@ -45,12 +45,6 @@ CREATE TABLE knowledge_repos (
     tip TEXT NOT NULL,
     emails TEXT NOT NULL,
     read_at TEXT NOT NULL
-);
-
--- The revision each KB page was last read at, so an unchanged page is never read again.
-CREATE TABLE knowledge_pages (
-    page_id TEXT PRIMARY KEY,
-    rev TEXT NOT NULL
 );
 
 -- The author's corrections (Settings → Review, "What Jesinia thinks you know").

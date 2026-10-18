@@ -660,6 +660,9 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **Overrides:** `known` sets the score to 1.0 and `unknown` to 0.0.
 - **Ingest:** the user's commits (from the workspace), finished rounds, quiz results, and KB
   pages with `jesinia.code`.
+  - **Note (R84):** KB pages are deferred, because their authorship is unknown (clipped
+    articles, other people's notes, agent output), so a page isn't evidence of knowledge. The
+    `kb_page` weight is kept in the table but unused, and issue #64 was closed.
 - **`summary(repo, paths) -> str`** feeds the ContextPack, and `propose_depth` uses the
   minimum unit familiarity over the touched paths.
 - **REST:** `GET /api/review/knowledge` and `PUT /api/review/knowledge/{unit}`.
