@@ -13,11 +13,13 @@ from fastapi import HTTPException
 from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
+from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA
 from jesinia.apps.issues.domain.suggestions import SuggestionFilters
-from jesinia.apps.issues.domain.triage import IssueFilters
+from jesinia.apps.issues.domain.triage import IssueFilters, triage
 from jesinia.apps.issues.module import (
     IDEMPOTENCY_PRUNE_JOB,
     ISSUES_DB,
@@ -33,6 +35,7 @@ from jesinia.core.module import AppContext
 from jesinia.core.scheduler import Job, Scheduler
 from jesinia.registry import DATABASES, modules
 from jesinia.services.github.application.service import GitHubService, GitHubUnavailable
+from tests.apps.issues.test_sync import issue
 
 
 def test_issues_db_is_history_and_registered_after_its_services() -> None:
@@ -45,7 +48,12 @@ def test_issues_db_is_history_and_registered_after_its_services() -> None:
 async def test_start_opens_the_db_and_wires_idempotency(cfg: Config) -> None:
     module = IssuesModule()
     assert module.router() is not None
-    assert [tool.name for tool in module.mcp_tools()] == ["issues_search", "issues_get"]
+    assert [tool.name for tool in module.mcp_tools()] == [
+        "issues_search",
+        "issues_get",
+        "queues_list",
+        "queue_get",
+    ]
     assert not module.health().ok
     with pytest.raises(HTTPException, match="not started") as caught:
         _ = module.idempotency
@@ -108,7 +116,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     module = IssuesModule()
     with pytest.raises(HTTPException, match="not started"):
         _ = module.sync
-    for name in ("labels", "queries", "pending", "apply", "epics", "briefs"):
+    for name in ("labels", "queries", "pending", "apply", "epics", "briefs", "queues"):
         with pytest.raises(HTTPException, match="not started"):
             getattr(module, name)
     await module.sync_repos()  # nothing to sync before start
@@ -126,6 +134,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     assert isinstance(module.epics, EpicService)  # ... the epic views don't
     assert isinstance(module.queries, IssueQueries)  # the cache reads need no GitHub
     assert isinstance(module.pending, PendingService)  # so does the tray
+    assert isinstance(module.queues, QueueService)  # queues are local
     assert module.clock().tzinfo is not None
     await module.stop()
 
@@ -284,4 +293,24 @@ async def test_suggestions_start_with_the_module_and_ask_the_agents_service(
     await module.suggest.drain()
     run = module.suggest.run_state("acme/web", 1)
     assert run is not None and run.status == "waiting"
+    await module.stop()
+
+
+async def test_the_triage_hook_marks_closed_queue_items_done(cfg: Config) -> None:
+    closed = issue(1, state="closed")
+    triaged = [(closed, triage(closed.labels, 0, DEFAULT_SCHEMA))]
+    module = IssuesModule()
+    module.on_triaged("acme/web", triaged)  # before start: nothing to tell
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    queue = module.queues.create("Mine").queue.id
+    conn = open_db(cfg.data_dir, ISSUES_DB)
+    conn.execute(
+        "INSERT INTO queue_items (queue_id, kind, ref, position, added_at) "
+        "VALUES (?, 'issue', 'acme/web#1', 0, '2026-10-01T00:00:00+00:00')",
+        (queue,),
+    )
+    conn.commit()
+    conn.close()
+    module.on_triaged("acme/web", triaged)
+    assert [d.item.ref.n for d in module.queues.queue(queue).done] == [1]
     await module.stop()

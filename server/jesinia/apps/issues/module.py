@@ -7,9 +7,11 @@ With the ``github`` service it syncs the watched repos every ``SYNC_INTERVAL`` (
 edited while there, are queued for suggestion runs, which the ``issues.suggest`` job starts
 through the ``agents`` service (looked up per run). Approvals and the pending-changes tray
 apply through one engine (``ApplyEngine``), and so do checklist conversions and approved
-epic proposals; approved delivery briefs are posted as the epic's brief comment. It serves
-``/api/issues`` and the read-only ``issues_search`` and ``issues_get`` MCP tools; the cache
-reads, suggestion drafts, epic views and the tray work without GitHub."""
+epic proposals; approved delivery briefs are posted as the epic's brief comment. Work queues
+are local: their Done and band moves stage in the tray, and sync's closed-issue hook marks their
+items done. It serves ``/api/issues`` and the read-only ``issues_search``, ``issues_get``,
+``queues_list`` and ``queue_get`` MCP tools; the cache reads, suggestion drafts, epic views,
+queues and the tray work without GitHub."""
 
 from __future__ import annotations
 
@@ -28,12 +30,15 @@ from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.ports import AgentAsker
+from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import RUN_INTERVAL, SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.domain.triage import Triage
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
 from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversionStore
+from jesinia.apps.issues.infrastructure.queue_store import SqliteQueueStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
 from jesinia.core.db import DbClass, ModuleDb, open_db
@@ -42,6 +47,7 @@ from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.github.application.issues import IssueClient
 from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
+from jesinia.services.github.domain.issue import Issue
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +84,7 @@ class IssuesModule:
         self._applied: SqliteApplyStore | None = None
         self._epics: EpicService | None = None
         self._briefs: BriefService | None = None
+        self._queues: QueueService | None = None
 
     @property
     def idempotency(self) -> IdempotencyStore:
@@ -151,6 +158,22 @@ class IssuesModule:
         if self._briefs is None:
             raise self._needs_github()
         return self._briefs
+
+    @property
+    def queues(self) -> QueueService:
+        """Work queues (local; Done and band moves stage in the tray, no GitHub needed)."""
+        if self._queues is None:
+            raise _not_started()
+        return self._queues
+
+    def on_triaged(self, repo: str, triaged: Sequence[tuple[Issue, Triage]]) -> None:
+        """Sync's and the engine's hook for each stored page of triaged issues: queue items whose
+        issue closed are marked done (``auto_done`` never raises), then drafts that lost their
+        premise are retired. Both are best effort; the caller isolates a failure."""
+        if self._queues is not None:
+            self._queues.auto_done(repo, triaged)
+        if self._suggest is not None:
+            self._suggest.retire_stale(repo, triaged)
 
     async def run_suggestions(self) -> None:
         """The ``issues.suggest`` job: start the suggestion runs that are due."""
@@ -230,6 +253,15 @@ class IssuesModule:
             conversions=SqliteConversionStore(self._conn),
             batches=applied,
         )
+        self._queues = QueueService(
+            SqliteQueueStore(self._conn),
+            store,
+            self._epics,
+            self._pending,
+            suggest,
+            SqliteSuggestionStore(self._conn),
+            _utc_now,
+        )
         ctx.scheduler.every(SUGGEST_JOB, RUN_INTERVAL, self.run_suggestions, at_start=True)
         github = ctx.services.get("github")
         if isinstance(github, GitHubService):
@@ -240,7 +272,7 @@ class IssuesModule:
                 _utc_now,
                 on_inbox=suggest.queue_new,
                 on_inbox_edit=suggest.queue_edited,
-                on_triaged=suggest.retire_stale,
+                on_triaged=self.on_triaged,
             )
             self._queries = IssueQueries(store, _utc_now, self._sync.is_syncing)
             self._labels = LabelSetupService(
@@ -252,7 +284,7 @@ class IssuesModule:
                 _utc_now,
                 on_rate_limit=self._sync.back_off,
                 on_schema_changed=self._sync.recompute,
-                on_triaged=suggest.retire_stale,
+                on_triaged=self.on_triaged,
                 blocked_until=self._sync.backoff_until,
             )
             self._apply = ApplyService(
@@ -285,6 +317,7 @@ class IssuesModule:
         self._applied = None
         self._epics = None
         self._briefs = None
+        self._queues = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None

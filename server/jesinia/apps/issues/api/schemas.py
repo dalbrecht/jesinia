@@ -30,6 +30,15 @@ from jesinia.apps.issues.application.ports import (
     StoredBrief,
     SuggestionRun,
 )
+from jesinia.apps.issues.application.queues import (
+    BandView,
+    ItemView,
+    QueueApproval,
+    QueueFill,
+    QueueSummary,
+    QueueView,
+    QueueWarning,
+)
 from jesinia.apps.issues.application.reads import IssueDetail
 from jesinia.apps.issues.application.suggest import MAX_BACKLOG_REFS
 from jesinia.apps.issues.domain.changes import (
@@ -57,6 +66,7 @@ from jesinia.apps.issues.domain.changes import (
 from jesinia.apps.issues.domain.epics import (
     Blocker,
     ConversionPlan,
+    ItemKind,
     Member,
     PlannedChild,
     Readiness,
@@ -69,6 +79,13 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlan,
     LabelPlanKind,
     skip_cause,
+)
+from jesinia.apps.issues.domain.queues import (
+    NOTE_MAX,
+    QUEUE_DESCRIPTION_MAX,
+    QUEUE_NAME_MAX,
+    DoneThen,
+    QueueItem,
 )
 from jesinia.apps.issues.domain.schema import (
     MAX_ALIASES,
@@ -483,6 +500,11 @@ class IssueSuggestionOut(BaseModel):
       ``skipped`` (not applied, with the cause; the next approval tries only these) or
       ``unchanged`` (nothing to set). The draft is ``approved`` once every item is applied or
       unchanged; until then ``apply_error`` lists what applied and what didn't.
+    - ``queue_next`` (``scope`` ``queue_next:<queue>``): ``{queue, items: [{kind, repo, n,
+      reason}]}``, items to add; ``queue_order``: the same shape, the whole proposed order;
+      ``queue_split`` (``scope`` ``queue_split:<queues>``): ``{queues, items: [{kind, repo, n,
+      from, to, reason}]}``. Approve these with ``/queues/suggestions/{id}/approve``: they only
+      change the local queues.
 
     ``reason`` is the agent's one line, untrusted text shown as data. ``apply_error`` is why
     its last approval didn't apply (it stays approvable)."""
@@ -1219,3 +1241,243 @@ class MilestoneDetailOut(BaseModel):
             issues=[MemberOut.of(c) for c in item.issues],
             brief=item.brief,
         )
+
+
+# Work queues (Task 9) -------------------------------------------------------------------------
+
+QueueId = Annotated[str, Field(min_length=1, max_length=64)]
+
+
+class WorkQueueIn(BaseModel):
+    """A new queue: its name (unique, without case) and an optional description."""
+
+    name: str = Field(min_length=1, max_length=QUEUE_NAME_MAX)
+    description: str = Field(default="", max_length=QUEUE_DESCRIPTION_MAX)
+
+
+class WorkQueuePatchIn(BaseModel):
+    """What to change about a queue; an omitted field stays. ``position`` is its place in the
+    list of queues (0 first)."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=QUEUE_NAME_MAX)
+    description: str | None = Field(default=None, max_length=QUEUE_DESCRIPTION_MAX)
+    position: int | None = Field(default=None, ge=0, le=1000)
+
+
+class WorkQueueItemIn(BaseModel):
+    """An item to add: a cached issue or epic (``n`` its number; the cache decides which it is),
+    or a milestone (``n`` its number), at ``position`` among the open items (the end when
+    omitted)."""
+
+    kind: ItemKind
+    repo: str = Field(min_length=3, max_length=REPO_MAX)
+    n: int = Field(ge=1, le=999_999_999)
+    position: int | None = Field(default=None, ge=0, le=1000)
+    note: str | None = Field(default=None, max_length=NOTE_MAX)
+
+
+class WorkQueueItemPatchIn(BaseModel):
+    """Move an open item to ``position`` among the open items and/or change its note."""
+
+    position: int | None = Field(default=None, ge=0, le=1000)
+    note: str | None = Field(default=None, max_length=NOTE_MAX)
+
+
+class WorkQueueDoneIn(BaseModel):
+    """Done: what to stage on GitHub. ``close`` closes the issue, with ``comment`` (the author's
+    words, posted as written); ``agent_ready`` sets its readiness so an agent can take over."""
+
+    then: DoneThen
+    comment: str | None = Field(default=None, max_length=COMMENT_BODY_LIMIT)
+
+
+class WorkQueueBandIn(BaseModel):
+    """A drop into a priority band (a priority label of the item's repo) at ``position`` among
+    that band's items (its end when omitted)."""
+
+    band: str = Field(min_length=1, max_length=MAX_LABEL_NAME)
+    position: int | None = Field(default=None, ge=0, le=1000)
+
+
+class WorkQueueSplitAskIn(BaseModel):
+    """The queues to split items across."""
+
+    queue_ids: list[QueueId] = Field(min_length=2, max_length=20)
+
+
+class WorkQueueFromPriorityIn(BaseModel):
+    """Turn a priority draft's order into a queue: a new one called ``name`` (with
+    ``description``), or the existing ``queue_id`` (appended)."""
+
+    suggestion_id: QueueId
+    queue_id: QueueId | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=QUEUE_NAME_MAX)
+    description: str = Field(default="", max_length=QUEUE_DESCRIPTION_MAX)
+
+
+class WorkQueueItemOut(BaseModel):
+    """A queue item. ``title``, ``state`` and ``url`` come from the cache (``null`` when it
+    isn't cached; titles are the issue authors' text). ``priority`` is its label and
+    ``pending_priority`` one staged in the tray but not applied yet. An open item has its
+    ``readiness`` and a ``warning`` saying why it isn't ready (warned, never hidden). A done one
+    has ``done_at`` and ``done_pending``, the staged change Undo takes back (``null`` when its
+    issue closed on GitHub)."""
+
+    kind: ItemKind
+    repo: str
+    n: int
+    position: int
+    note: str
+    added_at: datetime
+    done_at: datetime | None
+    done_pending: str | None
+    title: str | None
+    state: str | None
+    url: str | None
+    priority: str | None
+    pending_priority: str | None
+    readiness: ReadinessOut | None
+    warning: str | None
+
+    @classmethod
+    def of(cls, view: ItemView) -> WorkQueueItemOut:
+        item: QueueItem = view.item
+        return cls(
+            kind=item.ref.kind,
+            repo=item.ref.repo,
+            n=item.ref.n,
+            position=item.position,
+            note=item.note,
+            added_at=item.added_at,
+            done_at=item.done_at,
+            done_pending=item.done_pending,
+            title=view.title,
+            state=view.state,
+            url=view.url,
+            priority=view.priority,
+            pending_priority=view.pending_priority,
+            readiness=None if view.readiness is None else ReadinessOut.of(view.readiness),
+            warning=view.warning,
+        )
+
+
+class WorkQueueBandOut(BaseModel):
+    """The open items of one priority (``value``; ``null`` for none), in queue order."""
+
+    value: str | None
+    items: list[WorkQueueItemOut]
+
+    @classmethod
+    def of(cls, band: BandView) -> WorkQueueBandOut:
+        return cls(value=band.value, items=[WorkQueueItemOut.of(i) for i in band.items])
+
+
+class WorkQueueOut(BaseModel):
+    """A queue: its open ``items`` in order, the ``done`` ones (most recently done first, the
+    collapsed Done group) and the open items grouped by priority (``bands``, highest first)."""
+
+    id: str
+    name: str
+    description: str
+    position: int
+    created_at: datetime
+    items: list[WorkQueueItemOut]
+    done: list[WorkQueueItemOut]
+    bands: list[WorkQueueBandOut]
+
+    @classmethod
+    def of(cls, view: QueueView) -> WorkQueueOut:
+        q = view.queue
+        return cls(
+            id=q.id,
+            name=q.name,
+            description=q.description,
+            position=q.position,
+            created_at=q.created_at,
+            items=[WorkQueueItemOut.of(i) for i in view.items],
+            done=[WorkQueueItemOut.of(i) for i in view.done],
+            bands=[WorkQueueBandOut.of(b) for b in view.bands],
+        )
+
+
+class WorkQueueSummaryOut(BaseModel):
+    """A queue in the list (its section tab), with counts."""
+
+    id: str
+    name: str
+    description: str
+    position: int
+    open: int
+    done: int
+    warnings: int
+
+    @classmethod
+    def of(cls, summary: QueueSummary) -> WorkQueueSummaryOut:
+        q = summary.queue
+        return cls(
+            id=q.id,
+            name=q.name,
+            description=q.description,
+            position=q.position,
+            open=summary.open,
+            done=summary.done,
+            warnings=summary.warnings,
+        )
+
+
+class WorkQueuesOut(BaseModel):
+    queues: list[WorkQueueSummaryOut]
+
+
+class WorkQueueActionOut(BaseModel):
+    """A queue after Done or a band move, and the change staged in the tray (``null`` when a
+    band move stayed within the item's band)."""
+
+    queue: WorkQueueOut
+    staged: PendingOut | None
+
+
+class WorkQueueWarningOut(BaseModel):
+    kind: ItemKind
+    repo: str
+    n: int
+    reason: str
+
+    @classmethod
+    def of(cls, warning: QueueWarning) -> WorkQueueWarningOut:
+        ref = warning.item.ref
+        return cls(kind=ref.kind, repo=ref.repo, n=ref.n, reason=warning.reason)
+
+
+class WorkQueueWarningsOut(BaseModel):
+    """The open items that aren't ready for an agent, each with why."""
+
+    warnings: list[WorkQueueWarningOut]
+
+
+class WorkQueueApprovalOut(BaseModel):
+    """An approved queue proposal: the suggestion, the queues it changed (locally), and what it
+    skipped because things changed since."""
+
+    suggestion: IssueSuggestionOut
+    queues: list[WorkQueueOut]
+    skipped: list[str]
+
+    @classmethod
+    def of(cls, approval: QueueApproval) -> WorkQueueApprovalOut:
+        return cls(
+            suggestion=IssueSuggestionOut.of(approval.suggestion),
+            queues=[WorkQueueOut.of(v) for v in approval.views],
+            skipped=list(approval.skipped),
+        )
+
+
+class WorkQueueFillOut(BaseModel):
+    """A queue made or filled from a priority draft's order, and the issues skipped."""
+
+    queue: WorkQueueOut
+    skipped: list[str]
+
+    @classmethod
+    def of(cls, fill: QueueFill) -> WorkQueueFillOut:
+        return cls(queue=WorkQueueOut.of(fill.view), skipped=list(fill.skipped))

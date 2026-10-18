@@ -63,7 +63,26 @@ PR 3 (Tasks 8–10) adds epics, work queues and themes. Task 8 adds epics:
 - milestones as queue items: each stands for its open issues, with readiness rolled up and a
   brief built from them (Task 9's queues hold them).
 
-Queues and themes come next, and the web app in PR 4.
+Task 9 adds work queues (spec §5.2, ruling IR15):
+
+- named, ordered queues of issues, epics and milestones, kept in `issues.sqlite` only. Creating,
+  renaming and ordering queues, and adding, moving, noting and removing items, are local and
+  apply at once; nothing of it is a GitHub change;
+- each open item shows its readiness (an epic's rolled up from its children, a milestone's from
+  its open issues) and a warning saying why it isn't ready. It is warned, never hidden;
+- a queue grouped by priority (bands). Dropping an item into another band reorders it at once and
+  stages the priority label in the pending tray (`source` `queue`);
+- Done: the item moves to the Done group at once (with Undo), and closing the issue (with the
+  author's optional comment) or setting it `agent-ready` is staged in the tray. Milestones
+  can't be done or moved between bands (Jesinia never writes them);
+- items close themselves: when sync (or an applied batch) sees an issue, epic or milestone
+  closed, its open queue items are marked done;
+- the agent's queue proposals, all drafts: what to add next (`queue_next`), an order
+  (`queue_order`) and which queue each item fits (`queue_split`). Approving one changes only the
+  local queues;
+- a priority draft's order (Task 7) can make a new queue or fill one.
+
+Themes come next, and the web app in PR 4.
 
 ## Layout
 
@@ -76,6 +95,7 @@ domain/           pure rules, 100% covered
   suggestions.py  Suggestion drafts: what a triage reply may draft, edits, dismissals
   changes.py      Change, ChangeBatch, the ordered series, label edits, results, approvals
   epics.py        is_epic, can_contain, readiness, checklist plans, proposals, briefs
+  queues.py       queue items and their local order, bands, warnings, queue proposals
   similarity.py   the local TF-IDF that pre-filters duplicate candidates
 application/      orchestration over ports
   ports.py        what the app needs: IssueReads, LabelWrites, AgentAsker, the store protocols
@@ -87,18 +107,20 @@ application/      orchestration over ports
   apply.py        ApplyEngine: runs a batch's series against fresh reads (paced, rate-limit safe)
   pending.py      PendingService (the tray) and ApplyService (apply, retry, approve)
   epics.py        EpicService (views, plans, milestones, asks) and BriefService (the comment)
+  queues.py       QueueService: queues, items, Done and band moves (staged), auto-done, asks
 infrastructure/
   store.py        SqliteIssuesStore over issues.sqlite
   suggestion_store.py  SqliteSuggestionStore: drafts, runs, the similarity corpus
   apply_store.py  SqliteApplyStore: the pending tray and the applied batches
   brief_store.py  SqliteBriefStore: each epic's brief comment
   conversion_store.py  SqliteConversionStore: approved conversions and the items they created
+  queue_store.py  SqliteQueueStore: the work queues and their items
 api/
   routes.py       REST under /api/issues
   schemas.py      request and response bodies (the generated web client's types)
   tools.py        the MCP tools
 migrations/       issues.sqlite schema
-schemas/          JSON schemas of the agent jobs' replies (triage, priority, grouping, brief; queue for Task 9)
+schemas/          JSON schemas of the agent jobs' replies (triage, priority, grouping, brief, queue)
 module.py         IssuesModule: wiring, jobs, the 503 guards
 ```
 
@@ -137,11 +159,18 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   unlinked item it created an issue for (by a hash of its normalised text and repeat), with the
   issue it became. The checklist stays in the body, so this is what stops a second conversion
   creating the item again.
+- `queues` and `queue_items`: the work queues, in the author's order, and each queue's items
+  (`issue`, `epic` or `milestone`, by `owner/repo#n`) with their position, note, when they were
+  added and, once done, when and the pending change Done staged. A done item keeps its position,
+  so Undo puts it back where it was.
 
 ## Jobs
 
 - `issues.sync` runs every 5 minutes, and once at start, when the `github` service exists.
   - It syncs each watched repo incrementally and can resume after an interruption.
+  - Each stored page marks done the open queue items whose issue closed, and those of the repo's
+    closed milestones. This is best effort: a failure is logged with its cause and the sync goes
+    on.
   - On a repo's first sync, its existing issues go to the Backlog, and nothing is fetched per
     issue.
   - Any failure is recorded in that repo's `sync_error`, an unexpected one included, and the
@@ -238,13 +267,34 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     edits the stored comment in place, and marks the brief draft approved.
   - `GET /milestones?repo` and `GET /milestones/{owner}/{repo}/{number}`: milestones with their
     open issues, rolled-up readiness and brief.
+  - `GET /queues`: the work queues with their open, done and warned counts.
+    `POST /queues` with `{name, description?}` makes one (201; a name taken, without case, is a
+    409). `GET /queues/{id}`: its open items in order (each with its readiness and warning), the
+    Done group and the priority bands. `PATCH /queues/{id}` with `{name?, description?,
+    position?}` and `DELETE /queues/{id}`. `GET /queues/{id}/warnings`: the items that aren't
+    ready, with why.
+  - `POST /queues/{id}/items` with `{kind, repo, n, position?, note?}` adds a cached issue, epic
+    or milestone (201). Under `/queues/{id}/items/{kind}/{owner}/{repo}/{n}`: `PATCH` with
+    `{position?, note?}` and `DELETE` (local, at once); `POST …/done` with `{then: close |
+    agent_ready, comment?}` and `POST …/band` with `{band, position?}` answer the queue and the
+    change staged in the tray (`staged`); `POST …/undo` reopens a done item and unstages its
+    change.
+  - `POST /queues/{id}/suggestions/next`, `POST /queues/{id}/suggestions/order` and
+    `POST /queues/suggestions/split` with `{queue_ids}` ask the agent in the background (202
+    with the `scope`). `POST /queues/suggestions/{id}/approve` approves a queue draft: the local
+    queues change at once, and what changed since is listed in `skipped`. The engine's
+    `/suggestions/{id}/approve` refuses queue drafts (400).
+  - `POST /queues/from-priority` with `{suggestion_id, queue_id? | name, description?}` turns a
+    priority draft's order into a new queue, or appends it to one.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
     `possible_duplicates`. The last two read the open suggestions.
   - Typed errors come back as `{error, detail}`. A GitHub rate limit met by a request itself
     (a sync or a preview, not a batch) is a 503 with `Retry-After`, so the response is never
     stored under the key.
-- **MCP, read-only:** `issues_search {q, repo?}` and `issues_get {repo, n}`. Both read the
-  cache only. Every value an issue's author wrote comes back inside `<untrusted-data>` fences.
+- **MCP, read-only:** `issues_search {q, repo?}`, `issues_get {repo, n}`, `queues_list {}` and
+  `queue_get {queue}` (an id or a name). They read the cache and the local queues only; agents
+  can't change GitHub or queues. Every value an issue's author wrote comes back inside
+  `<untrusted-data>` fences, and so do queue names, descriptions, notes and warnings.
 
 ## How the label batches stay safe
 
@@ -384,6 +434,26 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   (`BriefRecoveryIncompleteError`, 409: check GitHub). A stored comment deleted on GitHub
   (404) is posted anew and its id kept. A rate limit refuses the write, backs syncs off, and is a
   503 with `Retry-After`.
+
+## How queues stay safe
+
+- **Local means local (IR15):** a queue, its order, its notes and approved queue proposals never
+  reach GitHub. `QueueService` holds no GitHub client.
+- **What reaches GitHub goes through the tray:** Done and band moves stage ordinary changes
+  (`Close`, or a `SetDimension` of readiness or priority) with `source` `queue`. They apply only
+  when the author applies the tray, through the write-ahead engine. A band move is made against
+  the priority the cache shows (filling a gap, or replacing that one value), so a change on
+  GitHub since is a conflict at apply time, not an overwrite.
+- **One action:** Done stages first and marks the item done only if the tray took the change;
+  if the mark can't be saved, the change is unstaged.
+- **Posted text:** the only text a queue posts is the author's own Done comment, as written. No
+  issue text or agent text is posted from a queue.
+- **Auto-done never breaks sync:** it runs inside sync's (and the engine's) best-effort hook and
+  catches its own failures, logging the cause.
+- **Agent asks (IR37):** issue text and the author's queue names are fenced as untrusted data;
+  replies are validated against `schemas/queue.json` with one retry; only items and queues
+  Jesinia listed are kept, and a reply is discarded when a queue or one of its issues changed
+  during the ask ("inputs changed, ask again").
 
 ## How suggestions stay safe
 

@@ -3,7 +3,7 @@
 Backlog, one issue, the label setup and migration batches, suggestion drafts (list, edit,
 dismiss, approve, and runs on demand), the pending-changes tray with its applied batches, and
 epics (their list and page, drop checks, checklist conversion, group, split and brief asks, the
-approved brief) and milestones.
+approved brief), milestones, and work queues (local; Done and band moves stage in the tray).
 
 Every route needs the owner: the app mounts module routers behind ``require_owner``, so agent
 session tokens are refused (IR2); the routes that change GitHub (applying a label batch,
@@ -65,11 +65,28 @@ from jesinia.apps.issues.api.schemas import (
     PendingListOut,
     PendingOut,
     SuggestionApproveOut,
+    WorkQueueActionOut,
+    WorkQueueApprovalOut,
+    WorkQueueBandIn,
+    WorkQueueDoneIn,
+    WorkQueueFillOut,
+    WorkQueueFromPriorityIn,
+    WorkQueueIn,
+    WorkQueueItemIn,
+    WorkQueueItemPatchIn,
+    WorkQueueOut,
+    WorkQueuePatchIn,
+    WorkQueuesOut,
+    WorkQueueSplitAskIn,
+    WorkQueueSummaryOut,
+    WorkQueueWarningOut,
+    WorkQueueWarningsOut,
     body_change,
 )
 from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
+from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
@@ -95,6 +112,14 @@ from jesinia.apps.issues.domain.labels import (
     LabelPlanKindMismatchError,
     LabelPlanNotFoundError,
     LabelPlanOutdatedError,
+)
+from jesinia.apps.issues.domain.queues import (
+    QueueDomainError,
+    QueueItemExistsError,
+    QueueItemNotFoundError,
+    QueueItemStateError,
+    QueueNameTakenError,
+    QueueNotFoundError,
 )
 from jesinia.apps.issues.domain.schema import InvalidSettingsSchemaError, validate_settings_schema
 from jesinia.apps.issues.domain.suggestions import (
@@ -158,6 +183,9 @@ class IssuesHost(Protocol):
     def briefs(self) -> BriefService: ...
 
     @property
+    def queues(self) -> QueueService: ...
+
+    @property
     def idempotency(self) -> IdempotencyStore: ...
 
     def clock(self) -> datetime:
@@ -188,6 +216,11 @@ _STATUS: dict[type[Exception], int] = {
     NothingToConvertError: status.HTTP_409_CONFLICT,
     ConversionRunningError: status.HTTP_409_CONFLICT,
     BriefRecoveryIncompleteError: status.HTTP_409_CONFLICT,
+    QueueNotFoundError: status.HTTP_404_NOT_FOUND,
+    QueueItemNotFoundError: status.HTTP_404_NOT_FOUND,
+    QueueNameTakenError: status.HTTP_409_CONFLICT,
+    QueueItemExistsError: status.HTTP_409_CONFLICT,
+    QueueItemStateError: status.HTTP_409_CONFLICT,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -198,6 +231,7 @@ _STATUS: dict[type[Exception], int] = {
     SuggestionDomainError: status.HTTP_400_BAD_REQUEST,
     ChangeDomainError: status.HTTP_400_BAD_REQUEST,
     EpicDomainError: status.HTTP_400_BAD_REQUEST,
+    QueueDomainError: status.HTTP_400_BAD_REQUEST,
     InvalidSettingsSchemaError: status.HTTP_400_BAD_REQUEST,
     GitHubReferenceError: status.HTTP_400_BAD_REQUEST,
     IssueDomainError: status.HTTP_400_BAD_REQUEST,
@@ -206,6 +240,7 @@ _TYPED = (
     TriageDomainError,
     ChangeDomainError,
     EpicDomainError,
+    QueueDomainError,
     LabelPlanError,
     SuggestionDomainError,
     SuggestionRunError,
@@ -224,6 +259,8 @@ Name = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Number = Annotated[int, Path(ge=1, le=999_999_999)]
 SuggestionId = Annotated[str, Path(min_length=1, max_length=64)]
 ItemId = Annotated[str, Path(min_length=1, max_length=64)]
+QueueId = Annotated[str, Path(min_length=1, max_length=64)]
+Kind = Annotated[str, Path(min_length=1, max_length=16)]
 
 
 def retry_after(reset_at: datetime | None, now: datetime) -> int:
@@ -788,6 +825,268 @@ def build_router(host: IssuesHost) -> APIRouter:
             return MilestoneDetailOut.of(host.epics.milestone(_repo(owner, repo), n))
 
         return await _respond(run, host.clock)
+
+    # Work queues (Task 9): local; Done and band moves stage in the tray -------------------
+
+    queue_path = "/queues/{queue_id}"
+    queue_item_path = queue_path + "/items/{kind}/{owner}/{repo}/{n}"
+
+    @r.get("/queues", response_model=WorkQueuesOut)
+    async def get_queues() -> Response:
+        """Every work queue, in the author's order, with its open, done and warned counts."""
+
+        async def run() -> WorkQueuesOut:
+            return WorkQueuesOut(queues=[WorkQueueSummaryOut.of(q) for q in host.queues.queues()])
+
+        return await _respond(run, host.clock)
+
+    @r.post("/queues", response_model=WorkQueueOut, status_code=status.HTTP_201_CREATED)
+    async def create_queue(body: WorkQueueIn, idem: IdempotentCall = keyed) -> Response:
+        """A new, empty queue, last in the list. A name another queue has (without case) is a
+        409."""
+
+        async def run() -> Response:
+            made = host.queues.create(body.name, body.description)
+            return JSONResponse(
+                jsonable_encoder(WorkQueueOut.of(made)), status_code=status.HTTP_201_CREATED
+            )
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post("/queues/from-priority", response_model=WorkQueueFillOut)
+    async def queue_from_priority(
+        body: WorkQueueFromPriorityIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Turn a priority draft's order into a new queue (``name``) or append it to one
+        (``queue_id``): its open cached issues in rank order; ``skipped`` says what wasn't
+        added and why. Local only; the draft's priorities are approved on their own."""
+
+        async def run() -> WorkQueueFillOut:
+            filled = host.queues.from_priority(
+                body.suggestion_id,
+                queue_id=body.queue_id,
+                name=body.name,
+                description=body.description,
+            )
+            return WorkQueueFillOut.of(filled)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        "/queues/suggestions/split",
+        response_model=IssueAskRunOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def suggest_queue_split(
+        body: WorkQueueSplitAskIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Ask the agent, in the background, which of these queues each of their open items
+        fits; the ``queue_split`` draft carries the answer's ``scope``."""
+
+        async def run() -> Response:
+            return _ask_started(host.queues.start_split(body.queue_ids))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post("/queues/suggestions/{suggestion_id}/approve", response_model=WorkQueueApprovalOut)
+    async def approve_queue_suggestion(
+        suggestion_id: SuggestionId, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Approve a queue proposal (``queue_next``, ``queue_order`` or ``queue_split``): it
+        changes the local queues at once and never GitHub, skipping what changed since (each
+        in ``skipped``). Any other kind is a 400; a settled one a 409."""
+
+        async def run() -> WorkQueueApprovalOut:
+            return WorkQueueApprovalOut.of(host.queues.approve(suggestion_id))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get(queue_path, response_model=WorkQueueOut)
+    async def get_queue(queue_id: QueueId) -> Response:
+        """One queue from the cache: its open items in order (each with its readiness and
+        warning), the Done group and the priority bands."""
+
+        async def run() -> WorkQueueOut:
+            return WorkQueueOut.of(host.queues.queue(queue_id))
+
+        return await _respond(run, host.clock)
+
+    @r.patch(queue_path, response_model=WorkQueueOut)
+    async def update_queue(
+        queue_id: QueueId, body: WorkQueuePatchIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Rename a queue, change its description, or move it in the list of queues."""
+
+        async def run() -> WorkQueueOut:
+            changed = host.queues.update(
+                queue_id, name=body.name, description=body.description, position=body.position
+            )
+            return WorkQueueOut.of(changed)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.delete(queue_path, status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_queue(queue_id: QueueId, idem: IdempotentCall = keyed) -> Response:
+        """Delete a queue and its items (nothing on GitHub changes)."""
+
+        async def run() -> Response:
+            host.queues.delete(queue_id)
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get(f"{queue_path}/warnings", response_model=WorkQueueWarningsOut)
+    async def get_queue_warnings(queue_id: QueueId) -> Response:
+        """The queue's open items that aren't ready for an agent, each with why."""
+
+        async def run() -> WorkQueueWarningsOut:
+            found = host.queues.warnings(queue_id)
+            return WorkQueueWarningsOut(warnings=[WorkQueueWarningOut.of(w) for w in found])
+
+        return await _respond(run, host.clock)
+
+    @r.post(f"{queue_path}/items", response_model=WorkQueueOut, status_code=status.HTTP_201_CREATED)
+    async def add_queue_item(
+        queue_id: QueueId, body: WorkQueueItemIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Add a cached issue, epic or milestone at ``position`` (local, at once). An item in
+        the queue already is a 409; one not cached a 404."""
+
+        async def run() -> Response:
+            view = host.queues.add(queue_id, body.kind, body.repo, body.n, body.position, body.note)
+            return JSONResponse(
+                jsonable_encoder(WorkQueueOut.of(view)), status_code=status.HTTP_201_CREATED
+            )
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.patch(queue_item_path, response_model=WorkQueueOut)
+    async def update_queue_item(
+        queue_id: QueueId,
+        kind: Kind,
+        owner: Owner,
+        repo: Name,
+        n: Number,
+        body: WorkQueueItemPatchIn,
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Reorder an open item (``position`` among the open items) or change its note: local,
+        at once, never GitHub."""
+
+        async def run() -> WorkQueueOut:
+            view = host.queues.update_item(
+                queue_id, kind, _repo(owner, repo), n, position=body.position, note=body.note
+            )
+            return WorkQueueOut.of(view)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.delete(queue_item_path, response_model=WorkQueueOut)
+    async def remove_queue_item(
+        queue_id: QueueId,
+        kind: Kind,
+        owner: Owner,
+        repo: Name,
+        n: Number,
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Take an item out of the queue (nothing on GitHub changes); answers the queue."""
+
+        async def run() -> WorkQueueOut:
+            return WorkQueueOut.of(host.queues.remove(queue_id, kind, _repo(owner, repo), n))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(f"{queue_item_path}/done", response_model=WorkQueueActionOut)
+    async def queue_item_done(
+        queue_id: QueueId,
+        kind: Kind,
+        owner: Owner,
+        repo: Name,
+        n: Number,
+        body: WorkQueueDoneIn,
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Mark an item done at once and stage closing its issue (with the optional comment) or
+        setting it ``agent-ready`` in the tray (``source`` ``queue``); GitHub changes when the
+        tray is applied. A milestone is a 400 (Jesinia never writes milestones), a done item a
+        409."""
+
+        async def run() -> WorkQueueActionOut:
+            action = host.queues.done(
+                queue_id, kind, _repo(owner, repo), n, body.then, body.comment
+            )
+            staged = None if action.staged is None else PendingOut.of(action.staged)
+            return WorkQueueActionOut(queue=WorkQueueOut.of(action.view), staged=staged)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(f"{queue_item_path}/undo", response_model=WorkQueueOut)
+    async def queue_item_undo(
+        queue_id: QueueId,
+        kind: Kind,
+        owner: Owner,
+        repo: Name,
+        n: Number,
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Undo Done: the item is open again in its old place, and its staged change leaves the
+        tray if it is still there."""
+
+        async def run() -> WorkQueueOut:
+            return WorkQueueOut.of(host.queues.undo_done(queue_id, kind, _repo(owner, repo), n))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(f"{queue_item_path}/band", response_model=WorkQueueActionOut)
+    async def queue_item_band(
+        queue_id: QueueId,
+        kind: Kind,
+        owner: Owner,
+        repo: Name,
+        n: Number,
+        body: WorkQueueBandIn,
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Drop an item into a priority band at ``position``: reordered at once, and, for
+        another band, the priority label staged in the tray (``source`` ``queue``)."""
+
+        async def run() -> WorkQueueActionOut:
+            action = host.queues.move_to_band(
+                queue_id, kind, _repo(owner, repo), n, body.band, body.position
+            )
+            staged = None if action.staged is None else PendingOut.of(action.staged)
+            return WorkQueueActionOut(queue=WorkQueueOut.of(action.view), staged=staged)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        f"{queue_path}/suggestions/next",
+        response_model=IssueAskRunOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def suggest_queue_next(queue_id: QueueId, idem: IdempotentCall = keyed) -> Response:
+        """Ask the agent, in the background, which open issues to add next (ready,
+        high-priority work first); the ``queue_next`` draft carries the answer's ``scope``."""
+
+        async def run() -> Response:
+            return _ask_started(host.queues.start_next(queue_id))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        f"{queue_path}/suggestions/order",
+        response_model=IssueAskRunOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def suggest_queue_order(queue_id: QueueId, idem: IdempotentCall = keyed) -> Response:
+        """Ask the agent, in the background, for an order of the queue's open items (by
+        dependencies and priority); the ``queue_order`` draft carries the answer's ``scope``."""
+
+        async def run() -> Response:
+            return _ask_started(host.queues.start_order(queue_id))
+
+        return await idem.run(lambda: _respond(run, host.clock))
 
     # Last: ``/{view}`` would otherwise also match ``/repos``.
     @r.get("/{view}", response_model=IssueViewOut)

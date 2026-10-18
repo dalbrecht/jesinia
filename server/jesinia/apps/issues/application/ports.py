@@ -16,7 +16,9 @@ from jesinia.apps.issues.domain.changes import (
     ChangeBatch,
     PendingChange,
 )
+from jesinia.apps.issues.domain.epics import ItemKind
 from jesinia.apps.issues.domain.labels import LabelPlan
+from jesinia.apps.issues.domain.queues import Queue, QueueItem
 from jesinia.apps.issues.domain.schema import LabelSchema, SchemaEntry
 from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionFilters, SuggestionKind
 from jesinia.apps.issues.domain.triage import (
@@ -601,3 +603,39 @@ class BatchReads(Protocol):
     """Stored batches (``SqliteApplyStore`` has it)."""
 
     def batch(self, batch_id: str) -> AppliedBatch | None: ...
+
+
+class QueueStore(Protocol):
+    """``queues`` and ``queue_items`` in ``issues.sqlite`` (Task 9): local only."""
+
+    def queues(self) -> list[Queue]:
+        """Every queue, in the author's order."""
+
+    def queue(self, queue_id: str) -> Queue | None: ...
+
+    def queue_named(self, name: str) -> Queue | None:
+        """The queue called ``name`` (compared without case)."""
+
+    def save_queue(self, queue: Queue) -> None:
+        """Insert or update a queue (its name, description and position)."""
+
+    def set_queue_order(self, queue_ids: Sequence[str]) -> None:
+        """Number the queues in this order, in one transaction."""
+
+    def delete_queue(self, queue_id: str) -> None:
+        """Delete a queue and its items, in one transaction."""
+
+    def items(self, queue_id: str) -> list[QueueItem]:
+        """The queue's items, open and done, by position."""
+
+    def save_items(self, queue_id: str, items: Sequence[QueueItem]) -> None:
+        """Replace the queue's items with ``items``, in one transaction."""
+
+    def open_items_for(
+        self, kinds: Sequence[ItemKind], refs: Sequence[str]
+    ) -> list[tuple[str, QueueItem]]:
+        """Every queue's open items of these kinds and refs (``owner/repo#n``), with their
+        queue's id."""
+
+    def set_done(self, queue_id: str, item: QueueItem, done_at: datetime) -> None:
+        """Mark one open item done (closed on GitHub: no pending change)."""
