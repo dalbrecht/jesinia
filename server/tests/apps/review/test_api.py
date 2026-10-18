@@ -23,6 +23,7 @@ from fastapi import APIRouter, FastAPI
 
 from jesinia.apps.review.api.routes import build_router
 from jesinia.apps.review.api.tools import build_review_tools
+from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import QueueService
@@ -30,6 +31,7 @@ from jesinia.apps.review.application.reviews import ReviewReads
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.posting import Draft
 from jesinia.apps.review.domain.queue import PrNotInQueueError, PrRef, RepoConfig, snapshot_of
+from jesinia.apps.review.infrastructure.knowledge_store import SqliteKnowledgeStore
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.module import REVIEW_DB, ReviewModule
 from jesinia.core.app import create_app
@@ -72,6 +74,7 @@ class Host:
     reviews: ReviewReads
     idempotency: SqliteIdempotencyStore
     stacks: StackReviews
+    knowledge: KnowledgeService
 
 
 class HostModule:
@@ -175,7 +178,8 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
         clock=clock,
         bus=EventBus(),
     )
-    host = Host(queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks)
+    knowledge = KnowledgeService(store=SqliteKnowledgeStore(conn), clock=clock)
+    host = Host(queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks, knowledge)
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
         transport = httpx.ASGITransport(app=app)
@@ -188,7 +192,13 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
 
 # --- auth and idempotency (carry g) -------------------------------------------------------------
 
-READS = [("GET", f"{API}/queue"), ("GET", PR), ("GET", f"{PR}/drafts"), ("GET", f"{API}/settings")]
+READS = [
+    ("GET", f"{API}/queue"),
+    ("GET", PR),
+    ("GET", f"{PR}/drafts"),
+    ("GET", f"{API}/settings"),
+    ("GET", f"{API}/knowledge"),
+]
 WRITES = [
     ("POST", f"{API}/load", {"ref": "acme/web#1"}),
     ("POST", f"{API}/queue/acme/web/1/dismiss", None),
@@ -201,6 +211,8 @@ WRITES = [
     ("POST", f"{PR}/post", {"event": "COMMENT", "confirm": [], "digest": "x"}),
     ("POST", f"{PR}/done", None),
     ("PUT", f"{API}/settings", {"prereview": "triage", "runner": "codex", "repos": []}),
+    ("PUT", f"{API}/knowledge/repo/acme/web/src", {"override": "known"}),
+    ("POST", f"{PR}/quiz", {"round_id": 1, "right": 1, "answered": 1}),
     ("POST", f"{API}/stacks/acme/web/1/open", None),
     (
         "POST",
@@ -711,7 +723,7 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
         for route in build_router(env.host).routes
         if "GET" in getattr(route, "methods", set())
     ]
-    assert len(gets) == 5  # queue, the PR, its drafts, its stack, settings
+    assert len(gets) == 6  # queue, the PR, its drafts, its stack, knowledge, settings
     # PR 1 is alone: its stack answers "not a stack", from the cache too.
     expected = {f"{API}/stacks/acme/web/1": 404}
     # M4: walked with the head's files cached (the PR view's diff) and without (drafts
@@ -891,3 +903,75 @@ async def test_done_is_bound_to_the_round_shown(env: Env) -> None:
     assert shown is not None and not shown.done
     current = await env.client.post(f"{PR}/done", json={"round_id": new}, headers=keyed())
     assert current.status_code == 200 and current.json()["done"] is True
+
+
+# --- the knowledge model (plan Task 14) ----------------------------------------------------------
+
+
+async def test_knowledge_lists_units_and_takes_overrides(env: Env) -> None:
+    empty = await env.client.get(f"{API}/knowledge")
+    assert empty.status_code == 200 and empty.json() == {
+        "units": [],
+        "total": 0,
+        "truncated": False,
+    }
+    key = keyed()
+    put = await env.client.put(
+        f"{API}/knowledge/repo/Acme/Web/src", json={"override": "known"}, headers=key
+    )
+    assert put.status_code == 200
+    unit = put.json()
+    assert unit["unit"] == "repo/acme/web/src" and unit["familiarity"] == 1.0
+    assert unit["override"] == "known" and unit["kind"] == "path" and unit["path"] == "src"
+    replay = await env.client.put(
+        f"{API}/knowledge/repo/Acme/Web/src", json={"override": "known"}, headers=key
+    )
+    assert replay.json() == unit
+    listed = (await env.client.get(f"{API}/knowledge", params={"repo": "acme/web"})).json()
+    assert [u["unit"] for u in listed["units"]] == ["repo/acme/web/src"]
+    tag = await env.client.put(f"{API}/knowledge/tag/ops", json={"override": "unknown"},
+                               headers=keyed())  # fmt: skip
+    assert tag.json()["familiarity"] == 0.0 and tag.json()["tag"] == "ops"
+    cleared = await env.client.put(
+        f"{API}/knowledge/repo/acme/web/src", json={"override": None}, headers=keyed()
+    )
+    assert cleared.json()["override"] is None and cleared.json()["familiarity"] == 0.0
+    assert [u["unit"] for u in (await env.client.get(f"{API}/knowledge")).json()["units"]] == [
+        "tag/ops"
+    ]
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["repo/acme/web/a/b/c/d", "repo/acme/web/..", "topic/x", "tag/Not%20A%20Tag", "repo/acme"],
+)
+async def test_knowledge_refuses_what_is_not_a_unit(env: Env, unit: str) -> None:
+    response = await env.client.put(
+        f"{API}/knowledge/{unit}", json={"override": "known"}, headers=keyed()
+    )
+    assert response.status_code == 400 and response.json()["error"] == "InvalidUnitError"
+
+
+async def test_knowledge_refuses_a_bad_override_and_a_bad_repo_filter(env: Env) -> None:
+    bad = await env.client.put(
+        f"{API}/knowledge/repo/acme/web", json={"override": "maybe"}, headers=keyed()
+    )
+    assert bad.status_code == 422
+    listed = await env.client.get(f"{API}/knowledge", params={"repo": "not a repo"})
+    assert listed.status_code == 400 and listed.json()["error"] == "InvalidUnitError"
+
+
+async def test_a_quiz_result_is_recorded_once_for_its_own_round(env: Env) -> None:
+    round_id = env.round()
+    body = {"round_id": round_id, "right": 3, "answered": 4}
+    first = await env.client.post(f"{PR}/quiz", json=body, headers=keyed())
+    assert first.status_code == 200 and first.json() == {"recorded": True}
+    again = await env.client.post(f"{PR}/quiz", json=body, headers=keyed())
+    assert again.json() == {"recorded": False}
+    other = await env.client.post(f"{API}/prs/acme/web/2/quiz", json=body, headers=keyed())
+    assert other.status_code == 409 and other.json()["error"] == "RoundNotOfPr"
+    impossible = {"round_id": round_id, "right": 4, "answered": 3}
+    refused = await env.client.post(f"{PR}/quiz", json=impossible, headers=keyed())
+    assert refused.status_code == 400 and refused.json()["error"] == "KnowledgeInputError"
+    too_many = {"round_id": round_id, "right": 1, "answered": 11}
+    assert (await env.client.post(f"{PR}/quiz", json=too_many, headers=keyed())).status_code == 422

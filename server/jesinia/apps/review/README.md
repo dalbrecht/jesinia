@@ -8,7 +8,7 @@ This is the first part of it (PR 1). It adds:
 - **The repo tools:** four read-only MCP tools (`repo_read`, `repo_grep`, `repo_ls`, `repo_git`). Review agents read PR code only through these. See `application/repo_tools.py` and `api/tools.py`.
 - **The auto-skip rules:** which files a review leaves out (lockfiles, generated, vendored and binary files). See `domain/skip.py`.
 
-It uses the `github` service (`services/github/`) for pull request data and for posting reviews. PR 2 adds the queue, the pre-review pipeline, the REST API and posting (below). PR 3 adds the web app (`web/apps/review/`); PR 4 adds follow-ups, re-reviews and stacks (below).
+It uses the `github` service (`services/github/`) for pull request data and for posting reviews. PR 2 adds the queue, the pre-review pipeline, the REST API and posting (below). PR 3 adds the web app (`web/apps/review/`); PR 4 adds follow-ups, re-reviews and stacks (below); PR 5 adds the knowledge model (below).
 
 ## API
 
@@ -19,6 +19,7 @@ It uses the `github` service (`services/github/`) for pull request data and for 
   - `GET|PUT /prs/…/drafts`, `POST /prs/…/post/preview`, `POST /prs/…/post` and `POST /prs/…/done`.
   - `GET /stacks/…`, `POST /stacks/…/open` and `POST /stacks/…/post-all` (below).
   - `GET|PUT /settings`.
+  - `GET /knowledge` and `PUT /knowledge/<unit>` (below), and `POST /prs/…/quiz` (a finished quiz's result).
 - **Stacks** (`domain/stacks.py`, `application/stacks.py`, spec §4.3): PRs whose base branch is another open PR's head branch, in the same repo (the head branch must live there), ordered bottom-up. A group that isn't one chain (a fork, two PRs on one branch, a cycle, more than 20 PRs) is never a stack: each PR is shown alone, with the reason.
   - A stack review is one Overview, one Background and one stack walkthrough (with cross-PR findings) for the PRs at their current heads. Each PR keeps its own round, walkthrough, findings, drafts and recommendation. Opening the stack opens every PR under its own gates; the stack's jobs start once no PR is held. A failed stack job, or one a stop cut short (marked `interrupted` at start), runs again only through Retry.
   - **Post all** posts each PR's confirmed review bottom-up through the normal posting path, and stops at the first that can't be posted: the answer is that PR's error with `stack_outcomes` (posted, already posted, failed, not attempted). Each PR's attempt is keyed from the request's `Idempotency-Key`, so a replay never posts a PR twice. A frozen or stale round anywhere refuses its PR before anything is posted. Every warning must be confirmed by the author for each PR: nothing is confirmed for them.
@@ -29,6 +30,11 @@ It uses the `github` service (`services/github/`) for pull request data and for 
   - **Across rounds:** before a post, unsettled attempts on the PR's earlier rounds are reconciled first: one found on GitHub refuses the post (`EarlierReviewPosted`), one still within its grace answers "retry later". The preview notes when the round's review was already posted.
 - **Incremental re-reviews** (`application/rereview.py`, spec §4.2): when the author requested changes or commented, or a changed rebase follows an approval, the `rereview` job maps each previous comment to addressed / partly / not addressed with the new hunks, and walks what is new since the last look. The previous review (stored round, or GitHub's threads) is shown aligned with this head's lines. Only an approval followed by a changed rebase narrows the round's own diff (R70).
 - **Your own PRs** (spec §3.3): Background is minimised, the quiz is off unless asked for (`POST /prs/…/open` with `quiz: true`), and the recommendation reads "ready / not ready to request review" (`recommendation_label`). Only a comment can be posted.
+- **The knowledge model** (`domain/knowledge.py`, `application/knowledge.py`, spec §6.1): what you know, per unit. A unit is a folder of a repo at most 3 deep (`repo/<owner>/<name>[/<path>]`, the root included) or a KB tag (`tag/<tag>`).
+  - **Signals**, each stored once by its source: your commits on each repo's default branch (from the workspace's mirror, matched to the signed-in `gh` user's emails and your global git `user.email`, read incrementally from the last tip); rounds you posted or marked done (`review_deep` or `review_quick`); quiz results (`quiz_pass` with at least 60% of the answered questions right, else `quiz_fail`); and KB pages that declare `jesinia.code`, with their tags as topics. A file exposes every folder above it.
+  - **Familiarity** in [0, 1]: each exposure weighs deep 1.0, commit 0.8, quiz pass 0.6, KB page 0.5, quick 0.4 (a failed quiz 0), halved every 90 days, combined as `1 - Π(1 - weight · decay)`; times `1 - c / (c + 200)` for the `c` lines changed in the unit since your last exposure; times `1 - distance`, the share of the unit's path not shared with your 10 best-known units. Marking a unit **known** makes it 1.0, **unknown** 0.0.
+  - **Use:** the proposed depth reads the lowest familiarity over the PR's paths (deep below 0.4); a depth you chose for the head still wins (R57). Every agent's ContextPack gets a bounded summary that names only units with a record, so a PR's own folder names never enter it. Until a repo's history has been read once, its familiarity is unknown and the depth follows the PR's size.
+  - **Ingest** runs at start and every 30 minutes (`review.knowledge-ingest`). It is best-effort: each source runs on its own, and a failure is logged with its cause without stopping anything else. KB page content is data only, never run.
 - **Posting** (`application/posting.py`) is the only GitHub write.
   - The preview shows exactly what will be posted, with its warnings (`blocking_comment`, `approve_against_evidence`, `newer_head`, `own_pr_comment_only`) and a digest. Approving an unfinished round, or one whose verdict isn't approve, needs `approve_against_evidence` confirmed: Jesinia recommends, the author decides.
   - A post must carry that digest and confirm every warning. It goes out as one atomic review on the round's head. Drafts GitHub can't anchor go in the body.
@@ -59,7 +65,7 @@ All under Jesinia's data directory (`~/Library/Application Support/jesinia/`):
 |---|---|---|
 | `review/repos/<owner>/<name>/mirror.git` | A bare mirror of the repo | rebuilt by fetching |
 | `review/repos/<owner>/<name>/trees/<sha>` | A checkout of one reviewed head | rebuilt on demand |
-| `review.sqlite` | The queue, rounds, artifacts, drafts and postings | history: included in `jesinia backup` |
+| `review.sqlite` | The queue, rounds, artifacts, drafts, postings and the knowledge model | history: included in `jesinia backup` |
 
 - **Kept commits:** commits fetched by SHA get a `refs/jesinia/keep/<sha>` ref, so `git gc` never drops them.
 - **Pruning:** `GitWorkspace.prune(keep)` removes worktrees and keep refs that are no longer needed. Nothing schedules it yet; a later task will.
@@ -94,7 +100,8 @@ Nothing is configured by the user yet. Limits and time-outs are constants in cod
 
 - the caps in `domain/repo_access.py`;
 - `SEARCH_TIMEOUT` in `application/repo_tools.py`;
-- the command and fetch time-outs on `GitWorkspace`.
+- the command and fetch time-outs on `GitWorkspace`;
+- the knowledge model's weights, half-life and limits in `domain/knowledge.py`, and `KNOWLEDGE_INTERVAL` in `module.py`.
 
 ## Development
 

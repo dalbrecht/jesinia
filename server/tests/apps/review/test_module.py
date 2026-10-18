@@ -179,3 +179,19 @@ async def test_posting_reviews_and_keys_need_a_started_module(cfg: Config) -> No
     await module.start(AppContext(cfg, EventBus(), Scheduler()))
     assert module.idempotency.reserve("k", "POST /x", datetime.now(UTC)) is None
     await module.stop()
+
+
+async def test_the_knowledge_model_starts_with_the_module(cfg: Config) -> None:
+    module = ReviewModule()
+    with pytest.raises(HTTPException) as caught:
+        _ = module.knowledge
+    assert caught.value.status_code == 503
+    await module.ingest_knowledge()  # before start: nothing to do
+
+    scheduler = Scheduler()
+    await module.start(AppContext(cfg, EventBus(), scheduler))
+    await module.ingest_knowledge()  # no KB, no GitHub, no mirrors: nothing read, no error
+    assert module.knowledge.view().total == 0
+    await module.stop()
+    with pytest.raises(HTTPException):
+        _ = module.knowledge

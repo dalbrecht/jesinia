@@ -443,6 +443,26 @@ export async function markDone(
   );
 }
 
+/**
+ * Record a finished quiz for the knowledge model (spec §3.1): how many of the answered questions
+ * were right. The first result of a round counts; `recorded` is false for a later one.
+ */
+export async function recordQuiz(
+  client: JesiniaClient,
+  repo: string,
+  number: number,
+  key: string,
+  result: { roundId: number; right: number; answered: number },
+): Promise<boolean> {
+  const out = unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/quiz", {
+      params: { ...prParams(repo, number), header: withIdempotency(key) },
+      body: { round_id: result.roundId, right: result.right, answered: result.answered },
+    }),
+  );
+  return out.recorded;
+}
+
 /** The stack holding a PR (spec §4.3), from the cache: each PR's view, the stack review, cross-PR findings. */
 export async function getStack(client: JesiniaClient, repo: string, number: number): Promise<StackView> {
   return unwrap(await client.GET("/api/review/stacks/{owner}/{repo}/{number}", { params: prParams(repo, number) }));

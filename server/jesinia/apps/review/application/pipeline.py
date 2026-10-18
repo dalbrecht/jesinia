@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Final, Literal, Protocol
@@ -151,9 +151,20 @@ def _github_failure(message: str, exc: Exception) -> RoundPreparationError:
 
 
 Clock = Callable[[], datetime]
-# The author's knowledge of a repo, from the knowledge model (plan Task 14). Trusted
-# context for the agents, so it is built from Jesinia's own records only, never PR text.
-KnowledgeSource = Callable[[str], str]
+
+
+class KnowledgeSource(Protocol):
+    """The author's knowledge, from the knowledge model (plan Task 14, ``KnowledgeService``).
+    The summary is trusted context for the agents, so it is built from Jesinia's own records
+    only, never PR text."""
+
+    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
+        """The lowest familiarity over the units ``paths`` touch; ``None`` when unknown."""
+        ...
+
+    def summary(self, repo: str, paths: Sequence[str]) -> str: ...
+
+
 OpenState = Literal["started", "running", "up_to_date", "failed", "checking"] | GateState
 # Why an open waits (Codex P1 on PR #63): planning a round before its head is classified would
 # leave out the re-review for good.
@@ -181,8 +192,14 @@ def background_jobs(mode: PreReviewMode, depth: Depth, *, loaded: bool) -> tuple
     return ()
 
 
-def _nothing_known(repo: str) -> str:
-    return ""
+class NothingKnown:
+    """No knowledge model: no familiarity and an empty summary."""
+
+    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
+        return None
+
+    def summary(self, repo: str, paths: Sequence[str]) -> str:
+        return ""
 
 
 class PipelineGitHub(Protocol):
@@ -361,7 +378,7 @@ class Pipeline:
         store: PipelineStore,
         bus: EventBus,
         clock: Clock,
-        knowledge: KnowledgeSource = _nothing_known,
+        knowledge: KnowledgeSource | None = None,
         slots: RoundSlots | None = None,
         followups: RoundFollowUps | None = None,
         rereviews: RoundRereviews | None = None,
@@ -376,7 +393,7 @@ class Pipeline:
         self._store = store
         self._bus = bus
         self._clock = clock
-        self._knowledge = knowledge
+        self._knowledge: KnowledgeSource = knowledge or NothingKnown()
         self._job_flights: _SingleFlight[tuple[int, JobKind], dict[str, object] | None] = (
             _SingleFlight()
         )
@@ -796,7 +813,10 @@ class Pipeline:
                 raise _github_failure(f"couldn't read CI on {ref}", exc) from exc
             ci = None
             warnings.append(f"CI on this head couldn't be read, so it counts as missing: {exc}")
-        proposed = propose_depth(pull.additions + pull.deletions, pull.changed_files, None)
+        paths = [f.path for f in diff.files]
+        familiarity, summary = self._known(ref, paths, warnings)
+        proposed = propose_depth(pull.additions + pull.deletions, pull.changed_files, familiarity)
+        # The author's own choice for this head always wins over the proposal (R57).
         depth = self._store.chosen_depth(ref, head) or proposed
         index = await asyncio.to_thread(hunk_index, diff) if diff.complete else None
         round = Round(
@@ -804,7 +824,7 @@ class Pipeline:
             pull,
             tuple(commits),
             depth,
-            knowledge=self._knowledge(repo),
+            knowledge=summary,
             merge_base=base,
             hunk_index=index,
             own_pr=self._is_own(ref),
@@ -816,6 +836,7 @@ class Pipeline:
             "depth",
             {
                 "proposed": proposed,
+                "familiarity": familiarity,
                 "correctness": correctness_depth,
                 "lines": pull.additions + pull.deletions,
                 "files": pull.changed_files,
@@ -825,6 +846,19 @@ class Pipeline:
         return _Prepared(
             ref, round, diff, ci, correctness_depth, tuple(warnings), followup, new_hunks
         )
+
+    def _known(
+        self, ref: PrRef, paths: Sequence[str], warnings: list[str]
+    ) -> tuple[float | None, str]:
+        """The lowest familiarity over the touched paths and the knowledge summary. The model
+        is secondary: a failure leaves the depth to the PR's size, with a warning."""
+        try:
+            familiarity = self._knowledge.familiarity(ref.repo, paths)
+            return familiarity, self._knowledge.summary(ref.repo, paths)
+        except Exception as exc:  # secondary: the round goes on without the model
+            log.warning("reading the knowledge model for %s failed: %s", ref, exc, exc_info=exc)
+            warnings.append(f"the knowledge model couldn't be read, so it was left out: {exc}")
+            return None, ""
 
     async def _follow_up(
         self,

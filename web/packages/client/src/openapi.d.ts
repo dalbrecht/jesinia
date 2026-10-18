@@ -1786,6 +1786,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/prs/{owner}/{repo}/{number}/quiz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Quiz
+         * @description Record the round's quiz result for the knowledge model (spec §3.1); the first
+         *     result of a round counts.
+         */
+        post: operations["record_quiz_api_review_prs__owner___repo___number__quiz_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/knowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Knowledge
+         * @description What Jesinia thinks you know (spec §6.1): each unit with a record or a correction,
+         *     its familiarity and why. Derived data, from the cache only.
+         */
+        get: operations["get_knowledge_api_review_knowledge_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/knowledge/{unit}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Knowledge
+         * @description Mark a unit known (familiarity 1) or unknown (0), or clear the mark (``null``).
+         */
+        put: operations["put_knowledge_api_review_knowledge__unit__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/settings": {
         parameters: {
             query?: never;
@@ -2686,6 +2748,18 @@ export interface components {
             post: components["schemas"]["PostOut"];
         };
         /**
+         * KnowledgeOut
+         * @description What Jesinia thinks you know: units by id, at most ``VIEW_LIMIT`` of ``total``.
+         */
+        KnowledgeOut: {
+            /** Units */
+            units: components["schemas"]["UnitOut"][];
+            /** Total */
+            total: number;
+            /** Truncated */
+            truncated: boolean;
+        };
+        /**
          * LabelApplyIn
          * @description Apply a previewed plan (an approval). ``plan_id`` is the preview's.
          */
@@ -2915,6 +2989,14 @@ export interface components {
              * @description The OPML document text
              */
             opml: string;
+        };
+        /**
+         * OverrideIn
+         * @description Mark a unit known or unknown; ``null`` clears the correction.
+         */
+        OverrideIn: {
+            /** Override */
+            override: ("known" | "unknown") | null;
         };
         /** PageIn */
         PageIn: {
@@ -3396,6 +3478,26 @@ export interface components {
              * @description The recommendation in words; on your own PR, 'ready to request review' or 'not ready to request review' (spec §3.3)
              */
             recommendation_label?: string | null;
+        };
+        /**
+         * QuizIn
+         * @description A finished quiz: how many of the answered questions were right (skips don't count).
+         */
+        QuizIn: {
+            /** Round Id */
+            round_id: number;
+            /** Right */
+            right: number;
+            /** Answered */
+            answered: number;
+        };
+        /** QuizOut */
+        QuizOut: {
+            /**
+             * Recorded
+             * @description False when the round already had a result
+             */
+            recorded: boolean;
         };
         /** ReadAboveIn */
         ReadAboveIn: {
@@ -3947,6 +4049,42 @@ export interface components {
             tag: string;
             /** Count */
             count: number;
+        };
+        /**
+         * UnitOut
+         * @description One unit of the author's knowledge, as Settings → Review shows it.
+         */
+        UnitOut: {
+            /**
+             * Unit
+             * @description repo/<owner>/<name>[/<path>] or tag/<tag>
+             */
+            unit: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "path" | "tag";
+            /** Repo */
+            repo: string | null;
+            /** Path */
+            path: string;
+            /** Tag */
+            tag: string | null;
+            /** Familiarity */
+            familiarity: number;
+            /** Override */
+            override: ("known" | "unknown") | null;
+            /** Exposures */
+            exposures: {
+                [key: string]: number;
+            };
+            /** Last Exposure */
+            last_exposure: string | null;
+            /** Changes Since Last */
+            changes_since_last: number;
+            /** Distance */
+            distance: number;
         };
         /** UnreadOut */
         UnreadOut: {
@@ -10451,6 +10589,277 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PostAllOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    record_quiz_api_review_prs__owner___repo___number__quiz_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuizIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuizOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    get_knowledge_api_review_knowledge_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewErrorOut"];
+                };
+            };
+        };
+    };
+    put_knowledge_api_review_knowledge__unit__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                unit: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OverrideIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnitOut"];
                 };
             };
             /** @description Bad Request */

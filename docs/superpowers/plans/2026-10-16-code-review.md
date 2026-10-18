@@ -635,7 +635,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - [x] **Step 3: Implement.**
 - [x] **Step 4: Run** `make ci`. Expected: PASS.
 - [x] **Step 5: Commit** `feat(review): stacks and own PRs`.
-  - [ ] **Open PR 4**, then the Codex loop and merge.
+  - [x] **Open PR 4**, then the Codex loop and merge.
 
 ## PR 5: Knowledge, metrics trend, kept pages (Tasks 14–16)
 
@@ -643,7 +643,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 
 **Files:**
 - Create: `apps/review/domain/knowledge.py`, `apps/review/application/knowledge.py`,
-  `migrations/0002_knowledge.sql`
+  `migrations/0009_knowledge.sql`
 - Test: `server/tests/apps/review/test_knowledge.py`
 
 **Interfaces:**
@@ -664,15 +664,15 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   minimum unit familiarity over the touched paths.
 - **REST:** `GET /api/review/knowledge` and `PUT /api/review/knowledge/{unit}`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - a table-driven `test_familiarity`;
   - `test_overrides_win`;
   - `test_changes_since_last_reduce_familiarity`;
   - `test_depth_uses_min_familiarity`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): knowledge model`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): knowledge model`.
 
 ### Task 15: Metrics trend and Settings → Review
 

@@ -25,6 +25,7 @@ from jesinia.apps.review.application.jobs import (
     parse_job_output,
     schema_for,
 )
+from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import (
     ON_OPEN_JOBS,
     TRIAGE_JOBS,
@@ -67,6 +68,7 @@ from jesinia.apps.review.domain.stacks import (
     stacks,
 )
 from jesinia.apps.review.domain.workspace import GitCommandError
+from jesinia.apps.review.infrastructure.knowledge_store import SqliteKnowledgeStore
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.module import REVIEW_DB
 from jesinia.core.app import create_app
@@ -1052,7 +1054,16 @@ async def api(cfg: Config, conn: sqlite3.Connection, stack: StackEnv) -> AsyncIt
     )
     queue = QueueService(FakePullRequests(), stack.store, stack.clock)
     reads = ReviewReads(stack.store, queue.status)
-    host = Host(queue, pipeline, stack.posting, reads, SqliteIdempotencyStore(conn), stack.service)
+    knowledge = KnowledgeService(store=SqliteKnowledgeStore(conn), clock=stack.clock)
+    host = Host(
+        queue,
+        pipeline,
+        stack.posting,
+        reads,
+        SqliteIdempotencyStore(conn),
+        stack.service,
+        knowledge,
+    )
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
         transport = httpx.ASGITransport(app=app)
@@ -1262,3 +1273,31 @@ async def test_the_background_check_runs_one_at_a_time_and_skips_known_heads(
     await stack.service.stop_verify()
     await stack.service.stop_verify()  # nothing running: a no-op
     assert sorted(stack.workspace.ancestry_checks) == [(HEADS[1], HEADS[3]), (HEADS[2], HEADS[3])]
+
+
+class StackKnowledge:
+    """The knowledge model as the stack reads it: one summary over every PR's paths."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.asked: list[tuple[str, tuple[str, ...]]] = []
+
+    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
+        return None
+
+    def summary(self, repo: str, paths: Sequence[str]) -> str:
+        self.asked.append((repo, tuple(paths)))
+        if self.error is not None:
+            raise self.error
+        return "Knows src/ well."
+
+
+@pytest.mark.parametrize("broken", [False, True])
+async def test_the_stack_summary_covers_every_prs_paths(stack: StackEnv, broken: bool) -> None:
+    knowledge = StackKnowledge(RuntimeError("model unreadable") if broken else None)
+    stack.service._knowledge = knowledge  # the fixture's service, with a model attached
+    await stack.service.open(stack.ref(2))
+    await stack.service.drain()
+    assert knowledge.asked and knowledge.asked[0][0] == REPO
+    assert stack.jobs.ran == list(STACK_JOBS)  # a broken model never stops the stack
+    assert stack.jobs.stacks[0].knowledge == ("" if broken else "Knows src/ well.")

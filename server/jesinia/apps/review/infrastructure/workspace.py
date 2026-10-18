@@ -32,9 +32,12 @@ import uuid
 # banned-builtin pattern also matches the name of this safe asyncio function.
 from asyncio import create_subprocess_exec as spawn
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
+from jesinia.apps.review.application.knowledge import CommitLog
 from jesinia.apps.review.application.ports import KeepProvider
+from jesinia.apps.review.domain.knowledge import LoggedCommit
 from jesinia.apps.review.domain.repo_access import CappedOutput, RegexDialect
 from jesinia.apps.review.domain.workspace import (
     DiffTooLargeError,
@@ -52,7 +55,14 @@ from jesinia.apps.review.domain.workspace import (
     parse_repo,
 )
 
-__all__ = ["DIFF_LIMIT", "EMPTY_TREE", "GitWorkspace", "github_remote_url"]
+__all__ = [
+    "DIFF_LIMIT",
+    "EMPTY_TREE",
+    "LOG_LIMIT",
+    "GitWorkspace",
+    "github_remote_url",
+    "parse_commit_log",
+]
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +115,20 @@ _TREE_READ_OPTIONS = (
     *("-c", "mailmap.blob="),
     *("-c", "core.quotePath=true"),  # non-ASCII paths in git's output stay escaped text
 )
+# For the knowledge model's history reads (`commit_log`): as `_TREE_READ_OPTIONS`, but paths
+# stay as they are (they become unit names) and no mailmap rewrites an author's email.
+_LOG_READ_OPTIONS = (
+    *("-c", "color.ui=never"),
+    *("-c", "log.showSignature=false"),
+    *("-c", "log.mailmap=false"),
+    *("-c", "mailmap.file="),
+    *("-c", "mailmap.blob="),
+    *("-c", "core.quotePath=false"),
+)
+# Bytes of `commit_log` output read at most; past it the log is cut (newest commits kept).
+LOG_LIMIT = 32 * 1024 * 1024
+_RECORD = b"\x1e"
+_FIELD = "\x1f"
 # git's stderr kept for error messages; the rest is drained and dropped.
 _STDERR_LIMIT = 64 * 1024
 # Pinned so the user's diff.* settings never change what later steps parse.
@@ -414,6 +438,65 @@ class GitWorkspace:
             )
         return await self._run(mirror, "cat-file", "blob", object_id.decode())
 
+    def has_mirror(self, repo: str) -> bool:
+        """Whether ``repo`` has a mirror yet (nothing is fetched to find out).
+
+        Raises:
+            InvalidRepoError: not an ``owner/name``.
+        """
+        return (self._mirror(repo) / "HEAD").is_file()
+
+    async def commit_log(
+        self, repo: str, tip: str, *, after: str | None, since: datetime | None, limit: int
+    ) -> CommitLog:
+        """The non-merge commits reachable from ``tip`` (only those after ``after`` when
+        given; only those since ``since`` when given), newest first, at most ``limit``, each
+        with its author's email and its files' changed lines (renames as delete plus add).
+        ``truncated`` when ``limit`` or ``LOG_LIMIT`` bytes cut older commits.
+
+        Raises:
+            InvalidShaError: before git runs.
+            GitCommandError, GitTimeoutError: e.g. a commit isn't in the mirror.
+        """
+        head = check_sha(tip)
+        revision = head if after is None else f"{check_sha(after)}..{head}"
+        args = [
+            "log",
+            "--no-color",
+            "--no-merges",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--numstat",
+            "-z",
+            f"--format={_RECORD.decode()}%H{_FIELD}%aI{_FIELD}%ae",
+            f"--max-count={max(limit, 1)}",
+        ]
+        if since is not None:
+            args.append(f"--since={since.astimezone(UTC).isoformat(timespec='seconds')}")
+        argv, out, err, code, cut = await self._execute(
+            (*_bare(self._mirror(repo)), *_LOG_READ_OPTIONS),
+            (*args, "--end-of-options", revision),
+            extra_env={"GIT_CONFIG_NOSYSTEM": "1"},  # local reads need no credential helper
+            output_limit=LOG_LIMIT,
+        )
+        if not cut and code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        # Up to LOG_LIMIT bytes: parsed off the event loop.
+        commits = await asyncio.to_thread(parse_commit_log, out, complete=not cut)
+        return CommitLog(tuple(commits), cut or len(commits) >= limit)
+
+    async def identity_email(self) -> str | None:
+        """The email of the user's global git identity (``user.email``), if set."""
+        argv, out, err, code, _ = await self._execute(
+            (), ("config", "--global", "--get", "user.email")
+        )
+        if code == 1:
+            return None  # not set
+        if code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return out.decode(errors="replace").strip() or None
+
     async def commit_messages(
         self, repo: str, base_sha: str, head_sha: str, *, limit: int
     ) -> CappedOutput:
@@ -707,6 +790,30 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
         while await proc.stdout.read(65536):
             pass
     await proc.wait()
+
+
+def parse_commit_log(data: bytes, *, complete: bool = True) -> list[LoggedCommit]:
+    """``commit_log``'s output as commits. When the output was cut (``complete`` false), the
+    last record may be partial and is dropped. A file's changed lines are added plus deleted
+    (0 for a binary file)."""
+    records = data.split(_RECORD)[1:]
+    if not complete:
+        records = records[:-1]
+    commits: list[LoggedCommit] = []
+    for record in records:
+        header, _, rest = record.partition(b"\0")
+        sha, at, email = header.decode(errors="replace").split(_FIELD, 2)
+        files: list[tuple[str, int]] = []
+        for entry in rest.lstrip(b"\n").split(b"\0"):
+            added, deleted, path = (entry.split(b"\t", 2) + [b"", b""])[:3]
+            if not path:
+                continue
+            lines = sum(int(n) for n in (added, deleted) if n.isdigit())
+            files.append((path.decode(errors="replace"), lines))
+        commits.append(
+            LoggedCommit(check_sha(sha), datetime.fromisoformat(at), email, tuple(files))
+        )
+    return commits
 
 
 def _bare(mirror: Path) -> tuple[str, ...]:

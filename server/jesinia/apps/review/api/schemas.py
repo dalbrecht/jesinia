@@ -9,12 +9,19 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 
+from jesinia.apps.review.application.knowledge import KnowledgeView, UnitView
 from jesinia.apps.review.application.pipeline import OpenResult
 from jesinia.apps.review.application.posting import DraftSet, PostPreview
 from jesinia.apps.review.application.reviews import PrView, ReviewSettings
 from jesinia.apps.review.application.stacks import StackOpenResult, StackView
 from jesinia.apps.review.domain.followup import FollowUpKind
 from jesinia.apps.review.domain.gates import CiState, Depth
+from jesinia.apps.review.domain.knowledge import (
+    QUIZ_MAX_QUESTIONS,
+    ExposureKind,
+    Override,
+    UnitKind,
+)
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
     DRAFTS_MAX,
@@ -721,3 +728,75 @@ class ReviewErrorOut(BaseModel):
         description="For a Post all that stopped: what was and wasn't posted, per PR (the "
         "error is the PR's that stopped it)",
     )
+
+
+# --- the knowledge model (plan Task 14) ---------------------------------------------------------
+
+
+class UnitOut(BaseModel):
+    """One unit of the author's knowledge, as Settings → Review shows it."""
+
+    unit: str = Field(description="repo/<owner>/<name>[/<path>] or tag/<tag>")
+    kind: UnitKind
+    repo: str | None
+    path: str
+    tag: str | None
+    familiarity: float = Field(ge=0.0, le=1.0)
+    override: Override | None
+    exposures: dict[ExposureKind, int]
+    last_exposure: datetime | None
+    changes_since_last: int
+    distance: float
+
+    @classmethod
+    def of(cls, view: UnitView) -> UnitOut:
+        unit = view.unit
+        return cls(
+            unit=unit.id,
+            kind=unit.kind,
+            repo=unit.repo,
+            path=unit.path,
+            tag=unit.tag,
+            familiarity=round(view.familiarity, 4),
+            override=view.override,
+            exposures=dict(view.exposures),
+            last_exposure=view.last_exposure,
+            changes_since_last=view.changes_since_last,
+            distance=round(view.distance, 4),
+        )
+
+
+class KnowledgeOut(BaseModel):
+    """What Jesinia thinks you know: units by id, at most ``VIEW_LIMIT`` of ``total``."""
+
+    units: list[UnitOut]
+    total: int
+    truncated: bool
+
+    @classmethod
+    def of(cls, view: KnowledgeView) -> KnowledgeOut:
+        return cls(
+            units=[UnitOut.of(u) for u in view.units], total=view.total, truncated=view.truncated
+        )
+
+
+class OverrideIn(BaseModel):
+    """Mark a unit known or unknown; ``null`` clears the correction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    override: Override | None
+
+
+class QuizIn(BaseModel):
+    """A finished quiz: how many of the answered questions were right (skips don't count)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_id: int = Field(ge=1)
+    right: int = Field(ge=0, le=QUIZ_MAX_QUESTIONS)
+    answered: int = Field(ge=1, le=QUIZ_MAX_QUESTIONS)
+
+
+class QuizOut(BaseModel):
+    recorded: bool = Field(description="False when the round already had a result")

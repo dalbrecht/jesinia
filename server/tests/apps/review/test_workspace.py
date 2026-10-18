@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from jesinia.apps.review.infrastructure.workspace import (
     EMPTY_TREE,
     GitWorkspace,
     github_remote_url,
+    parse_commit_log,
 )
 
 REPO = "acme/widget"
@@ -1035,3 +1037,85 @@ async def test_a_fresh_tree_is_bound_before_a_prune_can_remove_it(
     # An existing tree is bound under the lock too.
     assert await ws.worktree(REPO, fixture.head, bind=lambda p: sessions.bind("job2", p)) == tree
     assert sessions.worktree_for("job2") == tree
+
+
+# --- the knowledge model's history reads (plan Task 14) -----------------------------------------
+
+
+@pytest.fixture
+def history(tmp_path: Path) -> tuple[Path, list[str]]:
+    """A remote whose main has three commits by two authors: newest last in the list."""
+    remote = tmp_path / "history.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    work = tmp_path / "history"
+    subprocess.run(["git", "clone", "-q", str(remote), str(work)], check=True, capture_output=True)
+    git(work, "checkout", "-q", "-b", "main")
+    shas = []
+    (work / "src" / "sync").mkdir(parents=True)
+    (work / "src" / "sync" / "a.py").write_text("one\ntwo\n")
+    (work / "tab\tname.txt").write_text("x\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "first", "--author", "Me <ME@example.com>")
+    shas.append(git(work, "rev-parse", "HEAD"))
+    (work / "bin.dat").write_bytes(b"\0\1\2")
+    (work / "src" / "sync" / "a.py").write_text("one\n2\n3\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "second", "--author", "Other <o@example.com>")
+    shas.append(git(work, "rev-parse", "HEAD"))
+    (work / "README.md").write_text("hi\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "third", "--author", "Me <me@example.com>")
+    shas.append(git(work, "rev-parse", "HEAD"))
+    git(work, "push", "-q", "origin", "main")
+    return remote, shas
+
+
+async def test_commit_log_reads_authors_and_changed_lines(
+    tmp_path: Path, history: tuple[Path, list[str]]
+) -> None:
+    remote, (first, second, third) = history
+    ws = GitWorkspace(tmp_path / "repos", lambda repo: str(remote))
+    assert not ws.has_mirror(REPO)
+    await ws.ensure_mirror(REPO)
+    assert ws.has_mirror(REPO)
+    tip = await ws.fetch_default_branch(REPO)
+    assert tip == third
+    log = await ws.commit_log(REPO, tip, after=None, since=None, limit=100)
+    assert not log.truncated
+    assert [c.sha for c in log.commits] == [third, second, first]
+    assert [c.email for c in log.commits] == ["me@example.com", "o@example.com", "ME@example.com"]
+    assert dict(log.commits[1].files) == {"bin.dat": 0, "src/sync/a.py": 3}
+    assert dict(log.commits[2].files) == {"src/sync/a.py": 2, "tab\tname.txt": 1}
+    assert log.commits[0].at.tzinfo is not None
+    newer = await ws.commit_log(REPO, tip, after=first, since=None, limit=100)
+    assert [c.sha for c in newer.commits] == [third, second]
+    later = log.commits[0].at + timedelta(days=1)
+    assert (await ws.commit_log(REPO, tip, after=None, since=later, limit=100)).commits == ()
+    cut = await ws.commit_log(REPO, tip, after=None, since=None, limit=1)
+    assert cut.truncated and [c.sha for c in cut.commits] == [third]
+    with pytest.raises(GitCommandError):
+        await ws.commit_log(REPO, "f" * 40, after=None, since=None, limit=10)
+
+
+def test_parse_commit_log_drops_a_cut_last_record() -> None:
+    sha = "a" * 40
+    record = f"\x1e{sha}\x1f2026-10-18T10:00:00+02:00\x1fme@x\0\n1\t2\tsrc/a.py\0-\t-\tb.bin\0"
+    data = (record + record[:20]).encode()
+    (only,) = parse_commit_log(data, complete=False)
+    assert only.files == (("src/a.py", 3), ("b.bin", 0))
+    assert only.at.utcoffset() == timedelta(hours=2)
+    assert len(parse_commit_log(record.encode() * 2)) == 2
+
+
+async def test_identity_email_reads_the_global_git_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = GitWorkspace(tmp_path / "repos", str)
+    assert await ws.identity_email() is None
+    config = tmp_path / "with-identity"
+    config.write_text("[user]\n\temail = Me@Example.com\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    assert await ws.identity_email() == "Me@Example.com"
+    config.write_text("[[[ not a config\n")
+    with pytest.raises(GitCommandError):
+        await ws.identity_email()

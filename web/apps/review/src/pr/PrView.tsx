@@ -14,6 +14,7 @@ import {
   errorCause,
   getPr,
   markDone,
+  recordQuiz,
   openPr,
   refreshPr,
   retryPr,
@@ -390,6 +391,15 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     );
   };
 
+  /** A finished quiz feeds the knowledge model; best-effort, it never gets in the way. */
+  const quizFinished = (right: number, answered: number) => {
+    const roundId = round?.id;
+    if (roundId == null) return;
+    keyed(`quiz:${repo}#${number}:${roundId}`, (key) =>
+      recordQuiz(client, repo, number, key, { roundId, right, answered }),
+    ).catch((e: unknown) => console.warn(`The quiz result wasn't recorded: ${errorCause(e)}`));
+  };
+
   /** Your own PR's quiz is off until you ask for it (spec §3.3). */
   const askQuiz = () => {
     open("quiz", { quiz: true }).then(
@@ -600,7 +610,8 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       case "metrics":
         return artifacts.metrics ? <Metrics scores={artifacts.metrics} /> : pendingPage("Metrics");
       case "quiz":
-        if (artifacts.quiz) return <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} />;
+        if (artifacts.quiz)
+          return <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} onFinish={quizFinished} />;
         if (own && !artifacts.jobs.quiz)
           return (
             <article className={s.page} aria-label="Quiz">

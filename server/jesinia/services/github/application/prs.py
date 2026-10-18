@@ -291,6 +291,30 @@ class PrClient:
         except (GitHubRequestError, GitHubPayloadError) as exc:
             return _pull_request_from_search(repo, item, str(exc))
 
+    async def viewer_emails(self) -> list[str]:
+        """The viewer's email addresses, lowercase: the profile's public email, GitHub's
+        ``noreply`` addresses for the account, and every verified address ``/user/emails``
+        lists when the token may read it (the ``user:email`` scope; without it, the rest)."""
+        user = _mapping(await self._get_json("/user"), "/user")
+        login = _text(user, "login")
+        emails = [f"{login}@users.noreply.github.com"]
+        if isinstance(user.get("id"), int):
+            emails.append(f"{user['id']}+{login}@users.noreply.github.com")
+        if isinstance(public := user.get("email"), str) and public:
+            emails.append(public)
+        try:
+            listed = await self._get_pages("/user/emails")
+        except GitHubRequestError as exc:
+            if exc.status not in (403, 404):
+                raise
+            listed = []  # the token can't read them: the public ones still match
+        emails += [
+            address
+            for item in listed
+            if item.get("verified") is True and isinstance(address := item.get("email"), str)
+        ]
+        return list(dict.fromkeys(email.lower() for email in emails))
+
     async def viewer_orgs(self) -> list[str]:
         """Logins of the orgs the viewer belongs to, lowercase (every page)."""
         return [_text(org, "login").lower() for org in await self._get_pages("/user/orgs")]

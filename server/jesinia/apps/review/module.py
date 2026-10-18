@@ -17,6 +17,7 @@ from jesinia.apps.review.api.routes import build_router
 from jesinia.apps.review.api.tools import build_review_tools, build_tools
 from jesinia.apps.review.application.followup import FollowUps
 from jesinia.apps.review.application.jobs import JobRunner
+from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
@@ -32,6 +33,8 @@ from jesinia.apps.review.application.scheduler import (
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.queue import SyncStatus
+from jesinia.apps.review.infrastructure.kb_pages import KbKnowledgePages
+from jesinia.apps.review.infrastructure.knowledge_store import SqliteKnowledgeStore
 from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace, github_remote_url
@@ -41,6 +44,7 @@ from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
+from jesinia.services.kb.application.service import KbService
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +55,9 @@ SYNC_JOB = "review.sync"
 PRUNE_JOB = "review.prune"
 IDEMPOTENCY_PRUNE_JOB = "review.idempotency-prune"
 RECONCILE_JOB = "review.reconcile-postings"
+KNOWLEDGE_JOB = "review.knowledge-ingest"
+# How often the knowledge model reads its signals again (each source once, incrementally).
+KNOWLEDGE_INTERVAL = timedelta(minutes=30)
 # How often postings a crash or a lost response left unsettled are checked against GitHub.
 RECONCILE_INTERVAL = timedelta(minutes=5)
 
@@ -83,6 +90,7 @@ class ReviewModule:
         self._idempotency: SqliteIdempotencyStore | None = None
         self._followups: FollowUps | None = None
         self._stacks: StackReviews | None = None
+        self._knowledge: KnowledgeService | None = None
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -165,6 +173,23 @@ class ReviewModule:
         return self._reviews
 
     @property
+    def knowledge(self) -> KnowledgeService:
+        """The knowledge model (spec §6.1)."""
+        if self._knowledge is None:
+            raise _not_started()
+        return self._knowledge
+
+    async def ingest_knowledge(self) -> None:
+        """Read the knowledge model's signals (the ``review.knowledge-ingest`` job); failures
+        are logged and reported, never raised."""
+        if self._knowledge is not None:
+            report = await self._knowledge.ingest()
+            log.info(
+                "knowledge ingest: %d commits, %d reviews, %d quizzes, %d KB pages, %d errors",
+                report.commits, report.reviews, report.quizzes, report.pages, len(report.errors),
+            )  # fmt: skip
+
+    @property
     def idempotency(self) -> IdempotencyStore:
         if self._idempotency is None:
             raise _not_started()
@@ -240,6 +265,20 @@ class ReviewModule:
         self._reviews = ReviewReads(store, cached_status)
         agents = ctx.services.get("agents")
         github = ctx.services.get("github")
+        kb = ctx.services.get("kb")
+
+        def knowledge_repos() -> list[str]:
+            return [*store.watched_repos(), *(stored.pr.ref.repo for stored in store.prs())]
+
+        self._knowledge = KnowledgeService(
+            store=SqliteKnowledgeStore(self._conn),
+            clock=_utc_now,
+            workspace=self._workspace,
+            identity=PrClient(github) if isinstance(github, GitHubService) else None,
+            pages=KbKnowledgePages(kb) if isinstance(kb, KbService) else None,
+            repos=knowledge_repos,
+        )
+        ctx.scheduler.every(KNOWLEDGE_JOB, KNOWLEDGE_INTERVAL, self.ingest_knowledge, at_start=True)
         reviews = isinstance(agents, SessionService) and isinstance(github, GitHubService)
         # The review pipeline runs the pre-reviews; without agents and GitHub the gates are
         # still applied and ready PRs show as queued.
@@ -302,6 +341,7 @@ class ReviewModule:
                     slots=self._scheduler,
                     followups=followups,
                     rereviews=Rereviews(github=prs, workspace=self._workspace, store=store),
+                    knowledge=self._knowledge,
                 )
                 # A head classified after its round was planned gets its re-review then.
                 followups.on_classified = self._pipeline.replan
@@ -316,6 +356,7 @@ class ReviewModule:
                     clock=_utc_now,
                     slots=self._scheduler,
                     bus=ctx.bus,
+                    knowledge=self._knowledge,
                 )
                 # Nothing runs yet: a stack job left running was cut short by a stop (R73).
                 if swept := self._stacks.recover():
@@ -339,6 +380,7 @@ class ReviewModule:
         self._posting = None
         self._reviews = None
         self._idempotency = None
+        self._knowledge = None
         self._scheduler = None
         self._jobs = None
         self._queue = None

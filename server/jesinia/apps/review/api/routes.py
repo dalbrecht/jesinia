@@ -23,9 +23,11 @@ from jesinia.apps.review.api.schemas import (
     DoneIn,
     DraftsIn,
     DraftsOut,
+    KnowledgeOut,
     LoadIn,
     OpenIn,
     OpenOut,
+    OverrideIn,
     PostAllIn,
     PostAllOut,
     PostedOut,
@@ -36,13 +38,17 @@ from jesinia.apps.review.api.schemas import (
     PrOut,
     QueueOut,
     QueueRowOut,
+    QuizIn,
+    QuizOut,
     ReviewErrorOut,
     ReviewSettingsBody,
     RoundOut,
     StackOpenIn,
     StackOpenOut,
     StackOut,
+    UnitOut,
 )
+from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import OpenResult, Pipeline
 from jesinia.apps.review.application.posting import PostingFailed, PostingService
 from jesinia.apps.review.application.queue import QueueService
@@ -50,6 +56,7 @@ from jesinia.apps.review.application.reviews import ReviewReads
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import GateInputError
+from jesinia.apps.review.domain.knowledge import KnowledgeError, parse_unit
 from jesinia.apps.review.domain.posting import (
     CommentOnlyOnOwnPr,
     EarlierReviewPosted,
@@ -115,6 +122,9 @@ class ReviewHost(Protocol):
     @property
     def idempotency(self) -> IdempotencyStore: ...
 
+    @property
+    def knowledge(self) -> KnowledgeService: ...
+
 
 _STATUS: dict[type[Exception], int] = {
     PrNotInQueueError: status.HTTP_404_NOT_FOUND,
@@ -149,6 +159,7 @@ _STATUS: dict[type[Exception], int] = {
     PostingDomainError: status.HTTP_400_BAD_REQUEST,
     PullRequestDomainError: status.HTTP_400_BAD_REQUEST,
     GateInputError: status.HTTP_400_BAD_REQUEST,
+    KnowledgeError: status.HTTP_400_BAD_REQUEST,
     # The app's own failure (a workspace or job error, say): still typed, structured JSON.
     ReviewError: status.HTTP_500_INTERNAL_SERVER_ERROR,
 }
@@ -165,6 +176,8 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
 Owner = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Name = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Number = Annotated[int, Path(ge=1, le=999_999_999)]
+# repo/<owner>/<name>[/<path>] or tag/<tag>; validated by ``parse_unit`` (400 otherwise).
+UnitPath = Annotated[str, Path(min_length=1, max_length=600)]
 
 
 def _status_of(exc: Exception) -> int:
@@ -507,6 +520,44 @@ def build_router(host: ReviewHost) -> APIRouter:
                 key=cast(str, idem.key),
             )
             return PostAllOut(outcomes=[PostOutcomeOut.of(o) for o in result.outcomes])
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.post(f"{pr_path}/quiz", response_model=QuizOut)
+    async def record_quiz(
+        owner: Owner, repo: Name, number: Number, body: QuizIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Record the round's quiz result for the knowledge model (spec §3.1); the first
+        result of a round counts."""
+
+        async def run() -> QuizOut:
+            recorded = host.knowledge.record_quiz(
+                _ref(owner, repo, number), body.round_id, right=body.right, answered=body.answered
+            )
+            return QuizOut(recorded=recorded)
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.get("/knowledge", response_model=KnowledgeOut)
+    async def get_knowledge(
+        repo: Annotated[str | None, Query(max_length=REPO_MAX)] = None,
+    ) -> Response:
+        """What Jesinia thinks you know (spec §6.1): each unit with a record or a correction,
+        its familiarity and why. Derived data, from the cache only."""
+
+        async def run() -> KnowledgeOut:
+            return KnowledgeOut.of(host.knowledge.view(repo))
+
+        return await _respond(run)
+
+    @r.put("/knowledge/{unit:path}", response_model=UnitOut)
+    async def put_knowledge(
+        unit: UnitPath, body: OverrideIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Mark a unit known (familiarity 1) or unknown (0), or clear the mark (``null``)."""
+
+        async def run() -> UnitOut:
+            return UnitOut.of(host.knowledge.set_override(parse_unit(unit), body.override))
 
         return await idem.run(lambda: _respond(run))
 
