@@ -16,16 +16,17 @@ The apps:
 - **Review:** a queue of the pull requests that need you, a guided walkthrough of each
   with AI findings ready before you look, and one confirmed review posted to GitHub.
   It needs the GitHub CLI signed in (`gh auth login`); Jesinia stores no credentials.
-- **Settings:** the KB folder, git sync, agents, the tag catalog and RSS. (Review's settings
-  page comes in a later release.)
-
-Issues comes next.
+- **Issues:** triage the issues of the repos you watch with agent suggestions you approve,
+  group them into epics, and build ordered work queues by drag and drop. Every other change
+  to GitHub waits in a Pending changes tray until you apply it. It also uses `gh`.
+- **Settings:** the KB folder, git sync, agents, the tag catalog, RSS and Issues (watched
+  repos, label schema and setup). (Review's settings page comes in a later release.)
 
 ## Quickstart
 
 You need macOS, git, [uv](https://docs.astral.sh/uv/) and Node 22+
-(`brew install uv node`). Claude Code and/or Codex are optional, for chat; Review also needs `gh`
-(`brew install gh && gh auth login`).
+(`brew install uv node`). Claude Code and/or Codex are optional, for chat; Review and Issues
+also need `gh` (`brew install gh && gh auth login`).
 
 ```bash
 git clone --recurse-submodules https://github.com/dalbrecht/jesinia.git ~/apps/jesinia
@@ -40,8 +41,8 @@ Setup:
 3. asks before connecting Claude Code and Codex;
 4. prints a one-time login link.
 
-Open the link, then use **Install** in Chrome or Edge to give Jesinia, Notes, RSS and
-Review their own windows.
+Open the link, then use **Install** in Chrome or Edge to give Jesinia, Notes, RSS, Review and
+Issues their own windows.
 
 - `--kb-path` is your Markdown folder (default `~/kb`). Existing files are indexed in
   place, never moved. If it is a git repository with a remote, Jesinia commits and pushes

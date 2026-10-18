@@ -37,6 +37,7 @@ from jesinia.core.idempotency import SqliteIdempotencyStore
 from jesinia.core.module import AppContext
 from jesinia.core.scheduler import Job, Scheduler
 from jesinia.registry import DATABASES, modules
+from jesinia.services.agents.application.packs import ContextPack
 from jesinia.services.github.application.service import GitHubService, GitHubUnavailable
 from jesinia.services.kb.application.service import KbService
 from jesinia.services.kb.application.tags import TagService
@@ -301,6 +302,24 @@ async def test_suggestions_start_with_the_module_and_ask_the_agents_service(
     await module.suggest.drain()
     run = module.suggest.run_state("acme/web", 1)
     assert run is not None and run.status == "waiting"
+    await module.stop()
+
+
+async def test_suggestions_ask_the_runner_chosen_in_settings(cfg: Config) -> None:
+    module = IssuesModule()
+    with pytest.raises(HTTPException, match="not started"):
+        _ = module.settings
+    ctx = AppContext(cfg, EventBus(), Scheduler())
+    agents = _Agents()
+    ctx.services["agents"] = agents
+    ctx.services["agents.runner"] = lambda: "claude-code"
+    await module.start(ctx)
+    assert module.settings.runner() == "claude-code"
+    module.settings.update(runner="codex")
+    assert module.settings.runner() == "codex"
+    # The suggestion service asks through the same choice (looked up per run).
+    await module.suggest.ask(ContextPack("role"), "triage")
+    assert agents.asks == ["codex"]
     await module.stop()
 
 

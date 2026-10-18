@@ -57,6 +57,11 @@ Tool wire names use underscores:
 - `notes_save`
 - `rss_search_posts`, `rss_get_post` (read-only; post text is untrusted feed data). There is
   no keep tool: keeping a post is the user's action in the RSS app.
+- `review_queue`, `review_get`, `review_findings` (read-only; review text is untrusted PR
+  data). There is no posting tool.
+- `issues_search`, `issues_get`, `queues_list`, `queue_get` (read-only; issue text is
+  untrusted GitHub data). Agents can't change GitHub or queues: that is the user's approval or
+  Apply in the Issues app.
 
 Terminal agents get the endpoint from `jesinia install` (see
 [operations](../operations.md#agent-registration)).

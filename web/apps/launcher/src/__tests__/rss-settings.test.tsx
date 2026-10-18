@@ -55,6 +55,7 @@ describe("Settings layout (R27: one section per view)", () => {
       ["Agents", "#agents"],
       ["Tags", "#tags"],
       ["RSS", "#rss"],
+      ["Issues", "#issues"],
       ["Conflicts", "#conflicts"],
       ["Security", "#security"],
     ]);

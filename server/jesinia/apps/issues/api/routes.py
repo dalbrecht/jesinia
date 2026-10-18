@@ -49,7 +49,10 @@ from jesinia.apps.issues.api.schemas import (
     IssuesErrorOut,
     IssuesRepoIn,
     IssuesRepoOut,
+    IssuesRepoPatch,
     IssuesReposOut,
+    IssuesSettingsOut,
+    IssuesSettingsPatch,
     IssueSuggestionEditIn,
     IssueSuggestionOut,
     IssueSuggestionRunIn,
@@ -103,8 +106,9 @@ from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
+from jesinia.apps.issues.application.settings import IssuesSettingsService
 from jesinia.apps.issues.application.suggest import SuggestService
-from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.application.sync import KEEP, SYNC_INTERVAL, Keep, SyncService
 from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.changes import (
     BatchAbandonedError,
@@ -142,7 +146,11 @@ from jesinia.apps.issues.domain.queues import (
     QueueNameTakenError,
     QueueNotFoundError,
 )
-from jesinia.apps.issues.domain.schema import InvalidSettingsSchemaError, validate_settings_schema
+from jesinia.apps.issues.domain.schema import (
+    InvalidSettingsSchemaError,
+    LabelSchema,
+    validate_settings_schema,
+)
 from jesinia.apps.issues.domain.suggestions import (
     OPEN_STATES,
     DuplicateNotCachedError,
@@ -217,6 +225,9 @@ class IssuesHost(Protocol):
 
     @property
     def themes(self) -> ThemeService: ...
+
+    @property
+    def settings(self) -> IssuesSettingsService: ...
 
     @property
     def idempotency(self) -> IdempotencyStore: ...
@@ -403,6 +414,47 @@ def build_router(host: IssuesHost) -> APIRouter:
                 _repo(owner, repo), watched=body.watched, settings_schema=schema
             )
             return IssuesRepoOut.of(state)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.patch(repo_path, response_model=IssuesRepoOut)
+    async def patch_repo(
+        owner: Owner, repo: Name, body: IssuesRepoPatch, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Change only the fields sent: watch or unwatch the repo, or keep, replace or clear its
+        Settings schema. ``watched: true`` adds a new repo (its issues land in the Backlog)."""
+
+        async def run() -> IssuesRepoOut:
+            sent = body.model_fields_set
+            wanted = body.settings_schema
+            schema: LabelSchema | None | Keep = KEEP
+            if "settings_schema" in sent:
+                schema = None if wanted is None else validate_settings_schema(wanted.model_dump())
+            state = await host.sync.update(
+                _repo(owner, repo), watched=body.watched, settings_schema=schema
+            )
+            return IssuesRepoOut.of(state)
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get("/settings", response_model=IssuesSettingsOut)
+    async def get_settings() -> Response:
+        """Settings → Issues' own settings: the runner suggestions ask."""
+
+        async def run() -> IssuesSettingsOut:
+            return IssuesSettingsOut(runner=host.settings.settings().runner)
+
+        return await _respond(run, host.clock)
+
+    @r.patch("/settings", response_model=IssuesSettingsOut)
+    async def patch_settings(body: IssuesSettingsPatch, idem: IdempotentCall = keyed) -> Response:
+        """Save only the fields sent (``runner: null`` follows the agents service again)."""
+
+        async def run() -> IssuesSettingsOut:
+            current = host.settings.settings()
+            if "runner" in body.model_fields_set:
+                current = host.settings.update(runner=body.runner)
+            return IssuesSettingsOut(runner=current.runner)
 
         return await idem.run(lambda: _respond(run, host.clock))
 

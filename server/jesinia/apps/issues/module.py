@@ -34,6 +34,7 @@ from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.ports import AgentAsker, ThemeTags
 from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
+from jesinia.apps.issues.application.settings import IssuesSettingsService
 from jesinia.apps.issues.application.suggest import RUN_INTERVAL, SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.application.themes import ThemeService
@@ -90,6 +91,7 @@ class IssuesModule:
         self._briefs: BriefService | None = None
         self._queues: QueueService | None = None
         self._themes: ThemeService | None = None
+        self._settings: IssuesSettingsService | None = None
 
     @property
     def idempotency(self) -> IdempotencyStore:
@@ -178,6 +180,13 @@ class IssuesModule:
             raise _not_started()
         return self._themes
 
+    @property
+    def settings(self) -> IssuesSettingsService:
+        """Settings → Issues' own settings: the suggestion runner (no GitHub needed)."""
+        if self._settings is None:
+            raise _not_started()
+        return self._settings
+
     def on_triaged(self, repo: str, triaged: Sequence[tuple[Issue, Triage]]) -> None:
         """Sync's and the engine's hook for each stored page of triaged issues: queue items whose
         issue closed are marked done (``auto_done`` never raises), then drafts that lost their
@@ -195,19 +204,21 @@ class IssuesModule:
     @staticmethod
     def _suggestions(
         ctx: AppContext, store: SqliteIssuesStore, conn: sqlite3.Connection
-    ) -> SuggestService:
-        """The suggestion service. The agents service and its runner choice are looked up per
-        run, so suggestions wait (and say so) while no runner is available."""
+    ) -> tuple[SuggestService, IssuesSettingsService]:
+        """The suggestion service and the settings that choose its runner. The agents service
+        and its preferred runner are looked up per run, so suggestions wait (and say so) while
+        no runner is available."""
 
         def asker() -> AgentAsker | None:
             found = ctx.services.get("agents")
             return found if isinstance(found, AgentAsker) else None
 
-        def runner() -> str | None:
+        def preferred() -> str | None:
             pick = ctx.services.get("agents.runner")
             chosen = pick() if callable(pick) else None
             return chosen if isinstance(chosen, str) else None
 
+        settings = IssuesSettingsService(store, preferred)
         drafts = SqliteSuggestionStore(conn)
         # Nothing applies yet: a claim was left by an approval a stop cut off (IR40).
         if released := drafts.release_all():
@@ -215,7 +226,7 @@ class IssuesModule:
         # Single process and nothing runs yet: a run marked running was cut off by a stop.
         if requeued := drafts.requeue_running(_utc_now()):
             log.info("queued %d issues suggestion runs again after an unclean stop", requeued)
-        return SuggestService(drafts, store, asker, runner, _utc_now)
+        return SuggestService(drafts, store, asker, settings.runner, _utc_now), settings
 
     async def sync_repos(self) -> None:
         """The ``issues.sync`` job: every watched repo, failures recorded, never raised."""
@@ -248,7 +259,8 @@ class IssuesModule:
         )
         store = SqliteIssuesStore(self._conn)
         self._queries = IssueQueries(store, _utc_now)
-        suggest = self._suggest = self._suggestions(ctx, store, self._conn)
+        suggest, self._settings = self._suggestions(ctx, store, self._conn)
+        self._suggest = suggest
         applied = self._applied = SqliteApplyStore(self._conn)
         # Single process and nothing applies yet: a batch left running was cut off (IR45), with
         # or without the github service.
@@ -340,6 +352,7 @@ class IssuesModule:
         self._briefs = None
         self._queues = None
         self._themes = None
+        self._settings = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None

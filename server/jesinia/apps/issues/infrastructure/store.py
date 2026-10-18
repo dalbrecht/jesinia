@@ -385,6 +385,16 @@ class SqliteIssuesStore:
     def set_migrated(self, repo: str) -> None:
         self._conn.execute("UPDATE repos SET migrated = 1 WHERE repo = ?", (repo,))
 
+    # Settings → Issues ------------------------------------------------------------------
+
+    def runner(self) -> str | None:
+        # The one row exists from its migration on.
+        row = self._conn.execute("SELECT runner FROM settings WHERE id = 1").fetchone()
+        return cast(str | None, row[0])
+
+    def set_runner(self, runner: str | None) -> None:
+        self._conn.execute("UPDATE settings SET runner = ? WHERE id = 1", (runner,))
+
     def record_sync(self, repo: str, synced_at: datetime | None, error: str | None) -> None:
         if synced_at is None:
             self._conn.execute("UPDATE repos SET sync_error = ? WHERE repo = ?", (error, repo))

@@ -226,6 +226,41 @@ class IssuesRepoIn(BaseModel):
     settings_schema: LabelSchemaBody | None
 
 
+class IssuesRepoPatch(BaseModel):
+    """A partial save of one repo in Settings → Issues: only the fields sent change, so a save
+    never puts back what another tab changed. ``watched: true`` adds a repo; ``settings_schema:
+    null`` clears the schema made in Settings (the default then applies when there is no
+    labels.yml). At least one field must be sent, and ``watched`` can't be ``null``."""
+
+    watched: bool | None = None
+    settings_schema: LabelSchemaBody | None = None
+
+    @model_validator(mode="after")
+    def _something_sent(self) -> IssuesRepoPatch:
+        if not self.model_fields_set:
+            raise ValueError("send watched, settings_schema or both")
+        if "watched" in self.model_fields_set and self.watched is None:
+            raise ValueError("watched is true or false; leave it out to keep it")
+        return self
+
+
+RUNNER_NAME = r"^[a-z][a-z0-9-]{0,39}$"
+
+
+class IssuesSettingsOut(BaseModel):
+    """Settings → Issues' own settings. ``runner`` answers suggestion asks; ``null`` means the
+    agents service's preferred runner."""
+
+    runner: str | None
+
+
+class IssuesSettingsPatch(BaseModel):
+    """A partial save: a field left out keeps its value. ``runner: null`` follows the agents
+    service's preferred runner again."""
+
+    runner: str | None = Field(default=None, pattern=RUNNER_NAME)
+
+
 class IssueRowOut(BaseModel):
     """An Inbox or Backlog row with its triage against the repo's schema. ``state`` is
     GitHub's (``open`` or ``closed``) and ``linked_pr_state`` sums up the linked PRs

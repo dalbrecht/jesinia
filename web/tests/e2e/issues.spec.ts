@@ -4,7 +4,7 @@
 // changes tray until Apply, and each batch shows its result. GitHub is the fake on loopback
 // (fixtures/github/server.py), which records every request; the agent is the scripted `fake`
 // runner. Nothing here touches the developer's GitHub, `gh` config or credentials.
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -156,4 +156,201 @@ test("a queue's order is local: a real mouse drag reorders it at once, and nothi
   // Local only: no write reached GitHub, and nothing waits in the tray.
   expect((await githubRequests(page)).filter((r) => r.method !== "GET").length).toBe(writesBefore);
   await expect(page.getByRole("region", { name: "Pending changes" })).toHaveCount(0);
+});
+
+/** Pick up `handle` by keyboard and step with `key` until the live region says `over`, then drop. */
+async function keyboardDrag(page: Page, handle: Locator, key: "ArrowUp" | "ArrowDown", over: string) {
+  const announcer = page.locator("[data-dnd-announcer]");
+  await handle.focus();
+  await page.keyboard.press("Space");
+  await expect(announcer).toContainText("Picked up");
+  for (let step = 0; step < 40; step++) {
+    const said = (await announcer.textContent()) ?? "";
+    if (said.includes(over)) break;
+    await page.keyboard.press(key);
+    // Wait for the region to say where the drag is now, never a fixed sleep.
+    await expect(announcer).not.toHaveText(said);
+  }
+  await expect(announcer).toContainText(over);
+  await page.keyboard.press("Space");
+}
+
+/** A real mouse drag from `handle` onto the middle of `target` (dnd-kit needs a few steps). */
+async function mouseDrag(page: Page, handle: Locator, target: Locator) {
+  const from = await handle.boundingBox();
+  const to = await target.boundingBox();
+  if (!from || !to) throw new Error("the drag did not lay out");
+  const x = from.x + from.width / 2;
+  const y = from.y + from.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 4, y + 4, { steps: 3 });
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
+  await page.mouse.up();
+}
+
+test("Settings → Issues sets the labels up; drags stage two parent links, a band move and a Done; one Apply writes them", async ({
+  page,
+}) => {
+  const auth = { Authorization: `Bearer ${token()}` };
+  // A partial save, as Settings sends: only `watched`.
+  const watched = await page.request.patch(`/api/issues/repos/${REPO}`, {
+    headers: keyed(auth),
+    data: { watched: true },
+  });
+  expect(watched.ok()).toBe(true);
+  const { url } = (await (await page.request.post("/api/auth/nonce", { headers: auth })).json()) as { url: string };
+  await page.goto(url);
+
+  // Settings → Issues: preview the label setup (the fixture repo lacks `epic` and `initiative`),
+  // then apply it as an approval; the labels land on "GitHub".
+  await page.goto("/settings/#issues");
+  const repo = page.getByRole("group", { name: REPO });
+  await expect(repo.getByText("The default label convention")).toBeVisible();
+  await repo.getByRole("button", { name: `Preview setup for ${REPO}` }).click();
+  const setup = repo.getByRole("region", { name: `Setup for ${REPO}` });
+  await expect(setup.getByRole("list")).toContainText("Create epic");
+  await setup.getByRole("button", { name: "Apply setup" }).click();
+  await expect(setup.getByText("Setup applied: every step done.")).toBeVisible({ timeout: 30_000 });
+  const created = (await githubRequests(page))
+    .filter((r) => r.method === "POST" && r.path === `/repos/${REPO}/labels`)
+    .map((r) => (r.body as { name: string }).name);
+  expect(created).toEqual(expect.arrayContaining(["epic", "initiative"]));
+
+  // Fixtures on "GitHub": an epic, two issues for it, one for a theme, and three queue items.
+  const open = async (title: string, labels: string[]) => {
+    const made = await page.request.post(`${github()}/__issues`, { data: { title, body: "", labels } });
+    return ((await made.json()) as { number: number }).number;
+  };
+  const ready = ["bug", "area:cli", "priority: medium", "agent-ready"];
+  const epic = await open("Greeter epic", ["epic", "enhancement", "area:cli", "priority: medium", "agent-ready"]);
+  const first = await open("Epic child one", ready);
+  const second = await open("Epic child two", ready);
+  const themed = await open("Theme me", ready);
+  const high = await open("Queue high", ["bug", "area:cli", "priority: high", "agent-ready"]);
+  const moved = await open("Queue moved", ready);
+  const human = await open("Queue human task", ["bug", "area:cli", "priority: medium", "human-needed"]);
+  expect((await page.request.post(`/api/issues/repos/${REPO}/sync`, { headers: keyed(auth) })).ok()).toBe(true);
+  const ref = (n: number) => `${REPO}#${n}`;
+  const tag = "greeter-polish";
+  // Themes are tags from the KB's catalog: the theme needs the fixture KB.
+  const kb = await page.request.put("/api/kb/path", { headers: auth, data: { path: join(home, "kb") } });
+  expect(kb.ok()).toBe(true);
+  const themedFirst = await page.request.post(`/api/issues/themes/${tag}/issues`, {
+    headers: keyed(auth),
+    data: { issues: [{ repo: REPO, n: high }] },
+  });
+  expect(themedFirst.ok(), await themedFirst.text()).toBe(true);
+  const name = `Agents ${Date.now()}`;
+  const queue = (await (
+    await page.request.post("/api/issues/queues", { headers: keyed(auth), data: { name } })
+  ).json()) as {
+    id: string;
+  };
+  for (const n of [high, moved, human]) {
+    const added = await page.request.post(`/api/issues/queues/${queue.id}/items`, {
+      headers: keyed(auth),
+      data: { kind: "issue", repo: REPO, n },
+    });
+    expect(added.ok()).toBe(true);
+  }
+  const writesBefore = (await githubRequests(page)).length;
+  const applies: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/issues/pending/apply") applies.push(r.url());
+  });
+  const staged = async () =>
+    (
+      (await (await page.request.get("/api/issues/pending", { headers: auth })).json()) as {
+        changes: { n: number | null; change: { kind: string } }[];
+      }
+    ).changes.map((c) => `${c.change.kind} ${c.n}`);
+
+  // Two issues dragged together onto the epic with the real mouse: each stages its parent link.
+  await page.goto("/issues/epics");
+  const pool = page.getByRole("list", { name: "Open issues without an epic" });
+  await pool.getByRole("checkbox", { name: `Select ${ref(first)}` }).check();
+  await pool.getByRole("checkbox", { name: `Select ${ref(second)}` }).check();
+  await mouseDrag(
+    page,
+    pool.getByRole("button", { name: `Move ${ref(first)} Epic child one` }),
+    page.getByRole("group", { name: `${ref(epic)} Greeter epic` }),
+  );
+  await expect.poll(staged).toEqual(expect.arrayContaining([`set_parent ${first}`, `set_parent ${second}`]));
+
+  // One issue onto a theme, by keyboard: local, nothing staged for GitHub.
+  await page.goto("/issues/backlog");
+  const backlog = page.getByRole("list", { name: "Backlog" });
+  await keyboardDrag(
+    page,
+    backlog.getByRole("button", { name: `Move ${ref(themed)} Theme me` }),
+    "ArrowDown",
+    `Over #${tag}.`,
+  );
+  await expect
+    .poll(async () => {
+      const got = (await (await page.request.get(`/api/issues/themes/${tag}`, { headers: auth })).json()) as {
+        issues: { n: number }[];
+      };
+      return got.issues.map((i) => i.n).sort((a, b) => a - b);
+    })
+    .toEqual([themed, high].sort((a, b) => a - b));
+
+  // The queue by priority: reorder the medium band (local), move an item up a band (staged),
+  // and mark the human task Done (its close is staged).
+  await page.goto("/issues/queues");
+  await page.getByRole("tab").filter({ hasText: name }).click();
+  await page.getByRole("radio", { name: "By priority" }).check();
+  const order = async () =>
+    (
+      (await (await page.request.get(`/api/issues/queues/${queue.id}`, { headers: auth })).json()) as {
+        items: { n: number }[];
+      }
+    ).items.map((i) => i.n);
+  await keyboardDrag(
+    page,
+    page.getByRole("button", { name: `Move ${ref(human)} Queue human task` }),
+    "ArrowUp",
+    "Over Medium priority, position 1 of 2.",
+  );
+  await expect.poll(order).toEqual([high, human, moved]);
+  await keyboardDrag(
+    page,
+    page.getByRole("button", { name: `Move ${ref(moved)} Queue moved` }),
+    "ArrowUp",
+    "Over High priority, position 2 of 2.",
+  );
+  await expect.poll(staged).toContain(`set_dimension ${moved}`);
+  // The box never shows checked: Done moves the item to the Done group.
+  await page.getByRole("checkbox", { name: `Done: ${ref(human)} Queue human task` }).click();
+  await expect.poll(staged).toContain(`close ${human}`);
+  // Staged, not written: nothing reached GitHub yet.
+  expect((await githubRequests(page)).slice(writesBefore).filter((r) => r.method !== "GET")).toEqual([]);
+
+  // One Apply: one batch writes the parent links, the band's priority and the close.
+  const tray = page.getByRole("region", { name: "Pending changes" });
+  await tray.getByRole("button", { name: /^Apply/ }).click();
+  await expect(tray.getByText("All changes applied").last()).toBeVisible({ timeout: 30_000 });
+  expect(applies).toHaveLength(1);
+  const writes = (await githubRequests(page)).slice(writesBefore).filter((r) => r.method !== "GET");
+  const subIssues = writes.filter((w) => w.method === "POST" && w.path === `/repos/${REPO}/issues/${epic}/sub_issues`);
+  expect(subIssues.map((w) => (w.body as { sub_issue_id: number }).sub_issue_id).sort()).toEqual(
+    [7000 + first, 7000 + second].sort(),
+  );
+  const movedLabels = `/repos/${REPO}/issues/${moved}/labels`;
+  expect(
+    writes
+      .filter((w) => w.path.startsWith(movedLabels))
+      .map((w) => `${w.method} ${decodeURIComponent(w.path)}`)
+      .sort(),
+  ).toEqual([`DELETE ${movedLabels}/priority: medium`, `POST ${movedLabels}`].sort());
+  expect(writes.filter((w) => w.path === `/repos/${REPO}/issues/${human}`)).toEqual([
+    expect.objectContaining({ method: "PATCH", body: expect.objectContaining({ state: "closed" }) }),
+  ]);
+  // The theme stayed local, and nothing else was written.
+  expect(writes).toHaveLength(subIssues.length + 3);
+  const closed = await page.request.get(`${github()}/repos/${REPO}/issues/${human}`, {
+    headers: { Authorization: "Bearer e2e" },
+  });
+  expect(((await closed.json()) as { state: string }).state).toBe("closed");
 });

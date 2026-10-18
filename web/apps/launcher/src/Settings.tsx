@@ -4,18 +4,20 @@ import { Badge, Button, Input, Panel, useToast } from "@jesinia/design";
 import { RUNNER_NAMES, useClient, type KbPathInfo, type ServerStatus, type SyncStatus } from "@jesinia/shell";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { clock, MODE_LABEL } from "./format";
+import { IssuesSection } from "./settings/Issues";
 import { RssSection } from "./settings/Rss";
 import { TagsSection } from "./settings/Tags";
 import { unreachable } from "./settings/unreachable";
 import s from "./settings.module.css";
 
-/** The outline, in the design pass's order (Review joins when it ships). */
+/** The outline, in the design pass's order (Review joins when it ships, before Issues). */
 const SECTIONS = [
   ["kb", "Knowledge base"],
   ["sync", "Git sync"],
   ["agents", "Agents"],
   ["tags", "Tags"],
   ["rss", "RSS"],
+  ["issues", "Issues"],
   ["conflicts", "Conflicts"],
   ["security", "Security"],
 ] as const;
@@ -342,6 +344,7 @@ export function Settings({ status }: { status: ServerStatus }) {
     agents: <AgentsSection status={status} />,
     tags: <TagsSection />,
     rss: <RssSection />,
+    issues: <IssuesSection status={status} />,
     conflicts: <ConflictsSection status={status} />,
     security: <SecuritySection />,
   };

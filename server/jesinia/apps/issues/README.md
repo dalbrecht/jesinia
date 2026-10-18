@@ -103,7 +103,12 @@ Task 10 adds themes (spec §5.1, §6.2, rulings IR15, IR22, IR27):
 PR 4 (Tasks 11–14) adds the web app, `web/apps/issues/`, served at `/issues/`. Task 12 adds its
 shell: the Inbox and Backlog (a compact list with multi-select and a bulk bar, or a board by
 readiness, priority or status), an issue in the book layout, and the Pending changes tray, which
-polls each batch it starts (an apply, a retry or an approval) to its per-issue results.
+polls each batch it starts (an apply, a retry or an approval) to its per-issue results. Task 13
+adds the Epics, Queues and Themes views, with drag and drop onto epics, themes, queue bands and
+the Done zone. Task 14 adds Settings → Issues in the launcher (watched repos, each repo's schema
+source and aliases, the label setup and migration previews and their apply, and the runner that
+answers suggestion asks), partial saves (`PATCH`) for a repo and for the settings, and the
+end-to-end test against the fake GitHub and the fake runner.
 
 ## Layout
 
@@ -122,6 +127,7 @@ domain/           pure rules, 100% covered
 application/      orchestration over ports
   ports.py        what the app needs: IssueReads, LabelWrites, AgentAsker, the store protocols
   sync.py         SyncService: watch or unwatch, sync, Settings schemas, recompute
+  settings.py     IssuesSettingsService: the runner suggestion asks use
   reads.py        IssueQueries: views, items and search, served from the cache only
   labels.py       LabelPlanner, LabelExecutor (ordered, paced), LabelSetupService
   suggest.py      SuggestService: triage asks, background and on-demand runs, edits
@@ -158,6 +164,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `issues`: GitHub's data, stored verbatim, plus the stored triage (`complete`, `missing`,
   `inbox`, and so on).
 - `labels`, `milestones`, `comments`, `timeline` and `sub_issue_links`: the cache.
+- `settings`: one row, the runner Settings → Issues chose for suggestion asks (`NULL`: the
+  agents service's preferred one).
 - `label_plans`: previewed label batches. Each one is consumed by its apply and pruned after
   15 minutes.
 - `idempotency`: the keys of this module's write routes.
@@ -244,6 +252,13 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - `GET /repos`: every added repo, with its schema and sync status.
   - `PUT /repos/{owner}/{repo}` with `{watched, settings_schema}`: `settings_schema` is
     required; send `null` to clear it.
+  - `PATCH /repos/{owner}/{repo}` with `{watched?, settings_schema?}`: a partial save, as
+    Settings → Issues sends. Only the fields sent change (`settings_schema: null` clears it),
+    so a save never puts back what another tab changed; `watched: true` adds a new repo. An empty
+    body or `watched: null` is a 422.
+  - `GET /settings` and `PATCH /settings` with `{runner?}`: the runner suggestion asks use
+    (`null`: the agents service's preferred one, `claude-code` when it is available). A chosen
+    runner is asked even while unavailable, so the runs wait or fail with its cause.
   - `POST /repos/{owner}/{repo}/sync`: sync the repo now.
   - `GET /{inbox|backlog}?repo&filter`: a view, served from the cache, even without the
     `github` service. Each row carries GitHub's `state` and `linked_pr_state` (the linked PRs
