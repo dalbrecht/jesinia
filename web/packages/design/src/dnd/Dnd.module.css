@@ -4,8 +4,11 @@
 .handle {
   cursor: grab;
   border-radius: var(--jx-radius-sm);
-  /* Lets a finger scroll the list; the long-press sensor lifts the item. */
+  /* Lets a finger scroll the list; the long-press sensor lifts the item. No iOS callout or text
+     selection during the press. */
   touch-action: manipulation;
+  -webkit-touch-callout: none;
+  user-select: none;
   transition: opacity var(--jx-duration-fast) var(--jx-ease);
 }
 .draggable:focus-visible,
@@ -18,8 +21,9 @@
 }
 /* The rows being dragged stay in place, dimmed, while the preview travels. */
 .draggable[data-dragging],
-.handle[data-dragging] {
-  opacity: 0.45;
+.handle[data-dragging],
+.rowBody[data-dragging] {
+  opacity: var(--jx-dnd-dragging-opacity);
 }
 
 .target,
@@ -41,7 +45,13 @@
 }
 .target[data-drop-state="unavailable"],
 .sortable[data-drop-state="unavailable"] {
-  opacity: 0.6;
+  opacity: var(--jx-dnd-unavailable-opacity);
+}
+/* Focus lands on a target after a drop that removed the dragged item. */
+.target:focus-visible,
+.sortable:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
 }
 .target[data-drop-state="refused"],
 .sortable[data-drop-state="refused"] {
@@ -71,18 +81,36 @@
 .end {
   min-height: var(--jx-space-2);
 }
+/* An empty list stays a target a finger can hit. */
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--jx-dnd-empty-min-height);
+  padding: var(--jx-space-2) var(--jx-space-3);
+  border: 1px dashed var(--jx-border-strong);
+  border-radius: var(--jx-radius-md);
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+}
 /* The insertion line: where the dragged rows will land. */
 .row[data-insert-before]::before,
 .end[data-insert-before]::before {
   content: "";
   position: absolute;
-  top: -1px;
+  top: calc(var(--jx-dnd-line-width) / -2);
   right: 0;
   left: 0;
-  height: 2px;
-  background: var(--jx-accent);
+  height: var(--jx-dnd-line-width);
+  background: var(--jx-dnd-line);
   border-radius: var(--jx-radius-full);
   pointer-events: none;
+}
+@media (forced-colors: active) {
+  .row[data-insert-before]::before,
+  .end[data-insert-before]::before {
+    background: Highlight;
+  }
 }
 
 .preview {
@@ -90,7 +118,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--jx-space-2);
-  max-width: 320px;
+  max-width: var(--jx-dnd-preview-max-width);
   padding: var(--jx-space-2) var(--jx-space-3);
   background: var(--jx-surface-raised);
   color: var(--jx-fg);

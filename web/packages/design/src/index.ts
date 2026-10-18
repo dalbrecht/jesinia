@@ -22,6 +22,6 @@ export { Toast, ToastProvider, useToast, type ToastOptions, type ToastTone } fro
 export { DndProvider, LONG_PRESS_MS, type DndProviderProps } from "./dnd/DndProvider";
 export { Draggable, type DraggableProps } from "./dnd/Draggable";
 export { DropTarget, type DropState, type DropTargetProps } from "./dnd/DropTarget";
-export { SortableList, type SortableListProps } from "./dnd/SortableList";
+export { SortableList, type SortableItemState, type SortableListProps } from "./dnd/SortableList";
 export { edgeScrollDelta, moveToSlot } from "./dnd/model";
-export type { Accepts, DragItem, DragNoun, DropTargetInfo, Refusal } from "./dnd/types";
+export type { Accepts, DragHandleProps, DragItem, DragNoun, DropTargetInfo, Refusal } from "./dnd/types";

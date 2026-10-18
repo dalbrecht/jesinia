@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { HTMLAttributes } from "react";
+
 /** One thing being dragged: an issue, an epic, a queue row. `id` is unique within its provider. */
 export type DragItem = {
   readonly id: string;
@@ -27,6 +29,17 @@ export type DragSource = {
   readonly items: readonly DragItem[];
   /** The SortableList the items come from, or `null` for a plain Draggable. */
   readonly listId: string | null;
+  /** The item actually picked up (the preview names it, even within a group). */
+  readonly grabbedId: string;
+};
+
+/**
+ * Spread onto a dedicated drag-handle element (a grip button), so the rest of a row's controls
+ * stay outside the `role="button"` handle and keep their own keys.
+ */
+export type DragHandleProps = HTMLAttributes<HTMLElement> & {
+  readonly ref: (node: HTMLElement | null) => void;
+  readonly "data-drag-id": string;
 };
 
 /** What a drop target carries (dnd-kit's droppable `data`). */

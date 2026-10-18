@@ -21,12 +21,12 @@ import {
   type KeyboardSensorOptions,
   type Over,
 } from "@dnd-kit/core";
-import { add, getEventCoordinates, isKeyboardEvent, type Coordinates } from "@dnd-kit/utilities";
+import { isKeyboardEvent, type Coordinates } from "@dnd-kit/utilities";
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { VisuallyHidden } from "../components/Spinner";
 import { prefersReducedMotion } from "../components/util";
 import { DEFAULT_NOUN, DRAG_INSTRUCTIONS, countLabel, describeItems, dndMessages } from "./announcements";
-import { DragStateContext, IDLE, type DragState, type OverState } from "./context";
+import { DragStateContext, IDLE, findDropElement, type DragState, type OverState } from "./context";
 import s from "./Dnd.module.css";
 import { edgeScrollDelta, moveToSlot } from "./model";
 import type { DragItem, DragNoun, DragSource, DropData, DropTargetInfo, Refusal } from "./types";
@@ -63,6 +63,10 @@ const SILENT: Announcements = {
 };
 const ACCESSIBILITY = { announcements: SILENT, screenReaderInstructions: { draggable: DRAG_INSTRUCTIONS } };
 
+// Tab cancels rather than commits (dnd-kit's default drops on Tab): moving focus away from a
+// keyboard drag must never stage a change.
+const KEYBOARD_CODES = { start: ["Space", "Enter"], cancel: ["Escape", "Tab"], end: ["Space", "Enter"] };
+
 const KEY_STEPS: Record<string, 1 | -1> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
 
 export type DndProviderProps = {
@@ -73,6 +77,12 @@ export type DndProviderProps = {
    * arrive here.
    */
   onDrop: (items: readonly DragItem[], target: DropTargetInfo, position: number | null) => void;
+  /**
+   * After a keyboard drop: the item id whose handle takes focus next (preferring one inside the
+   * target). Omitted, or returning `undefined`, keeps focus where it is; if the drop removed the
+   * focused handle, focus moves to the dropped item's handle in the target, or else the target.
+   */
+  focusAfterDrop?: (items: readonly DragItem[], target: DropTargetInfo) => string | undefined;
   /** How announcements and the preview count things. Defaults to "item" / "items". */
   noun?: DragNoun;
   /** Replaces the default preview (the first label plus a count chip). */
@@ -109,7 +119,8 @@ function resolveOver(drag: DragState, droppableId: string, data: DropData, slot:
     return { ...base, refusal: null, isNoop, place: { slot, position, of: data.order.length } };
   }
   const refusal = data.accepts?.(items) ?? null;
-  return { ...base, refusal, isNoop: false, place: { slot, position: slot + 1, of: data.order.length + items.length } };
+  const added = items.filter((item) => !data.order.includes(item.id)).length;
+  return { ...base, refusal, isNoop: false, place: { slot, position: slot + 1, of: data.order.length + added } };
 }
 
 function announceOver(over: OverState | null): string {
@@ -137,7 +148,10 @@ function isScrollContainer(element: HTMLElement): boolean {
   return scrolls && (element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth);
 }
 
-/** Scrollable ancestors of each node, innermost first, the over node's before the active one's. */
+/**
+ * Scrollable ancestors of each node, innermost first, the over node's before the active one's,
+ * then the document itself when it scrolls (its root reports `overflow: visible`).
+ */
 function scrollContainers(...nodes: (HTMLElement | null)[]): HTMLElement[] {
   const found: HTMLElement[] = [];
   for (const node of nodes) {
@@ -145,7 +159,17 @@ function scrollContainers(...nodes: (HTMLElement | null)[]): HTMLElement[] {
       if (!found.includes(at) && isScrollContainer(at)) found.push(at);
     }
   }
+  const page = document.scrollingElement as HTMLElement | null;
+  if (page && !found.includes(page) && page.scrollHeight > page.clientHeight) found.push(page);
   return found;
+}
+
+/** A container's visible box; for the document, the viewport. */
+function visibleRect(element: HTMLElement): { top: number; bottom: number; left: number; right: number } {
+  if (element === document.scrollingElement) {
+    return { top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth };
+  }
+  return element.getBoundingClientRect();
 }
 
 function scrollAxis(element: HTMLElement, axis: "Top" | "Left", step: number): boolean {
@@ -166,16 +190,22 @@ function scrollAxis(element: HTMLElement, axis: "Top" | "Left", step: number): b
  */
 function AutoScroller({ pointer, isEnabled }: { pointer: MutableRefObject<Coordinates | null>; isEnabled: boolean }) {
   const { activeNode, over, droppableContainers } = useDndContext();
-  const nodes = useRef<(HTMLElement | null)[]>([]);
-  nodes.current = [over ? (droppableContainers.get(over.id)?.node.current ?? null) : null, activeNode];
+  const overNode = over ? (droppableContainers.get(over.id)?.node.current ?? null) : null;
+  // Walking ancestors reads computed styles, so it happens when the nodes change, not every tick.
+  const containers = useRef<HTMLElement[]>([]);
+  useEffect(() => {
+    containers.current = isEnabled ? scrollContainers(overNode, activeNode) : [];
+  }, [isEnabled, overNode, activeNode]);
 
+  // A fixed tick, not requestAnimationFrame: the speed (px per tick) then doesn't double on a
+  // 120 Hz display.
   useEffect(() => {
     if (!isEnabled) return;
     const timer = setInterval(() => {
       const at = pointer.current;
       if (!at) return;
-      for (const container of scrollContainers(...nodes.current)) {
-        const step = edgeScrollDelta(at, container.getBoundingClientRect());
+      for (const container of containers.current) {
+        const step = edgeScrollDelta(at, visibleRect(container));
         const movedY = scrollAxis(container, "Top", step.y);
         const movedX = scrollAxis(container, "Left", step.x);
         if (movedY || movedX) break;
@@ -186,19 +216,45 @@ function AutoScroller({ pointer, isEnabled }: { pointer: MutableRefObject<Coordi
   return null;
 }
 
+/**
+ * After a keyboard drop: focus the handle the app named, or, if the drop removed the focused
+ * handle, the dropped item's handle (preferring one inside the target), or else the target.
+ * Runs after the app's re-render and dnd-kit's own focus restore (a frame, then a task).
+ */
+function placeFocusAfterDrop(preferred: string | null, items: readonly DragItem[], targetId: string) {
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      const isLost = document.activeElement === null || document.activeElement === document.body;
+      if (preferred === null && !isLost) return;
+      const target = findDropElement(targetId);
+      const handles = [...document.querySelectorAll<HTMLElement>("[data-drag-id]")];
+      const handleFor = (id: string) => {
+        const matches = handles.filter((handle) => handle.dataset.dragId === id);
+        return matches.find((handle) => target?.contains(handle)) ?? matches[0];
+      };
+      const wanted = preferred === null ? undefined : handleFor(preferred);
+      const fallback = isLost ? (items.map((item) => handleFor(item.id)).find(Boolean) ?? target) : undefined;
+      (wanted ?? fallback)?.focus();
+    });
+  });
+}
+
 function DefaultPreview({
   items,
+  grabbedId,
   noun,
   refusal,
 }: {
   items: readonly DragItem[];
+  grabbedId: string | null;
   noun: DragNoun;
   refusal: Refusal | null;
 }) {
   const count = countLabel(items.length, noun);
+  const grabbed = items.find((item) => item.id === grabbedId) ?? items[0];
   return (
     <>
-      <span className={s.previewLabel}>{items[0]?.label ?? count}</span>
+      <span className={s.previewLabel}>{grabbed?.label ?? count}</span>
       {items.length > 1 ? (
         <span className={s.previewCount} data-drag-count="">
           {count}
@@ -214,7 +270,13 @@ function DefaultPreview({
  * and keyboard sensors; auto-scroll near the edges of scrolling lists; a drag preview with a
  * count; and a live region that announces every pick-up, move, refusal and drop.
  */
-export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, children }: DndProviderProps) {
+export function DndProvider({
+  onDrop,
+  focusAfterDrop,
+  noun = DEFAULT_NOUN,
+  renderPreview,
+  children,
+}: DndProviderProps) {
   const [drag, setDrag] = useState<DragState>(IDLE);
   const [message, setMessage] = useState("");
   const [keyboardTarget, setKeyboardTarget] = useState<string | null>(null);
@@ -223,7 +285,6 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
   const overDataRef = useRef<DropData | null>(null);
   const keyboardTargetRef = useRef<string | null>(null);
   const isKeyboardDragRef = useRef(false);
-  const startRef = useRef<Coordinates | null>(null);
   const pointerRef = useRef<Coordinates | null>(null);
 
   const update = useCallback((next: DragState) => {
@@ -254,7 +315,8 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
       overDataRef.current = data;
       if (isSameOver(current.over, next)) return;
       update({ ...current, over: next });
-      setMessage(announceOver(next));
+      // A pointer crossing the gaps between targets would interrupt speech at every gap.
+      if (next !== null || isKeyboardDragRef.current) setMessage(announceOver(next));
     },
     [update],
   );
@@ -263,7 +325,6 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
     update(IDLE);
     overDataRef.current = null;
     moveKeyboardTarget(null);
-    startRef.current = null;
     pointerRef.current = null;
     setIsPointerDrag(false);
   }, [update, moveKeyboardTarget]);
@@ -274,11 +335,16 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
       const items = source?.items ?? [{ id: String(event.active.id) }];
       const isKeyboard = isKeyboardEvent(event.activatorEvent);
       isKeyboardDragRef.current = isKeyboard;
-      startRef.current = isKeyboard ? null : getEventCoordinates(event.activatorEvent);
-      pointerRef.current = startRef.current;
+      pointerRef.current = null;
       setIsPointerDrag(!isKeyboard);
       moveKeyboardTarget(null);
-      update({ items, ids: new Set(items.map((item) => item.id)), listId: source?.listId ?? null, over: null });
+      update({
+        items,
+        ids: new Set(items.map((item) => item.id)),
+        listId: source?.listId ?? null,
+        grabbedId: source?.grabbedId ?? String(event.active.id),
+        over: null,
+      });
       setMessage(dndMessages.pickedUp(describeItems(items, noun)));
     },
     [noun, update, moveKeyboardTarget],
@@ -286,9 +352,9 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
 
   const onDragMove = useCallback(
     (event: DragMoveEvent) => {
-      // Keyboard targets come from the arrow keys (onDragOver), never from geometry.
-      if (isKeyboardDragRef.current || !startRef.current) return;
-      pointerRef.current = add(startRef.current, event.delta);
+      // Keyboard targets come from the arrow keys (onDragOver), never from geometry. The pointer
+      // itself is read in collision detection (it runs first, on every move and scroll).
+      if (isKeyboardDragRef.current) return;
       refresh(event.over);
     },
     [refresh],
@@ -303,13 +369,19 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
       const data = overDataRef.current;
       const items = current.items ?? [];
       const what = describeItems(items, noun);
+      const isKeyboard = isKeyboardDragRef.current;
       finish();
+      const settleFocus = (target: DropTargetInfo) => {
+        if (isKeyboard) placeFocusAfterDrop(focusAfterDrop?.(items, target) ?? null, items, target.id);
+      };
       if (!over || !data) {
-        setMessage(dndMessages.droppedNowhere(what));
+        // A list row that never left its list didn't go anywhere.
+        setMessage(current.listId === null ? dndMessages.droppedNowhere(what) : dndMessages.unchanged(what));
       } else if (over.refusal) {
         setMessage(dndMessages.refusedDrop(over.label, over.refusal.reason));
       } else if (data.kind === "target" || over.place === null) {
         onDrop(items, data.info, null);
+        settleFocus(data.info);
         setMessage(dndMessages.dropped(what, over.label));
       } else if (over.isNoop) {
         setMessage(dndMessages.unchanged(what));
@@ -320,10 +392,11 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
       } else {
         const { slot, position, of } = over.place;
         onDrop(items, data.info, slot);
+        settleFocus(data.info);
         setMessage(dndMessages.droppedAt(what, over.label, position, of));
       }
     },
-    [noun, onDrop, finish],
+    [noun, onDrop, focusAfterDrop, finish],
   );
 
   const onDragCancel = useCallback(() => {
@@ -364,7 +437,11 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
       const rect = context.droppableRects.get(target.id);
       return rect ? { x: rect.left, y: rect.top } : undefined;
     };
-    return { coordinateGetter };
+    return {
+      coordinateGetter,
+      keyboardCodes: KEYBOARD_CODES,
+      scrollBehavior: prefersReducedMotion() ? "auto" : "smooth",
+    };
   }, [moveKeyboardTarget]);
 
   const sensors = useSensors(
@@ -379,6 +456,9 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
         const isKnown = args.droppableContainers.some((container) => container.id === keyboardTarget);
         return keyboardTarget !== null && isKnown ? [{ id: keyboardTarget }] : [];
       }
+      // The real pointer: activation point plus translate, with no scroll adjustment, so
+      // auto-scroll and the half-row rule see where the pointer actually is.
+      if (args.pointerCoordinates) pointerRef.current = args.pointerCoordinates;
       return pointerWithin(args);
     },
     [keyboardTarget],
@@ -407,13 +487,13 @@ export function DndProvider({ onDrop, noun = DEFAULT_NOUN, renderPreview, childr
               {renderPreview ? (
                 renderPreview(drag.items, refusal)
               ) : (
-                <DefaultPreview items={drag.items} noun={noun} refusal={refusal} />
+                <DefaultPreview items={drag.items} grabbedId={drag.grabbedId} noun={noun} refusal={refusal} />
               )}
             </div>
           ) : null}
         </DragOverlay>
       </DndContext>
-      <div role="status" aria-live="assertive" aria-atomic="true" data-dnd-announcer="">
+      <div aria-live="assertive" aria-atomic="true" data-dnd-announcer="">
         <VisuallyHidden>{message}</VisuallyHidden>
       </div>
     </DragStateContext.Provider>

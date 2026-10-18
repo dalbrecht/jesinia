@@ -782,19 +782,29 @@ Drag and drop is a primary way to work in Issues ([the Issues spec](../specs/202
 
 **Anatomy:**
 
-- **Drag preview:** a raised card that follows the pointer. It shows the first item's label and, for
-  a multi-selection, a count chip ("3 issues"). Over a refused target it gains a `--jx-danger`
-  border and the refusal's reason. `--jx-surface-raised`, `--jx-border`, `--jx-shadow-2`; the chip
-  is `--jx-accent` on `--jx-accent-fg`.
-- **Dragged items** stay in place at 45% opacity while the preview travels.
+- **Drag preview:** a raised card that follows the pointer. It shows the grabbed item's label and,
+  for a multi-selection, a count chip ("3 issues"). Over a refused target it gains a `--jx-danger`
+  border and the refusal's reason. `--jx-surface-raised`, `--jx-border`, `--jx-shadow-2`, at most
+  `--jx-dnd-preview-max-width`; the chip is `--jx-accent-fg` text on an `--jx-accent` fill.
+- **Dragged items** stay in place at `--jx-dnd-dragging-opacity` while the preview travels.
+- **Handle:** by default a `Draggable`'s root (or a `SortableList` row) is the handle: one
+  `role="button"`. It must then hold **no interactive children** (a button's children are
+  presentational to assistive technology). Rows with controls (a Done checkbox, a menu) use a
+  dedicated handle instead: `Draggable`'s children as a function, or `SortableList`'s
+  `handle="custom"`, spread the `DragHandleProps` onto a grip button and keep the controls
+  outside it. Either way, Space or Enter on a control inside the handle works the control and
+  never starts a drag.
 - **Target highlight:** while a drag is on, a `DropTarget` that would take the items shows a 1 px
-  dashed `--jx-border-strong` outline (`available`); one that would refuse them dims to 60%
+  dashed `--jx-border-strong` outline (`available`); one that would refuse them dims to `--jx-dnd-unavailable-opacity`
   (`unavailable`). Under the drag it fills `--jx-accent-subtle` with a 2 px `--jx-accent` outline
   (`over`), or `--jx-danger-bg` with a dashed `--jx-danger` outline and the reason in
   `--jx-danger` text (`refused`).
-- **Insertion line:** in a `SortableList`, a 2 px `--jx-accent` line where the rows will land.
-  Rows don't shift aside, so the line reads the same for one row, a multi-selection, or rows
-  dragged in from elsewhere. No line is drawn where a drop would change nothing.
+- **Insertion line:** in a `SortableList`, a `--jx-dnd-line-width` `--jx-dnd-line` line where the
+  rows will land (`Highlight` in forced-colors mode). Rows don't shift aside, so the line reads
+  the same for one row, a multi-selection, or rows dragged in from elsewhere. No line is drawn
+  where a drop would change nothing.
+- **Empty list:** stays a target at least `--jx-dnd-empty-min-height` (44 px) tall, with a dashed
+  `--jx-border-strong` edge and an optional `emptyLabel` ("Drop issues here") in `--jx-fg-muted`.
 
 Each part exposes its state as `data-drop-state` (`idle`, `available`, `unavailable`, `over`,
 `refused`), `data-dragging` and `data-insert-before`, for app styling through tokens and for tests.
@@ -805,8 +815,8 @@ Each part exposes its state as `data-drop-state` (`idle`, `available`, `unavaila
 |---|---|
 | Mouse, trackpad | Press and move 4 px to lift |
 | Touch | Long-press 250 ms to lift (`LONG_PRESS_MS`); moving more than 5 px first scrolls instead |
-| Keyboard | Space or Enter picks up; arrows move between drop targets in document order; Space or Enter drops; Escape cancels |
-| Auto-scroll | While the pointer rests within 40 px of a scrolling list's or board's edge, it scrolls, faster nearer the edge, up to 16 px a tick. It scrolls the containers under the pointer as well as around the dragged item, so a drag from one pane into a long list in another works. If the inner container can't go further, the outer one scrolls |
+| Keyboard | Space or Enter picks up; arrows move between drop targets in document order; Space or Enter drops; Escape or Tab cancels (moving focus away never commits a drop) |
+| Auto-scroll | While the pointer rests within 40 px of a scrolling list's or board's edge, it scrolls, faster nearer the edge, up to 16 px a tick. It scrolls the containers under the pointer as well as around the dragged item, so a drag from one pane into a long list in another works. If the inner container can't go further, the outer one scrolls, and last the page itself |
 
 With the keyboard, ↓ and → step to the next target and ↑ and ← to the previous; the first press
 goes to the nearest target in that direction. In a list, each row stands for the slot before it,
@@ -814,15 +824,15 @@ plus an end slot; slots where a drop would change nothing are skipped.
 
 **Motion:** highlights change over `--jx-duration-fast`. On drop the preview settles into place
 over 200 ms (it mirrors `--jx-duration-base` and `--jx-ease`, since the Web Animations API can't
-read custom properties). Under `prefers-reduced-motion: reduce` the preview doesn't settle and
-highlights change at once.
+read custom properties). Under `prefers-reduced-motion: reduce` the preview doesn't settle, highlights change at once,
+and keyboard moves scroll targets into view without smooth scrolling.
 
 **Announcements** (one assertive live region, present from mount; plain sentences)
 
 | Moment | Example |
 |---|---|
 | Pick up | "Picked up 3 issues. Use the arrow keys to move, Space or Enter to drop, Escape to cancel." |
-| Over a target | "Over Epic A." |
+| Over a target | "Over Epic A." (a pointer crossing the gaps between targets isn't announced) |
 | Over a list position | "Over Next up, position 2 of 5." |
 | Over a refused target | "Can't drop on Epic A: An epic can't contain itself." |
 | Drop on a target | "Dropped 3 issues on Epic A." |
@@ -835,9 +845,20 @@ highlights change at once.
 One item is named by its label, several by count, using the provider's `noun`.
 
 **ARIA:** each draggable is `role="button"` with `aria-roledescription="draggable"` and
-`aria-describedby` pointing at the instructions ("To pick up, press Space or Enter. …"). Focus
-returns to the draggable after a drop or cancel. Every drag also needs a menu equivalent in the
-app ("Move to epic…", "Add to queue…"); the primitives don't provide one.
+`aria-describedby` pointing at the instructions ("To pick up, press Space or Enter. …").
+
+**Focus after a keyboard drop or cancel:**
+
+- After a cancel, or a drop that keeps the dragged handle (a reorder within a list, or an item
+  that stays where it was), focus stays on that handle.
+- `focusAfterDrop` may name an item id: focus then goes to that item's handle, preferring one
+  inside the target.
+- If the drop removed the focused handle (into a queue, onto a Done zone), focus goes to the
+  dropped item's handle inside the target if there is one (its new row), or else to the target
+  itself. Targets can take focus from script but are not Tab stops.
+
+Every drag also needs a menu equivalent in the app ("Move to epic…", "Add to queue…"); the
+primitives don't provide one.
 
 **Props**
 
@@ -853,14 +874,21 @@ type DropTargetInfo = { id: string; label: string; data?: unknown };
 // (0 before the first row, the list's length at the end), else position is null.
 function DndProvider(props: {
   onDrop: (items: readonly DragItem[], target: DropTargetInfo, position: number | null) => void;
+  // After a keyboard drop: the item id whose handle takes focus next.
+  focusAfterDrop?: (items: readonly DragItem[], target: DropTargetInfo) => string | undefined;
   noun?: { one: string; other: string }; // default "item" / "items"
   renderPreview?: (items: readonly DragItem[], refusal: Refusal | null) => ReactNode;
   children: ReactNode;
 }): JSX.Element;
 
-// Its root is the handle. With a group that includes it, the whole group drags (multi-select).
-function Draggable(props: HTMLAttributes<HTMLDivElement> & {
+// Spread onto a dedicated handle element.
+type DragHandleProps = HTMLAttributes<HTMLElement> & { ref: (node: HTMLElement | null) => void; "data-drag-id": string };
+
+// With a group that includes it, the whole group drags (multi-select). The sensors own the
+// handle's role, tabIndex, onKeyDown, onMouseDown and onTouchStart.
+function Draggable(props: Omit<HTMLAttributes<HTMLDivElement>, "role" | "tabIndex" | "onKeyDown" | "onMouseDown" | "onTouchStart"> & {
   id: string; label: string; data?: unknown; group?: readonly DragItem[]; disabled?: boolean;
+  children: ReactNode | ((handle: DragHandleProps) => ReactNode); // a function: a separate handle
 }): JSX.Element;
 
 // An epic, board column, theme, Done or Remove zone. accepts omitted: takes anything.
@@ -872,11 +900,15 @@ function DropTarget(props: HTMLAttributes<HTMLDivElement> & {
 function SortableList<T extends DragItem>(props: {
   id: string; label: string; items: readonly T[];
   onMove: (order: string[], moved: readonly T[]) => void;
-  renderItem: (item: T, state: { index: number; isDragging: boolean }) => ReactNode;
+  renderItem: (item: T, state: { index: number; isDragging: boolean; handleProps: DragHandleProps }) => ReactNode;
+  handle?: "row" | "custom"; // custom: renderItem spreads state.handleProps onto its own handle
+  emptyLabel?: string;
   selection?: readonly string[]; accepts?: Accepts; data?: unknown; className?: string;
 }): JSX.Element;
 ```
 
-Ids must be unique within a provider: a `Draggable`, a `DropTarget` and a `SortableList` can't
-share one. Rows inside a `SortableList` are namespaced by the list, so the same issue can appear
-in a list and as a `Draggable` elsewhere.
+**Ids:** `Draggable` ids are unique among draggables, and `DropTarget` and `SortableList` ids are
+unique among targets: a `DropTarget` and a `SortableList` must not share an id. A `Draggable` and
+a `DropTarget` may share one (an epic you can both drag and drop onto). Rows inside a
+`SortableList` are namespaced by the list, so the same issue can appear in a list and as a
+`Draggable` elsewhere.

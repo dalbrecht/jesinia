@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { dropAnimation } from "../dnd/DndProvider";
 import {
   DndProvider,
+  type DragHandleProps,
   Draggable,
   DropTarget,
   LONG_PRESS_MS,
@@ -24,16 +25,27 @@ const preview = () => document.querySelector("[data-drag-preview]");
 const dropState = (name: string) =>
   screen.getByText(name).closest("[data-drop-state]")?.getAttribute("data-drop-state");
 
-/** Lets the drag overlay finish its post-drop update inside act. */
-const settle = () => act(async () => {});
+/**
+ * Lets the drag overlay finish its post-drop update inside act. Under fake timers it also runs
+ * out the clock: after a pointer drag dnd-kit blocks clicks for 50 ms with a document listener,
+ * and a timer left pending would leak that block into the next test.
+ */
+const settle = async () => {
+  if (vi.isFakeTimers()) act(() => vi.advanceTimersByTime(100));
+  await act(async () => {});
+};
 
 beforeAll(() => {
   // jsdom has no scrollIntoView; the keyboard sensor calls it on pick-up.
   Element.prototype.scrollIntoView ??= () => {};
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // A test that ends mid-drag would leave the keyboard sensor listening; cancel it before
+  // cleanup. The sensor attaches its key listener a task after pick-up, so yield one first.
   vi.useRealTimers();
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape", code: "Escape" });
   vi.restoreAllMocks();
 });
 
@@ -368,6 +380,8 @@ function scrollable(element: HTMLElement, contentHeight: number, viewportHeight:
     get: () => top,
     set: (value: number) => {
       top = value;
+      // Browsers fire `scroll` after a scrollTop change; dnd-kit reacts to it.
+      element.dispatchEvent(new Event("scroll"));
     },
   });
 }
@@ -622,7 +636,7 @@ describe("SortableList", () => {
     const user = await pickUp("1. Issue A");
     await user.keyboard("[ArrowDown]"); // the only other slot is a no-op, so there is nowhere to go
     await user.keyboard("[Space]");
-    await waitFor(() => expect(said()).toBe("Dropped Issue A outside any drop target. Nothing changed."));
+    await waitFor(() => expect(said()).toBe("Issue A stayed where it was. Nothing changed."));
     expect(onMove).not.toHaveBeenCalled();
   });
 
@@ -732,5 +746,340 @@ describe("reduced motion", () => {
     await user.keyboard("[ArrowDown][Space]");
     await waitFor(() => expect(onDrop).toHaveBeenCalledOnce());
     expect(preview()).toBeNull();
+  });
+});
+
+describe("fix round 1", () => {
+  it("C1: keeps scrolling while the pointer rests near the edge, even as scroll events fire", async () => {
+    vi.useFakeTimers();
+    render(
+      <DndProvider onDrop={vi.fn()}>
+        <div data-testid="pane" style={{ overflowY: "auto" }}>
+          <Draggable id="1" label="Fix sync">
+            Fix sync
+          </Draggable>
+        </div>
+      </DndProvider>,
+    );
+    const pane = screen.getByTestId("pane");
+    scrollable(pane, 5000, 200);
+    layout(pane, { top: 0, height: 200 });
+    const handle = screen.getByRole("button", { name: "Fix sync" });
+    layout(handle, { top: 0, height: 40 });
+    fireEvent.mouseDown(handle, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.mouseMove(document, { clientX: 10, clientY: 30 });
+    fireEvent.mouseMove(document, { clientX: 10, clientY: 180 });
+    act(() => vi.advanceTimersByTime(200));
+    const early = pane.scrollTop;
+    act(() => vi.advanceTimersByTime(1000));
+    expect(early).toBeGreaterThan(0);
+    expect(pane.scrollTop).toBeGreaterThan(early + 300);
+    fireEvent.mouseUp(document, { clientX: 10, clientY: 180 });
+    await settle();
+  });
+
+  it("C1: after scrolling past half a row, the line still follows the row under the pointer, and the drop lands there", async () => {
+    vi.useFakeTimers();
+    const onMove = vi.fn();
+    const many = Array.from({ length: 20 }, (_, index) => ({ id: `r${index}`, label: `Row ${index}` }));
+    render(
+      <div data-testid="pane" style={{ overflowY: "auto" }}>
+        <Queue onMove={onMove} initial={many} />
+      </div>,
+    );
+    const pane = screen.getByTestId("pane");
+    scrollable(pane, 20 * 40 + 8, 200);
+    layout(pane, { top: 0, height: 200 });
+    // Rows move up as the pane scrolls, as they do in a browser.
+    [...document.querySelectorAll("[data-sortable-row]")].forEach((row, index) => {
+      vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => {
+        const top = index * 40 - pane.scrollTop;
+        return { top, bottom: top + 40, left: 0, right: 300, width: 300, height: 40, x: 0, y: top, toJSON: () => ({}) };
+      });
+    });
+    const handle = screen.getByRole("button", { name: "1. Row 0" });
+    fireEvent.mouseDown(handle, { button: 0, clientX: 20, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 30 });
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 190 });
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 100 });
+    act(() => vi.advanceTimersByTime(50));
+    const scrolled = pane.scrollTop;
+    expect(scrolled).toBeGreaterThan(20);
+    const under = Math.floor((100 + scrolled) / 40);
+    const isLowerHalf = (100 + scrolled) % 40 > 20;
+    const slot = under + (isLowerHalf ? 1 : 0);
+    expect(lineBefore()).toBe(`${slot + 1}. Row ${slot}`);
+    fireEvent.mouseUp(document, { clientX: 20, clientY: 100 });
+    act(() => vi.advanceTimersByTime(20));
+    const order = onMove.mock.calls[0]?.[0] as string[];
+    expect(order.indexOf("r0")).toBe(slot - 1);
+    expect(order[slot]).toBe(`r${slot}`);
+    await settle();
+  });
+
+  it("M4: scrolls the page itself when no container around the drag scrolls", async () => {
+    vi.useFakeTimers();
+    render(
+      <DndProvider onDrop={vi.fn()}>
+        <Draggable id="1" label="Fix sync">
+          Fix sync
+        </Draggable>
+      </DndProvider>,
+    );
+    const page = document.documentElement;
+    // jsdom has no scrollingElement; browsers return the root element.
+    Object.defineProperty(document, "scrollingElement", { configurable: true, get: () => page });
+    scrollable(page, 3000, window.innerHeight);
+    const handle = screen.getByRole("button", { name: "Fix sync" });
+    layout(handle, { top: 0, height: 40 });
+    fireEvent.mouseDown(handle, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.mouseMove(document, { clientX: 10, clientY: 30 });
+    fireEvent.mouseMove(document, { clientX: 10, clientY: window.innerHeight - 5 });
+    act(() => vi.advanceTimersByTime(160));
+    expect(page.scrollTop).toBeGreaterThan(0);
+    fireEvent.mouseUp(document, { clientX: 10, clientY: window.innerHeight - 5 });
+    await settle();
+    for (const key of ["scrollTop", "scrollHeight", "clientHeight", "scrollWidth", "clientWidth"]) {
+      Reflect.deleteProperty(page, key);
+    }
+    Reflect.deleteProperty(document, "scrollingElement");
+  });
+
+  it("I1: Space and Enter on a control inside a draggable work the control, not the drag", async () => {
+    const onToggle = vi.fn();
+    render(
+      <DndProvider onDrop={vi.fn()}>
+        <Draggable id="1" label="Fix sync">
+          Fix sync <input type="checkbox" aria-label="Done" onChange={onToggle} />
+        </Draggable>
+      </DndProvider>,
+    );
+    const user = userEvent.setup();
+    screen.getByRole("checkbox", { name: "Done" }).focus();
+    await user.keyboard("[Space]");
+    expect(onToggle).toHaveBeenCalledOnce();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(said()).toBe("");
+  });
+
+  it("I1: a separate drag handle keeps row controls outside the button", async () => {
+    const onDrop = vi.fn<OnDrop>();
+    render(
+      <DndProvider onDrop={onDrop}>
+        <Draggable id="1" label="Fix sync">
+          {(handle: DragHandleProps) => (
+            <>
+              <button type="button" {...handle} aria-label="Move Fix sync">
+                ⠿
+              </button>
+              <a href="#fix">Fix sync</a>
+              <input type="checkbox" aria-label="Done" />
+            </>
+          )}
+        </Draggable>
+        <DropTarget id="epic" label="Epic A">
+          Epic A
+        </DropTarget>
+      </DndProvider>,
+    );
+    const checkbox = screen.getByRole("checkbox", { name: "Done" });
+    expect(checkbox.closest("[role=button]")).toBeNull();
+    expect(screen.getByRole("link", { name: "Fix sync" }).closest("[role=button]")).toBeNull();
+    const user = await pickUp("Move Fix sync");
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(said()).toBe("Over Epic A."));
+    await user.keyboard("[Space]");
+    await waitFor(() => expect(onDrop).toHaveBeenCalledOnce());
+  });
+
+  it("I1: SortableList rows can use a separate handle too", async () => {
+    const onMove = vi.fn();
+    render(
+      <DndProvider onDrop={vi.fn()}>
+        <SortableList
+          id="q"
+          label="Queue"
+          handle="custom"
+          items={rows}
+          onMove={onMove}
+          renderItem={(item, { handleProps }) => (
+            <>
+              <button type="button" {...handleProps} aria-label={`Move ${item.label}`}>
+                ⠿
+              </button>
+              <input type="checkbox" aria-label={`Done ${item.label}`} />
+            </>
+          )}
+        />
+      </DndProvider>,
+    );
+    expect(screen.getByRole("checkbox", { name: "Done Issue A" }).closest("[role=button]")).toBeNull();
+    const user = await pickUp("Move Issue A");
+    await user.keyboard("[ArrowDown][Space]");
+    await waitFor(() => expect(onMove).toHaveBeenCalledWith(["b", "a", "c", "d"], [rows[0]]));
+  });
+
+  it("I2: Tab during a keyboard drag cancels instead of dropping", async () => {
+    const onDrop = vi.fn<OnDrop>();
+    render(<Board onDrop={onDrop} />);
+    const user = await pickUp("Fix sync");
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(said()).toBe("Over Epic A."));
+    await user.keyboard("[Tab]");
+    await waitFor(() => expect(said()).toBe("Drag cancelled. Nothing changed."));
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+
+  it("I3: a keyboard reorder keeps focus on the moved row", async () => {
+    render(<Queue />);
+    const user = await pickUp("2. Issue B");
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(said()).toBe("Over Next up, position 3 of 4."));
+    await user.keyboard("[Space]");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "3. Issue B" })));
+  });
+
+  function Move({
+    focusAfterDrop,
+  }: {
+    focusAfterDrop?: (items: readonly DragItem[], target: DropTargetInfo) => string | undefined;
+  }) {
+    const [inBacklog, setInBacklog] = useState(true);
+    const [queue, setQueue] = useState<Row[]>(rows.slice(0, 2));
+    return (
+      <DndProvider
+        onDrop={(items, target, position) => {
+          setInBacklog(false);
+          if (target.id === "q" && position !== null) {
+            setQueue((current) => [
+              ...current.slice(0, position),
+              { id: "x", label: "New issue" },
+              ...current.slice(position),
+            ]);
+          }
+        }}
+        {...(focusAfterDrop ? { focusAfterDrop } : {})}
+      >
+        {inBacklog ? (
+          <Draggable id="x" label="New issue">
+            New issue
+          </Draggable>
+        ) : null}
+        <DropTarget id="done" label="Done">
+          Done
+        </DropTarget>
+        <SortableList id="q" label="Queue" items={queue} onMove={vi.fn()} renderItem={(item) => item.label} />
+        <button type="button">Elsewhere</button>
+      </DndProvider>
+    );
+  }
+
+  it("I3: when the drop removes the dragged item, focus moves to its new row", async () => {
+    render(<Move />);
+    const user = await pickUp("New issue");
+    await user.keyboard("[ArrowDown][ArrowDown][ArrowDown]"); // Done, then Queue row A, then row B
+    await waitFor(() => expect(said()).toBe("Over Queue, position 2 of 3."));
+    await user.keyboard("[Space]");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "New issue" })));
+    expect(document.activeElement?.closest("ul")).toHaveAccessibleName("Queue");
+  });
+
+  it("I3: when the dragged item is gone for good, focus moves to the target", async () => {
+    render(<Move />);
+    const user = await pickUp("New issue");
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(said()).toBe("Over Done."));
+    await user.keyboard("[Space]");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText("Done").closest("[data-drop-state]")));
+  });
+
+  it("I3: onDrop can name where focus goes next", async () => {
+    render(<Move focusAfterDrop={() => "a"} />);
+    const user = await pickUp("New issue");
+    await user.keyboard("[ArrowDown][Space]");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Issue A" })));
+  });
+
+  it("I4: an empty list is a target you can hit, with a label", async () => {
+    vi.useFakeTimers();
+    const onDrop = vi.fn<OnDrop>();
+    render(
+      <DndProvider onDrop={onDrop}>
+        <Draggable id="x" label="New issue">
+          New issue
+        </Draggable>
+        <SortableList
+          id="q"
+          label="Queue"
+          items={[]}
+          emptyLabel="Drop issues here"
+          onMove={vi.fn()}
+          renderItem={() => null}
+        />
+      </DndProvider>,
+    );
+    const empty = document.querySelector("[data-sortable-end]") as HTMLElement;
+    expect(empty).toHaveAttribute("data-empty");
+    expect(empty).toHaveTextContent("Drop issues here");
+    layout(empty, { top: 100, height: 44 });
+    const handle = screen.getByRole("button", { name: "New issue" });
+    layout(handle, { top: 0, height: 40 });
+    fireEvent.mouseDown(handle, { button: 0, clientX: 20, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 30 });
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 130 });
+    act(() => vi.advanceTimersByTime(20));
+    expect(lineBefore()).toBe("end");
+    fireEvent.mouseUp(document, { clientX: 20, clientY: 130 });
+    act(() => vi.advanceTimersByTime(20));
+    expect(onDrop).toHaveBeenCalledWith([{ id: "x", label: "New issue" }], { id: "q", label: "Queue" }, 0);
+    await settle();
+  });
+
+  it("M3: crossing a gap during a pointer drag doesn't interrupt with 'not over a target'", async () => {
+    vi.useFakeTimers();
+    render(<Queue />);
+    [...document.querySelectorAll("[data-sortable-row]")].forEach((row, index) =>
+      layout(row, { top: index * 40, height: 40 }),
+    );
+    const handle = screen.getByRole("button", { name: "1. Issue A" });
+    fireEvent.mouseDown(handle, { button: 0, clientX: 20, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 30 });
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 110 });
+    act(() => vi.advanceTimersByTime(20));
+    expect(said()).toBe("Over Next up, position 3 of 4.");
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 400 });
+    act(() => vi.advanceTimersByTime(20));
+    expect(lineBefore()).toBeNull();
+    expect(said()).toBe("Over Next up, position 3 of 4.");
+    expect(announcer()).not.toHaveAttribute("role");
+    fireEvent.mouseUp(document, { clientX: 20, clientY: 400 });
+    await settle();
+  });
+
+  it("M7: the preview names the grabbed item, and an outside drop counts each item once", async () => {
+    const selection = [
+      { id: "1", label: "Fix sync" },
+      { id: "2", label: "Tidy tray" },
+    ];
+    render(
+      <Queue
+        extra={selection.map((item) => (
+          <Draggable
+            key={item.id}
+            id={item.id}
+            label={item.label}
+            group={[...selection, { id: "a", label: "Issue A" }]}
+          >
+            {item.label}
+          </Draggable>
+        ))}
+      />,
+    );
+    const user = await pickUp("Tidy tray");
+    expect(preview()?.firstElementChild).toHaveTextContent("Tidy tray");
+    await user.keyboard("[ArrowDown]");
+    // Issue A is already in the list: the list ends with 4 + 2 rows, not 4 + 3.
+    await waitFor(() => expect(said()).toBe("Over Next up, position 1 of 6."));
   });
 });

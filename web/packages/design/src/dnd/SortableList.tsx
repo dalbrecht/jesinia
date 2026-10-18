@@ -1,22 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable } from "@dnd-kit/sortable";
-import { useMemo, type ReactNode } from "react";
+import { useMemo, type HTMLAttributes, type ReactNode } from "react";
 import { cx } from "../components/util";
-import { useDragState } from "./context";
+import { dropStateFor, useDragState } from "./context";
 import s from "./Dnd.module.css";
-import { dropStateFor } from "./DropTarget";
-import type { Accepts, DragItem, DragSource, DropData, DropTargetInfo } from "./types";
+import type { Accepts, DragHandleProps, DragItem, DragSource, DropData, DropTargetInfo } from "./types";
+
+export type SortableItemState = {
+  index: number;
+  isDragging: boolean;
+  /** With `handle="custom"`: spread onto the row's own handle element. */
+  handleProps: DragHandleProps;
+};
 
 export type SortableListProps<T extends DragItem> = {
-  /** Unique within the DndProvider; reported to `onDrop` for items dropped in from outside. */
+  /** Unique among the provider's drop targets and lists; reported to `onDrop` for outside items. */
   id: string;
   /** The list's accessible name, also read out in announcements ("Over Next up, position 2 of 5."). */
   label: string;
   items: readonly T[];
   /** A reorder within this list: the new order of ids, and the items that moved. */
   onMove: (order: string[], moved: readonly T[]) => void;
-  renderItem: (item: T, state: { index: number; isDragging: boolean }) => ReactNode;
+  renderItem: (item: T, state: SortableItemState) => ReactNode;
+  /**
+   * `row` (default): the whole row is the handle, so it must hold no interactive children.
+   * `custom`: `renderItem` spreads `state.handleProps` onto its own handle element.
+   */
+  handle?: "row" | "custom";
+  /** Shown in an empty list, which stays a target large enough to hit. */
+  emptyLabel?: string;
   /** Selected ids; picking up a selected row drags every selected row, in list order. */
   selection?: readonly string[];
   /** For items dragged in from outside: a refusal or `null`. Reorders within the list are always allowed. */
@@ -26,6 +39,7 @@ export type SortableListProps<T extends DragItem> = {
 };
 
 type SlotBase = Omit<Extract<DropData, { kind: "slot" }>, "slot" | "isRow" | "itemId">;
+type RowData = DropData & DragSource & { itemId: string };
 
 const END = "\u0000end";
 
@@ -36,44 +50,56 @@ function rowId(listId: string, itemId: string): string {
 function SortableRow({
   data,
   isDragging,
+  isCustomHandle,
   showLine,
   children,
 }: {
-  data: DropData & DragSource & { itemId: string };
+  data: RowData;
   isDragging: boolean;
+  isCustomHandle: boolean;
   showLine: boolean;
-  children: ReactNode;
+  children: (handle: DragHandleProps) => ReactNode;
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef } = useSortable({
     id: rowId(data.info.id, data.itemId),
     data,
     attributes: { roleDescription: "draggable" },
   });
+  const handle: DragHandleProps = {
+    ...attributes,
+    ...(listeners as HTMLAttributes<HTMLElement> | undefined),
+    ref: setActivatorNodeRef,
+    "data-drag-id": data.itemId,
+  };
   return (
     <li ref={setNodeRef} className={s.row} data-sortable-row="" data-insert-before={showLine ? "" : undefined}>
-      <div
-        ref={setActivatorNodeRef}
-        {...attributes}
-        {...listeners}
-        className={s.handle}
-        data-dragging={isDragging ? "" : undefined}
-      >
-        {children}
-      </div>
+      {isCustomHandle ? (
+        <div className={s.rowBody} data-dragging={isDragging ? "" : undefined}>
+          {children(handle)}
+        </div>
+      ) : (
+        <div {...handle} className={s.handle} data-dragging={isDragging ? "" : undefined}>
+          {children(handle)}
+        </div>
+      )}
     </li>
   );
 }
 
-function EndSlot({ data, showLine }: { data: DropData; showLine: boolean }) {
+function EndSlot({ data, showLine, emptyLabel }: { data: DropData; showLine: boolean; emptyLabel: string | null }) {
   const { setNodeRef } = useDroppable({ id: rowId(data.info.id, END), data });
+  const isEmpty = emptyLabel !== null;
   return (
     <li
       ref={setNodeRef}
-      className={s.end}
-      aria-hidden="true"
+      className={cx(s.end, isEmpty && s.empty)}
+      aria-hidden={isEmpty ? undefined : "true"}
       data-sortable-end=""
+      data-empty={isEmpty ? "" : undefined}
       data-insert-before={showLine ? "" : undefined}
-    />
+    >
+      {emptyLabel}
+    </li>
   );
 }
 
@@ -88,6 +114,8 @@ export function SortableList<T extends DragItem>({
   items,
   onMove,
   renderItem,
+  handle = "row",
+  emptyLabel = "",
   selection,
   accepts,
   data,
@@ -108,7 +136,7 @@ export function SortableList<T extends DragItem>({
   const selected = new Set(selection ?? []);
 
   return (
-    <div className={cx(s.sortable, className)} data-drop-state={state}>
+    <div className={cx(s.sortable, className)} data-drop-state={state} data-drop-id={id} tabIndex={-1}>
       <SortableContext id={id} items={order.map((itemId) => rowId(id, itemId))}>
         <ul className={s.list} aria-label={label}>
           {items.map((item, index) => {
@@ -117,17 +145,19 @@ export function SortableList<T extends DragItem>({
             return (
               <SortableRow
                 key={item.id}
-                data={{ ...base, slot: index, isRow: true, itemId: item.id, items: dragItems }}
+                data={{ ...base, slot: index, isRow: true, itemId: item.id, items: dragItems, grabbedId: item.id }}
                 isDragging={isDragging}
+                isCustomHandle={handle === "custom"}
                 showLine={lineSlot === index}
               >
-                {renderItem(item, { index, isDragging })}
+                {(handleProps) => renderItem(item, { index, isDragging, handleProps })}
               </SortableRow>
             );
           })}
           <EndSlot
             data={{ ...base, slot: items.length, isRow: false, itemId: null }}
             showLine={lineSlot === items.length}
+            emptyLabel={items.length === 0 ? emptyLabel : null}
           />
         </ul>
       </SortableContext>

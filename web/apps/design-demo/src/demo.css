@@ -48,3 +48,25 @@
   font-family: var(--jx-font-mono);
   font-size: var(--jx-text-sm);
 }
+.drag-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, 240px);
+  gap: var(--jx-space-5);
+  align-items: start;
+}
+.drag-pane {
+  height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--jx-border);
+  border-radius: var(--jx-radius-md);
+  background: var(--jx-surface);
+}
+.drag-side {
+  display: grid;
+  gap: var(--jx-space-3);
+}
+.drag-row {
+  display: block;
+  padding: var(--jx-space-2) var(--jx-space-3);
+  line-height: var(--jx-leading-base);
+}
