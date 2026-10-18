@@ -303,6 +303,18 @@ export async function reviewAnyway(
   );
 }
 
+/**
+ * Fetch the PR from GitHub now (its new head, CI and reviews), checking the new head against
+ * the author's previous review (Task 11 M7); opening it afterwards applies its own gates.
+ */
+export async function refreshPr(client: JesiniaClient, repo: string, number: number, key: string): Promise<QueueRow> {
+  return unwrap(
+    await client.POST("/api/review/prs/{owner}/{repo}/{number}/refresh", {
+      params: { path: { ...split(repo), number }, header: withIdempotency(key) },
+    }),
+  );
+}
+
 /** Run again what failed. */
 export async function retryPr(client: JesiniaClient, repo: string, number: number, key: string): Promise<OpenResult> {
   return unwrap(

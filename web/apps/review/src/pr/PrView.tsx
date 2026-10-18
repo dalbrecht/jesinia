@@ -15,6 +15,7 @@ import {
   getPr,
   markDone,
   openPr,
+  refreshPr,
   retryPr,
   ReviewRequestError,
   reviewAnyway,
@@ -46,6 +47,7 @@ import s from "./pr.module.css";
 import { Quick } from "./Quick";
 import { Quiz } from "./Quiz";
 import { Recommendation, verdictWords } from "./Recommendation";
+import { NewSinceLastLook, YourRequests } from "./Rereview";
 import { Outline } from "./Outline";
 import { Visible } from "./Visible";
 import { NotWalked, StepPage, type DiffLayout } from "./Walkthrough";
@@ -91,9 +93,12 @@ function saveRead(key: string, read: ReadonlySet<string>): void {
 /** What opening (or Review anyway, Retry) said, in words, with the next step it offers. */
 type Notice = { text: string; anyway: boolean; tone: "info" | "problem"; retryOpen?: boolean; retry?: boolean };
 
-/** Said when "Review the new head" finds Jesinia's cached head already reviewed (PR 3 final M7). */
+/**
+ * Said when "Review the new head" fetched the PR again (Task 11 M7) and found the head it had
+ * already reviewed: GitHub has nothing newer yet.
+ */
 export const NEW_HEAD_NOT_FETCHED =
-  "This head's review is complete; the newer commits show once Jesinia has fetched them.";
+  "Jesinia fetched the PR again: this head's review is complete, and GitHub shows no newer commits.";
 
 function noticeOf(result: OpenResult, newHead = false): Notice | null {
   if (result.state === "up_to_date")
@@ -389,6 +394,24 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       (e: unknown) => fail("retry", e),
     );
   };
+  /**
+   * "Review the new head" (R65, Task 11 M7): fetch the PR from GitHub first, so the head opened
+   * is GitHub's, not the last sync's. A new head shows on the next read and opens once, under
+   * its own gates (R60, R66); the same head opens again here, to say it is up to date.
+   */
+  const reviewNewHead = () => {
+    keyed(`refresh:${repo}#${number}`, (key) => refreshPr(client, repo, number, key)).then(
+      (row) => {
+        if (row.head_sha === pr.head_sha) retryOpen(true);
+        else {
+          setNotice(null);
+          reread();
+        }
+      },
+      (e: unknown) =>
+        setNotice({ text: `Couldn't fetch the new head: ${errorCause(e)}`, anyway: false, tone: "problem" }),
+    );
+  };
   /** Open again; `newHead`: the author asked to review the PR's new head (R65). */
   const retryOpen = (newHead = false) => {
     open("open").then(
@@ -446,11 +469,17 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     setTimeout(() => back?.focus(), 0);
   };
 
-  const pendingPage = (label: string): ReactNode => {
-    const p = pending(artifacts, entry.kind) ?? { state: "missing" as const, error: null };
+  const pendingPage = (label: string): ReactNode => (
+    <article className={s.page} aria-label={label}>
+      <h2>{label}</h2>
+      {pendingNote(label)}
+    </article>
+  );
+
+  function pendingNote(label: string): ReactNode {
+    const p = pending(artifacts as Artifacts, entry.kind) ?? { state: "missing" as const, error: null };
     return (
-      <article className={s.page} aria-label={label}>
-        <h2>{label}</h2>
+      <>
         {p.state === "running" ? (
           <p className={s.muted}>{`${label} is being generated: it shows here when it finishes.`}</p>
         ) : null}
@@ -465,9 +494,9 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         {p.state === "missing" ? (
           <p className={s.muted}>{`${label} hasn't been generated for this review yet.`}</p>
         ) : null}
-      </article>
+      </>
     );
-  };
+  }
 
   const page = (): ReactNode => {
     switch (entry.kind) {
@@ -501,6 +530,24 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
             onWalkEverything={walkEverything}
             walking={walking}
             walkNote={walkNote}
+          />
+        );
+      case "requests":
+        return (
+          <YourRequests
+            previous={artifacts.previous}
+            rereview={artifacts.rereview}
+            files={shown.files}
+            status={pendingNote("Your requests")}
+          />
+        );
+      case "newchanges":
+        return (
+          <NewSinceLastLook
+            rereview={artifacts.rereview}
+            files={shown.files}
+            layout={layout}
+            status={pendingNote("New since your last look")}
           />
         );
       case "findings":
@@ -624,7 +671,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
             </Badge>
           ) : null}
           {shown.stale ? (
-            <Button size="sm" variant="secondary" onClick={() => retryOpen(true)}>
+            <Button size="sm" variant="secondary" onClick={reviewNewHead}>
               Review the new head
             </Button>
           ) : null}
@@ -745,7 +792,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
           }}
           onReviewNewCommits={() => {
             closePosting();
-            retryOpen(true);
+            reviewNewHead();
           }}
         />
       ) : null}

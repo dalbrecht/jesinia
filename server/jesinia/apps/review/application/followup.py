@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Final, Protocol
 
 from jesinia.apps.review.domain.followup import (
@@ -72,6 +72,8 @@ class FollowUpWorkspace(Protocol):
     async def patch_ids(self, repo: str, base_sha: str, head_sha: str) -> dict[str, str]: ...
 
     async def show_file(self, repo: str, sha: str, path: str, *, limit: int) -> bytes | None: ...
+
+    async def renames(self, repo: str, old_sha: str, new_sha: str) -> dict[str, str]: ...
 
 
 class FollowUpStore(Protocol):
@@ -226,22 +228,34 @@ class FollowUps:
         configs = self._store.repo_configs()
         done = 0
         for stored in self._store.prs():
-            ref, head = stored.pr.ref, stored.pr.head_sha
-            config = configs.get(ref.repo)
-            known = self._store.followup(ref, head)
-            if stored.fetch_error is not None or (known is not None and known.error is None):
-                continue
-            if config is not None and config.suggested and not stored.loaded:
-                continue
-            try:
-                await self.classify(stored)
-            except Exception as exc:  # one PR's failure must not stop the others; cause kept
-                log.warning("review.followup %s left unchecked: %s", ref, exc, exc_info=exc)
-                cause = str(exc) or type(exc).__name__
-                self._store.put_followup(ref, head, FollowUp("new", error=cause))
-                continue
-            done += 1
+            done += await self._check(stored, configs.get(stored.pr.ref.repo))
         return done
+
+    async def check(self, ref: PrRef) -> None:
+        """Check ``ref``'s current head now, as ``refresh`` would (the author fetched it
+        again to review it: its follow-up must be known before it opens, Task 11 M7). A
+        failure is recorded as unchecked, with its cause, never raised."""
+        stored = self._store.pr(ref)
+        if stored is not None:
+            await self._check(stored, self._store.repo_configs().get(ref.repo))
+
+    async def _check(self, stored: StoredPr, config: RepoConfig | None) -> int:
+        """Classify ``stored``'s head unless it is known, unreadable or not consented to
+        (R29a); 1 when it was classified."""
+        ref, head = stored.pr.ref, stored.pr.head_sha
+        known = self._store.followup(ref, head)
+        if stored.fetch_error is not None or (known is not None and known.error is None):
+            return 0
+        if config is not None and config.suggested and not stored.loaded:
+            return 0
+        try:
+            await self.classify(stored)
+        except Exception as exc:  # one PR's failure must not stop the others; cause kept
+            log.warning("review.followup %s left unchecked: %s", ref, exc, exc_info=exc)
+            cause = str(exc) or type(exc).__name__
+            self._store.put_followup(ref, head, FollowUp("new", error=cause))
+            return 0
+        return 1
 
     def start_refresh(self) -> None:
         """Run ``refresh`` in the background (one at a time), then ``after`` if it classified
@@ -291,15 +305,18 @@ class FollowUps:
         settled: list[Draft] = []
         for (old_head, old_base), drafts in groups.items():
             await self._fetch(repo, [old_head, old_base, head_sha, merge_base])
+            moved: dict[tuple[str, ReviewSide], str] = {}
             try:
-                maps = await self._maps(repo, old_head, old_base, head_sha, merge_base, drafts)
+                maps = await self._maps(
+                    repo, old_head, old_base, head_sha, merge_base, drafts, moved
+                )
             except WorkspaceError as exc:
                 # The earlier head can't be read (force-pushed away, say): its drafts stay
                 # outdated for good rather than failing every preparation (M2).
                 log.warning("review.followup %s: drafts from %s stay outdated: %s",
                             repo, old_head[:12], exc)  # fmt: skip
                 maps = {}
-            settled.extend(reanchor(draft, maps) for draft in drafts)
+            settled.extend(reanchor(draft, maps, moved) for draft in drafts)
         return self._store.reanchor_drafts(round_id, settled)
 
     async def _maps(
@@ -310,23 +327,35 @@ class FollowUps:
         head_sha: str,
         merge_base: str,
         drafts: list[Draft],
+        moved: dict[tuple[str, ReviewSide], str],
     ) -> LineMaps:
+        """Each draft file's line map per side, following renames between the two commits
+        (git's ``-M``, Task 11 M3); ``moved`` gets the new path of each renamed one."""
         old_merge_base = await self._workspace.merge_base(repo, old_base, old_head)
         commits: dict[ReviewSide, tuple[str, str]] = {
             "RIGHT": (old_head, head_sha),
             "LEFT": (old_merge_base, merge_base),
         }
-        return {
-            (path, side): await self._line_map(repo, *commits[side], path)
-            for path, side in {(d.path, d.side or "RIGHT") for d in drafts}
-        }
+        renamed: dict[ReviewSide, dict[str, str]] = {}
+        maps: dict[tuple[str, ReviewSide], Mapping[int, int] | None] = {}
+        for path, side in sorted({(d.path, d.side or "RIGHT") for d in drafts}):
+            old, new = commits[side]
+            if side not in renamed:
+                renamed[side] = await self._workspace.renames(repo, old, new)
+            new_path = renamed[side].get(path, path)
+            if new_path != path:
+                moved[(path, side)] = new_path
+            maps[(path, side)] = await self._line_map(repo, old, new, path, new_path)
+        return maps
 
-    async def _line_map(self, repo: str, old: str, new: str, path: str) -> dict[int, int] | None:
-        """Old line to new line for ``path`` between two commits; ``None`` when the file isn't
-        at both, or is too large to compare."""
+    async def _line_map(
+        self, repo: str, old: str, new: str, path: str, new_path: str
+    ) -> dict[int, int] | None:
+        """Old line to new line for ``path`` (``new_path`` at ``new``) between two commits;
+        ``None`` when the file isn't at both, or is too large to compare."""
         try:
             before = await self._workspace.show_file(repo, old, path, limit=REANCHOR_FILE_LIMIT)
-            after = await self._workspace.show_file(repo, new, path, limit=REANCHOR_FILE_LIMIT)
+            after = await self._workspace.show_file(repo, new, new_path, limit=REANCHOR_FILE_LIMIT)
         except MirrorFileTooLargeError:
             return None
         if before is None or after is None:

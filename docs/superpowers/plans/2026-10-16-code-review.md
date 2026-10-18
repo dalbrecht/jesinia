@@ -599,15 +599,15 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **UI:** a **Your requests** list, then **New since your last look**, and the previous round
   viewable beside or inline, aligned by file and hunk.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_rereview_maps_each_request_to_status`;
   - `test_commented_only_prs_get_incremental_rereview`;
   - `test_rereview_without_stored_walkthrough_uses_github_comments`;
   - the web test: the previous review shown aligned.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): incremental re-reviews`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): incremental re-reviews`.
 
 ### Task 13: Stacks and your own PRs
 

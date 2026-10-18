@@ -265,8 +265,13 @@ def _posting(row: tuple[object, ...]) -> Posting:
     )
 
 
+_FOLLOWUP_COLUMNS = (
+    "kind, differing_paths, note, prev_head, prev_source, error, prev_merge_base, prev_round"
+)
+
+
 def _followup(row: tuple[object, ...]) -> FollowUp:
-    kind, paths, note, prev_head, prev_source, error = row
+    kind, paths, note, prev_head, prev_source, error, prev_merge_base, prev_round = row
     return FollowUp(
         kind=cast(FollowUpKind, kind),
         differing_paths=list(json.loads(cast(str, paths))),
@@ -274,6 +279,8 @@ def _followup(row: tuple[object, ...]) -> FollowUp:
         prev_head=cast(str | None, prev_head),
         prev_source=cast(PrevSource | None, prev_source),
         error=cast(str | None, error),
+        prev_merge_base=cast(str | None, prev_merge_base),
+        prev_round_id=cast(int | None, prev_round),
     )
 
 
@@ -814,17 +821,17 @@ class SqliteReviewStore:
         return [(_draft(row[:-2]), cast(str, row[-2]), cast(str, row[-1])) for row in rows]
 
     def reanchor_drafts(self, round_id: int, drafts: Sequence[Draft]) -> int:
-        """Store re-anchored drafts (by id: new lines, or outdated) and clear their carried
-        head; a draft the author saved since (no longer pending) is left as they saved it.
-        Returns how many were updated."""
+        """Store re-anchored drafts (by id: new lines and path, after a rename, or outdated)
+        and clear their carried head; a draft the author saved since (no longer pending) is
+        left as they saved it. Returns how many were updated."""
         updated = 0
         with transaction(self._conn):
             for d in drafts:
                 cursor = self._conn.execute(
-                    "UPDATE drafts SET line = ?, start_line = ?, outdated = ?, "
+                    "UPDATE drafts SET path = ?, line = ?, start_line = ?, outdated = ?, "
                     "carried_head = NULL, carried_base = NULL "
                     "WHERE id = ? AND round_id = ? AND carried_head IS NOT NULL",
-                    (d.line, d.start_line, int(d.outdated), d.id, round_id),
+                    (d.path, d.line, d.start_line, int(d.outdated), d.id, round_id),
                 )
                 updated += cursor.rowcount
         return updated
@@ -1008,14 +1015,23 @@ class SqliteReviewStore:
         width = len(_ROUND_COLUMNS.split(","))
         return [(_round(row[:width]), _posting(row[width:])) for row in rows]
 
+    def posting_comments(self, posting_id: int) -> list[object]:
+        """The inline comments an attempt sent, as stored with it (``DraftComment`` fields)."""
+        row = self._conn.execute(
+            "SELECT comments FROM postings WHERE id = ?", (posting_id,)
+        ).fetchone()
+        loaded = [] if row is None else json.loads(row[0])
+        return list(loaded) if isinstance(loaded, list) else []
+
     def put_followup(self, ref: PrRef, head_sha: str, followup: FollowUp) -> None:
         self._conn.execute(
-            "INSERT INTO followups (repo, number, head_sha, kind, differing_paths, note, "
-            "prev_head, prev_source, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            f"INSERT INTO followups (repo, number, head_sha, {_FOLLOWUP_COLUMNS}) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (repo, number, head_sha) DO UPDATE SET kind = excluded.kind, "
             "differing_paths = excluded.differing_paths, note = excluded.note, "
             "prev_head = excluded.prev_head, prev_source = excluded.prev_source, "
-            "error = excluded.error",
+            "error = excluded.error, prev_merge_base = excluded.prev_merge_base, "
+            "prev_round = excluded.prev_round",
             (
                 ref.repo,
                 ref.number,
@@ -1026,12 +1042,14 @@ class SqliteReviewStore:
                 followup.prev_head,
                 followup.prev_source,
                 followup.error,
+                followup.prev_merge_base,
+                followup.prev_round_id,
             ),
         )
 
     def followup(self, ref: PrRef, head_sha: str) -> FollowUp | None:
         row = self._conn.execute(
-            "SELECT kind, differing_paths, note, prev_head, prev_source, error FROM followups "
+            f"SELECT {_FOLLOWUP_COLUMNS} FROM followups "
             "WHERE repo = ? AND number = ? AND head_sha = ?",
             (ref.repo, ref.number, head_sha),
         ).fetchone()
@@ -1041,8 +1059,8 @@ class SqliteReviewStore:
         """Each queued PR's follow-up for its current head, where it is known."""
         rows = self._conn.execute(
             "SELECT f.repo, f.number, f.kind, f.differing_paths, f.note, f.prev_head, "
-            "f.prev_source, f.error FROM followups f JOIN prs p ON p.repo = f.repo "
-            "AND p.number = f.number AND p.head_sha = f.head_sha"
+            "f.prev_source, f.error, f.prev_merge_base, f.prev_round FROM followups f "
+            "JOIN prs p ON p.repo = f.repo AND p.number = f.number AND p.head_sha = f.head_sha"
         )
         return {PrRef(row[0], row[1]): _followup(row[2:]) for row in rows}
 

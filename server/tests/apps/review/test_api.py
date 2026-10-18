@@ -175,6 +175,7 @@ WRITES = [
     ("POST", f"{API}/queue/acme/web/1/dismiss", None),
     ("POST", f"{API}/repos/acme/other/confirm", None),
     ("POST", f"{PR}/open", None),
+    ("POST", f"{PR}/refresh", None),
     ("POST", f"{PR}/retry", None),
     ("POST", f"{PR}/review-anyway", None),
     ("PUT", f"{PR}/drafts", {"summary": "", "drafts": []}),
@@ -302,6 +303,23 @@ async def test_load_and_dismiss(env: Env) -> None:
     assert filtered == []
     gone = await env.client.post(f"{API}/queue/acme/web/7/dismiss", headers=keyed())
     assert gone.status_code == 404
+
+
+async def test_refresh_fetches_the_pr_again_under_a_key(env: Env) -> None:
+    """Task 11 M7: "Review the new head" fetches it first; a replay never fetches twice."""
+    newer = "9" * 40
+    env.prs.inbox = [replace(env.prs.inbox[0], head_sha=newer)]
+    key = keyed()
+    first = await env.client.post(f"{PR}/refresh", headers=key)
+    assert first.status_code == 200 and first.json()["head_sha"] == newer
+    env.prs.inbox = [replace(env.prs.inbox[0], head_sha="8" * 40)]
+    replay = await env.client.post(f"{PR}/refresh", headers=key)
+    assert replay.json()["head_sha"] == newer  # the stored answer, not a second fetch
+    missing = await env.client.post(f"{API}/prs/acme/web/9/refresh", headers=keyed())
+    assert missing.status_code == 404 and missing.json()["error"] == "PrNotInQueueError"
+    env.prs.inbox = [replace(env.prs.inbox[0], state="closed")]
+    closed = await env.client.post(f"{PR}/refresh", headers=keyed())
+    assert closed.status_code == 409 and closed.json()["error"] == "PrNotOpenError"
 
 
 async def test_confirming_a_suggested_repo_watches_it(env: Env) -> None:

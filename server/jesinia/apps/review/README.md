@@ -15,6 +15,7 @@ It uses the `github` service (`services/github/`) for pull request data and for 
 - **REST, under `/api/review`:** owner-only, like every module route. Every write takes an `Idempotency-Key` header.
   - `GET /queue` and `GET /prs/<owner>/<repo>/<n>` read `review.sqlite` only and never wait for GitHub. A running or failed sync is reported in the response (`syncing`, `sync_error`).
   - `POST /load`, `POST /queue/…/dismiss`, and `POST /prs/…/open`, `/retry` and `/review-anyway`.
+  - `POST /prs/…/refresh` fetches a queued PR from GitHub now and checks its new head against your previous review ("Review the new head" opens it afterwards, under that head's own gates).
   - `GET|PUT /prs/…/drafts`, `POST /prs/…/post/preview`, `POST /prs/…/post` and `POST /prs/…/done`.
   - `GET|PUT /settings`.
 - **Posting** (`application/posting.py`) is the only GitHub write.

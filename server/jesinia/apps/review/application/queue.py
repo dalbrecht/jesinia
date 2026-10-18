@@ -59,6 +59,8 @@ DETAIL_CONCURRENCY = 8
 
 Clock = Callable[[], datetime]
 OnChange = Callable[[], Awaitable[None]]
+# Awaited after a refresh cached a PR's head, before the row is answered (classifies it).
+OnRefresh = Callable[[PrRef], Awaitable[None]]
 # What one PR's sync produced: a fresh snapshot, or the cause it couldn't be loaded.
 _Outcome = tuple[PrSnapshot, str | None]
 
@@ -88,6 +90,8 @@ class QueueService:
         store: ``review.sqlite``.
         clock: the current UTC time.
         on_change: awaited after a sync or a load changed the queue (the scheduler's tick).
+        on_refresh: awaited after ``refresh`` cached a PR's head (its follow-up check, so the
+            head is classified before the author opens it).
     """
 
     def __init__(
@@ -97,11 +101,13 @@ class QueueService:
         clock: Clock,
         *,
         on_change: OnChange | None = None,
+        on_refresh: OnRefresh | None = None,
     ) -> None:
         self._prs = prs
         self._store = store
         self._clock = clock
         self._on_change = on_change
+        self._on_refresh = on_refresh
         self._sync_lock = asyncio.Lock()
         self._syncing = False
         self._backoff_until: datetime | None = None
@@ -329,6 +335,41 @@ class QueueService:
         latest = self._store.latest_rounds().get(pr_ref)
         suggested = pr_ref.repo in self._store.suggested_repos()
         followup = self._store.current_followups().get(pr_ref)
+        return queue_row(stored, latest, self._store.viewer(), suggested, followup)
+
+    async def refresh(self, ref: PrRef) -> QueueRow:
+        """Fetch a queued PR from GitHub now, as a sync would (its new head, CI and reviews),
+        then check its new head against the author's previous review (Task 11 M7: "Review
+        the new head" must see the head GitHub has, not the last sync's). Nothing else
+        changes: a new head starts with its own gates, and a Review anyway recorded for the
+        old head doesn't carry over (R66).
+
+        Raises:
+            PrNotInQueueError: the PR isn't cached (load it instead).
+            PrNotOpenError: GitHub says the PR is closed or merged.
+            GitHubError: GitHub couldn't be read; the cache is left as it was.
+        """
+        if self._store.pr(ref) is None:
+            raise PrNotInQueueError(f"{ref} is not in the review queue; load it first")
+        pull = await self._prs.get(ref.repo, ref.number)
+        if pull.state != "open":
+            raise PrNotOpenError(f"{ref} is {pull.state}; only open PRs can be reviewed")
+        viewer = await self._prs.viewer()
+        snapshot = await self._details(pull, viewer, self._store.repo_configs())
+        self._store.apply_sync([snapshot], [], [], self._clock())
+        self._fetched_during_sync.add(ref)
+        if self._on_refresh is not None:
+            await self._on_refresh(ref)
+        await self._changed()
+        return self._row(ref)
+
+    def _row(self, ref: PrRef) -> QueueRow:
+        stored = self._store.pr(ref)
+        if stored is None:  # removed between the write and this read: say so, typed
+            raise PrNotInQueueError(f"{ref} left the review queue")
+        latest = self._store.latest_rounds().get(ref)
+        suggested = ref.repo in self._store.suggested_repos()
+        followup = self._store.current_followups().get(ref)
         return queue_row(stored, latest, self._store.viewer(), suggested, followup)
 
     async def dismiss(self, repo: str, number: int) -> None:

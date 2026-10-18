@@ -280,6 +280,18 @@ def build_router(host: ReviewHost) -> APIRouter:
 
         return await _respond(run)
 
+    @r.post(f"{pr_path}/refresh", response_model=QueueRowOut)
+    async def refresh_pr(
+        owner: Owner, repo: Name, number: Number, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Fetch the PR from GitHub now (its new head, CI and reviews) and check the new head
+        against your previous review; open it afterwards, under its own gates."""
+
+        async def run() -> QueueRowOut:
+            return QueueRowOut.of(await host.queue.refresh(_ref(owner, repo, number)))
+
+        return await idem.run(lambda: _respond(run))
+
     async def _open(
         idem: IdempotentCall,
         start: Callable[[PrRef], Awaitable[OpenResult]],

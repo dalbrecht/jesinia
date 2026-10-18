@@ -14,7 +14,9 @@ ALTER TABLE drafts ADD COLUMN carried_base TEXT;
 -- (a rebase with the same per-file patch IDs), a re-review of only the files that differ,
 -- or a re-review, by content only: CI is applied each time it is read. One row per current
 -- head (a sync drops the rest); differing_paths is a JSON list. `error`: the head couldn't be
--- checked (GitHub or git failed); it is checked again on the next sync.
+-- checked (GitHub or git failed); it is checked again on the next sync. prev_merge_base and
+-- prev_round: the previous review's merge base and stored round, which a re-review builds
+-- on (spec §4.2; Task 12).
 CREATE TABLE followups (
     repo TEXT NOT NULL,
     number INTEGER NOT NULL,
@@ -26,5 +28,7 @@ CREATE TABLE followups (
     prev_head TEXT,
     prev_source TEXT CHECK (prev_source IN ('round', 'github')),
     error TEXT,
+    prev_merge_base TEXT,
+    prev_round INTEGER,
     PRIMARY KEY (repo, number, head_sha)
 );

@@ -18,6 +18,7 @@ from typing import Literal
 from jesinia.apps.review.domain.coverage import Coverage, HunkIndex
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import Depth
+from jesinia.apps.review.domain.rereview import RereviewInput
 from jesinia.apps.review.domain.workspace import canonical_repo
 from jesinia.services.github.domain.pr import CheckState, PrCommit, PullRequest
 
@@ -100,6 +101,8 @@ class Round:
     hunk_index: HunkIndex | None = None
     # The author asked to walk everything (spec §3.1): the walkthrough leaves nothing out.
     walk_everything: bool = False
+    # A re-review (spec §4.2): the previous review and the hunks new since, for its job.
+    rereview: RereviewInput | None = None
 
     @property
     def repo(self) -> str:

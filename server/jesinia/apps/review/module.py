@@ -21,6 +21,7 @@ from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
 from jesinia.apps.review.application.repo_tools import RepoTools
+from jesinia.apps.review.application.rereview import Rereviews
 from jesinia.apps.review.application.reviews import ReviewReads
 from jesinia.apps.review.application.scheduler import (
     PRUNE_INTERVAL,
@@ -254,7 +255,9 @@ class ReviewModule:
                 # New heads are classified in the background (git work), then it ticks again.
                 followups.start_refresh()
 
-            self._queue = QueueService(prs, store, _utc_now, on_change=changed)
+            self._queue = QueueService(
+                prs, store, _utc_now, on_change=changed, on_refresh=followups.check
+            )
             self._reviews = ReviewReads(store, self._queue.status)
             self._posting = PostingService(
                 github=prs, writer=github, files=self._queue, store=store, clock=_utc_now
@@ -274,6 +277,7 @@ class ReviewModule:
                     clock=_utc_now,
                     slots=self._scheduler,
                     followups=followups,
+                    rereviews=Rereviews(github=prs, workspace=self._workspace, store=store),
                 )
 
     async def stop(self) -> None:

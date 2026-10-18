@@ -108,7 +108,9 @@ class FollowUp:
     previous review's (the only ones a ``changed_hunks_only`` round reviews); ``note``: one
     line for the queue row, in Jesinia's words (it names no path: paths are PR text).
     ``error``: the head couldn't be checked (GitHub or git failed); it is checked again on
-    the next sync, and meanwhile counts as an ordinary new head (``pr_kind`` "new")."""
+    the next sync, and meanwhile counts as an ordinary new head (``pr_kind`` "new").
+    ``prev_merge_base`` and ``prev_round_id``: the previous review's merge base (``None`` when
+    it couldn't be computed) and its stored round, which a re-review builds on (spec §4.2)."""
 
     kind: FollowUpKind
     differing_paths: list[str] = field(default_factory=list)
@@ -116,6 +118,8 @@ class FollowUp:
     prev_head: str | None = None
     prev_source: PrevSource | None = None
     error: str | None = None
+    prev_merge_base: str | None = None
+    prev_round_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in FOLLOW_UP_KINDS:
@@ -183,7 +187,7 @@ def effective_followup(followup: FollowUp, ci: CiState) -> FollowUp:
     if ci in _CI_KEEPS_APPROVAL:
         return followup
     note = "Same changes as you approved, but CI is failing"
-    return FollowUp("rereview", [], note, followup.prev_head, followup.prev_source)
+    return replace(followup, kind="rereview", differing_paths=[], note=note)
 
 
 def compare(
@@ -211,7 +215,15 @@ def compare(
 
 
 def _after(prev: PrevReview, kind: FollowUpKind, differing: list[str], note: str) -> FollowUp:
-    return FollowUp(kind, differing, note, prev.head_sha, prev.source)
+    return FollowUp(
+        kind,
+        differing,
+        note,
+        prev.head_sha,
+        prev.source,
+        prev_merge_base=prev.merge_base,
+        prev_round_id=prev.round_id,
+    )
 
 
 def restrict_diff(diff: ParsedDiff, paths: Collection[str]) -> ParsedDiff:
@@ -240,13 +252,18 @@ def _neighbour_moved(mapped: Mapping[int, int], line: int) -> bool:
     return mapped.get(line - 1) == mapped[line] - 1 or mapped.get(line + 1) == mapped[line] + 1
 
 
-def reanchor(draft: Draft, maps: LineMaps) -> Draft:
+def reanchor(
+    draft: Draft, maps: LineMaps, moved: Mapping[tuple[str, ReviewSide], str] | None = None
+) -> Draft:
     """``draft`` on the new head: moved to where its lines' text is now, when every line of
     it (its whole range) is unchanged and still consecutive; otherwise kept where it was and
     flagged ``outdated``. A single line moves only with a neighbour that moved with it, so
     a common line (a blank, a brace) matched by coincidence in rewritten code isn't trusted.
     A draft without a line (a general note) is unchanged. An
-    outside-the-diff draft's line only labels it: it is mapped by its right side."""
+    outside-the-diff draft's line only labels it: it is mapped by its right side.
+    ``moved``: the file's path on the new side when git's rename detection says it was
+    renamed (Task 11 M3); ``maps`` then compares the old path with the new one, and a draft
+    that moves takes the new path."""
     if draft.line is None:
         return draft
     side: ReviewSide = draft.side or "RIGHT"
@@ -262,6 +279,7 @@ def reanchor(draft: Draft, maps: LineMaps) -> Draft:
         return replace(draft, outdated=True)
     return replace(
         draft,
+        path=(moved or {}).get((draft.path, side), draft.path),
         line=mapped[draft.line],
         start_line=None if draft.start_line is None else mapped[draft.start_line],
         outdated=False,

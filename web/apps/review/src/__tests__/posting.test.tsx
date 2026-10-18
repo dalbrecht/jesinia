@@ -226,6 +226,7 @@ describe("posting", () => {
     const { calls } = setup(view, {
       [`POST ${API}/post/preview`]: () =>
         Response.json(preview({ event: "COMMENT", pr_head_sha: NEWER, warnings: ["newer_head"] })),
+      [`POST ${API}/refresh`]: () => Response.json(view.pr),
     });
     await ready();
     await userEvent.click(within(actions()).getByRole("button", { name: "Comment…" }));
@@ -239,7 +240,9 @@ describe("posting", () => {
     expect(within(box).getByRole("button", { name: "Comment" })).toBeEnabled();
     await userEvent.click(within(warning).getByRole("button", { name: "Review the new commits first" }));
     expect(screen.queryByRole("dialog")).toBeNull();
+    // Task 11 M7: the new head is fetched from GitHub first, then opened.
     await waitFor(() => expect(sent(calls, "POST", `${API}/open`).length).toBeGreaterThanOrEqual(2));
+    expect(sent(calls, "POST", `${API}/refresh`)).toHaveLength(1);
   });
 
   it("on your own PR only Comment is offered", async () => {

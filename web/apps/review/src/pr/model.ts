@@ -41,6 +41,33 @@ export type Evidence = {
 };
 export type JobState = { state: string; error: string | null };
 
+/** One of the author's comments in their previous review (spec §4.2), as Jesinia stored it. */
+export type PreviousComment = {
+  ref: string;
+  body: string;
+  path: string | null;
+  line: number | null;
+  side: "LEFT" | "RIGHT" | null;
+  start_line: number | null;
+  resolved: boolean;
+};
+export type PreviousReview = {
+  source: "round" | "github";
+  head_sha: string;
+  round_id: number | null;
+  comments: PreviousComment[];
+};
+export type RequestStatus = "addressed" | "partly" | "not_addressed";
+export type Request = { comment_ref: string; status: RequestStatus; explanation: string; hunks: HunkRef[] };
+/** The re-review job's result as Jesinia kept it: known comments, known hunks, new steps only. */
+export type Rereview = {
+  requests: Request[];
+  unanswered: string[];
+  new_hunks: HunkRef[];
+  steps: Step[];
+  coverage: WalkCoverage | null;
+};
+
 /** A round's artifacts, by what the PR view shows; null where a job hasn't stored one. */
 export type Artifacts = {
   overview: Overview | null;
@@ -57,7 +84,13 @@ export type Artifacts = {
   evidence: Evidence | null;
   jobs: Record<string, JobState>;
   nothingToWalk: boolean;
+  /** A re-review's head (spec §4.2): the previous review it builds on, and the job's result. */
+  isRereview: boolean;
+  previous: PreviousReview | null;
+  rereview: Rereview | null;
 };
+
+const REREVIEW_KINDS = new Set(["rereview", "changed_hunks_only"]);
 
 type Json = Record<string, unknown>;
 const record = (x: unknown): Json | null =>
@@ -107,6 +140,33 @@ export function readArtifacts(view: PrView): Artifacts {
     evidence: (record(a.evidence) as Evidence | null) ?? null,
     jobs,
     nothingToWalk: view.nothing_to_walk || coverage?.nothing_to_walk === true,
+    isRereview:
+      REREVIEW_KINDS.has(String(record(a.followup)?.kind)) || "rereview" in jobs || record(a.previous_review) !== null,
+    previous: previousOf(a.previous_review),
+    rereview: rereviewOf(a.rereview),
+  };
+}
+
+function previousOf(x: unknown): PreviousReview | null {
+  const p = record(x);
+  if (!p) return null;
+  return {
+    source: p.source === "round" ? "round" : "github",
+    head_sha: String(p.head_sha ?? ""),
+    round_id: typeof p.round_id === "number" ? p.round_id : null,
+    comments: list<PreviousComment>(p.comments) ?? [],
+  };
+}
+
+function rereviewOf(x: unknown): Rereview | null {
+  const r = record(x);
+  if (!r) return null;
+  return {
+    requests: list<Request>(r.requests) ?? [],
+    unanswered: list<string>(r.unanswered) ?? [],
+    new_hunks: list<HunkRef>(r.new_hunks) ?? [],
+    steps: list<Step>(record(r.new_changes_walkthrough)?.steps) ?? [],
+    coverage: coverageOf(r.coverage),
   };
 }
 
@@ -330,6 +390,7 @@ export const REASONS: Record<string, string> = {
   judged_mechanical: "judged mechanical by the agent",
   metadata_only: "metadata only",
   omitted: "left out without a reason",
+  unchanged: "unchanged since your last review",
 };
 
 export const SEVERITY: Record<string, string> = { critical: "Critical", important: "Important", minor: "Minor" };
@@ -379,7 +440,9 @@ export type EntryKind =
   | "metrics"
   | "quiz"
   | "comments"
-  | "recommendation";
+  | "recommendation"
+  | "requests"
+  | "newchanges";
 
 export type Entry = {
   id: string;
@@ -402,6 +465,8 @@ export const JOB_OF: Partial<Record<EntryKind, string>> = {
   metrics: "metrics",
   quiz: "quiz",
   recommendation: "recommendation",
+  requests: "rereview",
+  newchanges: "rereview",
 };
 
 const has = (a: Artifacts, kind: EntryKind): boolean => {
@@ -419,6 +484,9 @@ const has = (a: Artifacts, kind: EntryKind): boolean => {
       return a.findings !== null;
     case "recommendation":
       return a.verdict !== null || a.suggestion !== null;
+    case "requests":
+    case "newchanges":
+      return a.rereview !== null;
     default:
       return true;
   }
@@ -475,6 +543,19 @@ export function outlineOf(
     add({ id: "background", kind: "background", part: "Before you read", label: "Background" });
   } else {
     add({ id: "explanation", kind: "explanation", part: "Before you read", label: "Explanation" });
+  }
+  if (a.isRereview) {
+    // Spec §4.2: what happened to your requests, then what is new, before the full walk.
+    const since = "Since your last review";
+    const open = a.rereview ? a.rereview.requests.filter((r) => r.status !== "addressed").length : 0;
+    add({
+      id: "requests",
+      kind: "requests",
+      part: since,
+      label: "Your requests",
+      ...(a.rereview ? { note: `${open} open`, bad: open > 0 } : {}),
+    });
+    add({ id: "newchanges", kind: "newchanges", part: since, label: "New since your last look" });
   }
   const perStep = findingsByStep(a.steps ?? [], a.findings ?? [], files);
   const ids = new Set<string>();

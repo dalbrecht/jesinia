@@ -78,8 +78,9 @@ describe("queue follow-ups", () => {
 });
 
 describe("a stale review", () => {
-  it("offers Review the new head, which opens it and says when GitHub's newer commits aren't fetched yet", async () => {
-    const { calls } = openPr(reviewed({ stale: true }, { head_sha: NEWER }));
+  it("offers Review the new head, which fetches the PR, opens it, and says when GitHub has nothing newer", async () => {
+    const view = reviewed({ stale: true }, { head_sha: NEWER });
+    const { calls } = openPr(view, { [`POST ${API}/refresh`]: () => Response.json(view.pr) });
     await ready();
     await waitFor(() => expect(opens(calls)).toHaveLength(1)); // the tab's own open
     await userEvent.click(screen.getByRole("button", { name: "Review the new head" }));
