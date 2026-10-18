@@ -7522,6 +7522,151 @@
         }
       }
     },
+    "/api/review/prs/{owner}/{repo}/{number}/refresh": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Refresh Pr",
+        "description": "Fetch the PR from GitHub now (its new head, CI and reviews) and check the new head\nagainst your previous review; open it afterwards, under its own gates.",
+        "operationId": "refresh_pr_api_review_prs__owner___repo___number__refresh_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "Number"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueRowOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
     "/api/review/prs/{owner}/{repo}/{number}/open": {
       "post": {
         "tags": [
@@ -8738,6 +8883,460 @@
         }
       }
     },
+    "/api/review/stacks/{owner}/{repo}/{number}": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Stack",
+        "description": "The stack holding the PR (spec \u00a74.3), from the cache only: each PR's view, the\nstack review of their heads, and the cross-PR findings.",
+        "operationId": "get_stack_api_review_stacks__owner___repo___number__get",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "Number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StackOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
+    "/api/review/stacks/{owner}/{repo}/{number}/open": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Open Stack",
+        "description": "Open the stack: open each PR (under its own gates), then start the stack's\nOverview, Background and stack walkthrough it lacks (202) once no PR is held.",
+        "operationId": "open_stack_api_review_stacks__owner___repo___number__open_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "Number"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/StackOpenIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StackOpenOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "202": {
+            "description": "Stack jobs started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StackOpenOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/stacks/{owner}/{repo}/{number}/post-all": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Post All",
+        "description": "Post every PR's confirmed review, bottom-up, stopping at the first that can't be\nposted (its error, with ``stack_outcomes``). Owner only; each PR's attempt is keyed\nfrom this request's key, so a replay never posts a PR twice.",
+        "operationId": "post_all_api_review_stacks__owner___repo___number__post_all_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "Number"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostAllIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostAllOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
     "/api/review/settings": {
       "get": {
         "tags": [
@@ -9507,6 +10106,97 @@
           "views"
         ],
         "title": "CountsOut"
+      },
+      "CrossFindingOut": {
+        "properties": {
+          "prs": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Prs"
+          },
+          "group": {
+            "type": "string",
+            "title": "Group"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "explanation": {
+            "type": "string",
+            "title": "Explanation"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "shared_file: a PR's finding on a file another PR also changes; agent: reported across PRs by the stack walkthrough"
+          },
+          "found_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Found In"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "start_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Line"
+          },
+          "end_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Line"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prs",
+          "group",
+          "severity",
+          "explanation",
+          "source",
+          "found_in",
+          "path",
+          "start_line",
+          "end_line",
+          "note"
+        ],
+        "title": "CrossFindingOut",
+        "description": "A finding concerning more than one PR of a stack (agent text: render as text)."
       },
       "DoneIn": {
         "properties": {
@@ -11716,6 +12406,12 @@
             "type": "boolean",
             "title": "Walk Everything",
             "default": false
+          },
+          "quiz": {
+            "type": "boolean",
+            "title": "Quiz",
+            "description": "Generate the quiz, which is off on your own PR (spec \u00a73.3)",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -12128,6 +12824,96 @@
         ],
         "title": "PollSummaryOut"
       },
+      "PostAllIn": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PostAllItemIn"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "PostAllIn",
+        "description": "Post all (spec \u00a74.3): every PR's confirmed review, posted bottom-up."
+      },
+      "PostAllItemIn": {
+        "properties": {
+          "number": {
+            "type": "integer",
+            "maximum": 999999999.0,
+            "minimum": 1.0,
+            "title": "Number"
+          },
+          "round_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Round Id"
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REQUEST_CHANGES",
+              "COMMENT"
+            ],
+            "title": "Event"
+          },
+          "digest": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Digest"
+          },
+          "confirm": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "blocking_comment",
+                "approve_against_evidence",
+                "newer_head",
+                "own_pr_comment_only"
+              ]
+            },
+            "type": "array",
+            "maxItems": 4,
+            "title": "Confirm"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "number",
+          "round_id",
+          "event",
+          "digest"
+        ],
+        "title": "PostAllItemIn",
+        "description": "One PR's confirmed review: its round, event, preview digest and confirmed warnings."
+      },
+      "PostAllOut": {
+        "properties": {
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/PostOutcomeOut"
+            },
+            "type": "array",
+            "title": "Outcomes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcomes"
+        ],
+        "title": "PostAllOut"
+      },
       "PostIn": {
         "properties": {
           "event": {
@@ -12324,6 +13110,81 @@
           "has_full_article"
         ],
         "title": "PostOut"
+      },
+      "PostOutcomeOut": {
+        "properties": {
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "round_id": {
+            "type": "integer",
+            "title": "Round Id"
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REQUEST_CHANGES",
+              "COMMENT"
+            ],
+            "title": "Event"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "posted",
+              "already_posted",
+              "failed",
+              "not_attempted"
+            ],
+            "title": "State"
+          },
+          "review_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Url"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "number",
+          "round_id",
+          "event",
+          "state",
+          "review_url",
+          "error",
+          "error_code"
+        ],
+        "title": "PostOutcomeOut"
       },
       "PostPageOut": {
         "properties": {
@@ -12880,6 +13741,58 @@
           "suggested": {
             "type": "boolean",
             "title": "Suggested"
+          },
+          "followup_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "new",
+                  "still_approved",
+                  "rereview",
+                  "changed_hunks_only"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Followup Kind",
+            "description": "What this head needs after the author's previous review (spec \u00a74.1): still_approved, changed_hunks_only, rereview or new; null until classified"
+          },
+          "followup_note": {
+            "type": "string",
+            "title": "Followup Note",
+            "description": "One line on it, in Jesinia's words",
+            "default": ""
+          },
+          "differing_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Differing Paths",
+            "description": "Files whose changes differ from the previous review's (PR text)"
+          },
+          "stack": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Stack",
+            "description": "The PR's stack (spec \u00a74.3) as PR numbers, bottom-up; empty if none"
+          },
+          "recommendation_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommendation Label",
+            "description": "The recommendation in words; on your own PR, 'ready to request review' or 'not ready to request review' (spec \u00a73.3)"
           }
         },
         "type": "object",
@@ -13207,6 +14120,18 @@
             "title": "Field",
             "description": "For InvalidDraftContent: 'summary' or 'draft'"
           },
+          "successor_round_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Round Id",
+            "description": "For RoundFrozen: the round that took over its drafts"
+          },
           "retry_after": {
             "anyOf": [
               {
@@ -13218,6 +14143,21 @@
             ],
             "title": "Retry After",
             "description": "For PostingStillUncertain and PostingInProgress: seconds before retrying (also the Retry-After header)"
+          },
+          "stack_outcomes": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PostOutcomeOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stack Outcomes",
+            "description": "For a Post all that stopped: what was and wasn't posted, per PR (the error is the PR's that stopped it)"
           }
         },
         "type": "object",
@@ -13391,6 +14331,23 @@
           "done": {
             "type": "boolean",
             "title": "Done"
+          },
+          "frozen": {
+            "type": "boolean",
+            "title": "Frozen",
+            "description": "Read-only: a round on the PR's new head took over its drafts",
+            "default": false
+          },
+          "successor_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Id"
           }
         },
         "type": "object",
@@ -13665,6 +14622,138 @@
           "source_folder"
         ],
         "title": "SettingsBody"
+      },
+      "StackMemberOpenOut": {
+        "properties": {
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "number",
+          "state",
+          "reason"
+        ],
+        "title": "StackMemberOpenOut"
+      },
+      "StackOpenIn": {
+        "properties": {
+          "retry": {
+            "type": "boolean",
+            "title": "Retry",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "StackOpenIn",
+        "description": "``retry``: run again the stack's jobs that failed."
+      },
+      "StackOpenOut": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "stack_id": {
+            "type": "integer",
+            "title": "Stack Id"
+          },
+          "jobs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Jobs"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/StackMemberOpenOut"
+            },
+            "type": "array",
+            "title": "Members"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "reason",
+          "stack_id",
+          "jobs",
+          "members"
+        ],
+        "title": "StackOpenOut",
+        "description": "What opening the stack did: each PR's open, and the stack's jobs (``held`` while a PR\nis held by a gate)."
+      },
+      "StackOut": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "signature": {
+            "type": "string",
+            "title": "Signature"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/PrOut"
+            },
+            "type": "array",
+            "title": "Members"
+          },
+          "stack_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stack Id"
+          },
+          "artifacts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "title": "Artifacts",
+            "description": "The stack review's artifacts by kind (agent output: render as text)"
+          },
+          "cross_findings": {
+            "items": {
+              "$ref": "#/components/schemas/CrossFindingOut"
+            },
+            "type": "array",
+            "title": "Cross Findings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "signature",
+          "members",
+          "stack_id",
+          "artifacts",
+          "cross_findings"
+        ],
+        "title": "StackOut",
+        "description": "A stack from the cache (spec \u00a74.3): each PR's own view bottom-up, the stack review of\ntheir current heads and its artifacts (overview, background, stack_walkthrough, jobs),\nand the cross-PR findings."
       },
       "StartIn": {
         "properties": {

@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Protocol
 
+from jesinia.apps.review.domain.followup import FollowUp
 from jesinia.apps.review.domain.posting import Draft, NoReviewRound, RoundChanged
 from jesinia.apps.review.domain.queue import (
     InvalidSettingError,
@@ -28,6 +29,7 @@ from jesinia.apps.review.domain.queue import (
     nothing_to_walk_from_json,
     queue_row,
 )
+from jesinia.apps.review.domain.stacks import stack_numbers
 from jesinia.services.github.domain.pr import PrFile
 
 # A runner name names an agent CLI the agents service knows; nothing path-like.
@@ -40,11 +42,17 @@ class ReviewReadStore(Protocol):
 
     def pr(self, ref: PrRef) -> StoredPr | None: ...
 
+    def prs(self, include_dismissed: bool = False) -> list[StoredPr]: ...
+
     def viewer(self) -> str | None: ...
 
     def latest_rounds(self) -> dict[PrRef, RoundSummary]: ...
 
+    def current_followups(self) -> dict[PrRef, FollowUp]: ...
+
     def suggested_repos(self) -> list[str]: ...
+
+    def restacks(self) -> dict[tuple[str, str], str]: ...
 
     def latest_round(self, ref: PrRef) -> RoundRecord | None: ...
 
@@ -137,7 +145,10 @@ class ReviewReads:
         stored = self._stored(ref)
         latest = self._store.latest_rounds().get(ref)
         suggested = ref.repo in self._store.suggested_repos()
-        row = queue_row(stored, latest, self._store.viewer(), suggested)
+        followup = self._store.current_followups().get(ref)
+        everyone = [s.pr for s in self._store.prs(include_dismissed=True)]
+        stack = stack_numbers(everyone, self._store.restacks()).get(ref, ())
+        row = queue_row(stored, latest, self._store.viewer(), suggested, followup, stack)
         found = self._store.latest_round(ref)
         artifacts = {} if found is None else self._store.artifacts(found.id)
         files = None if found is None else self._store.pr_files(ref, found.head_sha)
@@ -170,6 +181,7 @@ class ReviewReads:
         Raises:
             NoReviewRound: the PR has no round.
             RoundChanged: ``round_id`` isn't the latest round.
+            RoundFrozen: a newer round took it over (a ``RoundChanged``).
         """
         found = self._store.latest_round(ref)
         if found is None:

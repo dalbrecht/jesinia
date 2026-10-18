@@ -14,6 +14,12 @@ from datetime import datetime
 from typing import Literal
 
 from jesinia.apps.review.domain.errors import ReviewError
+from jesinia.apps.review.domain.followup import (
+    FollowUp,
+    FollowUpKind,
+    effective_followup,
+    pr_kind,
+)
 from jesinia.apps.review.domain.gates import CiState, Depth, GateState, propose_depth
 from jesinia.apps.review.domain.workspace import InvalidRepoError, canonical_repo
 from jesinia.services.github.domain.pr import PullRequest, ReviewSummary
@@ -153,6 +159,18 @@ class PrSnapshot:
     bot_review_count: int
     human_review_count: int
     depth: Depth
+    # The author's latest review of the PR as GitHub lists it (``latest_review_key``): a
+    # follow-up classified against another one is out of date (R75).
+    viewer_review: str = ""
+
+    @property
+    def repo(self) -> str:
+        """The canonical repo (the stack rule reads PRs by it)."""
+        return self.ref.repo
+
+    @property
+    def number(self) -> int:
+        return self.ref.number
 
 
 @dataclass(frozen=True)
@@ -196,6 +214,9 @@ class RoundRecord:
     error: str | None
     posted_review_url: str | None
     done: bool
+    # Read-only once a newer round replaced it (spec §7): ``successor_id`` has its drafts.
+    frozen_at: datetime | None = None
+    successor_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +307,15 @@ class QueueRow:
     suggested: bool = False  # from a suggested repo (only a PR the author loaded)
     # The latest review's diff changes no line: the UI says so instead of showing 100% (M3).
     nothing_to_walk: bool = False
+    # What this head needs after the author's previous review (spec §4.1), once known.
+    followup_kind: FollowUpKind | None = None
+    followup_note: str = ""
+    differing_paths: tuple[str, ...] = ()
+    # The PR's stack (spec §4.3), as bottom-up PR numbers; empty when it isn't in one.
+    stack: tuple[int, ...] = ()
+    # The recommendation in words; on the author's own PR it reads as ready (or not) to
+    # request review (spec §3.3).
+    recommendation_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -332,6 +362,19 @@ def auto_review_state(
     return "landed" if landed else "pending"
 
 
+def latest_review_key(reviews: Sequence[ReviewSummary], viewer: str | None) -> str:
+    """The identity of ``viewer``'s latest review that isn't pending (its state, commit,
+    time and page), or "" when there is none. Any new review, or a dismissal, changes it."""
+    if viewer is None:
+        return ""
+    mine = [r for r in reviews if _login(r.author) == _login(viewer) and r.state != "PENDING"]
+    if not mine:
+        return ""
+    last = mine[-1]
+    when = "" if last.submitted_at is None else last.submitted_at.isoformat()
+    return f"{last.state}|{last.commit_sha or ''}|{when}|{last.url or ''}"
+
+
 def snapshot_of(
     pr: PullRequest,
     *,
@@ -366,7 +409,26 @@ def snapshot_of(
         bot_review_count=sum(1 for r in others if r.author_is_bot),
         human_review_count=sum(1 for r in others if not r.author_is_bot),
         depth=propose_depth(lines, pr.changed_files, None),
+        viewer_review=latest_review_key(reviews, viewer),
     )
+
+
+_VERDICT_WORDS: dict[str, str] = {
+    "approve": "approve",
+    "request_changes": "request changes",
+    "needs_closer_look": "needs a closer look",
+}
+
+
+def verdict_label(verdict: str | None, own: bool) -> str | None:
+    """A verdict in words. On the author's own PR (spec §3.3) the review is a pre-flight
+    check, so it reads "ready to request review" (approve) or "not ready to request review"
+    (anything else)."""
+    if verdict is None:
+        return None
+    if own:
+        return "ready to request review" if verdict == "approve" else "not ready to request review"
+    return _VERDICT_WORDS.get(verdict, verdict)
 
 
 def author_kind(author: str, author_is_bot: bool, viewer: str | None) -> AuthorKind:
@@ -396,13 +458,37 @@ def owner_of(repo: str) -> str:
 
 
 def queue_row(
-    stored: StoredPr, latest: RoundSummary | None, viewer: str | None, suggested: bool = False
+    stored: StoredPr,
+    latest: RoundSummary | None,
+    viewer: str | None,
+    suggested: bool = False,
+    followup: FollowUp | None = None,
+    stack: Sequence[int] = (),
 ) -> QueueRow:
-    """The row the UI shows. A PR whose last fetch failed says so, whatever state it had."""
+    """The row the UI shows. A PR whose last fetch failed says so, whatever state it had.
+    ``followup``: what the PR's current head needs after the author's previous review; its
+    kind is the row's (a still-approved rebase files under Still approved). ``stack``: the
+    PR's stack, bottom-up; a new PR in one is of kind ``stack`` (follow-ups still apply per
+    PR, spec §4.3)."""
     pr = stored.pr
+    if followup is not None:
+        followup = effective_followup(followup, pr.ci_state)  # CI as it is now (C2)
+    error = None if followup is None else followup.error
+    unchecked = error is not None
+    note = "" if followup is None else followup.note
+    if error is not None:
+        note = (
+            f"Couldn't check this head against your previous review ({error}); "
+            "it is checked again on the next sync"
+        )
     state, reason = stored.state, stored.state_reason
     if stored.fetch_error is not None:
         state, reason = "fetch_failed", f"couldn't load: {stored.fetch_error}"
+    kind = pr_kind(followup) if followup is not None else stored.kind
+    if stack and kind == "new":
+        kind = "stack"
+    who = author_kind(pr.author, pr.author_is_bot, viewer)
+    recommendation = None if latest is None else latest.verdict
     return QueueRow(
         repo=pr.ref.repo,
         display_repo=pr.display_repo,
@@ -410,11 +496,11 @@ def queue_row(
         title=pr.title,
         url=pr.url,
         author=pr.author,
-        author_kind=author_kind(pr.author, pr.author_is_bot, viewer),
+        author_kind=who,
         created_at=pr.created_at,
         size_lines=pr.size_lines,
         files=pr.files,
-        kind=stored.kind,
+        kind=kind,
         depth=pr.depth,
         ci_state=pr.ci_state,
         auto_review_state=pr.auto_review_state,
@@ -424,7 +510,7 @@ def queue_row(
         review_requested=pr.review_requested,
         prereview_state=state,
         prereview_reason=reason,
-        recommendation=None if latest is None else latest.verdict,
+        recommendation=recommendation,
         recommendation_stale=latest is not None and latest.head_sha != pr.head_sha,
         evidence=None if latest is None else latest.evidence,
         coverage_pct=None if latest is None else latest.coverage_pct,
@@ -435,4 +521,9 @@ def queue_row(
         fetch_error_at=stored.fetch_error_at,
         suggested=suggested,
         nothing_to_walk=latest is not None and latest.nothing_to_walk,
+        followup_kind=None if followup is None or unchecked else followup.kind,
+        followup_note=note,
+        differing_paths=() if followup is None else tuple(followup.differing_paths),
+        stack=tuple(stack),
+        recommendation_label=verdict_label(recommendation, who == "you"),
     )

@@ -163,7 +163,7 @@ export function PostDialog(props: PostDialogProps) {
           timer.current = setTimeout(() => void post(p), secs * 1000);
           return;
         }
-        if (code === "RoundChanged") {
+        if (e instanceof ReviewRequestError && e.roundChanged) {
           setFailure({
             final: true,
             message: "A new review round started: nothing was posted. Close this and review the new round.",

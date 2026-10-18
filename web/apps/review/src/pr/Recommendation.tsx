@@ -19,7 +19,7 @@ const VERDICTS: Record<string, VerdictWords> = {
 const OWN: Record<string, VerdictWords> = {
   approve: { text: "✓ Ready to request review", tone: "success" },
   request_changes: { text: "✕ Not ready to request review", tone: "danger" },
-  needs_closer_look: { text: "? Needs a closer look before you request review", tone: "warn" },
+  needs_closer_look: { text: "? Not ready to request review: it needs a closer look", tone: "warn" },
 };
 
 export function verdictWords(verdict: string | null | undefined, own: boolean): VerdictWords | null {

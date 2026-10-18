@@ -13,6 +13,7 @@ from jesinia.services.github.domain.pr import (
     PrFile,
     PullRequest,
     ReviewSummary,
+    ReviewThread,
     RollupState,
 )
 
@@ -99,6 +100,7 @@ class FakePullRequests:
         self.others: dict[tuple[str, int], PullRequest] = {}
         self.ci: dict[str, RollupState] = {}
         self.reviews_of: dict[tuple[str, int], list[ReviewSummary]] = {}
+        self.threads_of: dict[tuple[str, int], list[ReviewThread]] = {}
         self.error: Exception | None = None
         self.detail_errors: dict[tuple[str, int], Exception] = {}
         self.get_error: Exception | None = None
@@ -162,6 +164,10 @@ class FakePullRequests:
     async def reviews(self, repo: str, number: int) -> list[ReviewSummary]:
         self._fail()
         return self.reviews_of.get(_key(repo, number), [])
+
+    async def threads(self, repo: str, number: int) -> list[ReviewThread]:
+        self._fail()
+        return self.threads_of.get(_key(repo, number), [])
 
     async def files(self, repo: str, number: int) -> list[PrFile]:
         self._fail()

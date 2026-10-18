@@ -62,6 +62,10 @@ WITHHELD_TEXT: Final = (
     "[Jesinia removed this finding's text: it contained Jesinia's posting marker]"
 )
 WITHHELD_PATH: Final = "(path withheld: it contained Jesinia's posting marker)"
+# Where drafts GitHub can't anchor go in the body; outdated ones (their lines refer to an
+# earlier head, spec §7) get their own heading, so their line labels can't mislead.
+OUTSIDE_TITLE: Final = "Comments outside the diff"
+OUTDATED_TITLE: Final = "Comments on an earlier version (their lines changed since)"
 _HUNK = re.compile(r"^@@ -(\d{1,10})(?:,(\d{1,10}))? \+(\d{1,10})(?:,(\d{1,10}))? @@", re.M)
 _SEVERITY_TITLES: Final = {"critical": "Critical", "important": "Important", "minor": "Minor"}
 _GROUPS: Final = frozenset({"correctness", "design", "style"})
@@ -104,6 +108,21 @@ class PreviewOutdated(PostingDomainError):  # noqa: N818 - the error code client
 class RoundChanged(PostingDomainError):  # noqa: N818 - the error code clients see
     """The round a save, preview or post names is no longer the PR's current round: it is
     refused, never moved onto the new round (the author's text stays with them)."""
+
+
+class RoundFrozen(RoundChanged):  # noqa: N818 - the error code clients see
+    """The round is read-only: the PR moved to a new head and a round on it took over this
+    round's drafts (spec §7). Nothing is saved, posted or marked done on it; it stays
+    readable. ``successor_id`` is the round that took over (``None`` if unknown)."""
+
+    def __init__(self, round_id: int, successor_id: int | None) -> None:
+        then = "" if successor_id is None else f" (round {successor_id} has its drafts)"
+        super().__init__(
+            f"round {round_id} is read-only: a review of the PR's new head took over{then}; "
+            "nothing was saved or posted"
+        )
+        self.round_id = round_id
+        self.successor_id = successor_id
 
 
 class EarlierReviewPosted(PostingDomainError):  # noqa: N818 - the error code clients see
@@ -263,8 +282,9 @@ class CommentableLines:
 
     def anchors(self, draft: Draft) -> bool:
         """Whether GitHub can anchor ``draft`` inline: its line (and its range's start)
-        inside one hunk, on their sides."""
-        if draft.outside_diff or draft.line is None or draft.side is None:
+        inside one hunk, on their sides. An outdated draft never is: its lines refer to an
+        earlier head, so it posts in the body until the author anchors it again."""
+        if draft.outdated or draft.outside_diff or draft.line is None or draft.side is None:
             return False
         start, start_side = draft.start_line or draft.line, draft.start_side or draft.side
         return any(
@@ -347,18 +367,20 @@ def check_review_text(summary: str, drafts: Sequence[Draft]) -> None:
 def compose_review(summary: str, drafts: Sequence[Draft], commentable: CommentableLines) -> Review:
     """The review the drafts make: anchored drafts inline, in order; every other draft (an
     outside-the-diff note, or one GitHub can't anchor) in the body after the summary, under
-    its file and lines.
+    its file and lines; outdated drafts last, under their own heading (never inline).
 
     Raises:
         InvalidDraftContent: marker text in the summary or a draft (R48).
     """
     check_review_text(summary, drafts)
     inline = [draft.comment() for draft in drafts if commentable.anchors(draft)]
-    in_body = [draft for draft in drafts if not commentable.anchors(draft)]
+    in_body = [d for d in drafts if not commentable.anchors(d) and not d.outdated]
+    outdated = [draft for draft in drafts if draft.outdated]
     parts = [summary.strip()] if summary.strip() else []
-    if in_body:
-        notes = "\n\n".join(f"**{_label(draft)}**\n\n{draft.body.strip()}" for draft in in_body)
-        parts.append(f"#### Comments outside the diff\n\n{notes}")
+    for title, group in ((OUTSIDE_TITLE, in_body), (OUTDATED_TITLE, outdated)):
+        if group:
+            notes = "\n\n".join(f"**{_label(draft)}**\n\n{draft.body.strip()}" for draft in group)
+            parts.append(f"#### {title}\n\n{notes}")
     return Review("\n\n".join(parts), tuple(inline))
 
 
@@ -420,7 +442,24 @@ def review_digest(round_id: int, head_sha: str, event: ReviewEvent, review: Revi
 def posting_marker(posting_id: int) -> str:
     """The invisible tag ending every body Jesinia posts: how a review is recognised as
     that attempt's (and never a review the author posted by hand)."""
-    return f"<!-- jesinia-posting:{posting_id} -->"
+    return f"<!-- {_MARKER_NAME}:{posting_id} -->"
+
+
+# ``posting_marker``'s shape, for any posting id.
+_POSTING_MARKER: Final = re.compile(rf"<!-- {re.escape(_MARKER_NAME)}:\d+ -->")
+
+
+def has_posting_marker(text: str, posting_id: int) -> bool:
+    """Whether ``text`` carries attempt ``posting_id``'s exact marker anywhere (a body
+    edited on GitHub after Jesinia posted it may have text after its marker). For telling a
+    listed review apart, never for adopting one: adoption needs the marker at the end."""
+    return posting_marker(posting_id) in text
+
+
+def strip_posting_markers(text: str) -> str:
+    """``text`` without any posting marker, wherever it is (a body edited on GitHub after
+    Jesinia posted it may have text after its marker)."""
+    return _POSTING_MARKER.sub("", text)
 
 
 def marked_body(body: str, posting_id: int) -> str:

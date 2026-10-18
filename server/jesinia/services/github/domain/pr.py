@@ -104,12 +104,20 @@ class ReviewSummary:
 
 @dataclass(frozen=True)
 class ReviewThread:
+    """A review thread with its first comment. ``line`` and ``commit_sha`` are its current
+    position while it still applies (else where it was written); the ``original_*`` fields
+    are always where it was written, on ``side`` of that commit's diff."""
+
     path: str
     line: int | None
     body: str
     author: str
     resolved: bool
     commit_sha: str | None
+    original_commit_sha: str | None = None
+    original_line: int | None = None
+    original_start_line: int | None = None
+    side: ReviewSide | None = None
 
 
 @dataclass(frozen=True)

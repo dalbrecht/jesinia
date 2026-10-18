@@ -27,6 +27,7 @@ from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.reviews import ReviewReads
+from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.posting import Draft
 from jesinia.apps.review.domain.queue import PrNotInQueueError, PrRef, RepoConfig, snapshot_of
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
@@ -70,6 +71,7 @@ class Host:
     posting: PostingService
     reviews: ReviewReads
     idempotency: SqliteIdempotencyStore
+    stacks: StackReviews
 
 
 class HostModule:
@@ -118,6 +120,13 @@ class Env:
         return round_id
 
 
+class StackJobsUnused:
+    """No stack here (one PR): the stack's jobs are never run."""
+
+    async def run_stack(self, job: object, stack: object) -> dict[str, object]:
+        raise AssertionError("no stack job runs for a single PR")
+
+
 def keyed() -> dict[str, str]:
     return {IDEMPOTENCY_HEADER: str(uuid.uuid4())}
 
@@ -154,9 +163,19 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
     )
     poster = PostingGitHub(pr, clock=clock)
     posting = PostingService(github=poster, writer=poster, files=queue, store=store, clock=clock)
-    host = Host(
-        queue, pipeline, posting, ReviewReads(store, queue.status), SqliteIdempotencyStore(conn)
+    reads = ReviewReads(store, queue.status)
+    stacks = StackReviews(
+        store=store,
+        reads=reads,
+        opener=pipeline,
+        poster=posting,
+        jobs=StackJobsUnused(),
+        github=PipelineGitHub(pr),
+        workspace=FakeWorkspace(),
+        clock=clock,
+        bus=EventBus(),
     )
+    host = Host(queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks)
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
         transport = httpx.ASGITransport(app=app)
@@ -175,12 +194,19 @@ WRITES = [
     ("POST", f"{API}/queue/acme/web/1/dismiss", None),
     ("POST", f"{API}/repos/acme/other/confirm", None),
     ("POST", f"{PR}/open", None),
+    ("POST", f"{PR}/refresh", None),
     ("POST", f"{PR}/retry", None),
     ("POST", f"{PR}/review-anyway", None),
     ("PUT", f"{PR}/drafts", {"summary": "", "drafts": []}),
     ("POST", f"{PR}/post", {"event": "COMMENT", "confirm": [], "digest": "x"}),
     ("POST", f"{PR}/done", None),
     ("PUT", f"{API}/settings", {"prereview": "triage", "runner": "codex", "repos": []}),
+    ("POST", f"{API}/stacks/acme/web/1/open", None),
+    (
+        "POST",
+        f"{API}/stacks/acme/web/1/post-all",
+        {"items": [{"number": 1, "round_id": 1, "event": "COMMENT", "digest": "x"}]},
+    ),
 ]
 
 
@@ -302,6 +328,23 @@ async def test_load_and_dismiss(env: Env) -> None:
     assert filtered == []
     gone = await env.client.post(f"{API}/queue/acme/web/7/dismiss", headers=keyed())
     assert gone.status_code == 404
+
+
+async def test_refresh_fetches_the_pr_again_under_a_key(env: Env) -> None:
+    """Task 11 M7: "Review the new head" fetches it first; a replay never fetches twice."""
+    newer = "9" * 40
+    env.prs.inbox = [replace(env.prs.inbox[0], head_sha=newer)]
+    key = keyed()
+    first = await env.client.post(f"{PR}/refresh", headers=key)
+    assert first.status_code == 200 and first.json()["head_sha"] == newer
+    env.prs.inbox = [replace(env.prs.inbox[0], head_sha="8" * 40)]
+    replay = await env.client.post(f"{PR}/refresh", headers=key)
+    assert replay.json()["head_sha"] == newer  # the stored answer, not a second fetch
+    missing = await env.client.post(f"{API}/prs/acme/web/9/refresh", headers=keyed())
+    assert missing.status_code == 404 and missing.json()["error"] == "PrNotInQueueError"
+    env.prs.inbox = [replace(env.prs.inbox[0], state="closed")]
+    closed = await env.client.post(f"{PR}/refresh", headers=keyed())
+    assert closed.status_code == 409 and closed.json()["error"] == "PrNotOpenError"
 
 
 async def test_confirming_a_suggested_repo_watches_it(env: Env) -> None:
@@ -668,17 +711,19 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
         for route in build_router(env.host).routes
         if "GET" in getattr(route, "methods", set())
     ]
-    assert len(gets) == 4  # queue, the PR, its drafts, settings
+    assert len(gets) == 5  # queue, the PR, its drafts, its stack, settings
+    # PR 1 is alone: its stack answers "not a stack", from the cache too.
+    expected = {f"{API}/stacks/acme/web/1": 404}
     # M4: walked with the head's files cached (the PR view's diff) and without (drafts
     # would need GitHub's file list).
     for path in gets:
         response = await env.client.get(path)
-        assert response.status_code == 200, path
+        assert response.status_code == expected.get(path, 200), path
     assert (await env.client.get(PR)).json()["files"] is not None
     env.store._conn.execute("DELETE FROM pr_files")
     for path in gets:
         response = await env.client.get(path)
-        assert response.status_code == 200, path
+        assert response.status_code == expected.get(path, 200), path
     # The MCP reads are cache-only too.
     tools = _tools(env)
     await _call(tools["review_queue"])
@@ -821,9 +866,12 @@ async def test_saves_previews_and_posts_are_bound_to_the_round_shown(env: Env) -
     assert (await env.client.put(f"{PR}/drafts", json=current, headers=keyed())).status_code == 200
     new = env.store.start_round(env.ref, HEAD, "b" * 40, "quick", env.clock())
     assert new != old
-    stale = await env.client.put(f"{PR}/drafts", json=current, headers=keyed())
+    later = {**current, "summary": "Mine, edited later."}
+    stale = await env.client.put(f"{PR}/drafts", json=later, headers=keyed())
     assert stale.status_code == 409 and stale.json()["error"] == "RoundChanged"
-    assert env.store.review_summary(new) != "Mine."  # never retargeted onto the new round
+    # The new round took over what was saved when it started (Task 11); the stale save is
+    # never retargeted onto it.
+    assert env.store.review_summary(new) == "Mine."
     preview = await env.client.post(
         f"{PR}/post/preview", json={"event": "COMMENT", "round_id": old}
     )

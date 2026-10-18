@@ -74,8 +74,9 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
     `rename_only`, `format_only` or `judged_mechanical`;
   - shown in the walkthrough header, the queue row and the recommendation evidence;
   - the correctness pass reports its own coverage the same way.
-- **Rebase:** content is unchanged when per-file `git patch-id --stable` sets match between the
-  approved and the new PR diffs (each against its merge base), and CI is green or running.
+- **Rebase:** content is unchanged when per-file `git patch-id --verbatim` sets (whitespace
+  counts) match between the approved and the new PR diffs (each against its merge base), and CI
+  is green or running.
 - **Stack:** PR B is stacked on A when B's base ref is A's head ref **and** A's head repository
   is the base repository (same `owner/name`); fork PRs never stack onto same-named branches.
 - **Posting:**
@@ -199,7 +200,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - `async diff(repo, base_sha, head_sha) -> str`;
   - `async merge_base(repo, a, b) -> str`;
   - `async patch_ids(repo, base_sha, head_sha) -> dict[str, str]`, mapping path to
-    `git patch-id --stable`;
+    `git patch-id --verbatim` (whitespace counts);
   - `async prune(keep: set[tuple[str, str]]) -> int`.
 - **`GitWorkspace(root: Path, remote_url: Callable[[str], str])`:**
   - root is `data_dir/review/repos`;
@@ -574,16 +575,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **On a head change:** the open round freezes; drafts are copied into the new round,
   re-anchored where their lines are unchanged and `outdated` otherwise.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_pure_rebase_is_still_approved`;
   - `test_conflict_edit_reviews_only_differing_hunks`;
   - `test_github_posted_approval_counts`;
   - `test_drafts_carry_and_reanchor`;
   - `test_post_refuses_when_reviewed_head_is_gone` (Review Focus 1).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): rebases and head changes`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): rebases and head changes`.
 
 ### Task 12: Incremental re-reviews
 
@@ -599,15 +600,15 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **UI:** a **Your requests** list, then **New since your last look**, and the previous round
   viewable beside or inline, aligned by file and hunk.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_rereview_maps_each_request_to_status`;
   - `test_commented_only_prs_get_incremental_rereview`;
   - `test_rereview_without_stored_walkthrough_uses_github_comments`;
   - the web test: the previous review shown aligned.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): incremental re-reviews`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): incremental re-reviews`.
 
 ### Task 13: Stacks and your own PRs
 
@@ -625,16 +626,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **Own PRs:** background is minimised, the quiz is off by default, and the verdict reads
   "ready / not ready to request review".
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_stack_detection_orders_bottom_up`;
   - `test_post_all_stops_at_first_failure_and_reports`;
   - `test_own_pr_review_shape`;
   - the web test for the stack tabs.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): stacks and own PRs`. **Open PR 4**, then the Codex
-  loop and merge.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): stacks and own PRs`.
+  - [ ] **Open PR 4**, then the Codex loop and merge.
 
 ## PR 5: Knowledge, metrics trend, kept pages (Tasks 14–16)
 

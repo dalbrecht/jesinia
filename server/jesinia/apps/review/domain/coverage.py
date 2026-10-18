@@ -18,6 +18,7 @@ runs (never one object per line), a diff over ``MAX_CHANGED_LINES`` changed line
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from bisect import bisect_left
@@ -40,6 +41,7 @@ SkipReason = Literal[
     "judged_mechanical",
     "metadata_only",
     "omitted",
+    "unchanged",
 ]
 # The reasons a walkthrough agent may give (its schema's enum).
 AGENT_SKIP_REASONS: Final = frozenset(
@@ -59,6 +61,8 @@ NOT_WALKED_LIMIT: Final = 500
 # 1/SUMMARY_SHARE of it before it is summarised in one line.
 HUNK_INDEX_CHARS: Final = 60_000
 SUMMARY_SHARE: Final = 8
+# How the hunk index marks a hunk a re-review leaves out as unchanged (Jesinia's words).
+UNCHANGED_NOTE: Final = " unchanged since your last review: no need to walk it"
 
 _DIFF_HEADER = "diff --git "
 # Ten digits: git's line numbers fit, and int() never sees an absurd string.
@@ -103,11 +107,18 @@ class Run:
 
 @dataclass(frozen=True)
 class Hunk:
+    """One hunk. ``digest`` hashes its lines (context included, whitespace verbatim) but not
+    its line numbers, so the same change moved elsewhere in its file keeps its digest: what a
+    re-review compares hunks by. ``text`` is the hunk as git printed it, kept only when the
+    diff was parsed with ``keep_text``."""
+
     old_start: int
     old_count: int
     new_start: int
     new_count: int
     runs: tuple[Run, ...]
+    digest: str = field(default="", compare=False)
+    text: str | None = field(default=None, compare=False, repr=False)
 
     @property
     def changed(self) -> int:
@@ -136,17 +147,33 @@ class FileDiff:
 @dataclass(frozen=True)
 class ParsedDiff:
     """A PR's whole diff. ``complete`` is false when it couldn't be read in full (too large);
-    ``expected_lines`` and ``expected_files`` (GitHub's counts) then size what is missing."""
+    ``expected_lines`` and ``expected_files`` (GitHub's counts) then size what is missing.
+    ``unchanged``: hunks (file position, hunk index) a re-review marks as unchanged since the
+    author's last review (R69). They keep their numbers, the hunk index lists them as such,
+    and coverage leaves them out of what there is to cover, naming each one."""
 
     files: tuple[FileDiff, ...]
     complete: bool = True
     incomplete_reason: str | None = None
     expected_lines: int = 0
     expected_files: int = 0
+    unchanged: frozenset[tuple[int, int]] = frozenset()
 
     @property
     def changed_lines(self) -> int:
-        return sum(f.changed_lines for f in self.files)
+        """Changed lines left to review: every hunk's, less the ones marked unchanged."""
+        if not self.unchanged:
+            return sum(f.changed_lines for f in self.files)
+        return sum(self.live_lines(position) for position in range(len(self.files)))
+
+    def live_hunks(self, position: int) -> list[int]:
+        """The hunk indices of the entry at ``position`` not marked unchanged."""
+        count = len(self.files[position].hunks)
+        return [h for h in range(count) if (position, h) not in self.unchanged]
+
+    def live_lines(self, position: int) -> int:
+        hunks = self.files[position].hunks
+        return sum(hunks[h].changed for h in self.live_hunks(position))
 
     @cached_property
     def _hunks_by_path(self) -> dict[str, list[tuple[int, int]]]:
@@ -385,7 +412,7 @@ class _Budget:
             )
 
 
-def _hunk(header: str, lines: _Lines, budget: _Budget) -> Hunk:
+def _hunk(header: str, lines: _Lines, budget: _Budget, keep_text: bool = False) -> Hunk:
     """The hunk under ``header``. Its counts say where it ends: a removed line may itself
     start with ``---``. Consecutive lines of one kind are kept as one run."""
     match = _HUNK_HEADER.match(header)
@@ -398,6 +425,8 @@ def _hunk(header: str, lines: _Lines, budget: _Budget) -> Hunk:
     runs: list[Run] = []
     kind: str | None = None
     start = anchor = 0
+    digest = hashlib.sha256()
+    body: list[str] = [header] if keep_text else []
 
     def close(end: int) -> None:
         if kind is not None:
@@ -408,6 +437,9 @@ def _hunk(header: str, lines: _Lines, budget: _Budget) -> Hunk:
         line = lines.take()
         if line is None:
             raise DiffParseError("a hunk ends before its header's line counts")
+        digest.update(line.encode(errors="surrogateescape") + b"\n")
+        if keep_text:
+            body.append(line)
         marker = line[:1]
         if marker == "\\":
             continue  # "\ No newline at end of file"
@@ -430,12 +462,24 @@ def _hunk(header: str, lines: _Lines, budget: _Budget) -> Hunk:
     close((new_number if kind == "+" else old_number) - 1)
     while (following := lines.peek()) is not None and following.startswith("\\"):
         lines.take()
-    return Hunk(int(match.group(1)), old_count, int(match.group(3)), new_count, tuple(runs))
+        digest.update(following.encode(errors="surrogateescape") + b"\n")
+        if keep_text:
+            body.append(following)
+    return Hunk(
+        int(match.group(1)),
+        old_count,
+        int(match.group(3)),
+        new_count,
+        tuple(runs),
+        digest.hexdigest(),
+        "\n".join(body) if keep_text else None,
+    )
 
 
-def parse_unified_diff(text: str) -> ParsedDiff:
+def parse_unified_diff(text: str, *, keep_text: bool = False) -> ParsedDiff:
     """Parse ``git diff`` output (the workspace's pinned format: ``a/``/``b/`` prefixes,
-    renames detected, binaries as ``Binary files … differ``).
+    renames detected, binaries as ``Binary files … differ``). ``keep_text``: keep each
+    hunk's text as well (what a re-review shows the agent of the new changes).
 
     Raises:
         DiffParseError: the text is not a unified diff, or a hunk is cut short.
@@ -459,7 +503,7 @@ def parse_unified_diff(text: str) -> ParsedDiff:
             lines.take()
         while (following := lines.peek()) is not None and following.startswith("@@"):
             lines.take()
-            builder.hunks.append(_hunk(following, lines, budget))
+            builder.hunks.append(_hunk(following, lines, budget, keep_text))
         files.append(builder.build())
     return ParsedDiff(tuple(files))
 
@@ -499,7 +543,8 @@ def _index_block(diff: ParsedDiff, position: int, path: str) -> str:
         for h, hunk in enumerate(diff_file.hunks):
             added = sum(run.count for run in hunk.runs if run.kind == "+")
             cited = diff.cited_index(position, h)
-            entry.append(f"  hunk {cited}: {hunk.header} (+{added} -{hunk.changed - added})")
+            same = UNCHANGED_NOTE if (position, h) in diff.unchanged else ""
+            entry.append(f"  hunk {cited}: {hunk.header} (+{added} -{hunk.changed - added}){same}")
         return "\n".join(entry)
     if diff_file.status == "renamed":
         what = f"renamed from {json.dumps(diff_file.old_path, ensure_ascii=False)}"
@@ -550,7 +595,7 @@ def _summarise(
 ) -> Coverage:
     reasons = _agent_reasons(diff, agent_skips)
     not_walked: list[Skip] = []
-    total_not_walked = files_covered = auto_skipped = 0
+    total_not_walked = files_covered = auto_skipped = unchanged_files = 0
     deleted_lines = deleted_covered = 0
 
     def left_out(skip: Skip) -> None:
@@ -560,31 +605,39 @@ def _summarise(
             not_walked.append(skip)
 
     for f, diff_file in enumerate(diff.files):
-        walked = [covered.get((f, h), 0) for h in range(len(diff_file.hunks))]
-        auto = None if any(walked) else _auto_reason(diff_file)
+        live = diff.live_hunks(f)
+        if diff_file.hunks and not live:  # nothing in it changed since the last review
+            unchanged_files += 1
+            left_out(Skip(diff_file.path, None, "unchanged"))
+            continue
+        for h in range(len(diff_file.hunks)):
+            if (f, h) in diff.unchanged:
+                left_out(Skip(diff_file.path, diff.cited_index(f, h), "unchanged"))
+        walked = {h: covered.get((f, h), 0) for h in live}
+        live_lines = diff.live_lines(f)
+        auto = None if any(walked.values()) else _auto_reason(diff_file)
         if diff_file.status == "deleted" and auto is None:
-            deleted_lines += diff_file.changed_lines
-            deleted_covered += sum(walked)
-        if diff_file.hunks and all(
-            count == hunk.changed for count, hunk in zip(walked, diff_file.hunks, strict=True)
-        ):
+            deleted_lines += live_lines
+            deleted_covered += sum(walked.values())
+        if live and all(walked[h] == diff_file.hunks[h].changed for h in live):
             files_covered += 1
         elif auto is not None:
-            auto_skipped += diff_file.changed_lines
+            auto_skipped += live_lines
             left_out(Skip(diff_file.path, None, auto))
-        elif (diff_file.path, None) in reasons and not any(walked):
+        elif (diff_file.path, None) in reasons and not any(walked.values()):
             left_out(Skip(diff_file.path, None, reasons[(diff_file.path, None)]))
         else:
-            for h, hunk in enumerate(diff_file.hunks):
-                if walked[h] < hunk.changed:
+            for h in live:
+                if walked[h] < diff_file.hunks[h].changed:
                     cited = diff.cited_index(f, h)
                     reason = reasons.get((diff_file.path, cited), "omitted")
                     left_out(Skip(diff_file.path, cited, reason))
-    lines_total, files_total = diff.changed_lines, len(diff.files)
+    lines_total, files_total = diff.changed_lines, len(diff.files) - unchanged_files
     if not diff.complete:
         lines_total = max(lines_total, diff.expected_lines)
         files_total = max(files_total, diff.expected_files)
-    lines_covered = sum(covered.values())
+    # A step citing an unchanged hunk covers nothing that is left to review.
+    lines_covered = sum(n for slot, n in covered.items() if slot not in diff.unchanged)
     # Nothing changed line by line (binaries, renames): nothing was left unread.
     pct = _percent(lines_covered, lines_total) if lines_total else (100.0 if diff.complete else 0.0)
     reviewable = lines_total - auto_skipped - deleted_lines

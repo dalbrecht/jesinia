@@ -298,12 +298,33 @@ class GitWorkspace:
         out = await self._git(_bare(self._mirror(repo)), "merge-base", check_sha(a), check_sha(b))
         return check_sha(out.strip())
 
+    async def is_ancestor(self, repo: str, ancestor: str, descendant: str) -> bool:
+        """Whether commit ``descendant`` contains ``ancestor`` (R77: a stack's top head holds
+        every member head).
+
+        Raises:
+            InvalidShaError: before git runs.
+            GitCommandError: either commit isn't in the mirror (git's own failure, not "no").
+        """
+        argv, _, err, code, _ = await self._execute(
+            _bare(self._mirror(repo)),
+            ("merge-base", "--is-ancestor", check_sha(ancestor), check_sha(descendant)),
+        )
+        if code in (0, 1):
+            return code == 0
+        raise GitCommandError(argv, code, err.decode(errors="replace"))
+
     async def patch_ids(self, repo: str, base_sha: str, head_sha: str) -> dict[str, str]:
         """Per-file patch IDs, keyed by the post-change path (a rename's new name).
 
         Conservative by design: context lines are hashed, so a base change within three
         lines of a hunk, or to a renamed file's old content, changes the ID. Callers see
-        that as "content differs" and re-review, never as a missed change.
+        that as "content differs" and re-review, never as a missed change. Whitespace is
+        hashed too (``--verbatim``, C1): plain ``patch-id`` strips it, which would take a
+        Python re-indentation or a change inside a string literal for a pure rebase. Each
+        chunk is one file, so ``--stable`` (which git refuses beside ``--verbatim``) adds
+        nothing. A git without ``--verbatim`` (older than 2.39) fails the command, and the
+        caller then assumes nothing is unchanged.
 
         Raises:
             DiffTooLargeError: the (binary) patch is over the workspace's ``diff_limit``.
@@ -327,13 +348,43 @@ class GitWorkspace:
         numbered = b"".join(
             b"commit %040x\n" % index + chunk for index, chunk in enumerate(chunks, start=1)
         )
-        out = await self._git(mirror, "patch-id", "--stable", stdin=numbered)
+        out = await self._git(mirror, "patch-id", "--verbatim", stdin=numbered)
         pairs = (line.split() for line in out.splitlines())
         by_index = {int(commit, 16): patch_id for patch_id, commit in pairs}
         missing = [path for index, path in enumerate(paths, start=1) if index not in by_index]
         if missing:
             raise GitOutputError(f"git patch-id gave no patch id for {', '.join(missing)}")
         return {path: by_index[index] for index, path in enumerate(paths, start=1)}
+
+    async def renames(self, repo: str, old_sha: str, new_sha: str) -> dict[str, str]:
+        """The files git's rename detection (``-M``, as the diffs use) says were renamed
+        between two commits: old path to new path.
+
+        Raises:
+            InvalidShaError: before git runs.
+            DiffTooLargeError: the name list is over the workspace's ``diff_limit``.
+        """
+        out = await self._run(
+            _bare(self._mirror(repo)),
+            "diff",
+            *_DIFF_OPTIONS,
+            "--name-status",
+            "-z",
+            check_sha(old_sha),
+            check_sha(new_sha),
+            output_limit=self._diff_limit,
+        )
+        fields = [os.fsdecode(item) for item in out.split(b"\0")]
+        renamed: dict[str, str] = {}
+        at = 0
+        while at < len(fields) and fields[at]:
+            # "R<score>" carries two paths; every other status (no -C: no copies) one.
+            if fields[at].startswith("R"):
+                renamed[fields[at + 1]] = fields[at + 2]
+                at += 3
+            else:
+                at += 2
+        return renamed
 
     async def show_file(self, repo: str, sha: str, path: str, *, limit: int) -> bytes | None:
         """``MirrorFiles``: the content of the regular file at ``path`` in commit ``sha``,

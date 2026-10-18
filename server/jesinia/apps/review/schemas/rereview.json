@@ -3,137 +3,164 @@
   "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
   "$id": "https://jesinia.local/review/schemas/rereview.json",
   "title": "rereview",
-  "description": "A follow-up review: what happened to each earlier finding, and new findings on the new commits.",
+  "description": "An incremental re-review: what the new commits did about each of the author's previous comments, and a walk through what is new since the previous review.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "summary",
-    "previous",
-    "findings"
+    "requests",
+    "new_changes_walkthrough"
   ],
   "properties": {
-    "summary": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 4000
-    },
-    "previous": {
+    "requests": {
       "type": "array",
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "finding",
-          "status",
-          "note"
-        ],
-        "properties": {
-          "finding": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "status": {
-            "enum": [
-              "addressed",
-              "partly_addressed",
-              "not_addressed",
-              "obsolete"
-            ]
-          },
-          "note": {
-            "type": "string",
-            "minLength": 0,
-            "maxLength": 2000
-          }
-        }
+        "$ref": "#/$defs/request"
       },
-      "maxItems": 200
+      "maxItems": 500
     },
-    "findings": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/finding"
-      },
-      "maxItems": 200
-    }
-  },
-  "$defs": {
-    "finding": {
+    "new_changes_walkthrough": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "group",
-        "severity",
-        "path",
-        "start_line",
-        "end_line",
-        "explanation",
-        "rule"
+        "steps",
+        "skipped"
       ],
       "properties": {
-        "group": {
-          "enum": [
-            "correctness",
-            "design",
-            "style"
-          ]
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/step"
+          },
+          "maxItems": 200
         },
-        "severity": {
-          "enum": [
-            "critical",
-            "important",
-            "minor"
-          ]
-        },
-        "path": {
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/skip"
+          },
+          "maxItems": 5000
+        }
+      }
+    }
+  },
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comment_ref",
+        "status",
+        "explanation",
+        "hunks"
+      ],
+      "properties": {
+        "comment_ref": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 1024
+          "maxLength": 100
         },
-        "start_line": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "end_line": {
-          "type": "integer",
-          "minimum": 1
+        "status": {
+          "enum": [
+            "addressed",
+            "partly",
+            "not_addressed"
+          ]
         },
         "explanation": {
           "type": "string",
           "minLength": 1,
           "maxLength": 8000
         },
-        "rule": {
+        "hunks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hunk"
+          },
+          "maxItems": 200
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "body",
+        "hunks"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "hunks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hunk"
+          },
+          "minItems": 1,
+          "maxItems": 50
+        }
+      }
+    },
+    "hunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "hunk"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "hunk": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "skip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "hunk",
+        "reason"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "hunk": {
           "anyOf": [
             {
               "type": "null"
             },
             {
-              "$ref": "#/$defs/rule"
+              "type": "integer",
+              "minimum": 0
             }
           ]
-        }
-      }
-    },
-    "rule": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "layer"
-      ],
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 500
         },
-        "layer": {
+        "reason": {
           "enum": [
-            "base",
-            "repo",
-            "user"
+            "generated",
+            "lockfile",
+            "vendored",
+            "rename_only",
+            "format_only",
+            "judged_mechanical"
           ]
         }
       }

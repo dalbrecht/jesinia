@@ -15,6 +15,7 @@ import {
   getPr,
   markDone,
   openPr,
+  refreshPr,
   retryPr,
   ReviewRequestError,
   reviewAnyway,
@@ -46,8 +47,10 @@ import s from "./pr.module.css";
 import { Quick } from "./Quick";
 import { Quiz } from "./Quiz";
 import { Recommendation, verdictWords } from "./Recommendation";
+import { NewSinceLastLook, YourRequests } from "./Rereview";
 import { Outline } from "./Outline";
 import { Visible } from "./Visible";
+import { StackView } from "./StackView";
 import { NotWalked, StepPage, type DiffLayout } from "./Walkthrough";
 
 export type PrViewProps = {
@@ -89,10 +92,32 @@ function saveRead(key: string, read: ReadonlySet<string>): void {
 }
 
 /** What opening (or Review anyway, Retry) said, in words, with the next step it offers. */
-type Notice = { text: string; anyway: boolean; tone: "info" | "problem"; retryOpen?: boolean; retry?: boolean };
+type Notice = {
+  text: string;
+  anyway: boolean;
+  tone: "info" | "problem";
+  retryOpen?: boolean;
+  retry?: boolean;
+  checking?: boolean;
+};
 
-function noticeOf(result: OpenResult): Notice | null {
-  if (result.state === "up_to_date") return null;
+/**
+ * How long the view waits before opening again while the server is still checking the head
+ * against the author's previous review (Codex P1 on PR #63): the round must know whether it
+ * is a re-review before it is planned.
+ */
+export const CHECKING_RETRY_MS = 3000;
+
+/**
+ * Said when "Review the new head" fetched the PR again (Task 11 M7) and found the head it had
+ * already reviewed: GitHub has nothing newer yet.
+ */
+export const NEW_HEAD_NOT_FETCHED =
+  "Jesinia fetched the PR again: this head's review is complete, and GitHub shows no newer commits.";
+
+function noticeOf(result: OpenResult, newHead = false): Notice | null {
+  if (result.state === "up_to_date")
+    return newHead ? { text: NEW_HEAD_NOT_FETCHED, anyway: false, tone: "info" } : null;
   if (result.state === "started") {
     const n = result.jobs.length;
     return {
@@ -105,6 +130,7 @@ function noticeOf(result: OpenResult): Notice | null {
   if (result.state === "failed") return { text: result.reason, anyway: false, tone: "problem", retry: true };
   if (result.state === "running")
     return { text: "This head is being reviewed: pages fill in as they finish.", anyway: false, tone: "info" };
+  if (result.state === "checking") return { text: result.reason, anyway: false, tone: "info", checking: true };
   return { text: result.reason, anyway: GATES_ANYWAY.has(result.state), tone: "problem" };
 }
 
@@ -155,12 +181,20 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   const [session, setSession] = useState<string | null>(null);
   const [runners, setRunners] = useState<Runners | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [stackMode, setStackMode] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const focusPage = useRef(false);
   const outlineId = useId();
 
   const reread = () => setReads((n) => n + 1);
+  // While the head is being checked, open again shortly, by itself (Codex P1 on PR #63).
+  const retryLater = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    if (!notice?.checking) return;
+    const timer = setTimeout(() => retryLater.current(), CHECKING_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [notice]);
   useEffect(() => {
     if (!active) return;
     let current = true;
@@ -242,7 +276,10 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   const chosen: Depth | null = shown ? (depth ?? shown.round?.depth ?? shown.pr.depth) : null;
   // The outline is built once per view and depth (I4), not on every keystroke or render.
   const entries = useMemo(
-    () => (shown && artifacts && chosen ? outlineOf(chosen, artifacts, shown.files, draftCount) : []),
+    () =>
+      shown && artifacts && chosen
+        ? outlineOf(chosen, artifacts, shown.files, draftCount, shown.pr.author_kind === "you")
+        : [],
     [shown, artifacts, chosen, draftCount],
   );
   const perStep = useMemo(
@@ -300,6 +337,12 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
 
   const { pr, round } = shown;
   const own = pr.author_kind === "you";
+  const stack = pr.stack ?? [];
+  if (stackMode && stack.length > 1) {
+    return (
+      <StackView repo={repo} number={number} refresh={refresh} active={active} onClose={() => setStackMode(false)} />
+    );
+  }
   const at = Math.max(
     0,
     entries.findIndex((e) => e.id === entryId),
@@ -347,6 +390,17 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     );
   };
 
+  /** Your own PR's quiz is off until you ask for it (spec §3.3). */
+  const askQuiz = () => {
+    open("quiz", { quiz: true }).then(
+      (r) => {
+        setNotice(noticeOf(r));
+        reread();
+      },
+      (e: unknown) => fail("generate the quiz", e),
+    );
+  };
+
   const walkEverything = () => {
     setWalking(true);
     open("walk", { walk_everything: true })
@@ -384,10 +438,29 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       (e: unknown) => fail("retry", e),
     );
   };
-  const retryOpen = () => {
+  /**
+   * "Review the new head" (R65, Task 11 M7): fetch the PR from GitHub first, so the head opened
+   * is GitHub's, not the last sync's. A new head shows on the next read and opens once, under
+   * its own gates (R60, R66); the same head opens again here, to say it is up to date.
+   */
+  const reviewNewHead = () => {
+    keyed(`refresh:${repo}#${number}`, (key) => refreshPr(client, repo, number, key)).then(
+      (row) => {
+        if (row.head_sha === pr.head_sha) retryOpen(true);
+        else {
+          setNotice(null);
+          reread();
+        }
+      },
+      (e: unknown) =>
+        setNotice({ text: `Couldn't fetch the new head: ${errorCause(e)}`, anyway: false, tone: "problem" }),
+    );
+  };
+  /** Open again; `newHead`: the author asked to review the PR's new head (R65). */
+  const retryOpen = (newHead = false) => {
     open("open").then(
       (r) => {
-        setNotice(noticeOf(r));
+        setNotice(noticeOf(r, newHead));
         reread();
       },
       (e: unknown) =>
@@ -399,6 +472,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         }),
     );
   };
+  retryLater.current = () => retryOpen();
   const done = () => {
     keyed(`done:${repo}#${number}`, (key) => markDone(client, repo, number, key, round?.id ?? null)).then(
       () => {
@@ -406,7 +480,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         reread();
       },
       (e: unknown) => {
-        if (e instanceof ReviewRequestError && e.code === "RoundChanged") {
+        if (e instanceof ReviewRequestError && e.roundChanged) {
           toast.show({ tone: "danger", message: "A new review round started: it wasn't marked done." });
           reread();
         } else fail("mark it done", e);
@@ -440,11 +514,17 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     setTimeout(() => back?.focus(), 0);
   };
 
-  const pendingPage = (label: string): ReactNode => {
-    const p = pending(artifacts, entry.kind) ?? { state: "missing" as const, error: null };
+  const pendingPage = (label: string): ReactNode => (
+    <article className={s.page} aria-label={label}>
+      <h2>{label}</h2>
+      {pendingNote(label)}
+    </article>
+  );
+
+  function pendingNote(label: string): ReactNode {
+    const p = pending(artifacts as Artifacts, entry.kind) ?? { state: "missing" as const, error: null };
     return (
-      <article className={s.page} aria-label={label}>
-        <h2>{label}</h2>
+      <>
         {p.state === "running" ? (
           <p className={s.muted}>{`${label} is being generated: it shows here when it finishes.`}</p>
         ) : null}
@@ -459,9 +539,9 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         {p.state === "missing" ? (
           <p className={s.muted}>{`${label} hasn't been generated for this review yet.`}</p>
         ) : null}
-      </article>
+      </>
     );
-  };
+  }
 
   const page = (): ReactNode => {
     switch (entry.kind) {
@@ -497,12 +577,43 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
             walkNote={walkNote}
           />
         );
+      case "requests":
+        return (
+          <YourRequests
+            previous={artifacts.previous}
+            rereview={artifacts.rereview}
+            files={shown.files}
+            status={pendingNote("Your requests")}
+          />
+        );
+      case "newchanges":
+        return (
+          <NewSinceLastLook
+            rereview={artifacts.rereview}
+            files={shown.files}
+            layout={layout}
+            status={pendingNote("New since your last look")}
+          />
+        );
       case "findings":
         return artifacts.findings ? <Findings findings={artifacts.findings} /> : pendingPage("Findings");
       case "metrics":
         return artifacts.metrics ? <Metrics scores={artifacts.metrics} /> : pendingPage("Metrics");
       case "quiz":
-        return artifacts.quiz ? <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} /> : pendingPage("Quiz");
+        if (artifacts.quiz) return <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} />;
+        if (own && !artifacts.jobs.quiz)
+          return (
+            <article className={s.page} aria-label="Quiz">
+              <h2>Quiz</h2>
+              <p className={s.muted}>The quiz is off for your own PR: you wrote the code.</p>
+              <span>
+                <Button size="sm" variant="secondary" onClick={askQuiz}>
+                  Generate a quiz anyway
+                </Button>
+              </span>
+            </article>
+          );
+        return pendingPage("Quiz");
       case "comments":
         return (
           <article className={s.page} aria-label="Your comments">
@@ -574,6 +685,14 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
           ) : (
             <span className={s.muted}>No verdict yet</span>
           )}
+          {stack.length > 1 ? (
+            <>
+              <span className={s.sep} />
+              <Button size="sm" variant="ghost" onClick={() => setStackMode(true)}>
+                {`Review the stack of ${stack.length}`}
+              </Button>
+            </>
+          ) : null}
           <span className={s.sep} />
           <span className={s.pill}>{chosen === "deep" ? "Deep" : "Quick"}</span>
           <Button size="sm" variant="ghost" onClick={() => switchDepth(chosen === "deep" ? "quick" : "deep")}>
@@ -614,8 +733,13 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
         <div className={s.notices}>
           {shown.stale ? (
             <Badge tone="warn" icon="!">
-              Stale: this PR has newer commits than this review; it refreshes in the background.
+              Stale: this PR has newer commits than this review.
             </Badge>
+          ) : null}
+          {shown.stale ? (
+            <Button size="sm" variant="secondary" onClick={reviewNewHead}>
+              Review the new head
+            </Button>
           ) : null}
           {round?.error ? <p className={s.notice}>{`The last review failed: ${round.error}`}</p> : null}
           {posted ? (
@@ -639,7 +763,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
                 </Button>
               ) : null}
               {notice.retryOpen ? (
-                <Button size="sm" variant="secondary" onClick={retryOpen}>
+                <Button size="sm" variant="secondary" onClick={() => retryOpen()}>
                   Try again
                 </Button>
               ) : null}
@@ -734,7 +858,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
           }}
           onReviewNewCommits={() => {
             closePosting();
-            retryOpen();
+            reviewNewHead();
           }}
         />
       ) : null}

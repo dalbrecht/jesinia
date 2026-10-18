@@ -268,9 +268,7 @@ def test_build_app_points_github_and_review_at_the_fixtures(
     assert review._remote_url("e2e-dev/greeter").endswith("e2e-dev/greeter.git")
 
 
-REVIEW_JOBS = [
-    kind for kind in JobKind if kind not in (JobKind.STACK_WALKTHROUGH, JobKind.REREVIEW)
-]
+REVIEW_JOBS = [kind for kind in JobKind if kind is not JobKind.STACK_WALKTHROUGH]
 
 
 @pytest.mark.parametrize("job", REVIEW_JOBS, ids=lambda kind: kind.value)

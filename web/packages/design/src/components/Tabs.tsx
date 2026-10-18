@@ -4,7 +4,8 @@ import { Badge } from "./Badge";
 import s from "./Tabs.module.css";
 
 export type TabsProps = {
-  tabs: { id: string; label: string; count?: number; disabled?: boolean }[];
+  /** `title`: the full text on hover, for a label shortened to fit. */
+  tabs: { id: string; label: string; count?: number; disabled?: boolean; title?: string }[];
   selected: string;
   onSelect: (id: string) => void;
   "aria-label": string;
@@ -49,6 +50,7 @@ export function Tabs({ tabs, selected, onSelect, children, ...aria }: TabsProps)
               aria-selected={isSelected}
               aria-controls={`${base}-panel`}
               aria-disabled={t.disabled || undefined}
+              title={t.title}
               tabIndex={isSelected ? 0 : -1}
               onClick={() => !t.disabled && onSelect(t.id)}
             >

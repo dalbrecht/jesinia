@@ -325,6 +325,11 @@ async def test_threads_follow_the_graphql_cursor(prs: PrClient) -> None:
             author="bob",
             resolved=False,
             commit_sha=SHA,
+            # Where it was written (Task 12 N1): its original commit, line, range and side.
+            original_commit_sha="c" * 40,
+            original_line=11,
+            original_start_line=9,
+            side="LEFT",
         ),
         ReviewThread(
             path="src/old.py",
@@ -333,6 +338,8 @@ async def test_threads_follow_the_graphql_cursor(prs: PrClient) -> None:
             author="ghost",
             resolved=True,
             commit_sha="c" * 40,
+            original_commit_sha="c" * 40,
+            original_line=4,
         ),
     ]
     first, second = (json.loads(call.request.content) for call in route.calls)
