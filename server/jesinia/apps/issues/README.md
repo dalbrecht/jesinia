@@ -3,7 +3,7 @@
 
 The Issues app helps you triage GitHub issues across the repos you watch. New issues go to an
 Inbox and existing ones to a Backlog, and every issue is checked against a per-repo label
-convention. Later it adds suggestions, epics and work queues. The design is in
+convention. Later it adds suggestions, epics, work queues and themes. The design is in
 `docs/specs/2026-10-16-issues-design.md`, and the plan is
 `docs/superpowers/plans/2026-10-16-issues.md`.
 
@@ -83,7 +83,24 @@ Task 9 adds work queues (spec §5.2, ruling IR15):
   local queues;
 - a priority draft's order (Task 7) can make a new queue or fill one.
 
-Themes come next, and the web app in PR 4.
+Task 10 adds themes (spec §5.1, §6.2, rulings IR15, IR22, IR27):
+
+- a theme is a tag from the KB-wide catalog (the same `#tags` as notes and kept posts), kept
+  locally per issue in `issues.sqlite`. Adding one (a drop onto a theme, one issue or a
+  multi-selection) and removing one are local and immediate, never a staged change;
+- a new tag passes the catalog's instant, catalog-only near-duplicate check
+  (`TagService.check(tag, advise=False)`, no agent) and is added with `TagService.ensure`, as
+  Notes' Save note does; a near-duplicate is refused and nothing is stored;
+- Undo of an add (or removing the theme) takes the local theme off only: the catalog entry
+  `ensure` added stays, as it does for a note's tags (IR22);
+- publishing a theme in a repo stages in the pending tray (`source` `theme`) the label setup step
+  (an `EnsureLabel` for `theme:<tag>`) and an `add_label` change for each of the theme's cached
+  issues there that lacks it. They apply with the tray, through the write-ahead engine;
+- turning a theme into an epic is one approved batch, planned like a checklist conversion
+  (`ConversionPlan`, IR27): the epic is created in one of its issues' repos and the theme's
+  issues are linked under it.
+
+The web app comes in PR 4.
 
 ## Layout
 
@@ -97,6 +114,7 @@ domain/           pure rules, 100% covered
   changes.py      Change, ChangeBatch, the ordered series, label edits, results, approvals
   epics.py        is_epic, can_contain, readiness, checklist plans, proposals, briefs
   queues.py       queue items and their local order, bands, warnings, queue proposals
+  themes.py       theme tags, the theme: label and its setup step, the theme-to-epic plan
   similarity.py   the local TF-IDF that pre-filters duplicate candidates
 application/      orchestration over ports
   ports.py        what the app needs: IssueReads, LabelWrites, AgentAsker, the store protocols
@@ -109,6 +127,7 @@ application/      orchestration over ports
   pending.py      PendingService (the tray) and ApplyService (apply, retry, approve)
   epics.py        EpicService (views, plans, milestones, asks) and BriefService (the comment)
   queues.py       QueueService: queues, items, Done and band moves (staged), auto-done, asks
+  themes.py       ThemeService: themes (local, via the KB catalog), publishing (staged), epics
 infrastructure/
   store.py        SqliteIssuesStore over issues.sqlite
   suggestion_store.py  SqliteSuggestionStore: drafts, runs, the similarity corpus
@@ -116,6 +135,7 @@ infrastructure/
   brief_store.py  SqliteBriefStore: each epic's brief comment
   conversion_store.py  SqliteConversionStore: approved conversions and the items they created
   queue_store.py  SqliteQueueStore: the work queues and their items
+  theme_store.py  SqliteThemeStore: each issue's themes and the theme epics' batches
 api/
   routes.py       REST under /api/issues
   schemas.py      request and response bodies (the generated web client's types)
@@ -144,7 +164,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   drafts about several issues or a queue have `scope` instead.
 - `suggestion_runs`: each issue's latest suggestion run, with its status, when it is due, and
   the cause of a failure.
-- `pending`: the pending-changes tray, in the order staged.
+- `pending`: the pending-changes tray, in the order staged. A row is a change to one issue, or
+  (its `ref` names only the repo) a repo's label setup step, which a published theme stages.
 - `apply_batches`: every batch (from the tray, an approval or a checklist conversion, its
   `origin`), stored `running` before its first
   GitHub write and updated after every step, then `finished` (or `interrupted` by a stop), with
@@ -164,6 +185,10 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   (`issue`, `epic` or `milestone`, by `owner/repo#n`) with their position, note, when they were
   added and, once done, when and the pending change Done staged. A done item keeps its position,
   so Undo puts it back where it was.
+- `issue_themes`: each issue's themes, by the catalog's canonical tag. The catalog itself is the
+  KB's `Tags.md`, which this module never writes except through `TagService.ensure`.
+- `theme_epics`: the batches that turned a theme into an epic, so a second approval is refused
+  while one runs or didn't finish.
 
 ## Jobs
 
@@ -288,6 +313,24 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - `POST /queues/from-priority` with `{suggestion_id, queue_id | name, description?}` (exactly
     one of `queue_id` and `name`, else 422) turns a priority draft's order into a new queue, or
     appends it to one.
+  - `GET /themes`: every theme with its number of issues, by tag. `GET /themes/{tag}`: its
+    issues, from the cache (the theme as a filter; 404 when no issue has it).
+  - `POST /themes/{tag}/issues` with `{issues: [{repo, n}]}` gives cached issues the theme (201
+    with the catalog `tag` and the issues `added`, for Undo). A near-duplicate of a catalog tag
+    is a 409 (`ThemeNearDuplicateError`); without the kb service it is a 503
+    (`ThemesUnavailableError`). `POST /themes/{tag}/issues/remove` with the same body takes it
+    off (local; the catalog keeps the tag).
+  - `POST /themes/{tag}/publish` with `{repo}` stages the label setup step and the label
+    additions (201 with the staged changes; steps already in the tray are reused). A repo where
+    no cached issue of the theme lacks the label is a 409 (`NothingToPublishError`).
+  - `GET /themes/{tag}/epic?repo`: the plan turning the theme into an epic created in `repo`,
+    with its `title`, `body`, children, what is skipped and `digest`; nothing is written. `POST`
+    the same path with `{repo, digest}` approves it: a 202 with the batch (`origin` `epic`) and
+    `Location`. A plan changed since, or with no children, is a 409, and so is a second
+    approval while an earlier epic for the theme runs or didn't finish
+    (`ThemeEpicRunningError`: retry that batch).
+  - The tray (`GET /pending`) shows a label setup step with `n` `null` and
+    `change.kind` `ensure_label`, and a label addition as `add_label`.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
     `possible_duplicates`. The last two read the open suggestions.
   - Typed errors come back as `{error, detail}`. A GitHub rate limit met by a request itself
@@ -466,6 +509,30 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   replies are validated against `schemas/queue.json` with one retry; only items and queues
   Jesinia listed are kept, and a reply is discarded when a queue or one of its issues changed
   during the ask ("inputs changed, ask again").
+
+## How themes stay safe
+
+- **Local means local (IR15):** a theme is not a `Change`. Adding and removing one write only
+  `issue_themes` (and, for a new tag, the KB catalog); `ThemeService` holds no GitHub client.
+- **A drop never waits on an agent:** a new tag is checked against the catalog alone
+  (`advise=False`); the tag advisor (an agent run) is never asked.
+- **All or nothing:** every issue must be cached, and the tag must pass the check, before
+  anything is stored or catalogued. A catalog failure keeps its cause
+  (`ThemeCatalogError`, chained).
+- **Undo is local (IR22):** it removes the theme from the issues only. The catalog entry stays,
+  consistent with Notes.
+- **Labels go through the tray:** publishing stages the `theme:<tag>` setup step and the label
+  additions; nothing reaches GitHub until the author applies the tray. The write-ahead engine
+  applies them with its guards (a fresh read per issue, an add/remove against it, the label read
+  live before each add). The label is created only by the staged setup step: if the author undoes
+  it, the additions fail with `MissingLabelError` and nothing is created (IR4). A publish that
+  can't stage every change takes back what it staged.
+- **One epic per theme at a time:** a theme epic is one approved batch keyed by the digest of the
+  plan the author saw (IR27, IR45, IR46). The epic is created with no labels. Another repo's
+  issue gets the "won't fit one PR" warning and another owner's is refused (IR17). While an
+  earlier epic for the theme runs, or didn't finish, a new approval is refused: retry that batch
+  instead, so a second epic is never created.
+- **Posted text (IR49):** the epic's title and body carry the tag only as code.
 
 ## How suggestions stay safe
 

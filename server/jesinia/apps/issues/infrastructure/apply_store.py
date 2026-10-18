@@ -12,12 +12,15 @@ from typing import cast
 
 from jesinia.apps.issues.application.ports import AppliedBatch, ApplyOrigin
 from jesinia.apps.issues.domain.changes import (
+    EnsureLabel,
     Existing,
+    IssueChange,
     PendingChange,
     batch_json,
     change_json,
     parse_batch,
     parse_batch_status,
+    parse_change,
     parse_issue_change,
     parse_result,
     parse_source,
@@ -37,17 +40,24 @@ def _time(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="microseconds")
 
 
-def _ref(target: Existing) -> str:
-    return json.dumps({"repo": target.repo, "n": target.n})
+def _ref(change: PendingChange) -> str:
+    """The row's ``ref``: the issue, or (a label setup step) only its repo."""
+    if change.target is None:
+        return json.dumps({"repo": change.repo})
+    return json.dumps({"repo": change.target.repo, "n": change.target.n})
 
 
 def _pending(row: tuple[object, ...]) -> PendingChange:
     pid, ref, change, created, source = row
-    target = json.loads(str(ref))
+    where = json.loads(str(ref))
+    data = json.loads(str(change))
+    target = Existing(str(where["repo"]), int(where["n"])) if "n" in where else None
+    staged = parse_change(data) if target is None else parse_issue_change(data)
     return PendingChange(
         id=str(pid),
-        target=Existing(str(target["repo"]), int(target["n"])),
-        change=parse_issue_change(json.loads(str(change))),
+        target=target,
+        # ``PendingChange`` refuses anything but a label setup step without an issue.
+        change=cast(IssueChange | EnsureLabel, staged),
         created_at=datetime.fromisoformat(str(created)),
         source=parse_source(str(source)),
     )
@@ -80,7 +90,7 @@ class SqliteApplyStore:
             f"INSERT INTO pending ({_PENDING_COLUMNS}) VALUES (?, ?, ?, ?, ?)",
             (
                 change.id,
-                _ref(change.target),
+                _ref(change),
                 json.dumps(change_json(change.change), ensure_ascii=False),
                 _time(change.created_at),
                 change.source,

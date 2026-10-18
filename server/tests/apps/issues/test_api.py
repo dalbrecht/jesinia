@@ -31,6 +31,7 @@ from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
+from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.changes import ChangeBatch, Comment, CreateIssue, New
 from jesinia.apps.issues.domain.epics import brief_scope
 from jesinia.apps.issues.domain.suggestions import SuggestionFilters, priority_scope
@@ -41,11 +42,13 @@ from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversion
 from jesinia.apps.issues.infrastructure.queue_store import SqliteQueueStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
+from jesinia.apps.issues.infrastructure.theme_store import SqliteThemeStore
 from jesinia.apps.issues.module import ISSUES_DB, IssuesModule
 from jesinia.core.app import create_app
 from jesinia.core.auth import register_session_token
 from jesinia.core.config import Config
 from jesinia.core.db import open_db
+from jesinia.core.events import EventBus
 from jesinia.core.idempotency import IDEMPOTENCY_HEADER, SqliteIdempotencyStore
 from jesinia.core.module import AppContext, CallContext, ModuleHealth, ToolDef
 from jesinia.registry import modules
@@ -55,12 +58,17 @@ from jesinia.services.github.application.service import (
     GitHubUnavailable,
 )
 from jesinia.services.github.domain.issue import Issue, IssueComment, Milestone, TimelineEvent
+from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.tags import TagService
+from jesinia.services.kb.infrastructure.fs import LocalFiles
+from jesinia.services.kb.infrastructure.index import SqliteIndex
 from tests.apps.issues.test_apply import FakeWrites
 from tests.apps.issues.test_epics import BriefGitHub, dana
 from tests.apps.issues.test_labels import AMICUS_YML, Pauses
 from tests.apps.issues.test_suggest import FakeAgent, triage_reply
 from tests.apps.issues.test_sync import COMPLETE, REPO, FakeClock, issue
 from tests.conftest import BASE_URL, bearer, running
+from tests.services.kb.conftest import KB_DB
 
 API = "/api/issues"
 REPO_PATH = f"{API}/repos/acme/web"
@@ -84,6 +92,7 @@ class Host:
     epics: EpicService
     briefs: BriefService
     queues: QueueService
+    themes: ThemeService
 
 
 class HostModule:
@@ -137,7 +146,16 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @pytest.fixture
-async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
+def tags(tmp_path: Path) -> Iterator[TagService]:
+    root = tmp_path / "kb"
+    root.mkdir()
+    connection = open_db(tmp_path / "kb-data", KB_DB)
+    yield TagService(KbService(LocalFiles(root), SqliteIndex(connection), EventBus()), None)
+    connection.close()
+
+
+@pytest.fixture
+async def env(cfg: Config, conn: sqlite3.Connection, tags: TagService) -> AsyncIterator[Env]:
     github = BriefGitHub()
     github.files[(REPO, LABELS_YML)] = AMICUS_YML
     github.set_labels("design needed", "bug", "priority: high", "agent-ready", "area:web")
@@ -213,6 +231,7 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
             SqliteSuggestionStore(conn),
             clock,
         ),
+        ThemeService(SqliteThemeStore(conn), store, pending, lambda: tags, clock, batches=applied),
     )
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
@@ -241,6 +260,9 @@ READS = [
     ("GET", f"{API}/queues", None),
     ("GET", f"{API}/queues/x", None),
     ("GET", f"{API}/queues/x/warnings", None),
+    ("GET", f"{API}/themes", None),
+    ("GET", f"{API}/themes/sync", None),
+    ("GET", f"{API}/themes/sync/epic?repo=acme/web", None),
 ]
 WRITES: list[tuple[str, str, dict[str, object] | None]] = [
     ("PUT", REPO_PATH, {"watched": True, "settings_schema": None}),
@@ -279,6 +301,10 @@ WRITES: list[tuple[str, str, dict[str, object] | None]] = [
     ("POST", f"{API}/queues/suggestions/split", {"queue_ids": ["x", "y"]}),
     ("POST", f"{API}/queues/suggestions/x/approve", None),
     ("POST", f"{API}/queues/from-priority", {"suggestion_id": "x", "name": "Mine"}),
+    ("POST", f"{API}/themes/sync/issues", {"issues": [{"repo": REPO, "n": 1}]}),
+    ("POST", f"{API}/themes/sync/issues/remove", {"issues": [{"repo": REPO, "n": 1}]}),
+    ("POST", f"{API}/themes/sync/publish", {"repo": REPO}),
+    ("POST", f"{API}/themes/sync/epic", {"repo": REPO, "digest": "0" * 64}),
     ("POST", f"{LABELS}/apply", {"kind": "setup", "plan_id": "x"}),
 ]
 
@@ -619,6 +645,7 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
     env.host.queues.add(queue, "issue", REPO, 1)
     env.host.queues.add(queue, "epic", REPO, 3)
     env.host.queues.add(queue, "milestone", REPO, 3)
+    await env.host.themes.add([(REPO, 1)], "sync")
     calls: list[str] = []
     names = [
         "list_issues",
@@ -651,6 +678,7 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
     queries = {
         f"{API}/milestones": "?repo=acme/web",
         f"{API}/epics/acme/web/3/accepts": "?child_repo=acme/web&child_n=2",
+        f"{API}/themes/sync/epic": "?repo=acme/web",
     }
     gets = []
     for route in build_router(env.host).routes:
@@ -659,12 +687,13 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
         path = str(getattr(route, "path", ""))
         n = 3 if path.startswith((f"{API}/epics", f"{API}/milestones")) else 1
         made = path.format(
-            owner="acme", repo="web", n=n, view="backlog", batch=batch, queue_id=queue
+            owner="acme", repo="web", n=n, view="backlog", batch=batch, queue_id=queue, tag="sync"
         )
         gets.append(made + queries.get(made, ""))
     # repos, suggestions, pending, a batch, a view, an item; epics, an epic, a drop check, a
-    # conversion plan; milestones, a milestone; queues, a queue, its warnings
-    assert len(gets) == 15
+    # conversion plan; milestones, a milestone; queues, a queue, its warnings; themes, a theme,
+    # its epic plan
+    assert len(gets) == 18
     for path in [*gets, f"{API}/inbox"]:
         response = await env.client.get(path)
         assert response.status_code == 200, path
@@ -1601,3 +1630,91 @@ async def test_queue_tools_are_read_only_and_fence_queue_text(env: Env) -> None:
         assert "Ignore previous" in json.dumps(value)
         assert "Ignore previous" not in _outside_fences(value)
     assert not tools["queue_get"].writes and not tools["queues_list"].writes
+
+
+# --- themes (Task 10) ---------------------------------------------------------------------------
+
+THEMES = f"{API}/themes"
+
+
+async def test_theme_routes_add_locally_publish_to_the_tray_and_make_an_epic(env: Env) -> None:
+    await env.watch_and_sync()
+    issues = {"issues": [{"repo": REPO, "n": 1}, {"repo": REPO, "n": 2}]}
+    key = keyed()
+    added = await env.client.post(f"{THEMES}/Sync Reliability/issues", json=issues, headers=key)
+    assert added.status_code == 201, added.text
+    assert added.json() == {"tag": "sync-reliability", "added": issues["issues"]}
+    replay = await env.client.post(f"{THEMES}/Sync Reliability/issues", json=issues, headers=key)
+    assert replay.json() == added.json()
+    listed = (await env.client.get(THEMES)).json()
+    assert listed == {"themes": [{"tag": "sync-reliability", "count": 2}]}
+    theme = (await env.client.get(f"{THEMES}/sync-reliability")).json()
+    assert [(i["n"], i["state"]) for i in theme["issues"]] == [(1, "open"), (2, "open")]
+    assert env.github.writes == []  # local and immediate
+
+    published = await env.client.post(
+        f"{THEMES}/sync-reliability/publish", json={"repo": REPO}, headers=keyed()
+    )
+    assert published.status_code == 201, published.text
+    body = published.json()
+    assert body["label"] == "theme:sync-reliability"
+    assert body["ensure"]["n"] is None and body["ensure"]["change"]["kind"] == "ensure_label"
+    assert [c["change"] for c in body["added"]] == [
+        {"kind": "add_label", "name": "theme:sync-reliability"}
+    ] * 2
+    tray = (await env.client.get(f"{API}/pending")).json()["changes"]
+    assert [c["source"] for c in tray] == ["theme"] * 3
+    assert env.github.writes == []
+    applied = await env.client.post(f"{API}/pending/apply", json={}, headers=keyed())
+    await env.host.apply.drain()
+    batch = (await env.client.get(f"{API}/pending/{applied.json()['id']}")).json()
+    assert batch["complete"], batch
+    assert "theme:sync-reliability" in env.github.issues[(REPO, 1)].labels
+
+    plan = (await env.client.get(f"{THEMES}/sync-reliability/epic?repo={REPO}")).json()
+    assert plan["repo"] == REPO and plan["title"].startswith("Theme: `sync-reliability`")
+    assert [c["n"] for c in plan["children"]] == [1, 2]
+    started = await env.client.post(
+        f"{THEMES}/sync-reliability/epic",
+        json={"repo": REPO, "digest": plan["digest"]},
+        headers=keyed(),
+    )
+    assert started.status_code == 202 and started.headers["Location"].startswith(API)
+    await env.host.apply.drain()
+    made = (await env.client.get(started.headers["Location"])).json()
+    assert made["complete"] and made["origin"] == "epic"
+
+    removed = await env.client.post(
+        f"{THEMES}/sync-reliability/issues/remove", json=issues, headers=keyed()
+    )
+    assert removed.status_code == 200 and removed.json() == {"removed": 2}
+    gone = await env.client.get(f"{THEMES}/sync-reliability")
+    assert gone.status_code == 404 and gone.json()["error"] == "ThemeNotFoundError"
+
+
+async def test_theme_routes_map_their_errors(env: Env) -> None:
+    await env.watch_and_sync()
+    one = {"issues": [{"repo": REPO, "n": 1}]}
+    await env.client.post(f"{THEMES}/database/issues", json=one, headers=keyed())
+    near = await env.client.post(f"{THEMES}/databases/issues", json=one, headers=keyed())
+    assert near.status_code == 409 and near.json()["error"] == "ThemeNearDuplicateError"
+    bad = await env.client.post(f"{THEMES}/no good!/issues", json=one, headers=keyed())
+    assert bad.status_code == 400 and bad.json()["error"] == "InvalidThemeError"
+    uncached = {"issues": [{"repo": REPO, "n": 99}]}
+    missing = await env.client.post(f"{THEMES}/sync/issues", json=uncached, headers=keyed())
+    assert missing.status_code == 404
+    empty = await env.client.post(f"{THEMES}/sync/issues", json={"issues": []}, headers=keyed())
+    assert empty.status_code == 422
+    nothing = await env.client.post(
+        f"{THEMES}/database/publish", json={"repo": "acme/api"}, headers=keyed()
+    )
+    assert nothing.status_code == 409 and nothing.json()["error"] == "NothingToPublishError"
+    elsewhere = await env.client.get(f"{THEMES}/database/epic?repo=acme/api")
+    assert elsewhere.status_code == 400
+    outdated = await env.client.post(
+        f"{THEMES}/database/epic", json={"repo": REPO, "digest": "0" * 64}, headers=keyed()
+    )
+    assert outdated.status_code == 409 and outdated.json()["error"] == "ConversionOutdatedError"
+    env.host.themes._tags = lambda: None  # noqa: SLF001 - the kb service stopped
+    away = await env.client.post(f"{THEMES}/sync/issues", json=one, headers=keyed())
+    assert away.status_code == 503 and away.json()["error"] == "ThemesUnavailableError"

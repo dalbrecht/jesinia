@@ -46,6 +46,7 @@ from jesinia.apps.issues.application.ports import (
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.domain.changes import (
     Close,
+    Existing,
     IssueChange,
     PendingChange,
     PendingNotFoundError,
@@ -315,7 +316,7 @@ class QueueService:
         for change in self._pending.pending():
             found = change.change
             if isinstance(found, SetDimension) and found.dimension == "priority":
-                staged[(change.target.repo.casefold(), change.target.n)] = found.value
+                staged[cast(Existing, change.target).key] = found.value  # an issue change
         return staged
 
     def _readiness(self, ref: ItemRef, cached: CachedIssue | None) -> Readiness | None:
@@ -674,7 +675,7 @@ class QueueService:
         key = (ref.repo.casefold(), ref.n)
         for found in self._pending.pending():
             change = found.change
-            if found.target.key != key:
+            if found.key != key:
                 continue
             if then == "close" and isinstance(change, Close):
                 if found.source != "queue":

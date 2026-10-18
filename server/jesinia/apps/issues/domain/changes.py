@@ -3,7 +3,8 @@
 §6.1, §6.2, §8; plan Task 6, rulings IR4, IR13–IR16). Pure: no I/O.
 
 A **change** is what the author approved or staged: a label dimension set, an area added or
-removed, a parent epic linked, a child reordered, an issue closed or commented on. Two
+removed, a free-form label added (a published theme's ``theme:<tag>``), a parent epic linked,
+a child reordered, an issue closed or commented on. Two
 repo-level changes run before them: ``EnsureLabel`` (create a label, recording an approved
 schema entry) and ``CreateIssue`` (open an issue that the same batch's changes may name by its
 ``temp_id``). Queues and themes are local services (Tasks 9 and 10), never changes (IR15).
@@ -83,7 +84,7 @@ UNSURE = (
 UNREPEATABLE: tuple[StepKind, ...] = ("comment", "create_issue")
 ALREADY_CLOSED = "already closed"
 STEP_STATES: tuple[StepState, ...] = get_args(StepState)
-PendingSource = Literal["drag", "picker", "menu", "bulk", "queue"]
+PendingSource = Literal["drag", "picker", "menu", "bulk", "queue", "theme"]
 PENDING_SOURCES: tuple[PendingSource, ...] = get_args(PendingSource)
 _CLOSE_REASONS: tuple[CloseReason, ...] = get_args(CloseReason)
 # The per-issue steps, in the order they run.
@@ -243,6 +244,20 @@ class RemoveArea:
 
 
 @dataclass(frozen=True)
+class AddLabel:
+    """Add a free-form label: one starting with a schema ``free_prefixes`` entry (``theme:``,
+    ``review:``, ``campaign:``), such as a published theme's ``theme:<tag>`` (Task 10). Like
+    every label it must already exist on GitHub when it is added: a staged ``EnsureLabel``
+    creates it, never the add (IR4)."""
+
+    name: str
+
+    def __post_init__(self) -> None:
+        with _checked():
+            validate_label_name(self.name)
+
+
+@dataclass(frozen=True)
 class SetParent:
     """Make ``parent`` the issue's epic (moving it from another), or remove its parent.
 
@@ -349,10 +364,12 @@ class CreateIssue:
                 validate_label_names(self.labels)
 
 
-IssueChange = SetDimension | AddArea | RemoveArea | SetParent | ReorderChild | Close | Comment
+IssueChange = (
+    SetDimension | AddArea | RemoveArea | AddLabel | SetParent | ReorderChild | Close | Comment
+)
 RepoChange = EnsureLabel | CreateIssue
 Change = IssueChange | RepoChange
-LabelChange = SetDimension | AddArea | RemoveArea
+LabelChange = SetDimension | AddArea | RemoveArea | AddLabel
 
 
 def _refs(change: IssueChange) -> list[Target]:
@@ -451,6 +468,8 @@ def _sort(change: IssueChange) -> tuple[object, ...] | None:
         return ("dimension", change.dimension)
     if isinstance(change, AddArea | RemoveArea):
         return ("area", label_key(change.value))
+    if isinstance(change, AddLabel):
+        return ("label", label_key(change.name))
     if isinstance(change, SetParent):
         return ("parent",)
     if isinstance(change, Close):
@@ -470,7 +489,7 @@ def normalized(changes: Sequence[IssueChange]) -> list[IssueChange]:
 
 
 def _step_kind(change: IssueChange) -> StepKind:
-    if isinstance(change, SetDimension | AddArea | RemoveArea):
+    if isinstance(change, SetDimension | AddArea | RemoveArea | AddLabel):
         return "labels"
     if isinstance(change, SetParent):
         return "parent"
@@ -572,16 +591,34 @@ def area_value(schema: LabelSchema, value: str) -> Canonical:
     return Canonical(value.strip())
 
 
+def free_value(schema: LabelSchema, name: str) -> Canonical:
+    """The free-form label ``name`` is: one of ``schema``'s free prefixes followed by a name.
+
+    Raises:
+        InvalidChangeError: it starts with no free-form prefix (or is only the prefix).
+    """
+    key = label_key(name)
+    prefixes = [label_key(prefix) for prefix in schema.free_prefixes]
+    if not any(key.startswith(p) and len(key) > len(p) for p in prefixes):
+        raise InvalidChangeError(
+            f"{name!r} isn't a free-form label of this repo (they start with "
+            f"{', '.join(repr(p) for p in schema.free_prefixes)})"
+        )
+    return Canonical(name.strip())
+
+
 def check_change(change: IssueChange, schema: LabelSchema) -> None:
     """Refuse a label change whose value ``schema`` can't place (when it is staged).
 
     Raises:
-        InvalidChangeError: see ``dimension_value`` and ``area_value``.
+        InvalidChangeError: see ``dimension_value``, ``area_value`` and ``free_value``.
     """
     if isinstance(change, SetDimension):
         dimension_value(schema, change)
     elif isinstance(change, AddArea | RemoveArea):
         area_value(schema, change.value)
+    elif isinstance(change, AddLabel):
+        free_value(schema, change.name)
 
 
 def _expect(
@@ -659,6 +696,8 @@ def label_edit(
             add(canonical)
         elif isinstance(change, AddArea):
             add(area_value(schema, change.value))
+        elif isinstance(change, AddLabel):
+            add(free_value(schema, change.name))
         else:
             area = area_value(schema, change.value)
             drop(lambda label: not _matches(area, label))
@@ -675,7 +714,9 @@ def labels_needed(changes: Sequence[Change], schema: LabelSchema) -> set[str]:
     would leave them without."""
     needed: set[str] = set()
     for change in changes:
-        if isinstance(change, AddArea | SetDimension):
+        if isinstance(change, AddLabel):
+            needed.add(label_key(change.name))
+        elif isinstance(change, AddArea | SetDimension):
             needed.add(label_key(change.value))
             try:
                 if isinstance(change, AddArea):
@@ -760,13 +801,37 @@ class BatchResult:
 
 @dataclass(frozen=True)
 class PendingChange:
-    """A change staged in the tray (by a drag, a picker, a menu, the bulk bar or a queue)."""
+    """A change staged in the tray (by a drag, a picker, a menu, the bulk bar, a queue or a
+    theme): a change to the issue ``target``, or (``target`` ``None``) a repo's label setup step,
+    an ``EnsureLabel`` (a published theme's label, Task 10), which runs before every issue's
+    steps when the tray is applied.
+
+    Raises (on construction):
+        InvalidChangeError: an issue change without its issue, or a label setup step with one.
+    """
 
     id: str
-    target: Existing
-    change: IssueChange
+    target: Existing | None
+    change: IssueChange | EnsureLabel
     created_at: datetime
     source: PendingSource
+
+    def __post_init__(self) -> None:
+        if (self.target is None) != isinstance(self.change, EnsureLabel):
+            raise InvalidChangeError(
+                "a staged change names its issue; a staged label setup step names none"
+            )
+
+    @property
+    def repo(self) -> str:
+        if isinstance(self.change, EnsureLabel):
+            return self.change.repo
+        return cast(Existing, self.target).repo
+
+    @property
+    def key(self) -> tuple[str, int] | None:
+        """The issue's key, or ``None`` for a label setup step."""
+        return None if self.target is None else self.target.key
 
 
 def parse_source(value: str) -> PendingSource:
@@ -777,11 +842,21 @@ def parse_source(value: str) -> PendingSource:
 
 
 def pending_batch(changes: Sequence[PendingChange]) -> ChangeBatch:
-    """The staged changes as one batch: per issue, in the order staged."""
+    """The staged changes as one batch: the label setup steps first (each label once), then per
+    issue, in the order staged."""
     grouped: dict[tuple[str, int], tuple[Existing, list[IssueChange]]] = {}
+    ensured: dict[tuple[str, str], EnsureLabel] = {}
     for staged in changes:
-        grouped.setdefault(staged.target.key, (staged.target, []))[1].append(staged.change)
-    return ChangeBatch(tuple((target, tuple(found)) for target, found in grouped.values()))
+        change = staged.change
+        if isinstance(change, EnsureLabel):
+            ensured.setdefault((change.repo.casefold(), label_key(change.name)), change)
+            continue
+        target = cast(Existing, staged.target)
+        grouped.setdefault(target.key, (target, []))[1].append(change)
+    return ChangeBatch(
+        tuple((target, tuple(found)) for target, found in grouped.values()),
+        tuple(ensured.values()),
+    )
 
 
 # Approvals ----------------------------------------------------------------------------------
@@ -902,6 +977,8 @@ def change_json(change: Change) -> Json:
     if isinstance(change, AddArea | RemoveArea):
         kind = "add_area" if isinstance(change, AddArea) else "remove_area"
         return {"kind": kind, "value": change.value}
+    if isinstance(change, AddLabel):
+        return {"kind": "add_label", "name": change.name}
     if isinstance(change, SetParent):
         parent = None if change.parent is None else target_json(change.parent)
         expected = change.expected_parent
@@ -1012,6 +1089,8 @@ def _parse(data: Mapping[str, object]) -> Change:
         return AddArea(_text(data, "value"))
     if kind == "remove_area":
         return RemoveArea(_text(data, "value"))
+    if kind == "add_label":
+        return AddLabel(_text(data, "name"))
     if kind == "set_parent":
         expected = _optional_target(data.get("expected_parent"))
         if expected is not None and not isinstance(expected, Existing):

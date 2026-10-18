@@ -5,7 +5,7 @@ stores), ``services/github`` (``IssueClient`` satisfies ``IssueReads``) and ``se
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
@@ -42,6 +42,7 @@ from jesinia.services.github.domain.issue import (
     Page,
     TimelineEvent,
 )
+from jesinia.services.kb.application.tags import TagCheck
 
 SchemaSource = Literal["default", "repo", "settings"]
 
@@ -645,3 +646,41 @@ class QueueStore(Protocol):
 
     def set_done(self, queue_id: str, item: QueueItem, done_at: datetime) -> None:
         """Mark one open item done (closed on GitHub: no pending change)."""
+
+
+class ThemeStore(Protocol):
+    """``issue_themes`` and ``theme_epics`` in ``issues.sqlite`` (Task 10): local only."""
+
+    def add(
+        self, refs: Sequence[tuple[str, int]], tag: str, now: datetime
+    ) -> list[tuple[str, int]]:
+        """Give each issue the theme, in one transaction; the refs that didn't have it yet."""
+
+    def remove(self, refs: Sequence[tuple[str, int]], tag: str) -> int:
+        """Take the theme off these issues; how many had it."""
+
+    def themes(self) -> list[tuple[str, int]]:
+        """Every theme with its number of issues, by tag."""
+
+    def issues(self, tag: str) -> list[tuple[str, int]]:
+        """The theme's issues, by repo and number."""
+
+    def of_issue(self, repo: str, n: int) -> list[str]:
+        """The issue's themes, by tag."""
+
+    def record_epic(self, tag: str, batch_id: str, now: datetime) -> None:
+        """Keep a batch that turns the theme into an epic."""
+
+    def epic_batches(self, tag: str) -> list[str]:
+        """The batches that turned the theme into an epic, oldest first."""
+
+
+class ThemeTags(Protocol):
+    """The KB-wide tag catalog themes use (``services.kb``'s ``TagService`` has it)."""
+
+    async def check(self, raw: str, *, advise: bool = True) -> TagCheck:
+        """Normalise ``raw`` and find it, or near matches, in the catalog; ``advise=False``
+        asks no agent."""
+
+    async def ensure(self, tags: Iterable[str]) -> list[str]:
+        """The canonical catalog names for ``tags``, adding new ones all-or-nothing."""

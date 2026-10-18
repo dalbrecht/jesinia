@@ -964,6 +964,6 @@ async def test_queues_never_share_or_unstage_a_close_staged_from_the_tray(env: Q
     assert own.staged is not None and own.staged.source == "queue"
     env.queues.undo_done(q, "issue", REPO, 2)
     env.queues.remove(q, "issue", REPO, 1)
-    sources = sorted((p.target.n, p.source) for p in env.world.pending.pending())
-    assert sources == [(1, "menu"), (2, "picker")]
+    sources = sorted((p.key, p.source) for p in env.world.pending.pending())
+    assert sources == [((REPO, 1), "menu"), ((REPO, 2), "picker")]
     assert mine.id in {p.id for p in env.world.pending.pending()}

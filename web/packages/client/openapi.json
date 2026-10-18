@@ -10204,6 +10204,769 @@
         }
       }
     },
+    "/api/issues/themes": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Themes",
+        "description": "Every theme (a tag from the KB catalog) with its number of issues, by tag: the column\nof drop targets (local; no GitHub).",
+        "operationId": "get_themes_api_issues_themes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThemesOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/themes/{tag}": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Theme",
+        "description": "The theme's issues, by repo and number, from the cache (the theme as a filter). 404\nwhen no issue has it.",
+        "operationId": "get_theme_api_issues_themes__tag__get",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "title": "Tag"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThemeOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/themes/{tag}/issues": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Add Theme",
+        "description": "Give the cached issues the theme, at once and locally (a drop; nothing reaches\nGitHub). A tag new to the KB catalog passes its catalog-only near-duplicate check (no\nagent, so a drop never waits) and is added to it; a near-duplicate is a 409 naming the\ncatalog tags. ``added`` lists the issues that didn't have it yet, for Undo.",
+        "operationId": "add_theme_api_issues_themes__tag__issues_post",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "title": "Tag"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThemeIssuesIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThemeAddOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/themes/{tag}/issues/remove": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Remove Theme",
+        "description": "Take the theme off these issues, locally (also an add's Undo). The tag stays in the KB\ncatalog.",
+        "operationId": "remove_theme_api_issues_themes__tag__issues_remove_post",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "title": "Tag"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThemeIssuesIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThemeRemoveOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/themes/{tag}/publish": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Publish Theme",
+        "description": "Stage the theme's ``theme:<tag>`` label in ``repo`` in the pending tray: the label\nsetup step and the label addition for each of its cached issues there that lacks it\n(steps already staged are reused). Nothing reaches GitHub until the tray is applied,\nand the label is created only by that setup step. 409 when no issue there needs it.",
+        "operationId": "publish_theme_api_issues_themes__tag__publish_post",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "title": "Tag"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThemePublishIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThemePublishOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/themes/{tag}/epic": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Theme Epic",
+        "description": "What turning the theme into an epic created in ``repo`` (one of its issues' repos)\nwould do: its issues become the children (another repo's warned, \"won't fit one PR\";\nanother owner's refused), and what is skipped and why. Writes nothing.",
+        "operationId": "get_theme_epic_api_issues_themes__tag__epic_get",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "title": "Tag"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThemeEpicPlanOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Make Theme Epic",
+        "description": "Approve the epic previewed with ``digest``: one batch (create the epic, then link the\nchildren) applied in the background, a 202 with the batch and ``Location`` to poll. A\n409 when the plan changed since (preview again) or has no children, or while an earlier\nepic for the theme runs or didn't finish (retry that batch).",
+        "operationId": "make_theme_epic_api_issues_themes__tag__epic_post",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "title": "Tag"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThemeEpicIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyBatchOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/{view}": {
       "get": {
         "tags": [
@@ -12437,6 +13200,28 @@
         ],
         "title": "AddAreaBody"
       },
+      "AddLabelBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "add_label",
+            "title": "Kind"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "AddLabelBody",
+        "description": "Add a free-form label (``theme:``, ``review:``, ``campaign:``), as publishing a theme\nstages it. Like every label it must exist on GitHub by then (its setup step creates it)."
+      },
       "ApplyBatchOut": {
         "properties": {
           "id": {
@@ -13373,6 +14158,41 @@
           "runner"
         ],
         "title": "EngageIn"
+      },
+      "EnsureLabelBody": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "ensure_label",
+            "title": "Kind"
+          },
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "color": {
+            "type": "string",
+            "title": "Color"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "repo",
+          "name",
+          "color",
+          "description"
+        ],
+        "title": "EnsureLabelBody",
+        "description": "A repo's label setup step, as publishing a theme stages it: the label is created when the\ntray is applied, before every issue's steps, and only then (IR4)."
       },
       "EpicBriefIn": {
         "properties": {
@@ -16090,7 +16910,8 @@
               "picker",
               "menu",
               "bulk",
-              "queue"
+              "queue",
+              "theme"
             ],
             "title": "Source"
           }
@@ -16133,7 +16954,14 @@
             "title": "Repo"
           },
           "n": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "N"
           },
           "change": {
@@ -16148,6 +16976,9 @@
                 "$ref": "#/components/schemas/RemoveAreaBody"
               },
               {
+                "$ref": "#/components/schemas/AddLabelBody"
+              },
+              {
                 "$ref": "#/components/schemas/SetParentBody"
               },
               {
@@ -16158,6 +16989,9 @@
               },
               {
                 "$ref": "#/components/schemas/CommentBody"
+              },
+              {
+                "$ref": "#/components/schemas/EnsureLabelBody"
               }
             ],
             "title": "Change",
@@ -16165,8 +16999,10 @@
               "propertyName": "kind",
               "mapping": {
                 "add_area": "#/components/schemas/AddAreaBody",
+                "add_label": "#/components/schemas/AddLabelBody",
                 "close": "#/components/schemas/CloseBody",
                 "comment": "#/components/schemas/CommentBody",
+                "ensure_label": "#/components/schemas/EnsureLabelBody",
                 "remove_area": "#/components/schemas/RemoveAreaBody",
                 "reorder_child": "#/components/schemas/ReorderChildBody",
                 "set_dimension": "#/components/schemas/SetDimensionBody",
@@ -16181,7 +17017,8 @@
               "picker",
               "menu",
               "bulk",
-              "queue"
+              "queue",
+              "theme"
             ],
             "title": "Source"
           },
@@ -16200,7 +17037,8 @@
           "source",
           "created_at"
         ],
-        "title": "PendingOut"
+        "title": "PendingOut",
+        "description": "A staged change: to the issue ``repo#n``, or (``n`` is ``null``) the repo's label setup\nstep (``ensure_label``), which runs before every issue's steps."
       },
       "PollSummaryOut": {
         "properties": {
@@ -18227,6 +19065,305 @@
           "session"
         ],
         "title": "TakeawayOut"
+      },
+      "ThemeAddOut": {
+        "properties": {
+          "tag": {
+            "type": "string",
+            "title": "Tag"
+          },
+          "added": {
+            "items": {
+              "$ref": "#/components/schemas/IssueTargetBody"
+            },
+            "type": "array",
+            "title": "Added"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tag",
+          "added"
+        ],
+        "title": "ThemeAddOut",
+        "description": "A theme added: its catalog ``tag`` and the issues that didn't have it yet (an Undo\nremoves those, locally; the catalog entry stays)."
+      },
+      "ThemeEpicIn": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 140,
+            "minLength": 3,
+            "title": "Repo"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Digest"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "digest"
+        ],
+        "title": "ThemeEpicIn",
+        "description": "The approval of a previewed theme epic: its repo and ``digest``."
+      },
+      "ThemeEpicPlanOut": {
+        "properties": {
+          "tag": {
+            "type": "string",
+            "title": "Tag"
+          },
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "digest": {
+            "type": "string",
+            "title": "Digest"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/ConversionChildOut"
+            },
+            "type": "array",
+            "title": "Children"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/SkippedItemOut"
+            },
+            "type": "array",
+            "title": "Skipped"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tag",
+          "repo",
+          "title",
+          "body",
+          "digest",
+          "children",
+          "skipped"
+        ],
+        "title": "ThemeEpicPlanOut",
+        "description": "What turning the theme into an epic would do, from the cache; nothing is written. The\nepic (``title``, ``body``, no labels) is created in ``repo`` and the ``children`` linked\nunder it; ``skipped`` says why others aren't. Approve it with ``digest``."
+      },
+      "ThemeIssuesIn": {
+        "properties": {
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/IssueTargetBody"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Issues"
+          }
+        },
+        "type": "object",
+        "required": [
+          "issues"
+        ],
+        "title": "ThemeIssuesIn",
+        "description": "The cached issues to give the theme, or take it off (a multi-selection drop)."
+      },
+      "ThemeOut": {
+        "properties": {
+          "tag": {
+            "type": "string",
+            "title": "Tag"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ThemedIssueOut"
+            },
+            "type": "array",
+            "title": "Issues"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tag",
+          "issues"
+        ],
+        "title": "ThemeOut",
+        "description": "A theme and its issues (the theme as a filter)."
+      },
+      "ThemePublishIn": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 140,
+            "minLength": 3,
+            "title": "Repo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo"
+        ],
+        "title": "ThemePublishIn",
+        "description": "The repo to publish the theme's ``theme:<tag>`` label in."
+      },
+      "ThemePublishOut": {
+        "properties": {
+          "tag": {
+            "type": "string",
+            "title": "Tag"
+          },
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "ensure": {
+            "$ref": "#/components/schemas/PendingOut"
+          },
+          "added": {
+            "items": {
+              "$ref": "#/components/schemas/PendingOut"
+            },
+            "type": "array",
+            "title": "Added"
+          },
+          "already": {
+            "items": {
+              "$ref": "#/components/schemas/IssueTargetBody"
+            },
+            "type": "array",
+            "title": "Already"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tag",
+          "repo",
+          "label",
+          "ensure",
+          "added",
+          "already"
+        ],
+        "title": "ThemePublishOut",
+        "description": "What publishing staged in the tray (or found staged): the label setup step and the label\nadditions. Nothing reaches GitHub until the tray is applied; Undo each change there."
+      },
+      "ThemeRemoveOut": {
+        "properties": {
+          "removed": {
+            "type": "integer",
+            "title": "Removed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "removed"
+        ],
+        "title": "ThemeRemoveOut",
+        "description": "How many of the issues had the theme (taken off locally; the catalog entry stays)."
+      },
+      "ThemeSummaryOut": {
+        "properties": {
+          "tag": {
+            "type": "string",
+            "title": "Tag"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tag",
+          "count"
+        ],
+        "title": "ThemeSummaryOut"
+      },
+      "ThemedIssueOut": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "n",
+          "title",
+          "state",
+          "url"
+        ],
+        "title": "ThemedIssueOut",
+        "description": "A theme's issue; ``title``, ``state`` and ``url`` are ``null`` while it isn't cached.\n``title`` is the issue author's text, shown as data."
+      },
+      "ThemesOut": {
+        "properties": {
+          "themes": {
+            "items": {
+              "$ref": "#/components/schemas/ThemeSummaryOut"
+            },
+            "type": "array",
+            "title": "Themes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "themes"
+        ],
+        "title": "ThemesOut",
+        "description": "Every theme with its number of issues, by tag (the column of drop targets)."
       },
       "TreeOut": {
         "properties": {

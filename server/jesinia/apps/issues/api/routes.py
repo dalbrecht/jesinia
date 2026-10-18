@@ -3,7 +3,8 @@
 Backlog, one issue, the label setup and migration batches, suggestion drafts (list, edit,
 dismiss, approve, and runs on demand), the pending-changes tray with its applied batches, and
 epics (their list and page, drop checks, checklist conversion, group, split and brief asks, the
-approved brief), milestones, and work queues (local; Done and band moves stage in the tray).
+approved brief), milestones, work queues (local; Done and band moves stage in the tray), and
+themes (local; publishing stages its label in the tray, and an epic is one approved batch).
 
 Every route needs the owner: the app mounts module routers behind ``require_owner``, so agent
 session tokens are refused (IR2); the routes that change GitHub (applying a label batch,
@@ -65,6 +66,17 @@ from jesinia.apps.issues.api.schemas import (
     PendingListOut,
     PendingOut,
     SuggestionApproveOut,
+    ThemeAddOut,
+    ThemedIssueOut,
+    ThemeEpicIn,
+    ThemeEpicPlanOut,
+    ThemeIssuesIn,
+    ThemeOut,
+    ThemePublishIn,
+    ThemePublishOut,
+    ThemeRemoveOut,
+    ThemesOut,
+    ThemeSummaryOut,
     WorkQueueActionOut,
     WorkQueueApprovalOut,
     WorkQueueBandIn,
@@ -90,6 +102,7 @@ from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.changes import (
     BatchNotFoundError,
     BatchRunningError,
@@ -136,6 +149,16 @@ from jesinia.apps.issues.domain.suggestions import (
     SuggestionStateError,
     parse_kind,
     parse_state,
+)
+from jesinia.apps.issues.domain.themes import (
+    NothingToPublishError,
+    ThemeCatalogError,
+    ThemeDomainError,
+    ThemeEpicRunningError,
+    ThemeNearDuplicateError,
+    ThemeNotFoundError,
+    ThemesUnavailableError,
+    theme_tag,
 )
 from jesinia.apps.issues.domain.triage import (
     IssueFilters,
@@ -187,6 +210,9 @@ class IssuesHost(Protocol):
     def queues(self) -> QueueService: ...
 
     @property
+    def themes(self) -> ThemeService: ...
+
+    @property
     def idempotency(self) -> IdempotencyStore: ...
 
     def clock(self) -> datetime:
@@ -222,6 +248,13 @@ _STATUS: dict[type[Exception], int] = {
     QueueNameTakenError: status.HTTP_409_CONFLICT,
     QueueItemExistsError: status.HTTP_409_CONFLICT,
     QueueItemStateError: status.HTTP_409_CONFLICT,
+    ThemeNotFoundError: status.HTTP_404_NOT_FOUND,
+    ThemeNearDuplicateError: status.HTTP_409_CONFLICT,
+    NothingToPublishError: status.HTTP_409_CONFLICT,
+    ThemeEpicRunningError: status.HTTP_409_CONFLICT,
+    # The KB tag catalog, not the request, is away or failed: the cause is in ``detail``.
+    ThemesUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+    ThemeCatalogError: status.HTTP_503_SERVICE_UNAVAILABLE,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     GitHubRateLimitedError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -233,6 +266,7 @@ _STATUS: dict[type[Exception], int] = {
     ChangeDomainError: status.HTTP_400_BAD_REQUEST,
     EpicDomainError: status.HTTP_400_BAD_REQUEST,
     QueueDomainError: status.HTTP_400_BAD_REQUEST,
+    ThemeDomainError: status.HTTP_400_BAD_REQUEST,
     InvalidSettingsSchemaError: status.HTTP_400_BAD_REQUEST,
     GitHubReferenceError: status.HTTP_400_BAD_REQUEST,
     IssueDomainError: status.HTTP_400_BAD_REQUEST,
@@ -242,6 +276,7 @@ _TYPED = (
     ChangeDomainError,
     EpicDomainError,
     QueueDomainError,
+    ThemeDomainError,
     LabelPlanError,
     SuggestionDomainError,
     SuggestionRunError,
@@ -262,6 +297,7 @@ SuggestionId = Annotated[str, Path(min_length=1, max_length=64)]
 ItemId = Annotated[str, Path(min_length=1, max_length=64)]
 QueueId = Annotated[str, Path(min_length=1, max_length=64)]
 Kind = Annotated[ItemKind, Path()]
+Tag = Annotated[str, Path(min_length=1, max_length=100)]
 
 
 def retry_after(reset_at: datetime | None, now: datetime) -> int:
@@ -1086,6 +1122,113 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         async def run() -> Response:
             return _ask_started(host.queues.start_order(queue_id))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    theme_path = "/themes/{tag}"
+
+    @r.get("/themes", response_model=ThemesOut)
+    async def get_themes() -> Response:
+        """Every theme (a tag from the KB catalog) with its number of issues, by tag: the column
+        of drop targets (local; no GitHub)."""
+
+        async def run() -> ThemesOut:
+            return ThemesOut(themes=[ThemeSummaryOut.of(t) for t in host.themes.themes()])
+
+        return await _respond(run, host.clock)
+
+    @r.get(theme_path, response_model=ThemeOut)
+    async def get_theme(tag: Tag) -> Response:
+        """The theme's issues, by repo and number, from the cache (the theme as a filter). 404
+        when no issue has it."""
+
+        async def run() -> ThemeOut:
+            found = [ThemedIssueOut.of(i) for i in host.themes.issues(tag)]
+            return ThemeOut(tag=theme_tag(tag), issues=found)
+
+        return await _respond(run, host.clock)
+
+    @r.post(f"{theme_path}/issues", response_model=ThemeAddOut, status_code=status.HTTP_201_CREATED)
+    async def add_theme(tag: Tag, body: ThemeIssuesIn, idem: IdempotentCall = keyed) -> Response:
+        """Give the cached issues the theme, at once and locally (a drop; nothing reaches
+        GitHub). A tag new to the KB catalog passes its catalog-only near-duplicate check (no
+        agent, so a drop never waits) and is added to it; a near-duplicate is a 409 naming the
+        catalog tags. ``added`` lists the issues that didn't have it yet, for Undo."""
+
+        async def run() -> Response:
+            added = await host.themes.add(body.refs(), tag)
+            return JSONResponse(
+                jsonable_encoder(ThemeAddOut.of(added)), status_code=status.HTTP_201_CREATED
+            )
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(f"{theme_path}/issues/remove", response_model=ThemeRemoveOut)
+    async def remove_theme(tag: Tag, body: ThemeIssuesIn, idem: IdempotentCall = keyed) -> Response:
+        """Take the theme off these issues, locally (also an add's Undo). The tag stays in the KB
+        catalog."""
+
+        async def run() -> ThemeRemoveOut:
+            return ThemeRemoveOut(removed=host.themes.remove(body.refs(), tag))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post(
+        f"{theme_path}/publish",
+        response_model=ThemePublishOut,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def publish_theme(
+        tag: Tag, body: ThemePublishIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Stage the theme's ``theme:<tag>`` label in ``repo`` in the pending tray: the label
+        setup step and the label addition for each of its cached issues there that lacks it
+        (steps already staged are reused). Nothing reaches GitHub until the tray is applied,
+        and the label is created only by that setup step. 409 when no issue there needs it."""
+
+        async def run() -> Response:
+            published = host.themes.publish(tag, body.repo)
+            return JSONResponse(
+                jsonable_encoder(ThemePublishOut.of(published)),
+                status_code=status.HTTP_201_CREATED,
+            )
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get(f"{theme_path}/epic", response_model=ThemeEpicPlanOut)
+    async def get_theme_epic(
+        tag: Tag, repo: Annotated[str, Query(min_length=3, max_length=REPO_MAX)]
+    ) -> Response:
+        """What turning the theme into an epic created in ``repo`` (one of its issues' repos)
+        would do: its issues become the children (another repo's warned, "won't fit one PR";
+        another owner's refused), and what is skipped and why. Writes nothing."""
+
+        async def run() -> ThemeEpicPlanOut:
+            return ThemeEpicPlanOut.of(theme_tag(tag), host.themes.to_epic(tag, repo))
+
+        return await _respond(run, host.clock)
+
+    @r.post(
+        f"{theme_path}/epic",
+        response_model=ApplyBatchOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def make_theme_epic(
+        tag: Tag,
+        body: ThemeEpicIn,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Approve the epic previewed with ``digest``: one batch (create the epic, then link the
+        children) applied in the background, a 202 with the batch and ``Location`` to poll. A
+        409 when the plan changed since (preview again) or has no children, or while an earlier
+        epic for the theme runs or didn't finish (retry that batch)."""
+
+        async def run() -> Response:
+            started = host.themes.start_epic(
+                tag, body.repo, body.digest, _request_key("theme-epic", idem), host.apply
+            )
+            return _started(started.id, ApplyBatchOut.of(started))
 
         return await idem.run(lambda: _respond(run, host.clock))
 

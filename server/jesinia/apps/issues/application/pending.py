@@ -12,8 +12,9 @@ Two ways reach GitHub, through one engine:
   otherwise). A complete apply marks the suggestion ``approved``; a failed one leaves it
   approvable, with the cause in ``apply_error``.
 - **Every other GitHub-changing action stages** in the tray (``PendingService.stage``: drags,
-  pickers, menus, the bulk bar, queue moves) until ``ApplyService.start_pending`` sends them as
-  one batch.
+  pickers, menus, the bulk bar, queue moves, a published theme's labels) until
+  ``ApplyService.start_pending`` sends them as one batch. A published theme also stages its
+  label setup step (``stage_label``), which runs before the issues' steps.
 
 Every batch is written ahead and kept with its result, step by step, so ``retry`` re-runs only
 the steps that didn't apply (and an approval's suggestion is marked approved once its batch
@@ -47,6 +48,7 @@ from jesinia.apps.issues.domain.changes import (
     BatchRunningError,
     BatchStatus,
     ChangeBatch,
+    EnsureLabel,
     Existing,
     InvalidChangeError,
     IssueChange,
@@ -74,7 +76,7 @@ from jesinia.apps.issues.domain.suggestions import (
     premise_holds,
     priority_settled,
 )
-from jesinia.apps.issues.domain.triage import IssueNotCachedError
+from jesinia.apps.issues.domain.triage import IssueNotCachedError, RepoNotWatchedError
 from jesinia.services.github.domain.repo import validate_repo
 
 log = logging.getLogger(__name__)
@@ -199,6 +201,22 @@ class PendingService:
             change = replace(change, expects_parent=True, expected_parent=expected)
         ChangeBatch.of({target: [change]})  # the batch rules (no self-parent, same owner)
         staged = PendingChange(self._new_id(), target, change, self._clock(), where)
+        self._store.add_pending(staged)
+        return staged
+
+    def stage_label(self, change: EnsureLabel, source: str) -> PendingChange:
+        """Stage a repo's label setup step (a published theme's ``theme:<tag>``, Task 10): when
+        the tray is applied it runs before every issue's steps, through the label executor, and
+        is the only way the label is created (IR4). Nothing reaches GitHub until then.
+
+        Raises:
+            InvalidChangeError: an unknown source.
+            RepoNotWatchedError: the repo isn't watched.
+        """
+        where = parse_source(source)
+        if self._cache.repo(change.repo) is None:
+            raise RepoNotWatchedError(f"{change.repo} is not a watched repo; add it first")
+        staged = PendingChange(self._new_id(), None, change, self._clock(), where)
         self._store.add_pending(staged)
         return staged
 

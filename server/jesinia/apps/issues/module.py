@@ -9,9 +9,11 @@ through the ``agents`` service (looked up per run). Approvals and the pending-ch
 apply through one engine (``ApplyEngine``), and so do checklist conversions and approved
 epic proposals; approved delivery briefs are posted as the epic's brief comment. Work queues
 are local: their Done and band moves stage in the tray, and sync's closed-issue hook marks their
-items done. It serves ``/api/issues`` and the read-only ``issues_search``, ``issues_get``,
-``queues_list`` and ``queue_get`` MCP tools; the cache reads, suggestion drafts, epic views,
-queues and the tray work without GitHub."""
+items done. Themes are tags from the KB catalog (the ``tags`` service, looked up per add),
+kept locally per issue; publishing one stages its label in the tray, and turning one into an
+epic is one approved batch. It serves ``/api/issues`` and the read-only ``issues_search``,
+``issues_get``, ``queues_list`` and ``queue_get`` MCP tools; the cache reads, suggestion
+drafts, epic views, queues, themes and the tray work without GitHub."""
 
 from __future__ import annotations
 
@@ -29,11 +31,12 @@ from jesinia.apps.issues.application.apply import ApplyEngine
 from jesinia.apps.issues.application.epics import BriefService, EpicService
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
-from jesinia.apps.issues.application.ports import AgentAsker
+from jesinia.apps.issues.application.ports import AgentAsker, ThemeTags
 from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import RUN_INTERVAL, SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.triage import Triage
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
@@ -41,6 +44,7 @@ from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversion
 from jesinia.apps.issues.infrastructure.queue_store import SqliteQueueStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
+from jesinia.apps.issues.infrastructure.theme_store import SqliteThemeStore
 from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.idempotency import RETENTION, IdempotencyStore, SqliteIdempotencyStore
 from jesinia.core.module import AppContext, ModuleHealth, ToolDef
@@ -48,6 +52,7 @@ from jesinia.services.github.application.issues import IssueClient
 from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
 from jesinia.services.github.domain.issue import Issue
+from jesinia.services.kb.application.tags import TagService
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +90,7 @@ class IssuesModule:
         self._epics: EpicService | None = None
         self._briefs: BriefService | None = None
         self._queues: QueueService | None = None
+        self._themes: ThemeService | None = None
 
     @property
     def idempotency(self) -> IdempotencyStore:
@@ -165,6 +171,13 @@ class IssuesModule:
         if self._queues is None:
             raise _not_started()
         return self._queues
+
+    @property
+    def themes(self) -> ThemeService:
+        """Themes (local; publishing stages in the tray; new tags need the kb tag catalog)."""
+        if self._themes is None:
+            raise _not_started()
+        return self._themes
 
     def on_triaged(self, repo: str, triaged: Sequence[tuple[Issue, Triage]]) -> None:
         """Sync's and the engine's hook for each stored page of triaged issues: queue items whose
@@ -262,6 +275,14 @@ class IssuesModule:
             SqliteSuggestionStore(self._conn),
             _utc_now,
         )
+
+        def tags() -> ThemeTags | None:
+            found = ctx.services.get("tags")
+            return found if isinstance(found, TagService) else None
+
+        self._themes = ThemeService(
+            SqliteThemeStore(self._conn), store, self._pending, tags, _utc_now, batches=applied
+        )
         ctx.scheduler.every(SUGGEST_JOB, RUN_INTERVAL, self.run_suggestions, at_start=True)
         github = ctx.services.get("github")
         if isinstance(github, GitHubService):
@@ -318,6 +339,7 @@ class IssuesModule:
         self._epics = None
         self._briefs = None
         self._queues = None
+        self._themes = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None

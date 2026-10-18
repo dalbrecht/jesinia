@@ -1951,6 +1951,144 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/issues/themes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Themes
+         * @description Every theme (a tag from the KB catalog) with its number of issues, by tag: the column
+         *     of drop targets (local; no GitHub).
+         */
+        get: operations["get_themes_api_issues_themes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/themes/{tag}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Theme
+         * @description The theme's issues, by repo and number, from the cache (the theme as a filter). 404
+         *     when no issue has it.
+         */
+        get: operations["get_theme_api_issues_themes__tag__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/themes/{tag}/issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Theme
+         * @description Give the cached issues the theme, at once and locally (a drop; nothing reaches
+         *     GitHub). A tag new to the KB catalog passes its catalog-only near-duplicate check (no
+         *     agent, so a drop never waits) and is added to it; a near-duplicate is a 409 naming the
+         *     catalog tags. ``added`` lists the issues that didn't have it yet, for Undo.
+         */
+        post: operations["add_theme_api_issues_themes__tag__issues_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/themes/{tag}/issues/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove Theme
+         * @description Take the theme off these issues, locally (also an add's Undo). The tag stays in the KB
+         *     catalog.
+         */
+        post: operations["remove_theme_api_issues_themes__tag__issues_remove_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/themes/{tag}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish Theme
+         * @description Stage the theme's ``theme:<tag>`` label in ``repo`` in the pending tray: the label
+         *     setup step and the label addition for each of its cached issues there that lacks it
+         *     (steps already staged are reused). Nothing reaches GitHub until the tray is applied,
+         *     and the label is created only by that setup step. 409 when no issue there needs it.
+         */
+        post: operations["publish_theme_api_issues_themes__tag__publish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/themes/{tag}/epic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Theme Epic
+         * @description What turning the theme into an epic created in ``repo`` (one of its issues' repos)
+         *     would do: its issues become the children (another repo's warned, "won't fit one PR";
+         *     another owner's refused), and what is skipped and why. Writes nothing.
+         */
+        get: operations["get_theme_epic_api_issues_themes__tag__epic_get"];
+        put?: never;
+        /**
+         * Make Theme Epic
+         * @description Approve the epic previewed with ``digest``: one batch (create the epic, then link the
+         *     children) applied in the background, a 202 with the batch and ``Location`` to poll. A
+         *     409 when the plan changed since (preview again) or has no children, or while an earlier
+         *     epic for the theme runs or didn't finish (retry that batch).
+         */
+        post: operations["make_theme_epic_api_issues_themes__tag__epic_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/issues/{view}": {
         parameters: {
             query?: never;
@@ -2269,6 +2407,20 @@ export interface components {
             kind: "add_area";
             /** Value */
             value: string;
+        };
+        /**
+         * AddLabelBody
+         * @description Add a free-form label (``theme:``, ``review:``, ``campaign:``), as publishing a theme
+         *     stages it. Like every label it must exist on GitHub by then (its setup step creates it).
+         */
+        AddLabelBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "add_label";
+            /** Name */
+            name: string;
         };
         /**
          * ApplyBatchOut
@@ -2626,6 +2778,26 @@ export interface components {
         EngageIn: {
             /** Runner */
             runner: string;
+        };
+        /**
+         * EnsureLabelBody
+         * @description A repo's label setup step, as publishing a theme stages it: the label is created when the
+         *     tray is applied, before every issue's steps, and only then (IR4).
+         */
+        EnsureLabelBody: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "ensure_label";
+            /** Repo */
+            repo: string;
+            /** Name */
+            name: string;
+            /** Color */
+            color: string;
+            /** Description */
+            description: string;
         };
         /**
          * EpicBriefIn
@@ -3637,7 +3809,7 @@ export interface components {
              * Source
              * @enum {string}
              */
-            source: "drag" | "picker" | "menu" | "bulk" | "queue";
+            source: "drag" | "picker" | "menu" | "bulk" | "queue" | "theme";
         };
         /**
          * PendingListOut
@@ -3647,21 +3819,25 @@ export interface components {
             /** Changes */
             changes: components["schemas"]["PendingOut"][];
         };
-        /** PendingOut */
+        /**
+         * PendingOut
+         * @description A staged change: to the issue ``repo#n``, or (``n`` is ``null``) the repo's label setup
+         *     step (``ensure_label``), which runs before every issue's steps.
+         */
         PendingOut: {
             /** Id */
             id: string;
             /** Repo */
             repo: string;
             /** N */
-            n: number;
+            n: number | null;
             /** Change */
-            change: components["schemas"]["SetDimensionBody"] | components["schemas"]["AddAreaBody"] | components["schemas"]["RemoveAreaBody"] | components["schemas"]["SetParentBody"] | components["schemas"]["ReorderChildBody"] | components["schemas"]["CloseBody"] | components["schemas"]["CommentBody"];
+            change: components["schemas"]["SetDimensionBody"] | components["schemas"]["AddAreaBody"] | components["schemas"]["RemoveAreaBody"] | components["schemas"]["AddLabelBody"] | components["schemas"]["SetParentBody"] | components["schemas"]["ReorderChildBody"] | components["schemas"]["CloseBody"] | components["schemas"]["CommentBody"] | components["schemas"]["EnsureLabelBody"];
             /**
              * Source
              * @enum {string}
              */
-            source: "drag" | "picker" | "menu" | "bulk" | "queue";
+            source: "drag" | "picker" | "menu" | "bulk" | "queue" | "theme";
             /**
              * Created At
              * Format: date-time
@@ -4436,6 +4612,133 @@ export interface components {
             model: string;
             /** Session */
             session: string;
+        };
+        /**
+         * ThemeAddOut
+         * @description A theme added: its catalog ``tag`` and the issues that didn't have it yet (an Undo
+         *     removes those, locally; the catalog entry stays).
+         */
+        ThemeAddOut: {
+            /** Tag */
+            tag: string;
+            /** Added */
+            added: components["schemas"]["IssueTargetBody"][];
+        };
+        /**
+         * ThemeEpicIn
+         * @description The approval of a previewed theme epic: its repo and ``digest``.
+         */
+        ThemeEpicIn: {
+            /** Repo */
+            repo: string;
+            /** Digest */
+            digest: string;
+        };
+        /**
+         * ThemeEpicPlanOut
+         * @description What turning the theme into an epic would do, from the cache; nothing is written. The
+         *     epic (``title``, ``body``, no labels) is created in ``repo`` and the ``children`` linked
+         *     under it; ``skipped`` says why others aren't. Approve it with ``digest``.
+         */
+        ThemeEpicPlanOut: {
+            /** Tag */
+            tag: string;
+            /** Repo */
+            repo: string;
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Digest */
+            digest: string;
+            /** Children */
+            children: components["schemas"]["ConversionChildOut"][];
+            /** Skipped */
+            skipped: components["schemas"]["SkippedItemOut"][];
+        };
+        /**
+         * ThemeIssuesIn
+         * @description The cached issues to give the theme, or take it off (a multi-selection drop).
+         */
+        ThemeIssuesIn: {
+            /** Issues */
+            issues: components["schemas"]["IssueTargetBody"][];
+        };
+        /**
+         * ThemeOut
+         * @description A theme and its issues (the theme as a filter).
+         */
+        ThemeOut: {
+            /** Tag */
+            tag: string;
+            /** Issues */
+            issues: components["schemas"]["ThemedIssueOut"][];
+        };
+        /**
+         * ThemePublishIn
+         * @description The repo to publish the theme's ``theme:<tag>`` label in.
+         */
+        ThemePublishIn: {
+            /** Repo */
+            repo: string;
+        };
+        /**
+         * ThemePublishOut
+         * @description What publishing staged in the tray (or found staged): the label setup step and the label
+         *     additions. Nothing reaches GitHub until the tray is applied; Undo each change there.
+         */
+        ThemePublishOut: {
+            /** Tag */
+            tag: string;
+            /** Repo */
+            repo: string;
+            /** Label */
+            label: string;
+            ensure: components["schemas"]["PendingOut"];
+            /** Added */
+            added: components["schemas"]["PendingOut"][];
+            /** Already */
+            already: components["schemas"]["IssueTargetBody"][];
+        };
+        /**
+         * ThemeRemoveOut
+         * @description How many of the issues had the theme (taken off locally; the catalog entry stays).
+         */
+        ThemeRemoveOut: {
+            /** Removed */
+            removed: number;
+        };
+        /** ThemeSummaryOut */
+        ThemeSummaryOut: {
+            /** Tag */
+            tag: string;
+            /** Count */
+            count: number;
+        };
+        /**
+         * ThemedIssueOut
+         * @description A theme's issue; ``title``, ``state`` and ``url`` are ``null`` while it isn't cached.
+         *     ``title`` is the issue author's text, shown as data.
+         */
+        ThemedIssueOut: {
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
+            /** Title */
+            title: string | null;
+            /** State */
+            state: string | null;
+            /** Url */
+            url: string | null;
+        };
+        /**
+         * ThemesOut
+         * @description Every theme with its number of issues, by tag (the column of drop targets).
+         */
+        ThemesOut: {
+            /** Themes */
+            themes: components["schemas"]["ThemeSummaryOut"][];
         };
         /** TreeOut */
         TreeOut: {
@@ -11836,6 +12139,557 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IssueAskRunOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_themes_api_issues_themes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemesOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_theme_api_issues_themes__tag__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tag: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemeOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    add_theme_api_issues_themes__tag__issues_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                tag: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ThemeIssuesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemeAddOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    remove_theme_api_issues_themes__tag__issues_remove_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                tag: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ThemeIssuesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemeRemoveOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    publish_theme_api_issues_themes__tag__publish_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                tag: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ThemePublishIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemePublishOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_theme_epic_api_issues_themes__tag__epic_get: {
+        parameters: {
+            query: {
+                repo: string;
+            };
+            header?: never;
+            path: {
+                tag: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemeEpicPlanOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    make_theme_epic_api_issues_themes__tag__epic_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                tag: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ThemeEpicIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchOut"];
                 };
             };
             /** @description Bad Request */

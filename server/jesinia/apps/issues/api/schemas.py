@@ -41,8 +41,16 @@ from jesinia.apps.issues.application.queues import (
 )
 from jesinia.apps.issues.application.reads import IssueDetail
 from jesinia.apps.issues.application.suggest import MAX_BACKLOG_REFS
+from jesinia.apps.issues.application.themes import (
+    THEME_ISSUES_MAX,
+    ThemeAdded,
+    ThemedIssue,
+    ThemePublish,
+    ThemeSummary,
+)
 from jesinia.apps.issues.domain.changes import (
     AddArea,
+    AddLabel,
     BatchStatus,
     Close,
     Comment,
@@ -688,6 +696,39 @@ IssueChangeBody = Annotated[
 ]
 
 
+class AddLabelBody(BaseModel):
+    """Add a free-form label (``theme:``, ``review:``, ``campaign:``), as publishing a theme
+    stages it. Like every label it must exist on GitHub by then (its setup step creates it)."""
+
+    kind: Literal["add_label"]
+    name: LabelText
+
+
+class EnsureLabelBody(BaseModel):
+    """A repo's label setup step, as publishing a theme stages it: the label is created when the
+    tray is applied, before every issue's steps, and only then (IR4)."""
+
+    kind: Literal["ensure_label"]
+    repo: str
+    name: str
+    color: str
+    description: str
+
+
+PendingChangeBody = Annotated[
+    SetDimensionBody
+    | AddAreaBody
+    | RemoveAreaBody
+    | AddLabelBody
+    | SetParentBody
+    | ReorderChildBody
+    | CloseBody
+    | CommentBody
+    | EnsureLabelBody,
+    Field(discriminator="kind"),
+]
+
+
 def _target_body(target: Target | None) -> IssueTargetBody | None:
     """A staged change's issue: always an existing one (the tray holds no ``CreateIssue``, so
     staging refuses a new issue's temp id)."""
@@ -697,8 +738,18 @@ def _target_body(target: Target | None) -> IssueTargetBody | None:
     return IssueTargetBody(repo=existing.repo, n=existing.n)
 
 
-def change_body(change: IssueChange) -> IssueChangeBody:
+def change_body(change: IssueChange | EnsureLabel) -> PendingChangeBody:
     """A staged change as the API shows it."""
+    if isinstance(change, EnsureLabel):
+        return EnsureLabelBody(
+            kind="ensure_label",
+            repo=change.repo,
+            name=change.name,
+            color=change.color,
+            description=change.description,
+        )
+    if isinstance(change, AddLabel):
+        return AddLabelBody(kind="add_label", name=change.name)
     if isinstance(change, SetDimension):
         return SetDimensionBody(
             kind="set_dimension", dimension=change.dimension, value=change.value
@@ -765,10 +816,13 @@ class PendingIn(BaseModel):
 
 
 class PendingOut(BaseModel):
+    """A staged change: to the issue ``repo#n``, or (``n`` is ``null``) the repo's label setup
+    step (``ensure_label``), which runs before every issue's steps."""
+
     id: str
     repo: str
-    n: int
-    change: IssueChangeBody
+    n: int | None
+    change: PendingChangeBody
     source: PendingSource
     created_at: datetime
 
@@ -776,8 +830,8 @@ class PendingOut(BaseModel):
     def of(cls, pending: PendingChange) -> PendingOut:
         return cls(
             id=pending.id,
-            repo=pending.target.repo,
-            n=pending.target.n,
+            repo=pending.repo,
+            n=None if pending.target is None else pending.target.n,
             change=change_body(pending.change),
             source=pending.source,
             created_at=pending.created_at,
@@ -1487,3 +1541,133 @@ class WorkQueueFillOut(BaseModel):
     @classmethod
     def of(cls, fill: QueueFill) -> WorkQueueFillOut:
         return cls(queue=WorkQueueOut.of(fill.view), skipped=list(fill.skipped))
+
+
+# Themes (Task 10) ----------------------------------------------------------------------------
+
+
+class ThemeIssuesIn(BaseModel):
+    """The cached issues to give the theme, or take it off (a multi-selection drop)."""
+
+    issues: list[IssueTargetBody] = Field(min_length=1, max_length=THEME_ISSUES_MAX)
+
+    def refs(self) -> list[tuple[str, int]]:
+        return [(found.repo, found.n) for found in self.issues]
+
+
+class ThemeAddOut(BaseModel):
+    """A theme added: its catalog ``tag`` and the issues that didn't have it yet (an Undo
+    removes those, locally; the catalog entry stays)."""
+
+    tag: str
+    added: list[IssueTargetBody]
+
+    @classmethod
+    def of(cls, added: ThemeAdded) -> ThemeAddOut:
+        return cls(tag=added.tag, added=[IssueTargetBody(repo=r, n=n) for r, n in added.added])
+
+
+class ThemeRemoveOut(BaseModel):
+    """How many of the issues had the theme (taken off locally; the catalog entry stays)."""
+
+    removed: int
+
+
+class ThemeSummaryOut(BaseModel):
+    tag: str
+    count: int
+
+    @classmethod
+    def of(cls, theme: ThemeSummary) -> ThemeSummaryOut:
+        return cls(tag=theme.tag, count=theme.count)
+
+
+class ThemesOut(BaseModel):
+    """Every theme with its number of issues, by tag (the column of drop targets)."""
+
+    themes: list[ThemeSummaryOut]
+
+
+class ThemedIssueOut(BaseModel):
+    """A theme's issue; ``title``, ``state`` and ``url`` are ``null`` while it isn't cached.
+    ``title`` is the issue author's text, shown as data."""
+
+    repo: str
+    n: int
+    title: str | None
+    state: str | None
+    url: str | None
+
+    @classmethod
+    def of(cls, found: ThemedIssue) -> ThemedIssueOut:
+        return cls(repo=found.repo, n=found.n, title=found.title, state=found.state, url=found.url)
+
+
+class ThemeOut(BaseModel):
+    """A theme and its issues (the theme as a filter)."""
+
+    tag: str
+    issues: list[ThemedIssueOut]
+
+
+class ThemePublishIn(BaseModel):
+    """The repo to publish the theme's ``theme:<tag>`` label in."""
+
+    repo: str = Field(min_length=3, max_length=REPO_MAX)
+
+
+class ThemePublishOut(BaseModel):
+    """What publishing staged in the tray (or found staged): the label setup step and the label
+    additions. Nothing reaches GitHub until the tray is applied; Undo each change there."""
+
+    tag: str
+    repo: str
+    label: str
+    ensure: PendingOut
+    added: list[PendingOut]
+    already: list[IssueTargetBody]
+
+    @classmethod
+    def of(cls, published: ThemePublish) -> ThemePublishOut:
+        return cls(
+            tag=published.tag,
+            repo=published.repo,
+            label=published.label,
+            ensure=PendingOut.of(published.ensure),
+            added=[PendingOut.of(c) for c in published.added],
+            already=[IssueTargetBody(repo=r, n=n) for r, n in published.already],
+        )
+
+
+class ThemeEpicPlanOut(BaseModel):
+    """What turning the theme into an epic would do, from the cache; nothing is written. The
+    epic (``title``, ``body``, no labels) is created in ``repo`` and the ``children`` linked
+    under it; ``skipped`` says why others aren't. Approve it with ``digest``."""
+
+    tag: str
+    repo: str
+    title: str
+    body: str
+    digest: str
+    children: list[ConversionChildOut]
+    skipped: list[SkippedItemOut]
+
+    @classmethod
+    def of(cls, tag: str, plan: ConversionPlan) -> ThemeEpicPlanOut:
+        epic = cast(CreateIssue, plan.epic)  # a theme's epic is always one the batch creates
+        return cls(
+            tag=tag,
+            repo=epic.repo,
+            title=epic.title,
+            body=epic.body,
+            digest=plan.digest,
+            children=[ConversionChildOut.of(c) for c in plan.children],
+            skipped=[SkippedItemOut(item=s.item, reason=s.reason) for s in plan.skipped],
+        )
+
+
+class ThemeEpicIn(BaseModel):
+    """The approval of a previewed theme epic: its repo and ``digest``."""
+
+    repo: str = Field(min_length=3, max_length=REPO_MAX)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
