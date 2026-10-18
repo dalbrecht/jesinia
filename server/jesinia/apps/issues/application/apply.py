@@ -147,6 +147,9 @@ class _Run:
     ensured: dict[str, str]
     closed_before: set[tuple[str, int]] = field(default_factory=set)
     has_written: bool = False
+    # Records the step at hand ``in flight``; a comment or create calls it right before its
+    # write, so a cut-off during its preliminary reads is still "not run yet".
+    attempt: Callable[[], None] = lambda: None
 
 
 class ApplyEngine:
@@ -261,13 +264,16 @@ class ApplyEngine:
                 ):
                     results.append(self._failed(run, step, UNSURE))
                 else:
-                    if step.kind in UNREPEATABLE:
-                        self._progress(on_step, steps, kept, results, run, attempting=step)
+                    run.attempt = partial(
+                        self._progress, on_step, steps, kept, results, run, attempting=step
+                    )
                     try:
                         results.append(await self._step(run, step))
                     except _BatchStoppedError as exc:
                         stopped = exc
                         results.append(StepResult(step, "failed", str(exc)))
+                    finally:
+                        run.attempt = lambda: None
                     self._progress(on_step, steps, kept, results, run)
             result = BatchResult(
                 tuple(results),
@@ -501,6 +507,7 @@ class ApplyEngine:
             raise MissingLabelError(missing)
         names = [known[label_key(name)] for name in change.labels]
         await self._confirm_live(run, change.repo, names)
+        run.attempt()  # the irreversible write is next
         created = await self._write(
             run, lambda: self._github.create_issue(change.repo, change.title, change.body, names)
         )
@@ -546,6 +553,7 @@ class ApplyEngine:
                 lambda: self._github.remove_sub_issue(_repo_of(current), current.number, issue.id),
             )
             run.fresh[target.key] = replace(issue, parent=None)
+            self._lost_child(run, current)
             return None
         wanted = await self._id(run, change.parent)
         if current is not None and current.id == wanted:
@@ -561,7 +569,19 @@ class ApplyEngine:
         if isinstance(change.parent, Existing) and change.parent.key in run.fresh:
             epic = run.fresh[change.parent.key]  # linking may make it an epic
             run.fresh[change.parent.key] = replace(epic, sub_issue_count=epic.sub_issue_count + 1)
+        if current is not None:
+            self._lost_child(run, current)
         return None
+
+    @staticmethod
+    def _lost_child(run: _Run, former: Issue) -> None:
+        """The former parent (as just read live) has one child fewer: the cache update then
+        stores its count and recomputes its triage (losing its last child, it is no longer an
+        epic unless labelled one)."""
+        repo = _repo_of(former)  # read through the child's path, it carries the child's repo
+        key = (repo.casefold(), former.number)
+        epic = run.fresh.get(key, replace(former, repo=repo))
+        run.fresh[key] = replace(epic, sub_issue_count=max(0, epic.sub_issue_count - 1))
 
     @staticmethod
     def _check_parent(expected: Existing | None, current: Issue | None) -> None:
@@ -624,6 +644,7 @@ class ApplyEngine:
             return "nothing to post: it was already closed"
         body = validate_comment_body(text)
         repo, n = self._where(run, target)
+        run.attempt()  # the irreversible write is next
         await self._write(run, lambda: self._github.comment(repo, n, body))
         return None
 

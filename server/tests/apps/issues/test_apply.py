@@ -1555,3 +1555,68 @@ async def test_a_replayed_approval_running_with_no_task_resumes_once(world: Worl
     assert world.write_names() == ["add_labels"]
     found = world.drafts.suggestion(sid)
     assert found is not None and found.state == "approved" and not world.drafts.is_claimed(sid)
+
+
+# --- Codex round 1 (PR #61) --------------------------------------------------------------------
+
+
+class HeldReads(FakeWrites):
+    """``FakeWrites`` whose ``get`` (a step's preliminary fresh read) waits for ``go``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.go = asyncio.Event()
+
+    async def get(self, repo: str, n: int) -> Issue:
+        self.started.set()
+        await self.go.wait()
+        return await super().get(repo, n)
+
+
+async def test_a_cut_off_during_a_preliminary_read_is_retried_normally(
+    conn: sqlite3.Connection,
+) -> None:
+    world = World(conn)
+    held = HeldReads()
+    held.files, held.repo_labels = world.github.files, world.github.repo_labels
+    world.github = held
+    world.engine = ApplyEngine(held, world.store, world.clock, pause=world.pauses)
+    world.service = ApplyService(
+        world.engine, world.applied, world.drafts, world.store, world.clock
+    )
+    held.go.set()
+    world.sync = SyncService(held, world.store, world.clock)
+    await world.synced(issue(1))
+    held.go.clear()
+    held.started.clear()
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+    started = world.service.start_pending(None, key=None)
+    await held.started.wait()  # still reading the issue: nothing was written
+    await world.service.stop()
+    stopped = world.applied.batch(started.id)
+    assert stopped is not None and stopped.result.results[0].cause == "not run yet"
+    held.go.set()
+
+    retried = await world.service.retry(started.id)
+    assert retried.result.complete and held.comments_posted == [(1, "A")]
+
+
+async def test_unlinking_the_last_child_makes_the_old_parent_no_epic(world: World) -> None:
+    await world.synced(issue(1), issue(5, sub_issue_count=1))
+    cached = world.store.cached_issue(REPO, 5)
+    assert cached is not None and cached.triage.is_epic
+    world.github.parents[(REPO, 1)] = (REPO, 5)
+    result = await world.engine.apply(one(E1, SetParent(None)))
+    assert result.complete
+    after = world.store.cached_issue(REPO, 5)
+    assert after is not None and not after.triage.is_epic and after.issue.sub_issue_count == 0
+
+
+async def test_moving_a_child_refreshes_its_former_parent(world: World) -> None:
+    await world.synced(issue(1), issue(5, sub_issue_count=1), issue(6, labels=("epic",)))
+    world.github.parents[(REPO, 1)] = (REPO, 5)
+    result = await world.engine.apply(one(E1, SetParent(Existing(REPO, 6))))
+    assert result.complete
+    after = world.store.cached_issue(REPO, 5)
+    assert after is not None and not after.triage.is_epic and after.issue.sub_issue_count == 0
