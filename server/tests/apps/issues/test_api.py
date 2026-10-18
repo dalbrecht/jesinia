@@ -1845,5 +1845,5 @@ def test_a_refusal_naming_an_epic_carries_it_as_a_field() -> None:
 
     exists = _error(GroupEpicExistsError("b1", ("acme/app", 4), "an epic exists"), now)
     closed = _error(ThemeEpicClosedError(("acme/app", 40), "the epic is closed"), now)
-    assert json.loads(exists.body)["epic"] == "acme/app#4"
-    assert json.loads(closed.body)["epic"] == "acme/app#40"
+    assert json.loads(bytes(exists.body))["epic"] == "acme/app#4"
+    assert json.loads(bytes(closed.body))["epic"] == "acme/app#40"
