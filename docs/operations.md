@@ -189,7 +189,18 @@ picks it up (no restart). `/healthz` reports the `github` module as "no token: r
     familiar it thinks you are, and why (your commits, the reviews you finished, quiz
     results). Mark one **I know this** or **I don't know this**, or clear the mark; a mark on a
     folder covers everything beneath it and the list says where an inherited mark comes from.
-    KB pages aren't counted yet.
+    **Show more** reads the next areas. KB pages aren't counted yet.
+- **Kept reviews:** a deep review you post or mark **Done** is kept in your KB as
+  `Reviews/<owner>-<repo>/#<n> <title>.md`, with its overview, the findings that mattered and
+  your notes; keeping it again updates its section and keeps your edits. The PR view's last
+  page says where it went, or why it couldn't be written, with **Retry** (**Keep it** before
+  a first keep).
+- **How it works:** each repo has a KB page, `Reviews/<owner>-<repo>/How it works.md`,
+  describing its main parts. The first deep review drafts it and later approved deep reviews
+  draft updates: nothing is written until you choose **Accept** (**Not now** leaves the page
+  as it is). If you edited the page since the draft was made, the accept is refused and a
+  fresh draft is made against your edit. Deep reviews read the page and flag PRs that
+  contradict it as design findings.
 - **Metrics trend:** a deep review's **Metrics** page ends with the repo's quality trend: one
   point per scored round, its mean score from 0 to 10, with the numbers in a table beneath.
 - **Checkouts:** each watched repo gets a bare mirror under `review/repos/` and one checkout
