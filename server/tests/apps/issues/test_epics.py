@@ -91,6 +91,8 @@ class BriefGitHub(FakeWrites):
         self.vanished: set[int] = set()  # a read finds nothing
         # Set to hold ``comment`` after it reached GitHub (a cut-off mid-write).
         self.crash_after_comment: BaseException | None = None
+        # Set to lose ``edit_comment``'s answer after GitHub took the edit.
+        self.lose_edit_answer: BaseException | None = None
 
     async def comment(self, repo: str, n: int, body: str) -> CommentRef:
         self._write("comment", n, n, body)
@@ -112,6 +114,8 @@ class BriefGitHub(FakeWrites):
             for index, c in enumerate(found):
                 if c.id == comment_id:
                     found[index] = replace(c, body=body)
+                    if self.lose_edit_answer is not None:
+                        raise self.lose_edit_answer
                     return CommentRef(c.id, f"{c.url}#issuecomment-{c.id}")
         raise GitHubRequestError(404, "Not Found")
 
@@ -1425,3 +1429,51 @@ async def test_a_blocking_group_epic_that_cant_be_read_keeps_blocking(env: Epics
     assert replay.batch.id == started.batch.id
     await env.world.service.drain()
     assert len(creates(env)) == 2
+
+
+# --- Codex round 1: an accepted edit whose answer was lost --------------------------------------
+
+
+async def test_an_edit_github_took_whose_answer_was_lost_is_ours(env: Epics) -> None:
+    await env.synced(epic(1))
+    await env.publisher.approve(REPO, 1, "First")
+    env.github.lose_edit_answer = GitHubRequestError(None, "ReadTimeout")
+    with pytest.raises(GitHubRequestError):
+        await env.publisher.approve(REPO, 1, "Second")  # GitHub took it; the answer was lost
+    env.github.lose_edit_answer = None
+    third = await env.publisher.approve(REPO, 1, "Third")  # not "edited on GitHub"
+    assert third.text == "Third" and env.briefs.brief(REPO, 1).text == "Third"  # type: ignore[union-attr]
+    assert env.briefs.brief(REPO, 1).pending_body is None  # type: ignore[union-attr]
+
+
+async def test_an_edit_whose_record_failed_is_ours_next_time(
+    env: Epics, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await env.synced(epic(1))
+    await env.publisher.approve(REPO, 1, "First")
+    real = env.briefs.mark_posted
+
+    def broken(*args: object) -> object:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(env.briefs, "mark_posted", broken)
+    await env.publisher.approve(REPO, 1, "Second")  # edited; recording it failed (logged)
+    monkeypatch.setattr(env.briefs, "mark_posted", real)
+    assert env.briefs.brief(REPO, 1).text == "First"  # type: ignore[union-attr]
+    third = await env.publisher.approve(REPO, 1, "Third")
+    assert third.text == "Third"
+
+
+async def test_an_edit_checkpoint_that_cant_be_saved_sends_nothing(
+    env: Epics, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await env.synced(epic(1))
+    await env.publisher.approve(REPO, 1, "First")
+
+    def broken(*args: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(env.briefs, "mark_editing", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        await env.publisher.approve(REPO, 1, "Second")
+    assert not any(w[0] == "edit_comment" for w in env.github.writes)

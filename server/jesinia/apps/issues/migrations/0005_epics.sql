@@ -6,7 +6,9 @@
 -- `in_flight` from right before a new comment is posted until its id is stored: a post a stop or
 -- crash cut off is found again rather than posted twice. Each attempt's marker carries `nonce`
 -- (`<!-- jesinia:brief:<nonce> -->`), and recovery adopts only a comment by the signed-in gh
--- user carrying that exact nonce (ruling IR48).
+-- user carrying that exact nonce (ruling IR48). `pending_body` is the body an edit of the
+-- stored comment is on its way with, written before the edit: an edit GitHub took whose answer
+-- was lost is recognised as ours, not as an edit on GitHub, and settled on the next approval.
 CREATE TABLE epic_briefs (
     repo TEXT NOT NULL COLLATE NOCASE,
     n INTEGER NOT NULL,
@@ -16,6 +18,7 @@ CREATE TABLE epic_briefs (
     state TEXT NOT NULL CHECK (state IN ('in_flight', 'posted')),
     attempt_at TEXT,
     nonce TEXT,
+    pending_body TEXT,
     posted_at TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (repo, n)

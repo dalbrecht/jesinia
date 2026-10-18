@@ -10,7 +10,9 @@ from typing import cast
 
 from jesinia.apps.issues.application.ports import BriefState, StoredBrief
 
-_COLUMNS = "repo, n, comment_id, url, body, state, attempt_at, posted_at, updated_at, nonce"
+_COLUMNS = (
+    "repo, n, comment_id, url, body, state, attempt_at, posted_at, updated_at, nonce, pending_body"
+)
 _STATES: tuple[BriefState, ...] = ("in_flight", "posted")
 
 
@@ -23,7 +25,7 @@ def _optional_time(value: object) -> datetime | None:
 
 
 def _brief(row: tuple[object, ...]) -> StoredBrief:
-    repo, n, comment_id, url, body, state, attempt, posted, updated, nonce = row
+    repo, n, comment_id, url, body, state, attempt, posted, updated, nonce, pending = row
     return StoredBrief(
         repo=str(repo),
         n=cast(int, n),
@@ -35,6 +37,7 @@ def _brief(row: tuple[object, ...]) -> StoredBrief:
         posted_at=_optional_time(posted),
         updated_at=datetime.fromisoformat(str(updated)),
         nonce=cast(str | None, nonce),
+        pending_body=cast(str | None, pending),
     )
 
 
@@ -60,6 +63,12 @@ class SqliteBriefStore:
             (repo, n, body, _time(now), nonce, _time(now)),
         )
 
+    def mark_editing(self, repo: str, n: int, body: str | None, now: datetime) -> None:
+        self._conn.execute(
+            "UPDATE epic_briefs SET pending_body = ?, updated_at = ? WHERE repo = ? AND n = ?",
+            (body, _time(now), repo, n),
+        )
+
     def mark_posted(
         self, repo: str, n: int, comment_id: int, url: str, body: str, now: datetime
     ) -> StoredBrief:
@@ -68,7 +77,7 @@ class SqliteBriefStore:
             "updated_at) VALUES (?, ?, ?, ?, ?, 'posted', ?, ?) "
             "ON CONFLICT (repo, n) DO UPDATE SET comment_id = excluded.comment_id, "
             "url = excluded.url, body = excluded.body, state = 'posted', attempt_at = NULL, "
-            "nonce = NULL, "
+            "nonce = NULL, pending_body = NULL, "
             "posted_at = excluded.posted_at, updated_at = excluded.updated_at",
             (repo, n, comment_id, url, body, _time(now), _time(now)),
         )

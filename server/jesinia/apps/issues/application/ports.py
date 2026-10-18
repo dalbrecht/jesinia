@@ -543,7 +543,8 @@ class StoredBrief:
     (``None`` until one is known), the ``body`` posted (marker included), and ``state``:
     ``in_flight`` from right before a new comment is posted until its id is stored, ``posted``
     after. ``attempt_at`` is when that post started and ``nonce`` the one its marker carries
-    (a cut-off post is looked for by both, IR48)."""
+    (a cut-off post is looked for by both, IR48); ``pending_body`` is the body an edit was on
+    its way with, until it is recorded as posted."""
 
     repo: str
     n: int
@@ -555,6 +556,7 @@ class StoredBrief:
     posted_at: datetime | None
     updated_at: datetime
     nonce: str | None = None
+    pending_body: str | None = None
 
     @property
     def text(self) -> str:
@@ -572,10 +574,15 @@ class BriefStore(Protocol):
         checkpoint before an irreversible write); a stored comment id is forgotten (it is gone
         on GitHub)."""
 
+    def mark_editing(self, repo: str, n: int, body: str | None, now: datetime) -> None:
+        """Record the body an edit of the stored comment is about to send (the checkpoint
+        before it): an edit GitHub takes whose answer is lost is known as ours next time.
+        ``None`` clears it (GitHub refused the edit for certain)."""
+
     def mark_posted(
         self, repo: str, n: int, comment_id: int, url: str, body: str, now: datetime
     ) -> StoredBrief:
-        """Record the brief comment as posted (or edited) with its id."""
+        """Record the brief comment as posted (or edited) with its id; a pending edit is settled."""
 
 
 class BriefWrites(Protocol):

@@ -176,7 +176,7 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - A suggestion's `apply_error` says why its last approval didn't apply.
 - `epic_briefs`: each epic's brief comment, by its GitHub comment id, with the body posted. It is
   `in_flight` from right before a new comment is posted until its id is stored (ruling IR8), with
-  the attempt's nonce (IR48).
+  the attempt's nonce (IR48), and the body an edit is on its way with (`pending_body`).
 - `batch_origins`: every batch that may create issues, by its origin, which is its semantic
   target, never a draft id (ruling IR57): `split:<repo>#<n>` (the issue split), `group:<hash of
   the sorted members>` (a new epic), `conversion:<repo>#<n>` (the epic) and `theme:<tag>:<repo>`.
@@ -519,7 +519,9 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   (`BriefRecoveryIncompleteError`, 409: check GitHub).
 - **Briefs edited on GitHub (M1):** before editing the stored comment, it is read live. One
   edited on GitHub since it was posted is refused (409, `BriefEditedOnGitHubError`) unless the
-  approval says `overwrite`; one gone is posted anew. A stored comment deleted on GitHub
+  approval says `overwrite`; one gone is posted anew. The body an edit is on its way with is
+  checkpointed first (if that can't be saved, nothing is sent), so an edit GitHub took whose
+  answer was lost reads as ours, not as an edit on GitHub, and is settled on the next approval. A stored comment deleted on GitHub
   (404) is posted anew and its id kept. A rate limit refuses the write, backs syncs off, and is a
   503 with `Retry-After`.
 

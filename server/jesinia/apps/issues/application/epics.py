@@ -1031,15 +1031,18 @@ class BriefService:
             remote = await self._github.get_comment(repo, comment_id)
             if remote is None:
                 comment_id = None
-            elif not overwrite and strip_marker(remote.body) != strip_marker(stored.body):
-                raise BriefEditedOnGitHubError(
-                    f"{repo}#{n}'s brief was edited on GitHub since it was posted; refresh the "
-                    "draft from it, or overwrite it"
-                )
+            else:
+                self._check_ours(repo, n, stored, remote.body, overwrite)
         if comment_id is not None:
+            # The checkpoint before the edit: an edit GitHub takes whose answer is lost is still
+            # known as ours next time. If it can't be saved, nothing is sent.
+            self._briefs.mark_editing(repo, n, body, self._clock())
             try:
                 return await self._github.edit_comment(repo, comment_id, body)
             except GitHubRequestError as exc:
+                if exc.status is not None and exc.status < 500:
+                    # GitHub refused it for certain: nothing of it is on its way any more.
+                    self._briefs.mark_editing(repo, n, None, self._clock())
                 if exc.status != 404:
                     raise
                 log.info(
@@ -1048,6 +1051,28 @@ class BriefService:
         # The checkpoint before the irreversible write: if it can't be saved, nothing is sent.
         self._briefs.mark_in_flight(repo, n, body, self._clock(), nonce)
         return await self._github.comment(repo, n, body)
+
+    def _check_ours(
+        self, repo: str, n: int, stored: StoredBrief, remote: str, overwrite: bool
+    ) -> None:
+        """Refuse to overwrite a brief edited on GitHub. The remote body is ours when it is the
+        body last posted or the one an edit was on its way with (whose answer was lost); the
+        latter is then settled as posted.
+
+        Raises:
+            BriefEditedOnGitHubError: someone else's body, without ``overwrite``.
+        """
+        text = strip_marker(remote)
+        if stored.pending_body is not None and text == strip_marker(stored.pending_body):
+            self._record(
+                repo, n, CommentRef(cast(int, stored.comment_id), stored.url or ""), remote
+            )
+            return
+        if not overwrite and text != strip_marker(stored.body):
+            raise BriefEditedOnGitHubError(
+                f"{repo}#{n}'s brief was edited on GitHub since it was posted; refresh the "
+                "draft from it, or overwrite it"
+            )
 
     async def _who(self) -> str:
         if self._login is None:
