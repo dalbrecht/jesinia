@@ -71,10 +71,12 @@ class SqliteKnowledgeStore:
     def exposures(self) -> dict[Unit, list[Exposure]]:
         found: dict[Unit, list[Exposure]] = {}
         parsed: dict[str, Unit | None] = {}
-        for text, kind, at in self._conn.execute("SELECT unit, kind, at FROM knowledge_exposures"):
+        rows = self._conn.execute("SELECT unit, kind, at, direct FROM knowledge_exposures")
+        for text, kind, at, direct in rows:
             unit = parsed[text] if text in parsed else parsed.setdefault(text, _unit(text))
             if unit is not None:
-                found.setdefault(unit, []).append(Exposure(cast(ExposureKind, kind), _parse(at)))
+                exposure = Exposure(cast(ExposureKind, kind), _parse(at), bool(direct))
+                found.setdefault(unit, []).append(exposure)
         return found
 
     def overrides(self) -> dict[Unit, Override]:
@@ -125,8 +127,8 @@ class SqliteKnowledgeStore:
         if cursor.rowcount == 0:
             return False
         self._conn.executemany(
-            "INSERT OR IGNORE INTO knowledge_exposures (source, unit, kind, at, repo, path) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO knowledge_exposures "
+            "(source, unit, kind, at, repo, path, direct) VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     source,
@@ -135,8 +137,9 @@ class SqliteKnowledgeStore:
                     _time(at),
                     unit.repo,
                     None if unit.repo is None else unit.path,
+                    int(direct),
                 )
-                for unit, kind, at in rows
+                for unit, kind, at, direct in rows
             ],
         )
         return True
@@ -184,7 +187,8 @@ class SqliteKnowledgeStore:
             "SELECT r.id, r.repo, r.depth, COALESCE(("
             "SELECT MAX(p.started_at) FROM postings p "
             "WHERE p.round_id = r.id AND p.state = 'posted'), r.finished_at, r.started_at), "
-            "a.json, f.json FROM rounds r "
+            "COALESCE(c.json, a.json), f.json FROM rounds r "
+            "LEFT JOIN artifacts c ON c.round_id = r.id AND c.kind = 'covered_paths' "
             "LEFT JOIN artifacts a ON a.round_id = r.id AND a.kind = 'paths' "
             "LEFT JOIN pr_files f "
             "ON f.repo = r.repo AND f.number = r.number AND f.head_sha = r.head_sha "
@@ -205,8 +209,10 @@ class SqliteKnowledgeStore:
 
     def pending_quizzes(self) -> list[PendingRound]:
         rows = self._conn.execute(
-            "SELECT q.round_id, r.repo, q.correct, q.answered, q.recorded_at, a.json, f.json "
+            "SELECT q.round_id, r.repo, q.correct, q.answered, q.questions, q.recorded_at, "
+            "COALESCE(c.json, a.json), f.json "
             "FROM quiz_results q JOIN rounds r ON r.id = q.round_id "
+            "LEFT JOIN artifacts c ON c.round_id = r.id AND c.kind = 'covered_paths' "
             "LEFT JOIN artifacts a ON a.round_id = r.id AND a.kind = 'paths' "
             "LEFT JOIN pr_files f "
             "ON f.repo = r.repo AND f.number = r.number AND f.head_sha = r.head_sha "
@@ -216,9 +222,13 @@ class SqliteKnowledgeStore:
         )
         return [
             PendingRound(
-                round_id, repo, quiz_kind(correct, answered), _parse(at), _paths(paths, files)
+                round_id,
+                repo,
+                quiz_kind(correct, answered, questions),
+                _parse(at),
+                _paths(paths, files),
             )
-            for round_id, repo, correct, answered, at, paths, files in rows
+            for round_id, repo, correct, answered, questions, at, paths, files in rows
         ]
 
     def round_pr(self, round_id: int) -> PrRef | None:
@@ -227,11 +237,23 @@ class SqliteKnowledgeStore:
         ).fetchone()
         return None if row is None else PrRef(row[0], row[1])
 
-    def add_quiz(self, round_id: int, right: int, answered: int, at: datetime) -> bool:
+    def quiz_questions(self, round_id: int) -> int | None:
+        row = self._conn.execute(
+            "SELECT json FROM artifacts WHERE round_id = ? AND kind = 'quiz'", (round_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        quiz = json.loads(row[0])
+        questions = quiz.get("questions") if isinstance(quiz, dict) else None
+        return len(questions) if isinstance(questions, list) else None
+
+    def add_quiz(
+        self, round_id: int, right: int, answered: int, questions: int | None, at: datetime
+    ) -> bool:
         cursor = self._conn.execute(
-            "INSERT OR IGNORE INTO quiz_results (round_id, correct, answered, recorded_at) "
-            "VALUES (?, ?, ?, ?)",
-            (round_id, right, answered, _time(at)),
+            "INSERT OR IGNORE INTO quiz_results "
+            "(round_id, correct, answered, questions, recorded_at) VALUES (?, ?, ?, ?, ?)",
+            (round_id, right, answered, questions, _time(at)),
         )
         return cursor.rowcount == 1
 

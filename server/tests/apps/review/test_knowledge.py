@@ -29,7 +29,6 @@ from jesinia.apps.review.domain.gates import LOW_FAMILIARITY, propose_depth
 from jesinia.apps.review.domain.knowledge import (
     CHANGE_SCALE,
     COMMIT_RECENCY_CAP,
-    DEFERRED_KIND_WEIGHTS,
     HALF_LIFE,
     KIND_WEIGHTS,
     MAX_UNIT_DEPTH,
@@ -166,7 +165,6 @@ def test_the_formula_constants_are_the_plans() -> None:
         "quiz_pass": 0.6,
         "quiz_fail": 0.0,
     }
-    assert DEFERRED_KIND_WEIGHTS == {"kb_page": 0.5}  # R84: KB pages are deferred
 
 
 @pytest.mark.parametrize(
@@ -387,6 +385,11 @@ ME = "me@example.com"
 TIP1, TIP2 = "1" * 40, "2" * 40
 
 
+def fam(service: KnowledgeService, repo: str, paths: Sequence[str]) -> float | None:
+    """The familiarity ``propose_depth`` reads (``assess``'s first half)."""
+    return service.assess(repo, paths)[0]
+
+
 def sha(n: int) -> str:
     return f"{n:040x}"
 
@@ -472,6 +475,7 @@ class KEnv:
         done: bool = True,
         repo: str = WEB,
         stored_paths: bool = True,
+        covered: Sequence[str] | None = None,
     ) -> int:
         """A round as the pipeline leaves it (its touched paths stored with it, I3), with its
         PR's files cached as the queue caches them."""
@@ -480,6 +484,8 @@ class KEnv:
         round_id = self.reviews.start_round(ref, head, BASE, depth, self.clock())  # type: ignore[arg-type]
         if stored_paths:
             self.reviews.put_artifact(round_id, "paths", list(paths))
+        if covered is not None:
+            self.reviews.put_artifact(round_id, "covered_paths", list(covered))
         self.reviews.put_pr_files(
             ref, head, [PrFile(p, "modified", 1, 1, None, None) for p in paths]
         )
@@ -647,16 +653,16 @@ async def test_overrides_win(kenv: KEnv) -> None:
     kenv.done_round(1, "deep", ["src/a.py"])
     await kenv.service.ingest()
     src, docs = parse_unit("repo/acme/web/src"), parse_unit("repo/acme/web/docs")
-    assert kenv.service.familiarity(WEB, ["src/a.py"]) == pytest.approx(1.0)
+    assert fam(kenv.service, WEB, ["src/a.py"]) == pytest.approx(1.0)
     # docs has no record: its prior (R82), capped below quick for a novel area (R83).
-    assert kenv.service.familiarity(WEB, ["docs/x.md"]) == pytest.approx(NOVEL_PRIOR_CAP)
+    assert fam(kenv.service, WEB, ["docs/x.md"]) == pytest.approx(NOVEL_PRIOR_CAP)
     assert kenv.service.set_override(src, "unknown").familiarity == 0.0
     assert kenv.service.set_override(docs, "known").familiarity == 1.0
-    assert kenv.service.familiarity(WEB, ["src/a.py"]) == 0.0
-    assert kenv.service.familiarity(WEB, ["docs/x.md"]) == 1.0
+    assert fam(kenv.service, WEB, ["src/a.py"]) == 0.0
+    assert fam(kenv.service, WEB, ["docs/x.md"]) == 1.0
     # Overrides persist in review.sqlite, and clearing one goes back to the evidence.
     again = KnowledgeService(store=SqliteKnowledgeStore(kenv.conn), clock=kenv.clock)
-    assert again.familiarity(WEB, ["docs/x.md"]) == 1.0
+    assert fam(again, WEB, ["docs/x.md"]) == 1.0
     cleared = again.set_override(src, None)
     assert cleared.override is None and cleared.familiarity == pytest.approx(1.0)
     view = again.view()
@@ -666,13 +672,13 @@ async def test_overrides_win(kenv: KEnv) -> None:
 async def test_changes_since_last_reduce_familiarity(kenv: KEnv) -> None:
     kenv.workspace.log = [commit(1, 30 * DAY, ME, ("src/a.py", 5))]
     await kenv.service.ingest()
-    scores = [kenv.service.familiarity(WEB, ["src/a.py"])]
+    scores = [fam(kenv.service, WEB, ["src/a.py"])]
     for n, lines in ((2, 50), (3, 150), (4, 800)):
         kenv.workspace.tips[WEB] = sha(100 + n)
         kenv.workspace.log.insert(0, commit(n, 10 * DAY - n * timedelta(hours=1), "x@y.z",
                                             ("src/b.py", lines)))  # fmt: skip
         await kenv.service.ingest()
-        scores.append(kenv.service.familiarity(WEB, ["src/a.py"]))
+        scores.append(fam(kenv.service, WEB, ["src/a.py"]))
     assert all(isinstance(s, float) for s in scores)
     floats = [float(s or 0.0) for s in scores]
     assert floats == sorted(floats, reverse=True) and floats[0] > floats[-1]
@@ -683,35 +689,35 @@ async def test_changes_since_last_reduce_familiarity(kenv: KEnv) -> None:
     kenv.workspace.tips[WEB] = sha(200)
     kenv.workspace.log.insert(0, commit(9, 0 * DAY, ME, ("src/a.py", 1)))
     await kenv.service.ingest()
-    assert kenv.service.familiarity(WEB, ["src/a.py"]) == pytest.approx(COMMIT_RECENCY_CAP)
+    assert fam(kenv.service, WEB, ["src/a.py"]) == pytest.approx(COMMIT_RECENCY_CAP)
 
 
 async def test_depth_uses_min_familiarity_over_touched_paths(kenv: KEnv) -> None:
     kenv.done_round(1, "deep", ["src/a.py", "src/b/c.py"])
     await kenv.service.ingest()
-    assert kenv.service.familiarity(WEB, ["src/a.py"]) == pytest.approx(1.0)
-    assert kenv.service.familiarity(WEB, ["src/a.py", "src/b/c.py"]) == pytest.approx(1.0)
+    assert fam(kenv.service, WEB, ["src/a.py"]) == pytest.approx(1.0)
+    assert fam(kenv.service, WEB, ["src/a.py", "src/b/c.py"]) == pytest.approx(1.0)
     # A folder with no record of its own gets the prior: its nearest top unit (the root),
     # less its distance (R82); the minimum over the touched paths wins.
-    assert kenv.service.familiarity(WEB, ["src/a.py", "new/x.py"]) == pytest.approx(0.3)
-    assert kenv.service.familiarity(WEB, ["src/a.py", "src/new/deep/x.py"]) == pytest.approx(0.3)
-    assert kenv.service.familiarity(WEB, []) is None
+    assert fam(kenv.service, WEB, ["src/a.py", "new/x.py"]) == pytest.approx(0.3)
+    assert fam(kenv.service, WEB, ["src/a.py", "src/new/deep/x.py"]) == pytest.approx(0.3)
+    assert fam(kenv.service, WEB, []) is None
 
 
 async def test_familiarity_is_unknown_until_the_repos_history_is_read(kenv: KEnv) -> None:
-    assert kenv.service.familiarity(WEB, ["src/a.py"]) is None
-    assert kenv.service.familiarity("acme/other", ["x.py"]) is None
+    assert fam(kenv.service, WEB, ["src/a.py"]) is None
+    assert fam(kenv.service, "acme/other", ["x.py"]) is None
     # M5: a round alone (no mirror, so no history read) doesn't make the repo known.
     kenv.workspace.mirrors.clear()
     kenv.done_round(1, "deep", ["src/a.py"])
     await kenv.service.ingest()
-    assert kenv.service.familiarity(WEB, ["lib/x.py"]) is None
+    assert fam(kenv.service, WEB, ["lib/x.py"]) is None
     # An override is the author's own word: it counts at once.
     kenv.service.set_override(parse_unit("repo/acme/web/lib"), "known")
-    assert kenv.service.familiarity(WEB, ["lib/x.py"]) == 1.0
+    assert fam(kenv.service, WEB, ["lib/x.py"]) == 1.0
     kenv.workspace.mirrors.add(WEB)
     await kenv.service.ingest()  # reads acme/web's (empty) history
-    assert kenv.service.familiarity(WEB, ["src/a.py"]) == pytest.approx(1.0)
+    assert fam(kenv.service, WEB, ["src/a.py"]) == pytest.approx(1.0)
 
 
 async def test_summary_names_only_recorded_units(kenv: KEnv) -> None:
@@ -821,7 +827,10 @@ async def test_depth_uses_min_familiarity(kconn: sqlite3.Connection) -> None:
     assert depth["proposed"] == "deep" and depth["familiarity"] == 0.1
     assert knowledge.asked == [(WEB, ("src/app.py", "uv.lock"))]
     # I3: the round keeps its paths for the knowledge model.
-    assert artifacts["paths"] == ["src/app.py", "uv.lock"]
+    # I1: the lockfile the skip rules leave out isn't the author's exposure; once the jobs
+    # ran, only what the review covered counts.
+    assert artifacts["paths"] == ["src/app.py"]
+    assert artifacts["covered_paths"] == ["src/app.py"]
     stored = store.pr(PrRef(WEB, 1))
     assert stored is not None and stored.pr.depth == "deep"
 
@@ -915,7 +924,7 @@ async def test_without_a_workspace_only_the_rounds_count(kenv: KEnv) -> None:
     service = KnowledgeService(store=kenv.store, clock=kenv.clock)
     report = await service.ingest()
     assert (report.commits, report.reviews, report.errors) == (0, 1, ())
-    assert service.familiarity("not a repo", ["a.py"]) is None
+    assert fam(service, "not a repo", ["a.py"]) is None
 
 
 async def test_a_kb_page_linked_to_code_never_changes_familiarity(
@@ -953,7 +962,7 @@ async def test_a_kb_page_linked_to_code_never_changes_familiarity(
         report = await module.knowledge.ingest()
         assert report.errors == ()
         assert module.knowledge.view().total == 0
-        assert module.knowledge.familiarity(WEB, ["src/sync/a.py"]) is None
+        assert fam(module.knowledge, WEB, ["src/sync/a.py"]) is None
     finally:
         await module.stop()
         conn.close()
@@ -978,7 +987,7 @@ def test_the_store_skips_unit_text_it_cannot_read(kenv: KEnv) -> None:
     kenv.conn.execute("INSERT INTO knowledge_sources VALUES ('x', '2026-10-18T00:00:00+00:00')")
     kenv.conn.execute(
         "INSERT INTO knowledge_exposures VALUES "
-        "('x', 'bogus', 'commit', '2026-10-18T00:00:00+00:00', NULL, NULL)"
+        "('x', 'bogus', 'commit', '2026-10-18T00:00:00+00:00', NULL, NULL, 1)"
     )
     kenv.conn.execute("INSERT INTO knowledge_overrides VALUES ('bogus', 'known', '2026')")
     assert kenv.store.exposures() == {} and kenv.store.overrides() == {}
@@ -1018,8 +1027,8 @@ async def test_a_deep_review_outside_the_top_areas_still_counts(kenv: KEnv) -> N
     kenv.clock.now = NOW
     # The fake log is "on" every repo: only me/main's history matters here.
     await kenv.service.ingest()
-    assert kenv.service.familiarity(OTHER, ["pkg/core/io/f.py"]) >= LOW_FAMILIARITY  # type: ignore[operator]
-    assert kenv.service.familiarity(MAIN, ["docs/guide/sub/g.md"]) >= LOW_FAMILIARITY  # type: ignore[operator]
+    assert fam(kenv.service, OTHER, ["pkg/core/io/f.py"]) >= LOW_FAMILIARITY  # type: ignore[operator]
+    assert fam(kenv.service, MAIN, ["docs/guide/sub/g.md"]) >= LOW_FAMILIARITY  # type: ignore[operator]
 
 
 async def test_a_folder_override_applies_to_everything_beneath_it(kenv: KEnv) -> None:
@@ -1027,11 +1036,11 @@ async def test_a_folder_override_applies_to_everything_beneath_it(kenv: KEnv) ->
     kenv.done_round(1, "deep", ["src/a/b/c.py", "lib/x/y.py"])
     await kenv.service.ingest()
     kenv.service.set_override(parse_unit("repo/acme/web/src"), "unknown")
-    assert kenv.service.familiarity(WEB, ["src/a/b/c.py"]) == 0.0
+    assert fam(kenv.service, WEB, ["src/a/b/c.py"]) == 0.0
     kenv.service.set_override(parse_unit("repo/acme/web/src/a"), "known")
-    assert kenv.service.familiarity(WEB, ["src/a/b/c.py"]) == 1.0  # the nearer one wins
+    assert fam(kenv.service, WEB, ["src/a/b/c.py"]) == 1.0  # the nearer one wins
     kenv.service.set_override(parse_unit("repo/acme/web"), "unknown")
-    assert kenv.service.familiarity(WEB, ["lib/x/y.py"]) == 0.0  # the root covers all
+    assert fam(kenv.service, WEB, ["lib/x/y.py"]) == 0.0  # the root covers all
     text = kenv.service.summary(WEB, ["src/a/b/c.py", "lib/x/y.py"])
     assert "marked known by the author" in text and "marked unknown by the author" in text
     (deep,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src/a/b"]
@@ -1049,7 +1058,7 @@ async def test_commits_alone_never_move_a_pr_to_quick(kenv: KEnv) -> None:
     """R80: however many commits the history credits (spoofable emails), depth stays deep."""
     kenv.workspace.log = [commit(n, 0 * DAY, ME, ("src/a.py", 1)) for n in range(1, 200)]
     await kenv.service.ingest()
-    score = kenv.service.familiarity(WEB, ["src/a.py"])
+    score = fam(kenv.service, WEB, ["src/a.py"])
     assert score is not None and score < LOW_FAMILIARITY
     assert propose_depth(10, 1, score) == "deep"
 
@@ -1073,9 +1082,9 @@ async def test_a_new_folder_in_a_well_known_repo_still_proposes_deep(kenv: KEnv)
     kenv.done_round(1, "deep", ["src/a.py", "src/b.py"])
     kenv.done_round(2, "deep", ["src/c.py"])
     await kenv.service.ingest()
-    known = kenv.service.familiarity(WEB, ["src/a.py"])
+    known = fam(kenv.service, WEB, ["src/a.py"])
     assert known is not None and propose_depth(10, 1, known) == "quick"
-    novel = kenv.service.familiarity(WEB, ["src/a.py", "src/brand_new/x.py"])
+    novel = fam(kenv.service, WEB, ["src/a.py", "src/brand_new/x.py"])
     assert novel is not None and novel < LOW_FAMILIARITY
     assert propose_depth(10, 1, novel) == "deep"
 
@@ -1108,3 +1117,100 @@ async def test_a_page_with_no_commit_under_the_cut_is_warned(
     )  # fmt: skip
     await service.ingest()
     assert "is over the read limit" in caplog.text
+
+
+# --- PR 5 final fix wave ------------------------------------------------------------------------
+
+
+async def test_a_round_exposes_only_what_the_review_covered(kenv: KEnv) -> None:
+    """I1: the files a deep round left out (vendored, generated) aren't the author's."""
+    files = ["src/sync/a.py", "vendor/x/lib.js", "src/gen/api/models.py"]
+    kenv.done_round(1, "deep", files, covered=["src/sync/a.py"])
+    await kenv.service.ingest()
+    units = kenv.service.view().units
+    assert kinds(units, "repo/acme/web/src/sync") == {"review_deep": 1}
+    assert kinds(units, "repo/acme/web/vendor/x") == {}
+    assert kinds(units, "repo/acme/web/src/gen/api") == {}
+
+
+async def test_root_level_changes_need_engagement_with_the_root_itself(kenv: KEnv) -> None:
+    """I2: activity anywhere in a repo doesn't make its root files (package.json) familiar:
+    a folder's own score comes from what touched it directly; the rest is a capped prior."""
+    kenv.done_round(1, "deep", ["src/sync/a.py"])
+    await kenv.service.ingest()
+    root = fam(kenv.service, WEB, ["package.json"])
+    assert root is not None and root <= NOVEL_PRIOR_CAP
+    assert propose_depth(3, 1, root) == "deep"
+    shallow = fam(kenv.service, WEB, ["src/new_file.py"])
+    assert shallow is not None and shallow < LOW_FAMILIARITY
+    assert fam(kenv.service, WEB, ["src/sync/b.py"]) == pytest.approx(1.0)
+    kenv.done_round(2, "deep", ["package.json"])
+    await kenv.service.ingest()
+    assert fam(kenv.service, WEB, ["package.json"]) == pytest.approx(1.0)
+
+
+async def test_backdated_commits_still_count_as_changed_since(kenv: KEnv) -> None:
+    """I3: a commit read incrementally landed after the previous read, whatever dates it
+    carries: a backdated (or merged) commit still counts toward "changed since"."""
+    await kenv.service.ingest()  # the first read, at NOW
+    kenv.clock.now = NOW + DAY
+    kenv.done_round(1, "deep", ["src/a.py"])  # my last look, after the first read
+    kenv.clock.now = NOW + 2 * DAY
+    kenv.workspace.tips[WEB] = TIP2
+    backdated = NOW - 30 * DAY
+    kenv.workspace.log = [
+        LoggedCommit(sha(1), backdated, "x@y.z", (("src/b.py", 100),), backdated),
+        LoggedCommit(sha(2), backdated, ME, (("src/c.py", 50),), backdated),  # mine: no churn
+    ]
+    await kenv.service.ingest()
+    (src,) = [u for u in kenv.service.view().units if u.unit.id == "repo/acme/web/src"]
+    assert src.changes_since_last == 100
+
+
+async def test_the_view_pages_through_every_unit(kenv: KEnv) -> None:
+    """I4: past the first page, every unit can still be reached (and corrected)."""
+    for n in range(3):
+        kenv.done_round(n + 1, "deep", [f"d{n}/x.py"])
+    await kenv.service.ingest()
+    first = kenv.service.view(limit=2)
+    assert [u.unit.id for u in first.units] == ["repo/acme/web", "repo/acme/web/d0"]
+    assert first.truncated and first.total == 4 and first.offset == 0
+    rest = kenv.service.view(limit=2, offset=2)
+    assert [u.unit.id for u in rest.units] == ["repo/acme/web/d1", "repo/acme/web/d2"]
+    assert not rest.truncated and rest.offset == 2
+    with pytest.raises(KnowledgeInputError):
+        kenv.service.view(offset=-1)
+
+
+async def test_a_quiz_pass_needs_most_of_the_questions_right(kenv: KEnv) -> None:
+    """M1: one right answer with the rest skipped is no pass: the share is over the quiz's
+    questions, not only the answered ones."""
+    one = kenv.done_round(1, "deep", ["src/a.py"], done=False)
+    kenv.reviews.put_artifact(one, "quiz", {"questions": [{"q": i} for i in range(5)]})
+    kenv.service.record_quiz(PrRef(WEB, 1), one, right=1, answered=1)
+    three = kenv.done_round(2, "deep", ["lib/b.py"], done=False)
+    kenv.reviews.put_artifact(three, "quiz", {"questions": [{"q": i} for i in range(5)]})
+    kenv.service.record_quiz(PrRef(WEB, 2), three, right=3, answered=3)
+    await kenv.service.ingest()
+    units = kenv.service.view().units
+    assert kinds(units, "repo/acme/web/src") == {"quiz_fail": 1}
+    assert kinds(units, "repo/acme/web/lib") == {"quiz_pass": 1}
+
+
+def test_quiz_kind_counts_skipped_questions_as_not_right() -> None:
+    assert quiz_kind(1, 1, questions=5) == "quiz_fail"
+    assert quiz_kind(3, 3, questions=5) == "quiz_pass"
+    assert quiz_kind(3, 4) == "quiz_pass"  # no question count known: over the answered
+
+
+async def test_the_emails_digest_is_keyed_per_install(kenv: KEnv) -> None:
+    """M3: what's stored can't confirm a guessed address without the install's key."""
+    keyed = KnowledgeService(
+        store=kenv.store, clock=kenv.clock, workspace=kenv.workspace, identity=kenv.identity,
+        repos=lambda: [WEB], email_key=b"k" * 32,
+    )  # fmt: skip
+    await keyed.ingest()
+    state = kenv.store.repo_state(WEB)
+    assert state is not None
+    assert state.emails != hashlib.sha256(ME.encode()).hexdigest()
+    assert ME not in state.emails

@@ -2546,7 +2546,8 @@ export interface paths {
         /**
          * Get Knowledge
          * @description What Jesinia thinks you know (spec §6.1): each unit with a record or a correction,
-         *     its familiarity and why. Derived data, from the cache only.
+         *     its familiarity and why, one page at a time (``truncated``: more follow). Derived
+         *     data, from the cache only.
          */
         get: operations["get_knowledge_api_review_knowledge_get"];
         put?: never;
@@ -3790,7 +3791,8 @@ export interface components {
         };
         /**
          * KnowledgeOut
-         * @description What Jesinia thinks you know: units by id, at most ``VIEW_LIMIT`` of ``total``.
+         * @description What Jesinia thinks you know: one page of the units, from ``offset``, of ``total``;
+         *     ``truncated`` when more follow.
          */
         KnowledgeOut: {
             /** Units */
@@ -3799,6 +3801,11 @@ export interface components {
             total: number;
             /** Truncated */
             truncated: boolean;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
         };
         /**
          * LabelApplyIn
@@ -15490,6 +15497,8 @@ export interface operations {
         parameters: {
             query?: {
                 repo?: string | null;
+                offset?: number;
+                limit?: number;
             };
             header?: never;
             path?: never;

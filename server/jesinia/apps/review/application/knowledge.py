@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from jesinia.apps.review.domain.knowledge import (
     Exposure,
     ExposureKind,
     InvalidUnitError,
+    KnowledgeInputError,
     LoggedCommit,
     Override,
     SummaryEntry,
@@ -35,11 +37,13 @@ from jesinia.apps.review.domain.knowledge import (
     churn_by_prefix,
     distance,
     familiarity,
+    has_evidence,
     last_exposure,
     nearest,
     quiz_kind,
     recency,
     render_summary,
+    scored_exposures,
     top_units,
     unit_of_file,
     units_of_file,
@@ -93,7 +97,8 @@ class PendingRound:
     files: tuple[str, ...] | None
 
 
-ExposureRow = tuple[Unit, ExposureKind, datetime]
+# A unit, the signal's kind and time, and whether it touched the unit's own files (I2).
+ExposureRow = tuple[Unit, ExposureKind, datetime, bool]
 ChurnRow = tuple[str, datetime, str, int]  # sha, at, unit path, changed lines
 
 
@@ -137,7 +142,13 @@ class KnowledgeStore(Protocol):
 
     def round_pr(self, round_id: int) -> PrRef | None: ...
 
-    def add_quiz(self, round_id: int, right: int, answered: int, at: datetime) -> bool:
+    def quiz_questions(self, round_id: int) -> int | None:
+        """How many questions the round's quiz has (``None`` without one)."""
+        ...
+
+    def add_quiz(
+        self, round_id: int, right: int, answered: int, questions: int | None, at: datetime
+    ) -> bool:
         """Keep a round's quiz result; ``False`` when it already has one (the first counts)."""
         ...
 
@@ -209,7 +220,8 @@ class KnowledgeView:
 
     units: tuple[UnitView, ...]
     total: int
-    truncated: bool
+    truncated: bool  # more units follow this page
+    offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -227,19 +239,32 @@ class _Model:
         return None
 
 
+def _view_order(unit: Unit) -> tuple[bool, str, list[str], str]:
+    """Folders by repo, each parent before its children; the topics after."""
+    parts = unit.path.split("/") if unit.path else []
+    return (unit.tag is not None, unit.repo or "", parts, unit.tag or "")
+
+
 def _no_repos() -> Iterable[str]:
     return ()
 
 
-def _digest(emails: Iterable[str]) -> str:
-    return hashlib.sha256("\n".join(sorted(emails)).encode()).hexdigest()
+def _digest(emails: Iterable[str], key: bytes) -> str:
+    """The emails as a keyed digest (M3): stored only to notice a change, it can't confirm a
+    guessed address without the install's key."""
+    message = "\n".join(sorted(emails)).encode()
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
-def _round_units(repo: str, files: Iterable[str]) -> list[Unit]:
-    found: dict[str, Unit] = {}
+def _round_units(repo: str, files: Iterable[str]) -> list[tuple[Unit, bool]]:
+    """Every unit the files expose, each marked direct when it is a file's own (deepest)
+    unit (I2)."""
+    found: dict[str, tuple[Unit, bool]] = {}
     for path in files:
-        for unit in units_of_file(repo, path):
-            found.setdefault(unit.id, unit)
+        units = units_of_file(repo, path)
+        for unit in units:
+            direct = unit == units[-1] or found.get(unit.id, (unit, False))[1]
+            found[unit.id] = (unit, direct)
     return list(found.values())
 
 
@@ -256,12 +281,14 @@ class KnowledgeService:
         workspace: KnowledgeWorkspace | None = None,
         identity: ViewerEmails | None = None,
         repos: Callable[[], Iterable[str]] = _no_repos,
+        email_key: bytes = b"",
     ) -> None:
         self._store = store
         self._clock = clock
         self._workspace = workspace
         self._identity = identity
         self._repos = repos
+        self._email_key = email_key
         self._lock = asyncio.Lock()
 
     # --- ingest ----------------------------------------------------------------------------
@@ -311,7 +338,10 @@ class KnowledgeService:
                 if self._clock() - item.at > LEGACY_ROUND_GRACE:
                     self._store.add_exposures(f"{prefix}:{item.round_id}", [])
                 continue
-            rows = [(unit, item.kind, item.at) for unit in _round_units(item.repo, item.files)]
+            rows: list[ExposureRow] = [
+                (unit, item.kind, item.at, direct)
+                for unit, direct in _round_units(item.repo, item.files)
+            ]
             added += self._store.add_exposures(f"{prefix}:{item.round_id}", rows)
         return added
 
@@ -351,7 +381,7 @@ class KnowledgeService:
         self, workspace: KnowledgeWorkspace, repo: str, emails: set[str]
     ) -> int:
         tip = await workspace.default_branch_head(repo)
-        state, digest = self._store.repo_state(repo), _digest(emails)
+        state, digest = self._store.repo_state(repo), _digest(emails, self._email_key)
         if state is not None and state.tip == tip and state.emails == digest:
             return 0
         after: str | None = None
@@ -369,13 +399,20 @@ class KnowledgeService:
         commits = await self._read_history(workspace, repo, tip, after, since)
         churn: list[ChurnRow] = []
         mine: dict[str, list[ExposureRow]] = {}
+        read_at = self._clock()
         for commit in commits:
-            # When the code landed counts for "changed since" (M3); authoring for my own.
-            changed = commit.changed_at
-            churn += [(commit.sha, changed, p, n) for p, n in churn_by_prefix(commit.files).items()]
             if commit.email.strip().lower() in emails:
+                # The author's own change: an exposure, never "changed since" their look.
                 units = _round_units(repo, (path for path, _ in commit.files))
-                mine[f"commit:{repo}:{commit.sha}"] = [(u, "commit", commit.at) for u in units]
+                mine[f"commit:{repo}:{commit.sha}"] = [
+                    (u, "commit", commit.at, direct) for u, direct in units
+                ]
+                continue
+            # When the code landed counts for "changed since" (M3). Dates are the commit's
+            # to claim (backdated, or a merge's commits keep theirs): a commit read
+            # incrementally landed since the last read, so it counts as of now (I3).
+            changed = commit.changed_at if after is None else max(commit.changed_at, read_at)
+            churn += [(commit.sha, changed, p, n) for p, n in churn_by_prefix(commit.files).items()]
         for start in range(0, len(churn), CHURN_CHUNK):
             self._store.add_churn(repo, churn[start : start + CHURN_CHUNK])
             await asyncio.sleep(0)  # a first read can be large: let the loop breathe
@@ -434,8 +471,9 @@ class KnowledgeService:
         """
         if self._store.round_pr(round_id) != ref:
             raise RoundNotOfPr(ref.number, round_id)
-        quiz_kind(right, answered)  # validates
-        return self._store.add_quiz(round_id, right, answered, self._clock())
+        questions = self._store.quiz_questions(round_id)
+        quiz_kind(right, answered, questions)  # validates
+        return self._store.add_quiz(round_id, right, answered, questions, self._clock())
 
     # --- reads ------------------------------------------------------------------------------
 
@@ -447,12 +485,12 @@ class KnowledgeService:
 
     def _view(self, model: _Model, unit: Unit) -> UnitView:
         seen = tuple(model.exposures.get(unit, ()))
-        last = last_exposure(seen)
+        last = last_exposure(scored_exposures(seen))
         changes = 0 if last is None else self._store.changes_since(unit, last)
         override = model.override_of(unit)
-        # Distance is a prior for a unit with no evidence of its own (R82).
+        # Distance is a prior for a unit with no evidence of its own (R82, I2).
         far, prior = 0.0, 0.0
-        if last is None:
+        if not has_evidence(seen):
             far = distance(unit, model.top)
             closest = nearest(unit, model.top)
             prior = 0.0 if closest is None else model.scores[closest]
@@ -490,10 +528,6 @@ class KnowledgeService:
         lowest = min(view.familiarity for view in views)
         return lowest, self._summary(model, canonical_repo(repo), views)
 
-    def familiarity(self, repo: str, paths: Sequence[str]) -> float | None:
-        """The lowest familiarity over the touched units (see ``assess``)."""
-        return self.assess(repo, paths)[0]
-
     def summary(self, repo: str, paths: Sequence[str]) -> str:
         """The knowledge summary (see ``assess`` and ``render_summary``)."""
         return self.assess(repo, paths)[1]
@@ -524,20 +558,27 @@ class KnowledgeService:
         topics = sorted((t for t in scored if t[1] > 0), key=lambda t: (-t[1], t[0].id))
         return render_summary(repo, entries, unknown=unknown, topics=topics, now=self._clock())
 
-    def view(self, repo: str | None = None, limit: int = VIEW_LIMIT) -> KnowledgeView:
-        """Every unit with a record or an override, by id (only ``repo``'s path units when
-        given), at most ``limit`` of them.
+    def view(
+        self, repo: str | None = None, limit: int = VIEW_LIMIT, offset: int = 0
+    ) -> KnowledgeView:
+        """Every unit with a record or an override, by id: each repo's folders together,
+        parents before children, then the topics (only ``repo``'s path units when given).
+        One page of at most ``limit`` from ``offset``; ``truncated`` when more follow (I4).
 
         Raises:
             InvalidUnitError: ``repo`` isn't an owner/name.
+            KnowledgeInputError: a negative offset or a limit below 1.
         """
+        if offset < 0 or limit < 1:
+            raise KnowledgeInputError(f"not a page: offset {offset}, limit {limit}")
         model = self._model()
-        units = sorted({*model.exposures, *model.overrides}, key=lambda u: u.id)
+        units = sorted({*model.exposures, *model.overrides}, key=_view_order)
         if repo is not None:
             wanted = Unit.path_unit(repo, "").repo
             units = [u for u in units if u.repo == wanted]
-        shown = tuple(self._view(model, unit) for unit in units[:limit])
-        return KnowledgeView(shown, len(units), len(units) > limit)
+        page = units[offset : offset + limit]
+        shown = tuple(self._view(model, unit) for unit in page)
+        return KnowledgeView(shown, len(units), offset + len(page) < len(units), offset)
 
     def set_override(self, unit: Unit, override: Override | None) -> UnitView:
         """Mark ``unit`` known or unknown (``None`` clears it); persisted at once."""

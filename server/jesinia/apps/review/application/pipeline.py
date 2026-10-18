@@ -82,6 +82,7 @@ from jesinia.apps.review.domain.rereview import (
     only_hunks,
     rereview_artifact,
 )
+from jesinia.apps.review.domain.skip import auto_skip_reason
 from jesinia.apps.review.domain.workspace import DiffTooLargeError, WorkspaceError
 from jesinia.core.events import Event, EventBus
 from jesinia.services.github.application.prs import GitHubPayloadError
@@ -831,6 +832,9 @@ class Pipeline:
             ci = None
             warnings.append(f"CI on this head couldn't be read, so it counts as missing: {exc}")
         paths = [f.path for f in diff.files]
+        # What the knowledge model may count before the jobs say what they covered: not the
+        # files the skip rules leave out (lockfiles, generated, vendored, binaries: I1).
+        reviewable = [f.path for f in diff.files if auto_skip_reason(f.path, f.is_binary) is None]
         familiarity, summary = self._known(ref, paths, warnings)
         proposed = propose_depth(pull.additions + pull.deletions, pull.changed_files, familiarity)
         # The author's own choice for this head always wins over the proposal (R57).
@@ -854,7 +858,7 @@ class Pipeline:
         self._store.set_depth(ref, head, round_id, depth)
         # Kept with the round, so the knowledge model counts it once it is done, even after
         # the PR has left the queue (and its cached file list with it).
-        self._store.put_artifact(round_id, "paths", paths[:ROUND_PATHS_MAX])
+        self._store.put_artifact(round_id, "paths", reviewable[:ROUND_PATHS_MAX])
         self._store.put_artifact(
             round_id,
             "depth",
@@ -1206,6 +1210,7 @@ class Pipeline:
         read; ``correctness_claimed`` is what it said it checked). ``nothing_to_walk``: the
         diff changes no line, so the UI says so rather than showing 100% (M3)."""
         round_id, pr = prepared.round.id, prepared.round.pr
+        self._put_covered_paths(round_id, walkthrough, correctness)
         old = self._store.artifact(round_id, "coverage")
         before = old if isinstance(old, Mapping) else {}
         walk = walkthrough.as_json() if walkthrough else before.get("walkthrough")
@@ -1229,6 +1234,17 @@ class Pipeline:
                 "correctness_claimed": said,
             },
         )
+
+    def _put_covered_paths(self, round_id: int, *parts: Coverage | None) -> None:
+        """The files the round's review actually read (walked or checked), merged across its
+        jobs: once there is one, the knowledge model counts only these (I1)."""
+        new = [path for part in parts if part is not None for path in part.covered_paths]
+        if not new:
+            return
+        old = self._store.artifact(round_id, "covered_paths")
+        known = [str(p) for p in old] if isinstance(old, list) else []
+        merged = list(dict.fromkeys([*known, *new]))[:ROUND_PATHS_MAX]
+        self._store.put_artifact(round_id, "covered_paths", merged)
 
     async def _progress(
         self,

@@ -22,6 +22,9 @@ CREATE TABLE knowledge_exposures (
     at TEXT NOT NULL,
     repo TEXT,
     path TEXT,
+    -- 1 when the source touched the unit's own files (it is a file's deepest unit); 0 when
+    -- it reached the unit only through a folder below it.
+    direct INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (source, unit)
 );
 CREATE INDEX knowledge_exposures_unit ON knowledge_exposures (unit);
@@ -59,5 +62,7 @@ CREATE TABLE quiz_results (
     round_id INTEGER PRIMARY KEY REFERENCES rounds (id) ON DELETE CASCADE,
     correct INTEGER NOT NULL CHECK (correct >= 0),
     answered INTEGER NOT NULL CHECK (answered > 0 AND correct <= answered),
+    -- The quiz's question count; a skipped question counts as not right.
+    questions INTEGER,
     recorded_at TEXT NOT NULL
 );

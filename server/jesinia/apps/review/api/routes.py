@@ -55,7 +55,7 @@ from jesinia.apps.review.api.schemas import (
     UnitOut,
 )
 from jesinia.apps.review.application.keep import KeepService
-from jesinia.apps.review.application.knowledge import KnowledgeService
+from jesinia.apps.review.application.knowledge import VIEW_LIMIT, KnowledgeService
 from jesinia.apps.review.application.pipeline import OpenResult, Pipeline
 from jesinia.apps.review.application.posting import PostingFailed, PostingService
 from jesinia.apps.review.application.queue import QueueService
@@ -608,12 +608,15 @@ def build_router(host: ReviewHost) -> APIRouter:
     @r.get("/knowledge", response_model=KnowledgeOut)
     async def get_knowledge(
         repo: Annotated[str | None, Query(max_length=REPO_MAX)] = None,
+        offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
+        limit: Annotated[int, Query(ge=1, le=VIEW_LIMIT)] = VIEW_LIMIT,
     ) -> Response:
         """What Jesinia thinks you know (spec §6.1): each unit with a record or a correction,
-        its familiarity and why. Derived data, from the cache only."""
+        its familiarity and why, one page at a time (``truncated``: more follow). Derived
+        data, from the cache only."""
 
         async def run() -> KnowledgeOut:
-            return KnowledgeOut.of(host.knowledge.view(repo))
+            return KnowledgeOut.of(host.knowledge.view(repo, limit=limit, offset=offset))
 
         return await _respond(run)
 

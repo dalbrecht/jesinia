@@ -1143,6 +1143,7 @@ def test_parse_commit_log_reads_by_structure_and_skips_what_it_cannot(
     )  # fmt: skip
     assert commits[1].files == () and commits[2].files == (("ok.py", 6),)
     assert caplog.text.count("skipping an unreadable commit record") == 2
+    assert "not-a-sha" not in caplog.text and "me@x" not in caplog.text  # M2: no content
     assert parse_commit_log(b"") == [] and parse_commit_log(b"garbage") == []
 
 

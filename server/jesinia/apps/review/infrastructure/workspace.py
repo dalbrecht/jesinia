@@ -836,10 +836,11 @@ def parse_commit_log(data: bytes, *, complete: bool = True) -> list[LoggedCommit
             stray = position
             while position < count and tokens[position]:
                 position += 1
+            # Counts only: a stray field can be a commit's email (M2).
             log.warning(
-                "skipping an unreadable commit record: %d stray fields from %r",
+                "skipping an unreadable commit record: %d stray fields at field %d",
                 position - stray,
-                tokens[stray][:40],
+                stray,
             )
             continue
         position += 1
@@ -854,7 +855,7 @@ def _parse_record(fields: list[bytes]) -> LoggedCommit | None:
         for entry in fields[4:]:
             match = _NUMSTAT.fullmatch(entry)
             if match is None:
-                raise ValueError(f"not a numstat entry: {entry[:40]!r}")
+                raise ValueError("not a numstat entry")
             added, deleted, path = match.groups()
             lines = sum(int(n) for n in (added, deleted) if n != b"-")
             files.append((path.decode(errors="replace"), lines))
@@ -866,7 +867,8 @@ def _parse_record(fields: list[bytes]) -> LoggedCommit | None:
             datetime.fromisoformat(landed),
         )
     except (ValueError, WorkspaceError) as exc:  # UnicodeDecodeError is a ValueError
-        log.warning("skipping an unreadable commit record: %s", exc)
+        # The kind only: a misaligned field could be an email, and messages quote fields (M2).
+        log.warning("skipping an unreadable commit record: %s", type(exc).__name__)
         return None
 
 

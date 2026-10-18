@@ -843,16 +843,21 @@ class UnitOut(BaseModel):
 
 
 class KnowledgeOut(BaseModel):
-    """What Jesinia thinks you know: units by id, at most ``VIEW_LIMIT`` of ``total``."""
+    """What Jesinia thinks you know: one page of the units, from ``offset``, of ``total``;
+    ``truncated`` when more follow."""
 
     units: list[UnitOut]
     total: int
     truncated: bool
+    offset: int = 0
 
     @classmethod
     def of(cls, view: KnowledgeView) -> KnowledgeOut:
         return cls(
-            units=[UnitOut.of(u) for u in view.units], total=view.total, truncated=view.truncated
+            units=[UnitOut.of(u) for u in view.units],
+            total=view.total,
+            truncated=view.truncated,
+            offset=view.offset,
         )
 
 

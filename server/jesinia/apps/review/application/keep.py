@@ -47,6 +47,7 @@ from jesinia.apps.review.domain.kept import (
     round_section,
     system_page_path,
     system_seed,
+    system_source,
     system_update,
 )
 from jesinia.apps.review.domain.posting import Draft, NoReviewRound, Posting
@@ -61,7 +62,7 @@ from jesinia.services.kb.domain.tags import is_valid_tag, normalise_tag
 log = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
-# The job sessions don't record the model they ran on; the marker says so.
+# Rounds from before the agent record don't say which model ran; the marker says so.
 UNKNOWN_MODEL = "unknown"
 
 
@@ -345,17 +346,28 @@ class KeepService:
     # --- How it works -------------------------------------------------------------------------
 
     async def system_page(self, repo: str) -> PageWithRev | None:
-        """The repo's ``Reviews/<owner>-<repo>/How it works.md``, if it exists and the KB
-        can be read. Two repos can share that folder (``a-b/c`` and ``a/b-c``): a page that
-        names another repo in ``jesinia.repo`` isn't this repo's."""
+        """The repo's How it works page, if it exists and the KB can be read: the
+        ``review/system`` page whose source is this repo's (``system_source``), wherever it
+        now lives, else ``Reviews/<owner>-<repo>/How it works.md``. Two repos can share that
+        folder (``a-b/c`` and ``a/b-c``): a page that names another repo in ``jesinia.repo``
+        isn't this repo's, and its seed (written under a free name) is found by its source
+        (N3)."""
         if self._kb.files is None:
             return None
+        canonical = canonical_repo(repo)
+        for page_id in self._kb.index.pages_by_source(system_source(canonical)):
+            found = await self._kb.read(page_id)
+            meta = found.page.jesinia
+            owner = meta.get("repo")
+            if meta.get("kind") == SYSTEM_KIND and isinstance(owner, str):
+                if owner.lower() == canonical:
+                    return found
         row = self._kb.index.by_path(system_page_path(repo))
         if row is None:
             return None
         page = await self._kb.read(row.id)
         owner = page.page.jesinia.get("repo")
-        if isinstance(owner, str) and owner.lower() != canonical_repo(repo):
+        if isinstance(owner, str) and owner.lower() != canonical:
             log.warning("review.keep %s is %s's How it works, not %s's", row.path, owner, repo)
             return None
         return page
@@ -479,7 +491,8 @@ class KeepService:
                     SYSTEM_PAGE_TITLE,
                     repo_folder(repo),
                     draft.text,
-                    {"kind": SYSTEM_KIND, "repo": repo},
+                    # The source finds the page again wherever it lands (N3).
+                    {"kind": SYSTEM_KIND, "repo": repo, "source": system_source(repo)},
                 )
             )
         if current is None or current.rev != draft.base_rev:

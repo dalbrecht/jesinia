@@ -92,9 +92,16 @@ class KEnv:
     keeper: KeepService
     ref: PrRef
 
-    def round(self, depth: str = "deep", *, head: str = HEAD, background: bool = True) -> int:
+    def round(
+        self,
+        depth: str = "deep",
+        *,
+        head: str = HEAD,
+        background: bool = True,
+        ref: PrRef | None = None,
+    ) -> int:
         """A finished round with the jobs' artifacts, as a pre-review and opening leave it."""
-        round_id = self.store.start_round(self.ref, head, "b" * 40, depth, self.clock())  # type: ignore[arg-type]
+        round_id = self.store.start_round(ref or self.ref, head, "b" * 40, depth, self.clock())  # type: ignore[arg-type]
         put = self.store.put_artifact
         put(round_id, "overview", {"summary": "s", "purpose": "Merges edits.", "sources": []})
         steps = [{"title": "Merge on conflict", "body": "b", "hunks": [{"path": "a", "hunk": 0}]}]
@@ -989,3 +996,129 @@ async def test_a_session_that_cant_be_read_records_no_model(
     record = env.store.artifacts[(11, "overview_agent")]
     assert isinstance(record, dict) and record["model"] is None
     assert "couldn't read session" in caplog.text
+
+
+# --- PR 5 final fix wave ---------------------------------------------------------------------
+
+
+async def test_colliding_repos_each_seed_how_it_works_once(kenv: KEnv) -> None:
+    """N3: ``a-b/c`` and ``a/b-c`` share ``Reviews/a-b-c/``: each repo's page is found again
+    by its own record, so a later deep review offers an update, never another seed."""
+    first, second = PrRef("a-b/c", 1), PrRef("a/b-c", 2)
+    for ref in (first, second):
+        round_id = kenv.round(ref=ref, head=f"{ref.number}" * 40)
+        kenv.store.mark_round_done(round_id)
+        await kenv.keeper.keep_finished(round_id)
+        seed = SystemDraft.from_json(kenv.store.artifact(round_id, SYSTEM_DRAFT))
+        assert seed is not None and seed.kind == "seed"
+        written = await kenv.keeper.accept_system_update(ref, round_id, None)
+        assert written.page.jesinia["repo"] == ref.repo
+        found = await kenv.keeper.system_page(ref.repo)
+        assert found is not None and found.page.id == written.page.id
+    kenv.clock.advance(60)
+    for ref in (first, second):
+        later = kenv.round(ref=ref, head="e" * 40)
+        kenv.post(later, "APPROVE")
+        await kenv.keeper.keep_finished(later)
+        update = SystemDraft.from_json(kenv.store.artifact(later, SYSTEM_DRAFT))
+        assert update is not None and update.kind == "update"
+    systems = [p for p in kenv.pages() if p.name.startswith("How it works")]
+    assert len(systems) == 2
+
+
+async def test_a_hung_keep_never_holds_up_stop(
+    cfg: Config, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N2: stop() waits at most ``KEEP_STOP_SECONDS`` for keeps in flight, cancels the rest
+    (logged), and starts no keep once stopping."""
+    from jesinia.apps.review import module as module_module
+
+    monkeypatch.setattr(module_module, "KEEP_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(module_module, "KEEP_STOP_SECONDS", 0.05)
+    root = tmp_path / "kb"
+    root.mkdir()
+    kb_conn = open_db(tmp_path / "kbdata", KB_DB)
+    module = ReviewModule()
+    try:
+        kb = KbService(LocalFiles(root), SqliteIndex(kb_conn), EventBus())
+        services: dict[str, object] = {"kb": kb, "tags": TagService(kb, None)}
+        await module.start(AppContext(cfg, EventBus(), Scheduler(), services))
+        hang = asyncio.Event()
+
+        async def hung(round_id: int) -> None:
+            await hang.wait()
+
+        monkeypatch.setattr(module.keeper, "keep_finished", hung)
+        await module.keep_finished(1)  # the bounded wait gives up; the keep goes on
+        stop = asyncio.get_running_loop().time()
+        with caplog.at_level(logging.WARNING):
+            await asyncio.wait_for(module.stop(), 2)
+        assert asyncio.get_running_loop().time() - stop < 1
+        assert "cancelled 1 keep" in caplog.text
+        await module.keep_finished(2)  # stopped: nothing starts, nothing fails
+    finally:
+        kb_conn.close()
+
+
+async def test_a_keep_failing_in_the_background_is_logged(
+    cfg: Config, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N2: a keep that fails after the caller stopped waiting is logged, never lost."""
+    from jesinia.apps.review import module as module_module
+
+    monkeypatch.setattr(module_module, "KEEP_WAIT_SECONDS", 0.01)
+    root = tmp_path / "kb"
+    root.mkdir()
+    kb_conn = open_db(tmp_path / "kbdata", KB_DB)
+    module = ReviewModule()
+    try:
+        kb = KbService(LocalFiles(root), SqliteIndex(kb_conn), EventBus())
+        await module.start(
+            AppContext(cfg, EventBus(), Scheduler(), {"kb": kb, "tags": TagService(kb, None)})
+        )
+        go = asyncio.Event()
+
+        async def late_failure(round_id: int) -> None:
+            await go.wait()
+            raise RuntimeError("the KB went away")
+
+        monkeypatch.setattr(module.keeper, "keep_finished", late_failure)
+        await module.keep_finished(1)
+        with caplog.at_level(logging.WARNING):
+            go.set()
+            for _ in range(20):
+                await asyncio.sleep(0)
+        assert "the KB went away" in caplog.text
+        await module.stop()
+    finally:
+        kb_conn.close()
+
+
+async def test_posting_starts_the_keep_without_waiting_for_it(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M5: a post hands its round on and returns; the keep runs in the background."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    kb_conn = open_db(tmp_path / "kbdata", KB_DB)
+    module = ReviewModule()
+    try:
+        kb = KbService(LocalFiles(root), SqliteIndex(kb_conn), EventBus())
+        await module.start(
+            AppContext(cfg, EventBus(), Scheduler(), {"kb": kb, "tags": TagService(kb, None)})
+        )
+        hang = asyncio.Event()
+        started: list[int] = []
+
+        async def slow(round_id: int) -> None:
+            started.append(round_id)
+            await hang.wait()
+
+        monkeypatch.setattr(module.keeper, "keep_finished", slow)
+        await asyncio.wait_for(module.keep_in_background(7), 0.5)
+        await asyncio.sleep(0)
+        assert started == [7]
+        hang.set()
+        await module.stop()
+    finally:
+        kb_conn.close()

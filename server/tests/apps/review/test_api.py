@@ -1100,6 +1100,7 @@ async def test_knowledge_lists_units_and_takes_overrides(env: Env) -> None:
         "units": [],
         "total": 0,
         "truncated": False,
+        "offset": 0,
     }
     key = keyed()
     put = await env.client.put(
@@ -1169,3 +1170,16 @@ async def test_a_metric_of_any_size_is_bounded_before_the_domain_sees_it(env: En
             "repos": [{"repo": "acme/web", "watched": True, "metrics": ["x" * 2000]}]}  # fmt: skip
     response = await env.client.put(f"{API}/settings", json=body, headers=keyed())
     assert response.status_code == 422
+
+
+async def test_knowledge_pages_through_every_unit(env: Env) -> None:
+    """I4: past the first page, every unit can be reached (offset and limit)."""
+    for unit in ("repo/acme/web/a", "repo/acme/web/b", "repo/acme/zed/c"):
+        await env.client.put(f"{API}/knowledge/{unit}", json={"override": "known"}, headers=keyed())
+    first = (await env.client.get(f"{API}/knowledge", params={"limit": 2})).json()
+    assert [u["unit"] for u in first["units"]] == ["repo/acme/web/a", "repo/acme/web/b"]
+    assert first["truncated"] and first["total"] == 3 and first["offset"] == 0
+    rest = (await env.client.get(f"{API}/knowledge", params={"limit": 2, "offset": 2})).json()
+    assert [u["unit"] for u in rest["units"]] == ["repo/acme/zed/c"] and not rest["truncated"]
+    bad = await env.client.get(f"{API}/knowledge", params={"limit": 0})
+    assert bad.status_code == 422

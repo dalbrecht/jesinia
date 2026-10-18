@@ -243,6 +243,17 @@ def system_page_path(repo: str) -> PurePosixPath:
     return repo_folder(repo) / f"{SYSTEM_PAGE_TITLE}.md"
 
 
+def system_source(repo: str) -> str:
+    """The ``jesinia.source`` a How it works page carries: it finds the repo's page again
+    wherever it lives, even under a free name when two repos share a folder (N3).
+
+    Raises:
+        InvalidRepoError: ``repo`` isn't ``owner/name``.
+    """
+    owner, name = parse_repo(repo)
+    return f"https://github.com/{owner}/{name}#how-it-works"
+
+
 def review_title(number: int, title: str) -> str:
     """``#<n> <title>``, on one line and bounded."""
     clean = " ".join(title.split())[:TITLE_MAX] or "Untitled"

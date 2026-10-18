@@ -268,6 +268,8 @@ class Coverage:
     complete: bool = True
     incomplete_reason: str | None = None
     not_walked_total: int = 0
+    # Files with any changed line covered, in diff order: what the review actually read.
+    covered_paths: tuple[str, ...] = ()
 
     @property
     def nothing_to_walk(self) -> bool:
@@ -597,6 +599,7 @@ def _summarise(
     not_walked: list[Skip] = []
     total_not_walked = files_covered = auto_skipped = unchanged_files = 0
     deleted_lines = deleted_covered = 0
+    covered_paths: list[str] = []
 
     def left_out(skip: Skip) -> None:
         nonlocal total_not_walked
@@ -614,6 +617,8 @@ def _summarise(
             if (f, h) in diff.unchanged:
                 left_out(Skip(diff_file.path, diff.cited_index(f, h), "unchanged"))
         walked = {h: covered.get((f, h), 0) for h in live}
+        if any(walked.values()):
+            covered_paths.append(diff_file.path)
         live_lines = diff.live_lines(f)
         auto = None if any(walked.values()) else _auto_reason(diff_file)
         if diff_file.status == "deleted" and auto is None:
@@ -661,6 +666,7 @@ def _summarise(
         complete=diff.complete,
         incomplete_reason=diff.incomplete_reason,
         not_walked_total=total_not_walked,
+        covered_paths=tuple(covered_paths),
     )
 
 

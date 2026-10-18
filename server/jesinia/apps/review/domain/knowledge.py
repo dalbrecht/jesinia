@@ -62,9 +62,9 @@ KIND_WEIGHTS: Mapping[ExposureKind, float] = {
     "quiz_pass": 0.6,
     "quiz_fail": 0.0,
 }
-# The plan's weight for a KB page, deferred (R84): a page in the KB isn't necessarily the
-# author's (clipped articles, other people's notes, agent output), so no page is evidence.
-DEFERRED_KIND_WEIGHTS: Mapping[str, float] = {"kb_page": 0.5}
+# The plan's weight for a KB page (0.5) is deferred (R84): a page in the KB isn't
+# necessarily the author's (clipped articles, other people's notes, agent output), so no
+# page is evidence.
 CHANGE_SCALE = 200
 # What commits alone can add up to: below the quick threshold (R80).
 COMMIT_RECENCY_CAP = LOW_FAMILIARITY - 0.05
@@ -233,10 +233,13 @@ def unit_of_file(repo: str, file_path: str) -> Unit:
 
 @dataclass(frozen=True)
 class Exposure:
-    """One signal about one unit: what it was and when."""
+    """One signal about one unit: what it was and when. ``direct``: the signal touched the
+    unit's own files (it is a touched file's deepest unit); otherwise it reached the unit
+    only through a folder below it (I2)."""
 
     kind: ExposureKind
     at: datetime
+    direct: bool = True
 
 
 @dataclass(frozen=True)
@@ -333,8 +336,16 @@ def distance(unit: Unit, top: Iterable[Unit]) -> float:
 
 
 def has_evidence(exposures: Iterable[Exposure]) -> bool:
-    """Whether any exposure carries weight: the unit is then scored on its own (R82)."""
-    return last_exposure(exposures) is not None
+    """Whether any direct exposure carries weight: the unit is then scored on its own
+    (R82); activity only in folders below it is not evidence for it (I2)."""
+    return last_exposure(e for e in exposures if e.direct) is not None
+
+
+def scored_exposures(exposures: Sequence[Exposure]) -> tuple[Exposure, ...]:
+    """What a unit is scored on, and changes counted from: its direct exposures when it has
+    evidence of its own, else all of them (they feed only the capped prior)."""
+    direct = tuple(e for e in exposures if e.direct)
+    return direct if has_evidence(direct) else tuple(exposures)
 
 
 def familiarity(
@@ -364,9 +375,12 @@ def familiarity(
         return 1.0 if record.override == "known" else 0.0
     changed = changes_since_last / (changes_since_last + CHANGE_SCALE)
     if has_evidence(record.exposures):
-        base = recency(record.exposures, now)
+        base = recency(tuple(e for e in record.exposures if e.direct), now)
     else:
-        base = min(prior * (1.0 - distance), NOVEL_PRIOR_CAP)
+        # A novel area, or one known only through folders below it (I2): a prior, capped
+        # below quick (R83).
+        aggregate = recency(record.exposures, now)
+        base = min(max(aggregate, prior * (1.0 - distance)), NOVEL_PRIOR_CAP)
     return base * (1.0 - changed)
 
 
@@ -391,15 +405,18 @@ def churn_by_prefix(files: Iterable[tuple[str, int]]) -> dict[str, int]:
     return churn
 
 
-def quiz_kind(right: int, answered: int) -> ExposureKind:
-    """``quiz_pass`` with at least ``QUIZ_PASS_SHARE`` of the answered questions right.
+def quiz_kind(right: int, answered: int, questions: int | None = None) -> ExposureKind:
+    """``quiz_pass`` with at least ``QUIZ_PASS_SHARE`` of the quiz's ``questions`` right, a
+    skipped question counting as not right (M1); over the answered ones when the count of
+    questions isn't known.
 
     Raises:
         KnowledgeInputError: nothing answered, or counts no quiz can produce.
     """
     if not 0 < answered <= QUIZ_MAX_QUESTIONS or not 0 <= right <= answered:
         raise KnowledgeInputError(f"not a quiz result: {right} right of {answered} answered")
-    return "quiz_pass" if right >= QUIZ_PASS_SHARE * answered else "quiz_fail"
+    out_of = max(answered, questions or 0)
+    return "quiz_pass" if right >= QUIZ_PASS_SHARE * out_of else "quiz_fail"
 
 
 @dataclass(frozen=True)

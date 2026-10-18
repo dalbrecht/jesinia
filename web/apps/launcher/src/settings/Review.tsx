@@ -484,35 +484,69 @@ function KnowledgeRow({ unit, correct }: { unit: Unit; correct: (unit: Unit, to:
   );
 }
 
+/** Units read per page: every unit stays reachable through "Show more" (I4). */
+const KNOWLEDGE_PAGE = 200;
+
 function KnowledgePanel() {
   const client = useClient();
   const toast = useToast();
   const [knowledge, setKnowledge] = useState<Knowledge | null>(null);
   const [loadError, setLoadError] = useState<Load | null>(null);
   const [attemptNo, setAttemptNo] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const shown = useRef(0);
+  shown.current = knowledge?.units.length ?? 0;
+
+  /** Pages from `from` until `count` units are read or none follow; a failure as a Load. */
+  const readPages = useCallback(
+    async (from: number, count: number): Promise<Knowledge | Load> => {
+      let units: Unit[] = [];
+      let page: Knowledge | null = null;
+      while (units.length < count) {
+        const offset = from + units.length;
+        const limit = Math.min(KNOWLEDGE_PAGE, count - units.length);
+        try {
+          const r = await client.GET("/api/review/knowledge", { params: { query: { offset, limit } } });
+          if (!r.data) return { cause: errorText(r.error, `HTTP ${r.response.status}`), answered: true };
+          page = r.data;
+        } catch (e) {
+          return { cause: unreachable(e), answered: false };
+        }
+        units = [...units, ...page.units];
+        if (!page.truncated || page.units.length < limit) break; // the last page, or a short one
+      }
+      return { ...(page as Knowledge), units, offset: from, truncated: from + units.length < (page?.total ?? 0) };
+    },
+    [client],
+  );
 
   // Only the newest read lands: a reload that answers late never overwrites a newer list.
   const latestRead = useRef(0);
-  /** Read the model; `again`: after a correction, when a failure keeps the list shown. */
+  /** Read the model; `again`: after a correction (the pages shown so far, read again), when
+   * a failure keeps the list shown. */
   const load = useCallback(
     async (again = false) => {
       const read = ++latestRead.current;
-      const fail = (load: Load) => {
-        if (read !== latestRead.current) return;
-        if (again) toast.show({ tone: "danger", message: `Couldn't read the knowledge model again: ${load.cause}` });
-        else setLoadError(load);
-      };
-      try {
-        const r = await client.GET("/api/review/knowledge");
-        if (r.data) {
-          if (read === latestRead.current) setKnowledge(r.data);
-        } else fail({ cause: errorText(r.error, `HTTP ${r.response.status}`), answered: true });
-      } catch (e) {
-        fail({ cause: unreachable(e), answered: false });
-      }
+      const result = await readPages(0, again ? Math.max(shown.current, KNOWLEDGE_PAGE) : KNOWLEDGE_PAGE);
+      if (read !== latestRead.current) return;
+      if ("units" in result) setKnowledge(result);
+      else if (again)
+        toast.show({ tone: "danger", message: `Couldn't read the knowledge model again: ${result.cause}` });
+      else setLoadError(result);
     },
-    [client, toast],
+    [readPages, toast],
   );
+
+  const showMore = async () => {
+    if (!knowledge) return;
+    setLoadingMore(true);
+    const read = latestRead.current;
+    const result = await readPages(knowledge.units.length, KNOWLEDGE_PAGE);
+    setLoadingMore(false);
+    if (read !== latestRead.current) return; // a newer full read replaced the list
+    if ("units" in result) setKnowledge((k) => k && { ...result, units: [...k.units, ...result.units], offset: 0 });
+    else toast.show({ tone: "danger", message: `Couldn't read more of the knowledge model: ${result.cause}` });
+  };
   useEffect(() => {
     setLoadError(null);
     void load();
@@ -563,7 +597,16 @@ function KnowledgePanel() {
             </ul>
           )}
           {knowledge.truncated ? (
-            <p className={s.muted}>{`Showing ${knowledge.units.length} of ${knowledge.total} areas.`}</p>
+            <div className={s.inline}>
+              <p className={s.muted}>{`Showing ${knowledge.units.length} of ${knowledge.total} areas.`}</p>
+              {loadingMore ? (
+                <span className={s.muted}>Loading more…</span>
+              ) : (
+                <Button size="sm" variant="secondary" onClick={() => void showMore()}>
+                  Show more
+                </Button>
+              )}
+            </div>
           ) : null}
         </div>
       )}

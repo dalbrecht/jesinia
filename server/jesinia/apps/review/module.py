@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import secrets
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -65,6 +68,10 @@ RECONCILE_INTERVAL = timedelta(minutes=5)
 # How long a post or Done waits for its review page before answering; the keep goes on in
 # the background past that (the PWA reads the round's ``kept`` record when it re-reads).
 KEEP_WAIT_SECONDS = 10.0
+# How long stop() waits for keeps in flight before cancelling them (N2).
+KEEP_STOP_SECONDS = 15.0
+# The per-install secret the knowledge model's emails digest is keyed with (M3).
+KNOWLEDGE_KEY_FILE = "knowledge.key"
 
 
 def _not_started() -> HTTPException:
@@ -73,6 +80,27 @@ def _not_started() -> HTTPException:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _log_keep_failure(round_id: int, task: asyncio.Task[object]) -> None:
+    """A keep's own errors are caught inside it; anything else is logged, never lost."""
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        log.warning("review.keep round=%d failed in the background: %s", round_id, exc,
+                    exc_info=exc)  # fmt: skip
+
+
+def _knowledge_key(data_dir: Path) -> bytes:
+    """The per-install secret for the emails digest (M3): made once, readable by the user
+    only."""
+    path = data_dir / "review" / KNOWLEDGE_KEY_FILE
+    if path.is_file():
+        return path.read_bytes()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as out:
+        out.write(key)
+    return key
 
 
 class ReviewModule:
@@ -98,6 +126,7 @@ class ReviewModule:
         self._knowledge: KnowledgeService | None = None
         self._keeper: KeepService | None = None
         self._keeps: set[asyncio.Task[object]] = set()
+        self._stopping = False
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -198,16 +227,30 @@ class ReviewModule:
             raise _not_started()
         return self._keeper
 
-    async def keep_finished(self, round_id: int) -> None:
-        """Keep a finished deep round's KB page (spec §8): best effort, so posting and Done
-        never fail on it, and bounded, so they never wait on a slow KB for more than
-        ``KEEP_WAIT_SECONDS`` (the keep then finishes in the background). Without the KB
-        nothing is kept."""
-        if self._keeper is None:
-            return
+    def _start_keep(self, round_id: int) -> asyncio.Task[object] | None:
+        """Start keeping a round's KB page, tracked so stop() can wait for it; none without
+        the KB or once stopping (N2). A failure that lands after nobody waits is logged."""
+        if self._keeper is None or self._stopping:
+            return None
         task: asyncio.Task[object] = asyncio.create_task(self._keeper.keep_finished(round_id))
         self._keeps.add(task)
         task.add_done_callback(self._keeps.discard)
+        task.add_done_callback(lambda done: _log_keep_failure(round_id, done))
+        return task
+
+    async def keep_in_background(self, round_id: int) -> None:
+        """Hand a posted round on to be kept, without waiting (M5: a stack's Post all posts
+        PR after PR, and must not wait on the KB for each)."""
+        self._start_keep(round_id)
+
+    async def keep_finished(self, round_id: int) -> None:
+        """Keep a finished deep round's KB page (spec §8): best effort, so Done never fails
+        on it, and bounded, so it never waits on a slow KB for more than
+        ``KEEP_WAIT_SECONDS`` (the keep then finishes in the background). Without the KB
+        nothing is kept."""
+        task = self._start_keep(round_id)
+        if task is None:
+            return
         try:
             await asyncio.wait_for(asyncio.shield(task), KEEP_WAIT_SECONDS)
         except TimeoutError:
@@ -269,6 +312,7 @@ class ReviewModule:
         return [*build_tools(self), *build_review_tools(self)]
 
     async def start(self, ctx: AppContext) -> None:
+        self._stopping = False
         self._conn = open_db(ctx.cfg.data_dir, REVIEW_DB)
         self._workspace = GitWorkspace(
             ctx.cfg.data_dir / "review" / "repos", self._remote_url or github_remote_url
@@ -312,6 +356,7 @@ class ReviewModule:
             workspace=self._workspace,
             identity=PrClient(github) if isinstance(github, GitHubService) else None,
             repos=knowledge_repos,
+            email_key=_knowledge_key(ctx.cfg.data_dir),
         )
         ctx.scheduler.every(KNOWLEDGE_JOB, KNOWLEDGE_INTERVAL, self.ingest_knowledge, at_start=True)
         reviews = isinstance(agents, SessionService) and isinstance(github, GitHubService)
@@ -363,7 +408,7 @@ class ReviewModule:
                 files=self._queue,
                 store=store,
                 clock=_utc_now,
-                on_posted=self.keep_finished,
+                on_posted=self.keep_in_background,
             )
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_queue, at_start=True)
             ctx.scheduler.every(
@@ -404,8 +449,14 @@ class ReviewModule:
                     log.info("marked stack jobs of %d stack reviews interrupted", swept)
 
     async def stop(self) -> None:
-        if self._keeps:  # a keep in flight finishes (each is bounded by the KB's own I/O)
-            await asyncio.gather(*self._keeps, return_exceptions=True)
+        self._stopping = True  # no keep starts from here on (N2)
+        if self._keeps:  # keeps in flight get a bounded wait, then are cancelled
+            _, pending = await asyncio.wait(set(self._keeps), timeout=KEEP_STOP_SECONDS)
+            if pending:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                log.warning("review.keep stop cancelled %d keep(s) still running", len(pending))
         if self._scheduler is not None:
             self._scheduler.pause()  # cancelling an open frees a slot: nothing may take it
         if self._stacks is not None:

@@ -481,7 +481,41 @@ describe("What Jesinia thinks you know", () => {
   });
 
   it("notes a cut list", async () => {
-    renderReview({ "GET /api/review/knowledge": { units: UNITS, total: 900, truncated: true } });
+    renderReview({ "GET /api/review/knowledge": { units: UNITS, total: 900, truncated: true, offset: 0 } });
     expect(await (await knowledge()).findByText("Showing 4 of 900 areas.")).toBeInTheDocument();
+  });
+
+  it("reaches every unit page by page, and a later page's unit can be corrected (I4)", async () => {
+    const all: Unit[] = [
+      ...Array.from({ length: 300 }, (_, i) =>
+        unit({ unit: `repo/acme/api/a${i}`, repo: "acme/api", path: `a${i}`, familiarity: 0.5 }),
+      ),
+      ...Array.from({ length: 300 }, (_, i) =>
+        unit({ unit: `repo/acme/web/w${i}`, repo: "acme/web", path: `w${i}`, familiarity: 0.5 }),
+      ),
+    ];
+    const calls = renderReview({
+      "GET /api/review/knowledge": (request: Request) => {
+        const url = new URL(request.url);
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        const limit = Number(url.searchParams.get("limit") ?? 500);
+        const units = all.slice(offset, offset + limit);
+        return Response.json({ units, total: all.length, truncated: offset + units.length < all.length, offset });
+      },
+      "PUT /api/review/knowledge/repo/acme/web/w299": () =>
+        Response.json({ ...all[599], familiarity: 1, override: "known", override_unit: "repo/acme/web/w299" }),
+    });
+    const known = await knowledge();
+    expect(await known.findByText(/Showing \d+ of 600 areas\./)).toBeInTheDocument();
+    expect(known.queryByRole("listitem", { name: "acme/web / w299" })).toBeNull();
+    while (known.queryByRole("button", { name: "Show more" })) {
+      await userEvent.click(known.getByRole("button", { name: "Show more" }));
+      await waitFor(() => expect(known.queryByText(/Loading more/)).toBeNull());
+    }
+    const last = within(await known.findByRole("listitem", { name: "acme/web / w299" }));
+    await userEvent.selectOptions(last.getByRole("combobox", { name: "Correct acme/web / w299" }), "known");
+    expect(sent(calls, "PUT", "/api/review/knowledge/repo/acme/web/w299")).toHaveLength(1);
+    const offsets = sent(calls, "GET", "/api/review/knowledge").map((r) => new URL(r.url).searchParams.get("offset"));
+    expect(offsets).toContain("200");
   });
 });

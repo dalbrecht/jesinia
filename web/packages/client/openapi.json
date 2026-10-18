@@ -14155,7 +14155,7 @@
           "review"
         ],
         "summary": "Get Knowledge",
-        "description": "What Jesinia thinks you know (spec \u00a76.1): each unit with a record or a correction,\nits familiarity and why. Derived data, from the cache only.",
+        "description": "What Jesinia thinks you know (spec \u00a76.1): each unit with a record or a correction,\nits familiarity and why, one page at a time (``truncated``: more follow). Derived\ndata, from the cache only.",
         "operationId": "get_knowledge_api_review_knowledge_get",
         "parameters": [
           {
@@ -14173,6 +14173,30 @@
                 }
               ],
               "title": "Repo"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000000,
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 500,
+              "title": "Limit"
             }
           }
         ],
@@ -17738,6 +17762,11 @@
           "truncated": {
             "type": "boolean",
             "title": "Truncated"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
           }
         },
         "type": "object",
@@ -17747,7 +17776,7 @@
           "truncated"
         ],
         "title": "KnowledgeOut",
-        "description": "What Jesinia thinks you know: units by id, at most ``VIEW_LIMIT`` of ``total``."
+        "description": "What Jesinia thinks you know: one page of the units, from ``offset``, of ``total``;\n``truncated`` when more follow."
       },
       "LabelApplyIn": {
         "properties": {

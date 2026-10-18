@@ -195,3 +195,18 @@ async def test_the_knowledge_model_starts_with_the_module(cfg: Config) -> None:
     await module.stop()
     with pytest.raises(HTTPException):
         _ = module.knowledge
+
+
+async def test_the_emails_key_is_made_once_per_install_and_kept_private(cfg: Config) -> None:
+    """M3: the knowledge model's emails digest is keyed by a per-install secret file."""
+    import stat
+
+    module = ReviewModule()
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    await module.stop()
+    key = cfg.data_dir / "review" / "knowledge.key"
+    first = key.read_bytes()
+    assert len(first) == 32 and stat.S_IMODE(key.stat().st_mode) == 0o600
+    await module.start(AppContext(cfg, EventBus(), Scheduler()))
+    await module.stop()
+    assert key.read_bytes() == first
