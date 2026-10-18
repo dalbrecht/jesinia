@@ -760,10 +760,16 @@ class QueueService:
         current = next(i for i in before.items if i.item.key == item.key)
         effective = current.pending_priority or current.priority
         staged: PendingChange | None = None
-        if effective is None or label_key(effective) != target:
-            staged = self._pending.stage(
-                item.ref.repo, item.ref.n, self._priority_change(cached, band), "queue"
-            )
+        # A band move staged earlier is replaced, never stacked: the issue gets one priority
+        # change, made against the label the first one saw.
+        earlier = self._staged_priority(item.ref.repo, item.ref.n)
+        changes = effective is None or label_key(effective) != target
+        if changes:
+            change = self._priority_change(cached, band)
+            if earlier is not None:
+                change = replace(cast(SetDimension, earlier.change), value=band)
+            if earlier is None or not self._restores(change, band):
+                staged = self._pending.stage(item.ref.repo, item.ref.n, change, "queue")
         members = next(
             (
                 [i.item.key for i in b.items]
@@ -780,7 +786,32 @@ class QueueService:
             if staged is not None:
                 self._pending.unstage(staged.id)
             raise
+        if changes and earlier is not None:
+            self._pending.unstage(earlier.id)  # replaced (or undone, back in its own band)
         return QueueAction(self._view_of(queue, moved), staged)
+
+    def _staged_priority(self, repo: str, n: int) -> PendingChange | None:
+        """The priority change a band move staged for this issue, still in the tray."""
+        return next(
+            (
+                p
+                for p in self._pending.pending()
+                if p.source == "queue"
+                and p.target is not None
+                and p.target.key == (repo.casefold(), n)
+                and isinstance(p.change, SetDimension)
+                and p.change.dimension == "priority"
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _restores(change: SetDimension, band: str) -> bool:
+        """Whether ``change`` would set the very value it was made against: moving back to the
+        issue's own band needs no change at all."""
+        return change.only_if_value is not None and label_key(change.only_if_value) == label_key(
+            band
+        )
 
     @staticmethod
     def _priority_change(cached: CachedIssue, band: str) -> SetDimension:

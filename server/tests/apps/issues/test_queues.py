@@ -993,3 +993,24 @@ async def test_a_queue_done_change_is_undone_from_its_queue_not_the_tray(env: Qu
     env.world.pending.clear()  # clears only what no queue item holds
     assert [p.id for p in env.world.pending.pending()] == [done.staged.id]
     assert other.id not in [p.id for p in env.world.pending.pending()]
+
+
+async def test_a_second_band_move_replaces_the_first_staged_priority(env: Queues) -> None:
+    await env.synced(issue(1, labels=HIGH), issue(2, labels=HIGH))
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+    env.queues.add(q, "issue", REPO, 2)
+    first = env.queues.move_to_band(q, "issue", REPO, 2, "priority: medium")
+    second = env.queues.move_to_band(q, "issue", REPO, 2, "priority: low")
+    assert first.staged is not None and second.staged is not None
+    staged = env.world.pending.pending()
+    assert [p.change for p in staged] == [
+        SetDimension("priority", "priority: low", only_if_value="priority: high")
+    ]  # one row, made against the label the cache shows, as the first was
+    back = env.queues.move_to_band(q, "issue", REPO, 2, "priority: high")
+    assert back.staged is None and env.world.pending.pending() == []  # back where it was
+    env.queues.move_to_band(q, "issue", REPO, 2, "priority: medium")
+    applied = await env.world.service.apply_pending(None)
+    assert [r.step.kind for r in applied.result.results] == ["labels"]
+    assert "priority: medium" in env.world.labels_of(2)
+    assert "priority: high" not in env.world.labels_of(2)
