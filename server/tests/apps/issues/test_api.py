@@ -1510,7 +1510,7 @@ async def test_queue_routes_map_their_errors(env: Env) -> None:
     bad_kind = await env.client.patch(
         f"{QUEUES}/{q}/items/task/acme/web/1", json={"position": 0}, headers=keyed()
     )
-    assert bad_kind.status_code == 400 and bad_kind.json()["error"] == "InvalidQueueError"
+    assert bad_kind.status_code == 422
     item = f"{QUEUES}/{q}/items/issue/acme/web/1"
     await env.client.post(f"{item}/done", json={"then": "close"}, headers=keyed())
     done = await env.client.post(f"{item}/done", json={"then": "close"}, headers=keyed())
@@ -1578,6 +1578,12 @@ async def test_a_priority_drafts_order_becomes_a_queue_over_rest(env: Env) -> No
     assert made.status_code == 200
     assert made.json()["queue"]["name"] == "Launch" and made.json()["skipped"] == []
     assert [i["n"] for i in made.json()["queue"]["items"]] == [2, 1]
+    both = await env.client.post(
+        f"{QUEUES}/from-priority",
+        json={"suggestion_id": draft.id, "name": "Again", "queue_id": "x"},
+        headers=keyed(),
+    )
+    assert both.status_code == 422
 
 
 async def test_queue_tools_are_read_only_and_fence_queue_text(env: Env) -> None:

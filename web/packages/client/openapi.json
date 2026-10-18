@@ -9175,9 +9175,12 @@
             "in": "path",
             "required": true,
             "schema": {
+              "enum": [
+                "issue",
+                "epic",
+                "milestone"
+              ],
               "type": "string",
-              "minLength": 1,
-              "maxLength": 16,
               "title": "Kind"
             }
           },
@@ -9340,9 +9343,12 @@
             "in": "path",
             "required": true,
             "schema": {
+              "enum": [
+                "issue",
+                "epic",
+                "milestone"
+              ],
               "type": "string",
-              "minLength": 1,
-              "maxLength": 16,
               "title": "Kind"
             }
           },
@@ -9497,9 +9503,12 @@
             "in": "path",
             "required": true,
             "schema": {
+              "enum": [
+                "issue",
+                "epic",
+                "milestone"
+              ],
               "type": "string",
-              "minLength": 1,
-              "maxLength": 16,
               "title": "Kind"
             }
           },
@@ -9664,9 +9673,12 @@
             "in": "path",
             "required": true,
             "schema": {
+              "enum": [
+                "issue",
+                "epic",
+                "milestone"
+              ],
               "type": "string",
-              "minLength": 1,
-              "maxLength": 16,
               "title": "Kind"
             }
           },
@@ -9821,9 +9833,12 @@
             "in": "path",
             "required": true,
             "schema": {
+              "enum": [
+                "issue",
+                "epic",
+                "milestone"
+              ],
               "type": "string",
-              "minLength": 1,
-              "maxLength": 16,
               "title": "Kind"
             }
           },
@@ -18594,7 +18609,7 @@
           "suggestion_id"
         ],
         "title": "WorkQueueFromPriorityIn",
-        "description": "Turn a priority draft's order into a queue: a new one called ``name`` (with\n``description``), or the existing ``queue_id`` (appended)."
+        "description": "Turn a priority draft's order into a queue: a new one called ``name`` (with\n``description``), or the existing ``queue_id`` (appended); exactly one of the two."
       },
       "WorkQueueIn": {
         "properties": {

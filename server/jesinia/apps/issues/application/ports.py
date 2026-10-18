@@ -631,6 +631,12 @@ class QueueStore(Protocol):
     def save_items(self, queue_id: str, items: Sequence[QueueItem]) -> None:
         """Replace the queue's items with ``items``, in one transaction."""
 
+    def save_many(self, queues: Mapping[str, Sequence[QueueItem]]) -> None:
+        """Replace several queues' items, all in one transaction."""
+
+    def items_with_pending(self, pending_id: str) -> list[tuple[str, QueueItem]]:
+        """Every done item (in any queue) whose Done staged ``pending_id``."""
+
     def open_items_for(
         self, kinds: Sequence[ItemKind], refs: Sequence[str]
     ) -> list[tuple[str, QueueItem]]:

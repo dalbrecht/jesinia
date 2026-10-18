@@ -121,6 +121,17 @@ class ItemRef:
         return self.ref
 
 
+def item_ref(kind: str, repo: str, n: int) -> ItemRef:
+    """The item ``kind`` (text from a request) names in ``repo``.
+
+    Raises:
+        InvalidQueueError: an unknown kind, a bad repo or number.
+    """
+    if kind not in ITEM_KINDS:
+        raise InvalidQueueError(f"an item is one of {', '.join(ITEM_KINDS)}")
+    return ItemRef(kind, repo, n)
+
+
 def parse_ref(kind: str, text: str) -> ItemRef:
     """The item stored as ``text`` (``owner/repo#n``) of ``kind``.
 
@@ -130,7 +141,7 @@ def parse_ref(kind: str, text: str) -> ItemRef:
     repo, sep, number = text.rpartition("#")
     if not sep or not number.isdigit():
         raise InvalidQueueError(f"{text!r} isn't owner/repo#n")
-    return ItemRef(cast(ItemKind, kind), repo, int(number))
+    return item_ref(kind, repo, int(number))
 
 
 @dataclass(frozen=True)

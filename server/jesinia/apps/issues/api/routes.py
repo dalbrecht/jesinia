@@ -102,6 +102,7 @@ from jesinia.apps.issues.domain.epics import (
     ConversionOutdatedError,
     ConversionRunningError,
     EpicDomainError,
+    ItemKind,
     NotAnEpicError,
     NothingToConvertError,
 )
@@ -260,7 +261,7 @@ Number = Annotated[int, Path(ge=1, le=999_999_999)]
 SuggestionId = Annotated[str, Path(min_length=1, max_length=64)]
 ItemId = Annotated[str, Path(min_length=1, max_length=64)]
 QueueId = Annotated[str, Path(min_length=1, max_length=64)]
-Kind = Annotated[str, Path(min_length=1, max_length=16)]
+Kind = Annotated[ItemKind, Path()]
 
 
 def retry_after(reset_at: datetime | None, now: datetime) -> int:

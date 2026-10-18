@@ -154,7 +154,9 @@ async def test_done_stages_close_or_agent_ready(env: Queues) -> None:
     assert closed.staged.change == Close("completed", comment="Done by hand")
     handed = env.queues.done(q, "issue", REPO, 2, "agent_ready")
     assert handed.staged is not None
-    assert handed.staged.change == SetDimension("readiness", "agent-ready")
+    assert handed.staged.change == SetDimension(
+        "readiness", "agent-ready", only_if_value="human-needed"
+    )
     view = env.queues.queue(q)
     assert view.items == () and [d.item.ref.n for d in view.done] == [2, 1]
     assert view.done[1].item.done_pending == closed.staged.id
@@ -750,3 +752,198 @@ async def test_unknown_suggestions_are_not_found(env: Queues) -> None:
         env.queues.approve("missing")
     with pytest.raises(SuggestionNotFoundError):
         env.queues.from_priority("missing", name="x")
+
+
+# --- fix round 1 ----------------------------------------------------------------------------------
+
+
+async def test_a_closed_issue_epic_or_milestone_is_added_already_done(env: Queues) -> None:
+    env.github.repo_milestones[REPO] = [Milestone(4, "Launch", "closed", None)]
+    await env.synced(issue(1, state="closed"), replace(epic(2), state="closed"), issue(3))
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+    env.queues.add(q, "epic", REPO, 2)
+    env.queues.add(q, "milestone", REPO, 4)
+    view = env.queues.add(q, "issue", REPO, 3)
+    assert [i.item.ref.n for i in view.items] == [3]
+    assert sorted((d.item.ref.kind, d.item.ref.n) for d in view.done) == [
+        ("epic", 2),
+        ("issue", 1),
+        ("milestone", 4),
+    ]
+    assert all(d.item.done_pending is None for d in view.done)
+    with pytest.raises(QueueItemStateError):  # nothing to close
+        env.queues.done(q, "issue", REPO, 1, "close")
+
+
+async def test_done_agent_ready_is_made_against_the_cached_readiness(env: Queues) -> None:
+    await env.synced(
+        issue(1, labels=("human-needed", "priority: high", "bug", "area:web")),
+        issue(2, labels=("bug",)),
+        issue(3, labels=("human-needed", "blocked", "bug")),
+    )
+    q = env.queues.create("Mine").queue.id
+    for n in (1, 2, 3):
+        env.queues.add(q, "issue", REPO, n)
+    changes = [env.queues.done(q, "issue", REPO, n, "agent_ready").staged for n in (1, 2, 3)]
+    assert [c.change for c in changes if c is not None] == [
+        SetDimension("readiness", "agent-ready", only_if_value="human-needed"),
+        SetDimension("readiness", "agent-ready", only_if_missing=True),
+        SetDimension("readiness", "agent-ready"),  # conflicted: the author's choice resolves it
+    ]
+
+
+async def test_done_in_two_queues_shares_one_staged_change(env: Queues) -> None:
+    await env.synced(issue(1), issue(2))
+    a = env.queues.create("Mine").queue.id
+    b = env.queues.create("Launch").queue.id
+    c = env.queues.create("Other").queue.id
+    for q in (a, b, c):
+        env.queues.add(q, "issue", REPO, 1)
+    first = env.queues.done(a, "issue", REPO, 1, "close", "one")
+    second = env.queues.done(b, "issue", REPO, 1, "close")
+    assert first.staged is not None and second.staged is not None
+    assert second.staged.id == first.staged.id and len(env.world.pending.pending()) == 1
+    with pytest.raises(QueueItemStateError):  # a second, different comment would be lost
+        env.queues.done(c, "issue", REPO, 1, "close", "two")
+    assert [i.item.ref.n for i in env.queues.queue(c).items] == [1]
+    # Undo in one queue keeps the change the other still marks done with.
+    env.queues.undo_done(a, "issue", REPO, 1)
+    assert len(env.world.pending.pending()) == 1
+    env.queues.undo_done(b, "issue", REPO, 1)
+    assert env.world.pending.pending() == []
+    # agent-ready is shared the same way.
+    env.queues.add(a, "issue", REPO, 2)
+    env.queues.add(b, "issue", REPO, 2)
+    one = env.queues.done(a, "issue", REPO, 2, "agent_ready")
+    two = env.queues.done(b, "issue", REPO, 2, "agent_ready")
+    assert one.staged is not None and two.staged is not None and one.staged.id == two.staged.id
+
+
+async def test_removing_a_done_item_or_its_queue_unstages_its_change(env: Queues) -> None:
+    await env.synced(issue(1), issue(2))
+    a = env.queues.create("Mine").queue.id
+    b = env.queues.create("Launch").queue.id
+    env.queues.add(a, "issue", REPO, 1)
+    env.queues.add(b, "issue", REPO, 2)
+    env.queues.add(b, "issue", REPO, 1)
+    env.queues.done(a, "issue", REPO, 1, "close")
+    env.queues.done(b, "issue", REPO, 1, "close")
+    env.queues.done(b, "issue", REPO, 2, "close")
+    env.queues.remove(a, "issue", REPO, 1)
+    assert len(env.world.pending.pending()) == 2  # queue b still marks #1 done with it
+    env.world.pending.unstage(env.world.pending.pending()[1].id)  # #2's left the tray already
+    env.queues.delete(b)
+    assert env.world.pending.pending() == []
+
+
+async def test_a_split_approval_saves_every_queue_or_none(env: Queues) -> None:
+    await env.synced(issue(1), issue(2))
+    a = env.queues.create("Mine").queue.id
+    b = env.queues.create("Agents").queue.id
+    env.queues.add(a, "issue", REPO, 1)
+    env.queues.add(a, "issue", REPO, 2)
+    env.agent.replies = [
+        queue_reply("split", {"repo": REPO, "number": 1, "queue": "Agents", "reason": "r"})
+    ]
+    split = await env.queues.suggest_split([a, b])
+    assert split is not None
+
+    def broken(queues: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    env.store.save_many = broken  # type: ignore[method-assign]
+    with pytest.raises(sqlite3.OperationalError):
+        env.queues.approve(split.id)
+    assert env.numbers(a) == [1, 2] and env.numbers(b) == []
+    assert env.world.drafts.suggestion(split.id).state == "draft"  # type: ignore[union-attr]
+
+
+async def test_a_band_move_that_cant_be_recorded_unstages_its_change(env: Queues) -> None:
+    await env.synced(issue(1, labels=MEDIUM))
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+
+    def broken(queue_id: str, items: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    env.store.save_items = broken  # type: ignore[method-assign]
+    with pytest.raises(sqlite3.OperationalError):
+        env.queues.move_to_band(q, "issue", REPO, 1, "priority: high")
+    assert env.world.pending.pending() == []
+
+
+async def test_from_priority_leaves_no_empty_queue_when_it_fails(env: Queues) -> None:
+    await env.synced(issue(1))
+    now = env.world.clock()
+    items = [{"repo": REPO, "n": 1, "priority": None, "current": None, "rank": 1, "reason": "r"}]
+    draft = Suggestion(
+        "p1", None, None, "priority:x", "priority", {"items": items}, "r", "draft", now, now
+    )
+    env.world.drafts.replace_scope_drafts("priority:x", "priority", [draft])
+
+    def broken(queue_id: str, items: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    env.store.save_items = broken  # type: ignore[method-assign]
+    with pytest.raises(sqlite3.OperationalError):
+        env.queues.from_priority("p1", name="Launch")
+    assert env.queues.queues() == []
+    with pytest.raises(InvalidQueueError):
+        env.queues.from_priority("p1", queue_id="x", name="Launch")
+
+
+async def test_starting_suggest_next_computes_no_readiness(env: Queues) -> None:
+    await env.synced(issue(1), epic(2))
+    q = env.queues.create("Mine").queue.id
+    calls: list[object] = []
+    readiness = env.epics.readiness
+
+    def counted(*args: object) -> object:
+        calls.append(args)
+        return readiness(*args)  # type: ignore[arg-type]
+
+    env.epics.readiness = counted  # type: ignore[method-assign, assignment]
+    env.agent.replies = [queue_reply("next")]
+    run = env.queues.start_next(q)
+    assert calls == []
+    await wait_until(lambda: env.suggest.ask_run(run.scope).status != "running")  # type: ignore[union-attr]
+    assert calls == [("epic", REPO, 2)]  # only the epic's roll-up asks the epic service
+
+
+async def test_failures_after_a_shared_or_unstaged_change_keep_the_tray(
+    env: Queues, conn: sqlite3.Connection
+) -> None:
+    await env.synced(issue(1, labels=HIGH), issue(2))
+    a = env.queues.create("Mine").queue.id
+    b = env.queues.create("Launch").queue.id
+    env.queues.add(a, "issue", REPO, 1)
+    env.queues.add(b, "issue", REPO, 1)
+    env.queues.add(b, "issue", REPO, 2)
+    env.queues.done(a, "issue", REPO, 1, "close")
+    saving = env.store.save_items
+
+    def broken(queue_id: str, items: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    env.store.save_items = broken  # type: ignore[method-assign]
+    # The close Done shares with queue a stays in the tray for queue a.
+    with pytest.raises(sqlite3.OperationalError):
+        env.queues.done(b, "issue", REPO, 1, "close")
+    assert len(env.world.pending.pending()) == 1
+    # A move within the item's own band staged nothing, so nothing is unstaged.
+    with pytest.raises(sqlite3.OperationalError):
+        env.queues.move_to_band(b, "issue", REPO, 1, "priority: high")
+    assert len(env.world.pending.pending()) == 1
+    env.store.save_items = saving  # type: ignore[method-assign]
+    conn.execute("DELETE FROM issues WHERE number = 2")
+    with pytest.raises(IssueNotCachedError):
+        env.queues.done(b, "issue", REPO, 2, "close")
+
+
+async def test_suggest_next_needs_a_candidate_when_it_runs(env: Queues) -> None:
+    await env.synced(issue(1))
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+    with pytest.raises(InvalidSuggestionFilterError):
+        await env.queues.suggest_next(q)

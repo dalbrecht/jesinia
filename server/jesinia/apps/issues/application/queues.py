@@ -53,10 +53,12 @@ from jesinia.apps.issues.domain.changes import (
 )
 from jesinia.apps.issues.domain.epics import (
     ItemKind,
+    Member,
     NotAnEpicError,
     Readiness,
     is_epic,
     is_initiative,
+    issue_readiness,
 )
 from jesinia.apps.issues.domain.queues import (
     DONE_THENS,
@@ -80,6 +82,7 @@ from jesinia.apps.issues.domain.queues import (
     find,
     insert,
     item_note,
+    item_ref,
     mark_done,
     mark_open,
     move,
@@ -470,44 +473,59 @@ class QueueService:
         return self.queue(queue_id)
 
     def delete(self, queue_id: str) -> None:
-        """Delete a queue and its items (nothing on GitHub changes).
+        """Delete a queue and its items (nothing on GitHub changes). A change its done items
+        staged leaves the tray, unless another queue's done item still holds it.
 
         Raises:
             QueueNotFoundError.
         """
         self._queue(queue_id)
+        staged = [i.done_pending for i in self._store.items(queue_id) if i.done_pending]
         self._store.delete_queue(queue_id)
         self._store.set_queue_order([q.id for q in self._store.queues()])
+        for pending_id in staged:
+            self._release(pending_id)
 
     # Items ------------------------------------------------------------------------------
 
-    def _resolve(self, kind: str, repo: str, n: int) -> ItemRef:
+    def _resolve(self, kind: str, repo: str, n: int) -> tuple[ItemRef, bool]:
         """The item as the cache knows it: an issue or epic (by the cache: an epic added as an
-        issue is an epic), spelled as GitHub spells its repo, or a cached milestone.
+        issue is an epic), spelled as GitHub spells its repo, or a cached milestone; and
+        whether it is open.
 
         Raises:
             InvalidQueueError, IssueNotCachedError, NotAnEpicError (``kind`` ``epic``, and it
             isn't one).
         """
-        asked = ItemRef(kind, repo, n)  # type: ignore[arg-type]  # checked by ItemRef
+        asked = item_ref(kind, repo, n)
         if asked.kind == "milestone":
-            return ItemRef("milestone", self._epics.milestone(repo, n).repo, n)
+            found = self._epics.milestone(repo, n)
+            return ItemRef("milestone", found.repo, n), found.milestone.state == "open"
         cached = self._cache.cached_issue(validate_repo(repo), n)
         if cached is None:
             raise IssueNotCachedError(f"{repo}#{n} is {NOT_CACHED}")
         found_epic = self._is_epic(cached)
         if asked.kind == "epic" and not found_epic:
             raise NotAnEpicError(f"{cached.issue.repo}#{n} is not an epic")
-        return ItemRef("epic" if found_epic else "issue", cached.issue.repo, n)
-
-    def _key(self, kind: str, repo: str, n: int) -> ItemKey:
-        return ItemRef(kind, repo, n).key  # type: ignore[arg-type]  # checked by ItemRef
+        ref = ItemRef("epic" if found_epic else "issue", cached.issue.repo, n)
+        return ref, cached.issue.state == "open"
 
     def _item(self, items: Sequence[QueueItem], kind: str, repo: str, n: int) -> QueueItem:
-        found = find(items, self._key(kind, repo, n))
+        asked = item_ref(kind, repo, n)
+        found = find(items, asked.key)
         if found is None:
-            raise QueueItemNotFoundError(f"{ItemRef(kind, repo, n)} isn't in the queue")  # type: ignore[arg-type]
+            raise QueueItemNotFoundError(f"{asked} isn't in the queue")
         return found
+
+    def _release(self, pending_id: str) -> None:
+        """Take a change Done staged out of the tray, unless a done item (in any queue) still
+        holds it; one that already left the tray (applied, or undone there) is fine."""
+        if self._store.items_with_pending(pending_id):
+            return
+        try:
+            self._pending.unstage(pending_id)
+        except PendingNotFoundError:
+            log.info("issues: a queue's staged change %s already left the tray", pending_id)
 
     def add(
         self,
@@ -519,15 +537,18 @@ class QueueService:
         note: str | None = None,
     ) -> QueueView:
         """Add a cached issue, epic or milestone at ``position`` among the open items (the end
-        when ``None``). Local and at once.
+        when ``None``). Local and at once. An item already closed on GitHub goes straight into
+        the Done group (spec §5.2: a closed item is marked done), with no staged change, since
+        sync would never see it close again.
 
         Raises:
             QueueNotFoundError, InvalidQueueError, IssueNotCachedError, NotAnEpicError,
             QueueItemExistsError.
         """
         queue = self._queue(queue_id)
-        ref = self._resolve(kind, repo, n)
-        made = QueueItem(ref, 0, item_note(note or ""), self._clock())
+        ref, is_open = self._resolve(kind, repo, n)
+        now = self._clock()
+        made = QueueItem(ref, 0, item_note(note or ""), now, None if is_open else now)
         items = insert(self._store.items(queue_id), made, position)
         self._store.save_items(queue_id, items)
         return self._view_of(queue, items)
@@ -563,14 +584,19 @@ class QueueService:
         return self.update_item(queue_id, kind, repo, n, position=position)
 
     def remove(self, queue_id: str, kind: str, repo: str, n: int) -> QueueView:
-        """Take an item out of the queue (nothing on GitHub changes).
+        """Take an item out of the queue (nothing on GitHub changes). A change it staged as done
+        leaves the tray, unless another queue's done item still holds it.
 
         Raises:
             QueueNotFoundError, InvalidQueueError, QueueItemNotFoundError.
         """
         queue = self._queue(queue_id)
-        items = remove(self._store.items(queue_id), self._key(kind, repo, n))
+        current = self._store.items(queue_id)
+        item = self._item(current, kind, repo, n)
+        items = remove(current, item.key)
         self._store.save_items(queue_id, items)
+        if item.done_pending is not None:
+            self._release(item.done_pending)
         return self._view_of(queue, items)
 
     def _writable(self, items: Sequence[QueueItem], kind: str, repo: str, n: int) -> QueueItem:
@@ -609,24 +635,74 @@ class QueueService:
             raise InvalidQueueError("a comment goes with closing the issue only")
         items = self._store.items(queue_id)
         item = self._writable(items, kind, repo, n)
-        change: IssueChange = (
-            Close("completed", comment=text)
-            if then == "close"
-            else SetDimension("readiness", AGENT_READY)
-        )
-        staged = self._pending.stage(item.ref.repo, item.ref.n, change, "queue")
+        cached = self._cache.cached_issue(item.ref.repo, item.ref.n)
+        if cached is None:
+            raise IssueNotCachedError(f"{item.ref} is {NOT_CACHED}")
+        shared = self._staged_done(item.ref, then, text)
+        if shared is not None:
+            staged, is_new = shared, False
+        else:
+            change: IssueChange = (
+                Close("completed", comment=text)
+                if then == "close"
+                else self._readiness_change(cached)
+            )
+            staged = self._pending.stage(item.ref.repo, item.ref.n, change, "queue")
+            is_new = True
         marked = mark_done(items, item.key, self._clock(), staged.id)
         try:
             self._store.save_items(queue_id, marked)
         except Exception:
             # Done is one action: without the local mark, the staged change goes too.
-            self._pending.unstage(staged.id)
+            if is_new:
+                self._pending.unstage(staged.id)
             raise
         return QueueAction(self._view_of(queue, marked), staged)
 
+    def _staged_done(self, ref: ItemRef, then: DoneThen, text: str | None) -> PendingChange | None:
+        """The change Done already staged for this issue (from another queue, say), which this
+        Done shares: the engine applies one close (and one comment) per issue, so a second close
+        would silently replace the first one's comment.
+
+        Raises:
+            QueueItemStateError: a close with another comment is staged already.
+        """
+        key = (ref.repo.casefold(), ref.n)
+        for found in self._pending.pending():
+            if found.target.key != key:
+                continue
+            change = found.change
+            if then == "close" and isinstance(change, Close):
+                if text is not None and change.comment != text:
+                    raise QueueItemStateError(
+                        f"closing {ref} is staged already with another comment; edit or undo "
+                        "that change in the tray first"
+                    )
+                return found
+            if (
+                then == "agent_ready"
+                and isinstance(change, SetDimension)
+                and change.dimension == "readiness"
+                and label_key(change.value) == label_key(AGENT_READY)
+            ):
+                return found
+        return None
+
+    @staticmethod
+    def _readiness_change(cached: CachedIssue) -> SetDimension:
+        """agent-ready, made against the readiness the cache shows (like a band move): a change
+        on GitHub since is a conflict at apply time, not an overwrite."""
+        triaged = cached.triage
+        if any(c.split(":", 1)[0] == "readiness" for c in triaged.conflicts):
+            return SetDimension("readiness", AGENT_READY)  # the author's choice resolves it
+        if triaged.readiness is None:
+            return SetDimension("readiness", AGENT_READY, only_if_missing=True)
+        return SetDimension("readiness", AGENT_READY, only_if_value=triaged.readiness)
+
     def undo_done(self, queue_id: str, kind: str, repo: str, n: int) -> QueueView:
         """Undo Done: the item is open again, in its old place, and the change Done staged
-        leaves the tray if it is still there (once applied, GitHub keeps it).
+        leaves the tray if it is still there (once applied, GitHub keeps it) and no other
+        queue's done item shares it.
 
         Raises:
             QueueNotFoundError, QueueItemNotFoundError, QueueItemStateError (it isn't done).
@@ -635,12 +711,9 @@ class QueueService:
         items = self._store.items(queue_id)
         item = self._item(items, kind, repo, n)
         reopened = mark_open(items, item.key)
-        if item.done_pending is not None:
-            try:
-                self._pending.unstage(item.done_pending)
-            except PendingNotFoundError:
-                log.info("issues: undoing %s, its staged change already left the tray", item.ref)
         self._store.save_items(queue_id, reopened)
+        if item.done_pending is not None:
+            self._release(item.done_pending)
         return self._view_of(queue, reopened)
 
     def move_to_band(
@@ -690,7 +763,13 @@ class QueueService:
             [],
         )
         moved = move(items, item.key, band_position(items, item.key, members, position))
-        self._store.save_items(queue_id, moved)
+        try:
+            self._store.save_items(queue_id, moved)
+        except Exception:
+            # One action, like Done: without the new order, the staged label goes too.
+            if staged is not None:
+                self._pending.unstage(staged.id)
+            raise
         return QueueAction(self._view_of(queue, moved), staged)
 
     @staticmethod
@@ -805,7 +884,15 @@ class QueueService:
             ref = ItemRef(kind, issue.repo, issue.number)
             if ref.key in queued:
                 continue
-            readiness = self._epics.readiness(kind, issue.repo, issue.number)
+            # Only an epic needs the epic service's roll-up (cache reads per child); an issue's
+            # readiness is its own labels, computed here without touching the cache.
+            readiness = (
+                self._epics.readiness(kind, issue.repo, issue.number)
+                if kind == "epic"
+                else issue_readiness(
+                    Member(issue.repo, issue.number, issue.title, True, cached.triage)
+                )
+            )
             rank = self._rank(issue.repo, cached.triage.priority)
             order = (not readiness.ready, 1_000 if rank is None else rank[0])
             found.append((order, ref, cached, readiness))
@@ -821,6 +908,15 @@ class QueueService:
             raise InvalidSuggestionFilterError("there is no open issue to suggest for the queue")
         return queue, candidates
 
+    def _has_candidate(self, queue_id: str) -> None:
+        """Raises InvalidSuggestionFilterError unless some open cached issue isn't queued: the
+        request's cheap check; the job ranks the candidates."""
+        queued = {i.key for i in self._store.items(queue_id)}
+        for cached in self._cache.open_issues(None):
+            if ("issue", cached.issue.repo.casefold(), cached.issue.number) not in queued:
+                return
+        raise InvalidSuggestionFilterError("there is no open issue to suggest for the queue")
+
     def start_next(self, queue_id: str) -> PriorityRun:
         """``suggest_next`` in the background (scope ``next_scope``); poll
         ``SuggestService.ask_run``.
@@ -828,7 +924,8 @@ class QueueService:
         Raises:
             QueueNotFoundError, InvalidSuggestionFilterError (nothing to suggest).
         """
-        self._next_inputs(queue_id)
+        self._queue(queue_id)
+        self._has_candidate(queue_id)
 
         async def job() -> str | None:
             made = await self.suggest_next(queue_id)
@@ -1028,8 +1125,10 @@ class QueueService:
                 items = self._fill(items, next_items(found.payload), skipped)
             else:
                 items = reorder(items, order_keys(found.payload))
-            self._store.save_items(queue.id, items)
+            self._store.save_many({queue.id: items})
             views = (self._view_of(queue, items),)
+        # The queues are saved first, in one transaction: if settling the draft then fails, a
+        # second approval skips what the first did ("in the queue already", "left ... since").
         self._drafts.save(settled)
         return QueueApproval(settled, views, tuple(skipped))
 
@@ -1043,14 +1142,12 @@ class QueueService:
                 skipped.append(f"{ref} is in the queue already")
                 continue
             try:
-                resolved = self._resolve(
-                    "issue" if ref.kind == "epic" else ref.kind, ref.repo, ref.n
-                )
+                kind = "issue" if ref.kind == "epic" else ref.kind
+                resolved, is_open = self._resolve(kind, ref.repo, ref.n)
             except IssueNotCachedError:
                 skipped.append(f"{ref} is not in the cache")
                 continue
-            cached = None if ref.kind == "milestone" else self._cache.cached_issue(ref.repo, ref.n)
-            if cached is not None and cached.issue.state != "open":
+            if not is_open:
                 skipped.append(f"{ref} is closed")
                 continue
             items = insert(items, QueueItem(resolved, 0, "", self._clock()), None)
@@ -1074,13 +1171,13 @@ class QueueService:
             items[source.id] = remove(items[source.id], moved.ref.key)
             arrived = replace(current, added_at=self._clock())
             items[target.id] = insert(items[target.id], arrived, None)
-        views: list[QueueView] = []
-        for queue_id, queue in queues.items():
-            if queue is None:
-                continue
-            self._store.save_items(queue_id, items[queue_id])
-            views.append(self._view_of(queue, items[queue_id]))
-        return tuple(views)
+        # Every queue at once: a move never leaves an item in neither queue, or in both.
+        self._store.save_many(items)
+        return tuple(
+            self._view_of(queue, items[queue_id])
+            for queue_id, queue in queues.items()
+            if queue is not None
+        )
 
     def from_priority(
         self,
@@ -1091,9 +1188,9 @@ class QueueService:
         description: str = "",
     ) -> QueueFill:
         """Turn a priority draft's order (Task 7; spec §6.2 "only queues hold an order") into a
-        new queue called ``name``, or append it to the queue ``queue_id``: its issues in rank
-        order, skipping (with why) one queued already, no longer cached, or closed. The draft
-        itself is unchanged; its priorities are still approved on their own.
+        new queue called ``name``, or append it to the queue ``queue_id`` (exactly one of them):
+        its issues in rank order, skipping (with why) one queued already, no longer cached, or
+        closed. The draft itself is unchanged; its priorities are still approved on their own.
 
         Raises:
             SuggestionNotFoundError, InvalidQueueError (not a priority draft; neither a queue
@@ -1107,13 +1204,21 @@ class QueueService:
             raise InvalidQueueError(f"a {found.kind} suggestion has no order to queue")
         if found.state == "dismissed":
             raise SuggestionStateError(f"suggestion {suggestion_id} was dismissed")
-        if queue_id is None and name is None:
-            raise InvalidQueueError("name the queue to make, or the queue to fill")
-        queue = self._queue(queue_id) if queue_id is not None else self.create(
-            str(name), description
-        ).queue  # fmt: skip
+        if (queue_id is None) == (name is None):
+            raise InvalidQueueError("name either the queue to make or the queue to fill")
         skipped: list[str] = []
         refs = [ItemRef("issue", repo, n) for repo, n in priority_order(found.payload)]
-        items = self._fill(self._store.items(queue.id), refs, skipped)
-        self._store.save_items(queue.id, items)
+        if queue_id is not None:
+            queue = self._queue(queue_id)
+            items = self._fill(self._store.items(queue.id), refs, skipped)
+            self._store.save_items(queue.id, items)
+            return QueueFill(self._view_of(queue, items), tuple(skipped))
+        # The items first, the queue after: a failure leaves no empty queue behind.
+        items = self._fill([], refs, skipped)
+        queue = self.create(str(name), description).queue
+        try:
+            self._store.save_items(queue.id, items)
+        except Exception:
+            self._store.delete_queue(queue.id)
+            raise
         return QueueFill(self._view_of(queue, items), tuple(skipped))

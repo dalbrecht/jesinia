@@ -713,7 +713,7 @@ class ApplyEngine:
         listener = self._on_triaged
         if listener is not None:
             for repo, triaged in by_repo.items():
-                self._guard(f"retiring {repo}'s drafts", lambda: listener(repo, triaged))
+                self._guard(f"the after-apply hooks for {repo}", lambda: listener(repo, triaged))
 
     async def _schema_changed(self, repo: str) -> None:
         if self._on_schema_changed is not None:

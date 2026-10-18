@@ -26,6 +26,7 @@ from jesinia.apps.issues.domain.queues import (
     done_items,
     insert,
     item_note,
+    item_ref,
     mark_done,
     mark_open,
     move,
@@ -323,3 +324,9 @@ def test_a_priority_drafts_order_is_its_items_by_rank() -> None:
         ]
     }  # fmt: skip
     assert priority_order(payload) == [(REPO, 3), (REPO, 5)]
+
+
+def test_item_ref_checks_the_kind_text() -> None:
+    assert item_ref("epic", REPO, 3) == ref(3, "epic")
+    with pytest.raises(InvalidQueueError):
+        item_ref("task", REPO, 3)

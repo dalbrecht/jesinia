@@ -4566,7 +4566,7 @@ export interface components {
         /**
          * WorkQueueFromPriorityIn
          * @description Turn a priority draft's order into a queue: a new one called ``name`` (with
-         *     ``description``), or the existing ``queue_id`` (appended).
+         *     ``description``), or the existing ``queue_id`` (appended); exactly one of the two.
          */
         WorkQueueFromPriorityIn: {
             /** Suggestion Id */
@@ -11318,7 +11318,7 @@ export interface operations {
             };
             path: {
                 queue_id: string;
-                kind: string;
+                kind: "issue" | "epic" | "milestone";
                 owner: string;
                 repo: string;
                 n: number;
@@ -11401,7 +11401,7 @@ export interface operations {
             };
             path: {
                 queue_id: string;
-                kind: string;
+                kind: "issue" | "epic" | "milestone";
                 owner: string;
                 repo: string;
                 n: number;
@@ -11488,7 +11488,7 @@ export interface operations {
             };
             path: {
                 queue_id: string;
-                kind: string;
+                kind: "issue" | "epic" | "milestone";
                 owner: string;
                 repo: string;
                 n: number;
@@ -11575,7 +11575,7 @@ export interface operations {
             };
             path: {
                 queue_id: string;
-                kind: string;
+                kind: "issue" | "epic" | "milestone";
                 owner: string;
                 repo: string;
                 n: number;
@@ -11658,7 +11658,7 @@ export interface operations {
             };
             path: {
                 queue_id: string;
-                kind: string;
+                kind: "issue" | "epic" | "milestone";
                 owner: string;
                 repo: string;
                 n: number;

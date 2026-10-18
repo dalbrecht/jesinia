@@ -6,7 +6,7 @@ parameterised."""
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import cast
 
@@ -99,24 +99,38 @@ class SqliteQueueStore:
 
     def save_items(self, queue_id: str, items: Sequence[QueueItem]) -> None:
         with transaction(self._conn):
-            self._conn.execute("DELETE FROM queue_items WHERE queue_id = ?", (queue_id,))
-            self._conn.executemany(
-                f"INSERT INTO queue_items (queue_id, {_ITEM_COLUMNS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        queue_id,
-                        item.ref.kind,
-                        item.ref.ref,
-                        item.position,
-                        item.note,
-                        _time(item.added_at),
-                        None if item.done_at is None else _time(item.done_at),
-                        item.done_pending,
-                    )
-                    for item in items
-                ],
-            )
+            self._replace(queue_id, items)
+
+    def save_many(self, queues: Mapping[str, Sequence[QueueItem]]) -> None:
+        with transaction(self._conn):
+            for queue_id, items in queues.items():
+                self._replace(queue_id, items)
+
+    def items_with_pending(self, pending_id: str) -> list[tuple[str, QueueItem]]:
+        rows = self._conn.execute(
+            f"SELECT queue_id, {_ITEM_COLUMNS} FROM queue_items WHERE done_pending = ?",
+            (pending_id,),
+        )
+        return [(str(row[0]), _item(row[1:])) for row in rows]
+
+    def _replace(self, queue_id: str, items: Sequence[QueueItem]) -> None:
+        self._conn.execute("DELETE FROM queue_items WHERE queue_id = ?", (queue_id,))
+        self._conn.executemany(
+            f"INSERT INTO queue_items (queue_id, {_ITEM_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    queue_id,
+                    item.ref.kind,
+                    item.ref.ref,
+                    item.position,
+                    item.note,
+                    _time(item.added_at),
+                    None if item.done_at is None else _time(item.done_at),
+                    item.done_pending,
+                )
+                for item in items
+            ],
+        )
 
     def open_items_for(
         self, kinds: Sequence[ItemKind], refs: Sequence[str]

@@ -76,7 +76,8 @@ Task 9 adds work queues (spec §5.2, ruling IR15):
   author's optional comment) or setting it `agent-ready` is staged in the tray. Milestones
   can't be done or moved between bands (Jesinia never writes them);
 - items close themselves: when sync (or an applied batch) sees an issue, epic or milestone
-  closed, its open queue items are marked done;
+  closed, its open queue items are marked done. One already closed when it is added goes straight
+  into the Done group;
 - the agent's queue proposals, all drafts: what to add next (`queue_next`), an order
   (`queue_order`) and which queue each item fits (`queue_split`). Approving one changes only the
   local queues;
@@ -284,8 +285,9 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     with the `scope`). `POST /queues/suggestions/{id}/approve` approves a queue draft: the local
     queues change at once, and what changed since is listed in `skipped`. The engine's
     `/suggestions/{id}/approve` refuses queue drafts (400).
-  - `POST /queues/from-priority` with `{suggestion_id, queue_id? | name, description?}` turns a
-    priority draft's order into a new queue, or appends it to one.
+  - `POST /queues/from-priority` with `{suggestion_id, queue_id | name, description?}` (exactly
+    one of `queue_id` and `name`, else 422) turns a priority draft's order into a new queue, or
+    appends it to one.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
     `possible_duplicates`. The last two read the open suggestions.
   - Typed errors come back as `{error, detail}`. A GitHub rate limit met by a request itself
@@ -444,8 +446,16 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   when the author applies the tray, through the write-ahead engine. A band move is made against
   the priority the cache shows (filling a gap, or replacing that one value), so a change on
   GitHub since is a conflict at apply time, not an overwrite.
-- **One action:** Done stages first and marks the item done only if the tray took the change;
-  if the mark can't be saved, the change is unstaged.
+- **One action:** Done (and a band move) stages first and keeps the change only if the queue
+  is saved; if it can't be, the change is unstaged.
+- **One close per issue:** the engine applies one close and one comment per issue, so Done in a
+  second queue shares the close already staged for that issue (and agent-ready likewise). A
+  second, different comment is refused (409) rather than silently replacing the first.
+- **Guards:** agent-ready is staged against the readiness the cache shows, like a band move's
+  priority: a change on GitHub since is a conflict at apply time, not an overwrite.
+- **Staged changes follow their items:** Undo, removing a done item and deleting a queue take the
+  change Done staged out of the tray, unless another queue's done item still shares it.
+- **Approvals are atomic:** an approved split saves every queue it touches in one transaction.
 - **Posted text:** the only text a queue posts is the author's own Done comment, as written. No
   issue text or agent text is posted from a queue.
 - **Auto-done never breaks sync:** it runs inside sync's (and the engine's) best-effort hook and

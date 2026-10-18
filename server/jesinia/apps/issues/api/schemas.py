@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, Field, JsonValue, model_validator
 
 from jesinia.apps.issues.application.epics import (
     Containment,
@@ -1307,12 +1307,18 @@ class WorkQueueSplitAskIn(BaseModel):
 
 class WorkQueueFromPriorityIn(BaseModel):
     """Turn a priority draft's order into a queue: a new one called ``name`` (with
-    ``description``), or the existing ``queue_id`` (appended)."""
+    ``description``), or the existing ``queue_id`` (appended); exactly one of the two."""
 
     suggestion_id: QueueId
     queue_id: QueueId | None = None
     name: str | None = Field(default=None, min_length=1, max_length=QUEUE_NAME_MAX)
     description: str = Field(default="", max_length=QUEUE_DESCRIPTION_MAX)
+
+    @model_validator(mode="after")
+    def _one_target(self) -> WorkQueueFromPriorityIn:
+        if (self.queue_id is None) == (self.name is None):
+            raise ValueError("give either name (a new queue) or queue_id (an existing one)")
+        return self
 
 
 class WorkQueueItemOut(BaseModel):
