@@ -74,8 +74,9 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
     `rename_only`, `format_only` or `judged_mechanical`;
   - shown in the walkthrough header, the queue row and the recommendation evidence;
   - the correctness pass reports its own coverage the same way.
-- **Rebase:** content is unchanged when per-file `git patch-id --stable` sets match between the
-  approved and the new PR diffs (each against its merge base), and CI is green or running.
+- **Rebase:** content is unchanged when per-file `git patch-id --verbatim` sets (whitespace
+  counts) match between the approved and the new PR diffs (each against its merge base), and CI
+  is green or running.
 - **Stack:** PR B is stacked on A when B's base ref is A's head ref **and** A's head repository
   is the base repository (same `owner/name`); fork PRs never stack onto same-named branches.
 - **Posting:**
@@ -199,7 +200,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
   - `async diff(repo, base_sha, head_sha) -> str`;
   - `async merge_base(repo, a, b) -> str`;
   - `async patch_ids(repo, base_sha, head_sha) -> dict[str, str]`, mapping path to
-    `git patch-id --stable`;
+    `git patch-id --verbatim` (whitespace counts);
   - `async prune(keep: set[tuple[str, str]]) -> int`.
 - **`GitWorkspace(root: Path, remote_url: Callable[[str], str])`:**
   - root is `data_dir/review/repos`;

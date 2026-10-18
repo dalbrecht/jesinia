@@ -63,7 +63,7 @@ class Workspace(Protocol):
         """The best common ancestor of two commits."""
 
     async def patch_ids(self, repo: str, base_sha: str, head_sha: str) -> dict[str, str]:
-        """Each changed path mapped to the ``git patch-id --stable`` of its own diff, so a
+        """Each changed path mapped to the ``git patch-id --verbatim`` (whitespace counts) of its own diff, so a
         pure rebase compares equal file by file and a conflict resolution does not."""
 
     async def prune(self, keep: KeepProvider) -> int:

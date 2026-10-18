@@ -241,8 +241,12 @@ function readHeader(raw: string): { oldStart: number; oldCount: number; newStart
   };
 }
 
-/** How many patches were parsed: the guard that big PRs parse once per round (N3). */
-export const parseStats = { parses: 0 };
+/**
+ * Work counters, the guards that big PRs stay cheap without timing anything: how many patches
+ * were parsed (once per round, N3), and how many hunk checks and step lookups building the
+ * outline did (linear in the PR's size).
+ */
+export const parseStats = { parses: 0, hunkChecks: 0, lookups: 0 };
 
 /** A GitHub patch's hunks, numbered as Jesinia cites them (0-based, in order), with line numbers. */
 export function parsePatch(patch: string): Hunk[] {
@@ -319,6 +323,7 @@ export function findingsByStep(steps: Step[], findings: Finding[], files: PrFile
     if (!file?.patch) continue;
     const removed = file.status === "removed";
     hunksOf(file.patch).forEach((h, i) => {
+      parseStats.hunkChecks += 1;
       const [start, end] = removed ? [h.oldStart, h.oldEnd] : [h.newStart, h.newEnd];
       if (f.start_line > end || f.end_line < start) return;
       const key = `${f.path}\u0000${i}`;
@@ -327,7 +332,10 @@ export function findingsByStep(steps: Step[], findings: Finding[], files: PrFile
   }
   return steps.map((step) => {
     const mine = new Set<Finding>();
-    for (const ref of step.hunks) for (const f of byHunk.get(`${ref.path}\u0000${ref.hunk}`) ?? []) mine.add(f);
+    for (const ref of step.hunks) {
+      parseStats.lookups += 1;
+      for (const f of byHunk.get(`${ref.path}\u0000${ref.hunk}`) ?? []) mine.add(f);
+    }
     return [...mine];
   });
 }

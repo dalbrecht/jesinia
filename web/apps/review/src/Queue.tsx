@@ -270,7 +270,7 @@ function summaryOf(id: SectionId, rows: QueueRow[]): string {
     const shown = rows.slice(0, 2).map(refOf).join(", ");
     return rows.length > 2 ? `${shown} +${rows.length - 2} more` : shown;
   }
-  if (id === "approved") return "Rebased, unchanged, CI green";
+  if (id === "approved") return "Rebased, unchanged, CI not failing";
   const counts = new Map<string, number>();
   for (const r of rows) {
     const what = r.suggested

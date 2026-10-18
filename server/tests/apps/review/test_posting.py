@@ -1082,3 +1082,15 @@ async def test_seeds_that_would_pass_the_draft_limit_are_capped_and_counted(env:
     assert saved.seeds_dropped == 400 - (DRAFTS_MAX - 150)
     again = await env.service.save_drafts(round_id, "Notes.", list(saved.drafts))
     assert len(again.drafts) == DRAFTS_MAX and again.seeds_dropped == 0
+
+
+async def test_a_preview_says_when_the_round_was_already_posted(env: Env) -> None:
+    """Final M2: posting again from a round already posted (Post all, another tab) adds a
+    second review; the preview says so."""
+    assert not any(
+        "already posted" in n for n in (await env.service.preview(env.round_id, "COMMENT")).notes
+    )
+    await env.post("COMMENT")
+    preview = await env.service.preview(env.round_id, "APPROVE")
+    (note,) = [n for n in preview.notes if "already posted" in n]
+    assert "COMMENT" in note and URL in note and "second review" in note

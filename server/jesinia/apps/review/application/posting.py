@@ -431,6 +431,12 @@ class PostingService:
         against = self._against_evidence(rnd)
         if event == "APPROVE" and against is not None:
             notes.append(against)
+        for earlier in self._store.postings(round_id):
+            if earlier.state == "posted":  # Post all, or another tab (final M2)
+                notes.append(
+                    f"This round's review was already posted ({earlier.event}, "
+                    f"{earlier.review_url or _pr_url(rnd)}); posting again adds a second review"
+                )
         notes.append(MARKER_NOTE)
         return PostPreview(
             round_id=round_id,
