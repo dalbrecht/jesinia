@@ -75,6 +75,11 @@ class QueueItemStateError(QueueDomainError):
     """The item is done already, or (for Undo) isn't done."""
 
 
+class TrayChangeStagedError(QueueItemStateError):
+    """A change the author staged from the tray (a picker, a menu, a drag elsewhere) would be
+    overridden: queues never override tray-staged changes; undo it there first."""
+
+
 class QueueItemNotWritableError(InvalidQueueError):
     """Done or a band move would change GitHub, and the item is a milestone, which Jesinia never
     writes."""

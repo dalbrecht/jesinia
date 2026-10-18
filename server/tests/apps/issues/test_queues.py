@@ -40,6 +40,7 @@ from jesinia.apps.issues.domain.queues import (
     QueueItemStateError,
     QueueNameTakenError,
     QueueNotFoundError,
+    TrayChangeStagedError,
     next_scope,
     order_scope,
     split_scope,
@@ -1014,3 +1015,27 @@ async def test_a_second_band_move_replaces_the_first_staged_priority(env: Queues
     assert [r.step.kind for r in applied.result.results] == ["labels"]
     assert "priority: medium" in env.world.labels_of(2)
     assert "priority: high" not in env.world.labels_of(2)
+
+
+async def test_a_band_move_never_overrides_a_priority_staged_from_the_tray(env: Queues) -> None:
+    await env.synced(issue(1, labels=HIGH), issue(2, labels=HIGH))
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+    env.queues.add(q, "issue", REPO, 2)
+    env.queues.move_to_band(q, "issue", REPO, 2, "priority: medium")
+    picked = env.world.pending.stage(REPO, 2, SetDimension("priority", "priority: low"), "picker")
+    order = env.numbers(q)
+    tray = env.world.pending.pending()
+    with pytest.raises(
+        TrayChangeStagedError, match=r"\(priority: low\) is already staged from the tray"
+    ):
+        env.queues.move_to_band(q, "issue", REPO, 2, "priority: high", 0)
+    assert env.world.pending.pending() == tray and picked in tray  # nothing changed
+    assert env.numbers(q) == order
+    # A plain queue-to-queue move on another issue still replaces its own staged change.
+    env.queues.move_to_band(q, "issue", REPO, 1, "priority: medium")
+    env.queues.move_to_band(q, "issue", REPO, 1, "priority: low")
+    mine = [p for p in env.world.pending.pending() if p.target is not None and p.target.n == 1]
+    assert [p.change for p in mine] == [
+        SetDimension("priority", "priority: low", only_if_value="priority: high")
+    ]

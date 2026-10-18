@@ -77,6 +77,7 @@ from jesinia.apps.issues.domain.queues import (
     QueueNameTakenError,
     QueueNotFoundError,
     QueueReply,
+    TrayChangeStagedError,
     band_position,
     bands,
     done_items,
@@ -744,6 +745,7 @@ class QueueService:
         Raises:
             QueueNotFoundError, QueueItemNotFoundError, QueueItemStateError (done),
             QueueItemNotWritableError (a milestone), InvalidQueueError (a blank band),
+            TrayChangeStagedError (a priority change staged from the tray: undo it there),
             IssueNotCachedError, and what ``PendingService.stage`` raises (a priority the repo's
             schema lacks).
         """
@@ -755,6 +757,7 @@ class QueueService:
         cached = self._cache.cached_issue(item.ref.repo, item.ref.n)
         if cached is None:
             raise IssueNotCachedError(f"{item.ref} is {NOT_CACHED}")
+        self._refuse_tray_priority(item.ref.repo, item.ref.n)
         before = self._view_of(queue, items)
         target = label_key(band)
         current = next(i for i in before.items if i.item.key == item.key)
@@ -790,20 +793,35 @@ class QueueService:
             self._pending.unstage(earlier.id)  # replaced (or undone, back in its own band)
         return QueueAction(self._view_of(queue, moved), staged)
 
+    def _priority_rows(self, repo: str, n: int) -> list[PendingChange]:
+        """The priority changes staged for this issue, still in the tray, in the order staged."""
+        return [
+            p
+            for p in self._pending.pending()
+            if p.target is not None
+            and p.target.key == (repo.casefold(), n)
+            and isinstance(p.change, SetDimension)
+            and p.change.dimension == "priority"
+        ]
+
     def _staged_priority(self, repo: str, n: int) -> PendingChange | None:
         """The priority change a band move staged for this issue, still in the tray."""
-        return next(
-            (
-                p
-                for p in self._pending.pending()
-                if p.source == "queue"
-                and p.target is not None
-                and p.target.key == (repo.casefold(), n)
-                and isinstance(p.change, SetDimension)
-                and p.change.dimension == "priority"
-            ),
-            None,
-        )
+        return next((p for p in self._priority_rows(repo, n) if p.source == "queue"), None)
+
+    def _refuse_tray_priority(self, repo: str, n: int) -> None:
+        """Queues never override a change staged from the tray (as Done never shares a tray
+        close).
+
+        Raises:
+            TrayChangeStagedError: a priority change for the issue is staged from the tray.
+        """
+        for staged in self._priority_rows(repo, n):
+            if staged.source != "queue":
+                value = cast(SetDimension, staged.change).value
+                raise TrayChangeStagedError(
+                    f"a priority change ({value}) is already staged from the tray; undo it there "
+                    "first"
+                )
 
     @staticmethod
     def _restores(change: SetDimension, band: str) -> bool:
