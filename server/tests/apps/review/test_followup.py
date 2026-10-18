@@ -52,7 +52,14 @@ from jesinia.apps.review.domain.posting import (
     commentable_lines,
     compose_review,
 )
-from jesinia.apps.review.domain.queue import PrRef, QueueFilter, RepoConfig, SyncStatus, snapshot_of
+from jesinia.apps.review.domain.queue import (
+    PrRef,
+    QueueFilter,
+    RepoConfig,
+    SyncStatus,
+    latest_review_key,
+    snapshot_of,
+)
 from jesinia.apps.review.domain.workspace import GitCommandError, MirrorFileTooLargeError
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace
@@ -1291,3 +1298,17 @@ async def test_a_loaded_pr_waits_for_its_heads_check_before_its_pre_review(env: 
     followups.start_refresh()
     await followups.drain()
     assert ticks == [1]
+
+
+def test_latest_review_key_names_the_authors_latest_submitted_review() -> None:
+    mine = ReviewSummary("Me", False, "APPROVED", SHA_A, START, 0, "ok", "u1")
+    later = ReviewSummary("me", False, "COMMENTED", SHA_B, None, 0, "hm", None)
+    pending = ReviewSummary("me", False, "PENDING", SHA_B, START, 0)
+    other = ReviewSummary("alice", False, "APPROVED", SHA_B, START, 0)
+    assert (
+        latest_review_key([mine, other, pending], "me")
+        == f"APPROVED|{SHA_A}|{START.isoformat()}|u1"
+    )
+    assert latest_review_key([mine, later], "ME") == f"COMMENTED|{SHA_B}||"
+    assert latest_review_key([other, pending], "me") == ""
+    assert latest_review_key([mine], None) == ""

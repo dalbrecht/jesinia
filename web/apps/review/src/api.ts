@@ -38,7 +38,10 @@ const SECTION_INFO: Record<SectionId, { label: string; intro: string }> = {
     intro: "CI or an automated reviewer hasn't finished, or the pre-review hasn't run yet.",
   },
   loaded: { label: "Loaded", intro: "PRs you loaded: they jump the queue until closed or dismissed." },
-  approved: { label: "Still approved", intro: "Rebased since you approved, unchanged, CI green or still running (or no CI)." },
+  approved: {
+    label: "Still approved",
+    intro: "Rebased since you approved, unchanged, CI green or still running (or no CI).",
+  },
 };
 const SECTION_ORDER: SectionId[] = ["ready", "waiting", "loaded", "approved"];
 export const SECTIONS: { id: SectionId; label: string; intro: string }[] = SECTION_ORDER.map((id) => ({
