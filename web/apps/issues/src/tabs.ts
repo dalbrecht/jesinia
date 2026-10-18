@@ -5,13 +5,18 @@
 export const TABS_KEY = "jesinia.issues.tabs";
 const MAX_TABS = 20;
 
-/** An opened issue: its ref and the label it was opened with. */
-export type OpenTab = { repo: string; number: number; label: string };
+/** An opened issue or epic (`kind: "epic"`, the epic layout): its ref and its label. */
+export type OpenTab = { repo: string; number: number; label: string; kind?: "epic" };
 
 function isTab(value: unknown): value is OpenTab {
   if (typeof value !== "object" || value === null) return false;
   const t = value as Record<string, unknown>;
-  return typeof t.repo === "string" && typeof t.number === "number" && typeof t.label === "string";
+  return (
+    typeof t.repo === "string" &&
+    typeof t.number === "number" &&
+    typeof t.label === "string" &&
+    (t.kind === undefined || t.kind === "epic")
+  );
 }
 
 export function loadTabs(): OpenTab[] {
@@ -31,6 +36,10 @@ export function saveTabs(tabs: OpenTab[]): void {
   }
 }
 
-/** The same issue: repo names compare without case, as GitHub's (and the server's) do. */
-export const sameTab = (a: { repo: string; number: number }, b: { repo: string; number: number }): boolean =>
-  a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;
+type Tabbed = { repo: string; number: number; kind?: string | undefined };
+const isEpic = (t: Tabbed) => t.kind === "epic";
+
+/** The same screen: an issue's and an epic's tabs differ; repo names compare without case, as
+ * GitHub's (and the server's) do. */
+export const sameTab = (a: Tabbed, b: Tabbed): boolean =>
+  isEpic(a) === isEpic(b) && a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;

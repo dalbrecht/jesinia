@@ -79,9 +79,11 @@ type Props = {
   repos: Repo[];
   onTitle: (title: string) => void;
   onOpenRef: (repo: string, number: number) => void;
+  /** Open an epic in its own tab, with the epic layout (the issue's parent is one). */
+  onOpenEpic: (repo: string, number: number) => void;
 };
 
-export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
+export function IssueView({ repo, number, repos, onTitle, onOpenRef, onOpenEpic }: Props) {
   const client = useClient();
   const toast = useToast();
   const tray = useTray();
@@ -539,7 +541,7 @@ export function IssueView({ repo, number, repos, onTitle, onOpenRef }: Props) {
           {parent ? (
             <p>
               In{" "}
-              <button type="button" className={s.linkButton} onClick={() => onOpenRef(parent.repo, parent.number)}>
+              <button type="button" className={s.linkButton} onClick={() => onOpenEpic(parent.repo, parent.number)}>
                 {issue.parent}
               </button>
             </p>

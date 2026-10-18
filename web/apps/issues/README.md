@@ -19,8 +19,9 @@ reads and writes is `server/jesinia/apps/issues/README.md`.
 - **Epics:** the epics and initiatives with progress and readiness, each a drop target and itself
   draggable, beside the open issues without an epic and the agent's group proposals. A drop stages
   one parent link per issue; a drop an epic can't take (into itself or its own child, an
-  initiative into an epic, another owner's issue) is refused with the reason. An epic opens in the
-  book layout: its children (a sortable list: reorders stage the sub-issue order), the brief
+  initiative into an epic, another owner's issue) is refused with the reason. An epic opens in its
+  own workspace tab (`/issues/epics/<owner>/<repo>/<n>`, from the list, a proposal or an issue's
+  "In owner/repo#n"), in the book layout: its children (a sortable list: reorders stage the sub-issue order), the brief
   editor (posted through the brief endpoints; a brief edited on GitHub asks to refresh or
   overwrite), Copy brief, the checklist conversion and the epic's proposals.
 - **Queues:** section tabs with counts (each tab takes drops), flat or by priority. Order is local

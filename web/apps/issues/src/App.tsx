@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // The Issues app (Issues spec §6): workspace tabs (Inbox, Backlog, Epics and Queues, then one tab
-// per opened issue) over the list or the opened issue, with the Pending changes tray pinned at the
-// bottom whenever it isn't empty. Routes: /issues/, /issues/backlog, /issues/epics,
-// /issues/queues and /issues/<owner>/<repo>/<n>. Compact density (ADR 0008).
+// per opened issue or epic) over the list, the opened issue or the opened epic, with the Pending
+// changes tray pinned at the bottom whenever it isn't empty. Routes: /issues/, /issues/backlog,
+// /issues/epics, /issues/queues, /issues/<owner>/<repo>/<n> and /issues/epics/<owner>/<repo>/<n>.
+// Compact density (ADR 0008).
 import type { JesiniaClient } from "@jesinia/client";
 import { useToast } from "@jesinia/design";
 import { AppShell, useClient, VisibleText } from "@jesinia/shell";
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { errorCause, getRepos, refOf, routeOf, routePath, type IssueRow, type Repo, type Route } from "./api";
 import { Backlog } from "./Backlog";
-import { Epics } from "./Epics";
+import { Epics, EpicTab } from "./Epics";
 import { Inbox } from "./Inbox";
 import s from "./issues.module.css";
 import { IssueView } from "./IssueView";
@@ -25,9 +26,29 @@ const FIXED: { kind: Fixed; label: string }[] = [
   { kind: "queues", label: "Queues" },
 ];
 
-/** A screen's key: issues by ref, without case (GitHub's repo names compare that way). */
-const tabKey = (route: Route) => (route.kind === "issue" ? `${route.repo}#${route.number}`.toLowerCase() : route.kind);
-const issueKey = (tab: OpenTab) => `${tab.repo}#${tab.number}`.toLowerCase();
+type Opened = Extract<Route, { kind: "issue" | "epic" }>;
+
+/** A screen's key: issues and epics by ref, without case (GitHub's repo names compare that way). */
+const tabKey = (route: Route) =>
+  route.kind === "issue"
+    ? `${route.repo}#${route.number}`.toLowerCase()
+    : route.kind === "epic"
+      ? `epic:${route.repo}#${route.number}`.toLowerCase()
+      : route.kind;
+/** The screen an opened tab shows. */
+const routeOfTab = (tab: OpenTab): Opened =>
+  tab.kind === "epic"
+    ? { kind: "epic", repo: tab.repo, number: tab.number }
+    : { kind: "issue", repo: tab.repo, number: tab.number };
+const issueKey = (tab: OpenTab) => tabKey(routeOfTab(tab));
+const isOpened = (route: Route): route is Opened => route.kind === "issue" || route.kind === "epic";
+/** The tab a linked or popped address opens (labelled by its ref until its title is known). */
+const tabOf = (route: Opened): OpenTab => ({
+  repo: route.repo,
+  number: route.number,
+  label: `${route.repo}#${route.number}`,
+  ...(route.kind === "epic" ? { kind: "epic" as const } : {}),
+});
 
 function Workspace() {
   const client = useClient();
@@ -37,9 +58,7 @@ function Workspace() {
   const [tabs, setTabs] = useState<OpenTab[]>(() => {
     const saved = loadTabs();
     const linked = routeOf(window.location.pathname);
-    if (linked.kind === "issue" && !saved.some((t) => sameTab(t, linked))) {
-      saved.push({ repo: linked.repo, number: linked.number, label: `${linked.repo}#${linked.number}` });
-    }
+    if (isOpened(linked) && !saved.some((t) => sameTab(t, linked))) saved.push(tabOf(linked));
     return saved;
   });
   const [repos, setRepos] = useState<Repo[]>([]);
@@ -90,7 +109,7 @@ function Workspace() {
   useEffect(() => {
     const onPop = () => {
       const to = routeOf(window.location.pathname);
-      if (to.kind === "issue") openTab({ repo: to.repo, number: to.number, label: `${to.repo}#${to.number}` });
+      if (isOpened(to)) openTab(tabOf(to));
       show(to);
     };
     window.addEventListener("popstate", onPop);
@@ -107,13 +126,23 @@ function Workspace() {
     },
     [openTab, navigate],
   );
+  const openEpic = useCallback(
+    (repo: string, number: number, title?: string) => {
+      const label = title === undefined ? `${repo}#${number}` : `${repo}#${number} ${title}`;
+      openTab({ repo, number, label, kind: "epic" });
+      const to: Route = { kind: "epic", repo, number };
+      focusTab.current = tabKey(to);
+      navigate(to);
+    },
+    [openTab, navigate],
+  );
   const openRow = useCallback((row: IssueRow) => openIssue(row.repo, row.number, row.title), [openIssue]);
 
-  /** An opened issue's tab follows its title. */
-  const retitle = useCallback((repo: string, number: number, title: string) => {
+  /** An opened issue's (or epic's) tab follows its title. */
+  const retitle = useCallback((repo: string, number: number, title: string, kind?: "epic") => {
     const label = `${repo}#${number} ${title}`;
     setTabs((prev) => {
-      const at = prev.findIndex((t) => sameTab(t, { repo, number }));
+      const at = prev.findIndex((t) => sameTab(t, { repo, number, kind }));
       if (at < 0 || prev[at]?.label === label) return prev;
       return prev.map((t, i) => (i === at ? { ...t, label } : t));
     });
@@ -128,11 +157,9 @@ function Workspace() {
       next.delete(issueKey(tab));
       return next;
     });
-    const next: Route = neighbour
-      ? { kind: "issue", repo: neighbour.repo, number: neighbour.number }
-      : { kind: "inbox" };
+    const next: Route = neighbour ? routeOfTab(neighbour) : { kind: "inbox" };
     focusTab.current = tabKey(next);
-    if (route.kind === "issue" && sameTab(route, tab)) navigate(next);
+    if (isOpened(route) && sameTab(route, tab)) navigate(next);
   };
 
   const follow = (e: MouseEvent<HTMLAnchorElement>, to: Route) => {
@@ -160,7 +187,7 @@ function Workspace() {
           </a>
         ))}
         {tabs.map((t) => {
-          const to: Route = { kind: "issue", repo: t.repo, number: t.number };
+          const to = routeOfTab(t);
           const ref = refOf(t);
           return (
             <span key={issueKey(t)} className={s.wtabItem}>
@@ -196,7 +223,7 @@ function Workspace() {
         ) : null}
         {visited.has("epics") ? (
           <div className={s.pane} hidden={route.kind !== "epics"}>
-            <Epics repos={repos} onOpenIssue={openIssue} />
+            <Epics repos={repos} onOpenIssue={openIssue} onOpenEpic={openEpic} />
           </div>
         ) : null}
         {visited.has("queues") ? (
@@ -207,18 +234,25 @@ function Workspace() {
         {tabs
           .filter((t) => visited.has(issueKey(t)))
           .map((t) => (
-            <div
-              key={issueKey(t)}
-              className={s.pane}
-              hidden={!isShown({ kind: "issue", repo: t.repo, number: t.number })}
-            >
-              <IssueView
-                repo={t.repo}
-                number={t.number}
-                repos={repos}
-                onTitle={(title) => retitle(t.repo, t.number, title)}
-                onOpenRef={(repo, number) => openIssue(repo, number)}
-              />
+            <div key={issueKey(t)} className={s.pane} hidden={!isShown(routeOfTab(t))}>
+              {t.kind === "epic" ? (
+                <EpicTab
+                  repo={t.repo}
+                  number={t.number}
+                  onTitle={(title) => retitle(t.repo, t.number, title, "epic")}
+                  onClose={() => navigate({ kind: "epics" })}
+                  onOpenIssue={openIssue}
+                />
+              ) : (
+                <IssueView
+                  repo={t.repo}
+                  number={t.number}
+                  repos={repos}
+                  onTitle={(title) => retitle(t.repo, t.number, title)}
+                  onOpenRef={(repo, number) => openIssue(repo, number)}
+                  onOpenEpic={(repo, number) => openEpic(repo, number)}
+                />
+              )}
             </div>
           ))}
       </div>

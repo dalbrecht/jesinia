@@ -51,7 +51,8 @@ export type Route =
   | { kind: "backlog" }
   | { kind: "epics" }
   | { kind: "queues" }
-  | { kind: "issue"; repo: string; number: number };
+  | { kind: "issue"; repo: string; number: number }
+  | { kind: "epic"; repo: string; number: number };
 
 export function issuePath(repo: string, number: number): string {
   return `/issues/${repo}/${number}`;
@@ -59,21 +60,30 @@ export function issuePath(repo: string, number: number): string {
 
 const NAME = "([A-Za-z0-9_.-]+)";
 const ISSUE_ROUTE = new RegExp(`^/issues/${NAME}/${NAME}/([1-9][0-9]{0,8})/?$`);
+const EPIC_ROUTE = new RegExp(`^/issues/epics/${NAME}/${NAME}/([1-9][0-9]{0,8})/?$`);
 const FIXED = new RegExp("^/issues/(backlog|epics|queues)/?$");
+
+export function epicPath(repo: string, number: number): string {
+  return `/issues/epics/${repo}/${number}`;
+}
 
 /** The screen a path names; anything unknown is the Inbox. */
 export function routeOf(pathname: string): Route {
   const issue = ISSUE_ROUTE.exec(pathname);
   // GitHub's casing is kept (the server casefolds only to compare); tabs compare without case.
   if (issue) return { kind: "issue", repo: `${issue[1]}/${issue[2]}`, number: Number(issue[3]) };
+  const epic = EPIC_ROUTE.exec(pathname);
+  if (epic) return { kind: "epic", repo: `${epic[1]}/${epic[2]}`, number: Number(epic[3]) };
   const fixed = FIXED.exec(pathname)?.[1];
   if (fixed === "backlog" || fixed === "epics" || fixed === "queues") return { kind: fixed };
   return { kind: "inbox" };
 }
 
 export function routePath(route: Route): string {
-  return route.kind === "issue" ? issuePath(route.repo, route.number) : route.kind === "inbox" ? "/issues/" : `/issues/${route.kind}`;
-} // prettier-ignore
+  if (route.kind === "issue") return issuePath(route.repo, route.number);
+  if (route.kind === "epic") return epicPath(route.repo, route.number);
+  return route.kind === "inbox" ? "/issues/" : `/issues/${route.kind}`;
+}
 
 // --- errors and keys ---------------------------------------------------------------------------
 

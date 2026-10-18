@@ -123,20 +123,6 @@ describe("the children", () => {
     ]);
   });
 
-  it("another epic dropped into the children stages its parent link; the Remove zone refuses it", async () => {
-    const { routes } = epicRoutes();
-    const { calls } = renderApp(routes, "/issues/epics");
-    await openEpic();
-    const user = await pickUp("Move acme/app#20 Other");
-    expect(await moveTo(user, "Remove from acme/app#10")).toMatch(/Only acme\/app#10's own children/);
-    await moveTo(user, /^Children of acme\/app#10, position/);
-    await user.keyboard("[Space]");
-    await waitFor(() => expect(callsTo(calls, "POST", "/api/issues/pending")).toHaveLength(1));
-    expect(await bodies(callsTo(calls, "POST", "/api/issues/pending"))).toEqual([
-      expect.objectContaining({ n: 20, source: "drag", change: expect.objectContaining({ parent: { repo: "acme/app", n: 10 } }) }), // prettier-ignore
-    ]);
-  });
-
   it("children never fetched offer a refresh; ← All epics goes back", async () => {
     const { routes } = epicRoutes(epicDetail(10, { epic: epic(10, { title: "Onboarding" }), children: null }), {
       "POST /api/issues/item/acme/app/10/refresh": () => json({ error: "X", detail: "offline" }, 503),

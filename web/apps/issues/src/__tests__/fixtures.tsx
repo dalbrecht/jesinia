@@ -360,7 +360,9 @@ export function theme(tag: string, over: Partial<Theme> = {}): Theme {
 
 // --- driving the drag primitives by keyboard -----------------------------------------------------
 
-export const said = () => document.querySelector("[data-dnd-announcer]")?.textContent ?? "";
+/** The live region of the pane on screen (each pane, an epic's tab included, has its own). */
+export const said = () =>
+  [...document.querySelectorAll("[data-dnd-announcer]")].find((el) => !el.closest("[hidden]"))?.textContent ?? "";
 
 export async function pickUp(name: string): Promise<UserEvent> {
   const user = userEvent.setup();

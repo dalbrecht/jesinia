@@ -11,6 +11,8 @@ import {
   batch,
   callsTo,
   detail,
+  epic,
+  epicDetail,
   finished,
   issuesRoutes,
   json,
@@ -114,13 +116,13 @@ describe("workspace edges", () => {
     expect(window.location.pathname).toBe("/issues/");
   });
 
-  it("a popstate to an issue opens its tab; the parent and a duplicate open theirs", async () => {
+  it("a popstate to an issue opens its tab; the parent opens as an epic tab, a duplicate as an issue", async () => {
     renderApp(
       issuesRoutes({
         "GET /api/issues/item/acme/app/1": detail({ parent: "acme/app#9" }),
         "POST /api/issues/item/acme/app/1/refresh": detail({ parent: "acme/app#9" }),
-        "GET /api/issues/item/acme/app/9": detail({ number: 9, title: "The epic" }),
-        "POST /api/issues/item/acme/app/9/refresh": detail({ number: 9, title: "The epic" }),
+        "GET /api/issues/epics": { epics: [epic(9, { title: "The epic" })] },
+        "GET /api/issues/epics/acme/app/9": epicDetail(9, { epic: epic(9, { title: "The epic" }) }),
         "GET /api/issues/item/acme/app/2": detail({ number: 2, title: "Add export" }),
         "POST /api/issues/item/acme/app/2/refresh": detail({ number: 2, title: "Add export" }),
       }),
@@ -128,10 +130,12 @@ describe("workspace edges", () => {
     await screen.findByText("Fix login");
     window.history.pushState(null, "", ISSUE);
     window.dispatchEvent(new PopStateEvent("popstate"));
-    const epic = await screen.findByRole("region", { name: "Epic" });
-    await userEvent.click(within(epic).getByRole("button", { name: "acme/app#9" }));
-    expect(window.location.pathname).toBe("/issues/acme/app/9");
+    const section = await screen.findByRole("region", { name: "Epic" });
+    await userEvent.click(within(section).getByRole("button", { name: "acme/app#9" }));
+    // The parent is an epic: it opens in its own tab with the epic layout (final review I1).
+    expect(window.location.pathname).toBe("/issues/epics/acme/app/9");
     expect(await within(tabs()).findByRole("link", { name: /acme\/app#9 The epic/ })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Children" })).toBeInTheDocument();
     await userEvent.click(within(tabs()).getByRole("link", { name: /acme\/app#1/ }));
     const related = screen.getAllByRole("region", { name: "Related" }).find((r) => !r.closest("[hidden]"));
     if (!related) throw new Error("no related");

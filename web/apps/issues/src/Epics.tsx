@@ -5,7 +5,8 @@
 // one parent link per issue (ruling IR39), never a write; a drop the epic can't take (into
 // itself or its own child, an initiative into an epic, another owner's issue: IR17) is refused
 // with the reason before anything is staged, and an issue from another repo is warned "won't fit
-// one PR". "Move to epic…" is the menu equivalent, with the same refusals.
+// one PR". "Move to epic…" is the menu equivalent, with the same refusals. An epic opens in its own
+// workspace tab (`EpicTab`, PR 4 final review I1), with the same layout wherever it is opened from.
 import { Badge, Button, Draggable, DropTarget, useToast, type DragItem, type Refusal } from "@jesinia/design";
 import { useClient, VisibleText, visibleText } from "@jesinia/shell";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -126,9 +127,11 @@ const progress = (epic: Epic) => `${epic.done} of ${epic.total} done`;
 export type EpicsProps = {
   repos: Repo[];
   onOpenIssue: (repo: string, number: number, title?: string) => void;
+  /** Open an epic in its own workspace tab. */
+  onOpenEpic: (repo: string, number: number, title?: string) => void;
 };
 
-export function Epics({ repos, onOpenIssue }: EpicsProps) {
+export function Epics({ repos, onOpenIssue, onOpenEpic }: EpicsProps) {
   const client = useClient();
   const toast = useToast();
   const tray = useTray();
@@ -137,7 +140,6 @@ export function Epics({ repos, onOpenIssue }: EpicsProps) {
   const [epics, setEpics] = useState<Epic[] | null>(null);
   const [pool, setPool] = useState<IssueRow[]>([]);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-  const [opened, setOpened] = useState<{ repo: string; number: number } | null>(null);
   const reads = useRef(0);
 
   const read = useCallback(async () => {
@@ -187,7 +189,7 @@ export function Epics({ repos, onOpenIssue }: EpicsProps) {
 
   const scope = groupsScope(repo || null);
   const drafts = useDrafts({ scope }, (d) => d.kind === "group");
-  const proposals = useProposalApproval((r, n) => setOpened({ repo: r, number: n }));
+  const proposals = useProposalApproval((r, n) => onOpenEpic(r, n));
 
   return (
     <Drops>
@@ -215,7 +217,6 @@ export function Epics({ repos, onOpenIssue }: EpicsProps) {
                 const ref = refOf(epic);
                 const label = `${ref} ${visibleText(epic.title)}`;
                 const data: DropAction = { drop: (items) => void link(epic, linkablesOf(items), "drag") };
-                const isOpen = opened !== null && lower(refOf(opened)) === lower(ref);
                 return (
                   <li key={ref}>
                     <DropTarget
@@ -247,8 +248,7 @@ export function Epics({ repos, onOpenIssue }: EpicsProps) {
                             <button
                               type="button"
                               className={s.cardTitle}
-                              aria-current={isOpen ? "true" : undefined}
-                              onClick={() => setOpened({ repo: epic.repo, number: epic.number })}
+                              onClick={() => onOpenEpic(epic.repo, epic.number, epic.title)}
                             >
                               <VisibleText text={epic.title} />
                             </button>
@@ -284,107 +284,133 @@ export function Epics({ repos, onOpenIssue }: EpicsProps) {
           )}
         </aside>
         <div className={s.epicsMain}>
-          {opened !== null ? (
-            <EpicView
-              key={lower(refOf(opened))}
-              repo={opened.repo}
-              number={opened.number}
-              parentOf={parentOf}
-              onClose={() => setOpened(null)}
-              onOpenIssue={onOpenIssue}
-            />
-          ) : (
-            <>
-              <section className={s.section} aria-label="Issues without an epic">
-                <h2 className={s.kicker}>Issues without an epic</h2>
-                <p className={s.muted}>Drag issues onto an epic, or select them and use Move to epic…</p>
-                {chosen.length > 0 ? (
-                  <div className={s.bulk} role="toolbar" aria-label="Selected issues">
-                    <strong>{chosen.length} selected</strong>
-                    <MoveToEpicMenu targets={chosen} name="Move the selected issues to an epic" />
-                    <AddToQueueMenu targets={chosen} name="Add the selected issues to a queue" />
-                    <span className={s.spacer} />
-                    <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-                      Clear selection
-                    </Button>
-                  </div>
-                ) : null}
-                {epics !== null && pool.length === 0 ? (
-                  <p className={s.muted}>Every open issue is in an epic.</p>
-                ) : null}
-                {epics === null ? null : (
-                  <ul className={s.list} aria-label="Open issues without an epic">
-                    {pool.map((row) => {
-                      const ref = refOf(row);
-                      const label = `${ref} ${visibleText(row.title)}`;
-                      return (
-                        <li key={ref} data-selected={selected.has(ref) || undefined}>
-                          <Draggable id={ref} label={label} data={row} group={group} className={s.row}>
-                            {(handle) => (
-                              <>
-                                <button type="button" {...handle} className={s.grip} aria-label={`Move ${label}`}>
-                                  <span aria-hidden="true">⠿</span>
-                                </button>
-                                <input
-                                  type="checkbox"
-                                  aria-label={`Select ${ref}`}
-                                  checked={selected.has(ref)}
-                                  onChange={() => toggle(row)}
-                                />
-                                <span className={s.ref}>{ref}</span>
-                                <button
-                                  type="button"
-                                  className={s.titleButton}
-                                  onClick={() => onOpenIssue(row.repo, row.number, row.title)}
-                                >
-                                  <VisibleText text={row.title} />
-                                </button>
-                                <span className={s.rowLabels}>
-                                  {row.readiness ? <Badge>{row.readiness}</Badge> : null}
-                                </span>
-                              </>
-                            )}
-                          </Draggable>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-              <section className={s.section} aria-label="Proposals">
-                <div className={s.runLine}>
-                  <h2 className={s.kicker}>Proposals</h2>
+          <>
+            <section className={s.section} aria-label="Issues without an epic">
+              <h2 className={s.kicker}>Issues without an epic</h2>
+              <p className={s.muted}>Drag issues onto an epic, or select them and use Move to epic…</p>
+              {chosen.length > 0 ? (
+                <div className={s.bulk} role="toolbar" aria-label="Selected issues">
+                  <strong>{chosen.length} selected</strong>
+                  <MoveToEpicMenu targets={chosen} name="Move the selected issues to an epic" />
+                  <AddToQueueMenu targets={chosen} name="Add the selected issues to a queue" />
                   <span className={s.spacer} />
-                  <Button
-                    size="sm"
-                    loading={drafts.isAsking}
-                    onClick={() => void drafts.ask(`groups:${scope}`, (key) => askGroups(client, repo || null, key))}
-                  >
-                    Ask Claude for groups
+                  <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                    Clear selection
                   </Button>
                 </div>
-                {drafts.status ? <p className={s.muted}>{drafts.status}</p> : null}
-                {drafts.drafts.length === 0 ? (
-                  <p className={s.muted}>No proposals. Claude can group related open issues into candidate epics.</p>
-                ) : null}
-                <ul className={s.plain}>
-                  {drafts.drafts.map((draft) => (
-                    <ProposalCard
-                      key={draft.id}
-                      suggestion={draft}
-                      busy={proposals.isApproving(draft.id)}
-                      onApprove={() => void proposals.approve(draft)}
-                      onDismiss={() => void drafts.dismiss(draft)}
-                      problem={proposals.problems.get(draft.id)?.text ?? null}
-                      actions={proposals.problems.get(draft.id)?.action}
-                    />
-                  ))}
+              ) : null}
+              {epics !== null && pool.length === 0 ? <p className={s.muted}>Every open issue is in an epic.</p> : null}
+              {epics === null ? null : (
+                <ul className={s.list} aria-label="Open issues without an epic">
+                  {pool.map((row) => {
+                    const ref = refOf(row);
+                    const label = `${ref} ${visibleText(row.title)}`;
+                    return (
+                      <li key={ref} data-selected={selected.has(ref) || undefined}>
+                        <Draggable id={ref} label={label} data={row} group={group} className={s.row}>
+                          {(handle) => (
+                            <>
+                              <button type="button" {...handle} className={s.grip} aria-label={`Move ${label}`}>
+                                <span aria-hidden="true">⠿</span>
+                              </button>
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${ref}`}
+                                checked={selected.has(ref)}
+                                onChange={() => toggle(row)}
+                              />
+                              <span className={s.ref}>{ref}</span>
+                              <button
+                                type="button"
+                                className={s.titleButton}
+                                onClick={() => onOpenIssue(row.repo, row.number, row.title)}
+                              >
+                                <VisibleText text={row.title} />
+                              </button>
+                              <span className={s.rowLabels}>
+                                {row.readiness ? <Badge>{row.readiness}</Badge> : null}
+                              </span>
+                            </>
+                          )}
+                        </Draggable>
+                      </li>
+                    );
+                  })}
                 </ul>
-              </section>
-            </>
-          )}
+              )}
+            </section>
+            <section className={s.section} aria-label="Proposals">
+              <div className={s.runLine}>
+                <h2 className={s.kicker}>Proposals</h2>
+                <span className={s.spacer} />
+                <Button
+                  size="sm"
+                  loading={drafts.isAsking}
+                  onClick={() => void drafts.ask(`groups:${scope}`, (key) => askGroups(client, repo || null, key))}
+                >
+                  Ask Claude for groups
+                </Button>
+              </div>
+              {drafts.status ? <p className={s.muted}>{drafts.status}</p> : null}
+              {drafts.drafts.length === 0 ? (
+                <p className={s.muted}>No proposals. Claude can group related open issues into candidate epics.</p>
+              ) : null}
+              <ul className={s.plain}>
+                {drafts.drafts.map((draft) => (
+                  <ProposalCard
+                    key={draft.id}
+                    suggestion={draft}
+                    busy={proposals.isApproving(draft.id)}
+                    onApprove={() => void proposals.approve(draft)}
+                    onDismiss={() => void drafts.dismiss(draft)}
+                    problem={proposals.problems.get(draft.id)?.text ?? null}
+                    actions={proposals.problems.get(draft.id)?.action}
+                  />
+                ))}
+              </ul>
+            </section>
+          </>
         </div>
       </div>
+    </Drops>
+  );
+}
+
+export type EpicTabProps = {
+  repo: string;
+  number: number;
+  onTitle: (title: string) => void;
+  onClose: () => void;
+  onOpenIssue: (repo: string, number: number, title?: string) => void;
+};
+
+/** An epic's own workspace tab: its page, with the parents of the open epics for drop refusals
+ * (the server's own parent check refuses at staging should this read fail). */
+export function EpicTab({ repo, number, onTitle, onClose, onOpenIssue }: EpicTabProps) {
+  const client = useClient();
+  const tray = useTray();
+  const [epics, setEpics] = useState<Epic[]>([]);
+  const titled = useRef(onTitle);
+  titled.current = onTitle;
+  useEffect(() => {
+    let live = true;
+    getEpics(client).then(
+      (found) => {
+        if (!live) return;
+        setEpics(found);
+        const own = found.find((e) => lower(refOf(e)) === lower(`${repo}#${number}`));
+        if (own) titled.current(own.title);
+      },
+      () => undefined, // the tab still works: refusals then come from the server
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, repo, number, tray.revision]);
+  const parentOf = useMemo(() => parentsOf(epics), [epics]);
+  return (
+    <Drops>
+      <EpicView repo={repo} number={number} parentOf={parentOf} onClose={onClose} onOpenIssue={onOpenIssue} />
     </Drops>
   );
 }
