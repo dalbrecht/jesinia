@@ -745,7 +745,8 @@ class QueueService:
         Raises:
             QueueNotFoundError, QueueItemNotFoundError, QueueItemStateError (done),
             QueueItemNotWritableError (a milestone), InvalidQueueError (a blank band),
-            TrayChangeStagedError (a priority change staged from the tray: undo it there),
+            TrayChangeStagedError (a move into another band while a priority change is staged
+            from the tray: undo it there; a move within its band is always local),
             IssueNotCachedError, and what ``PendingService.stage`` raises (a priority the repo's
             schema lacks).
         """
@@ -757,7 +758,6 @@ class QueueService:
         cached = self._cache.cached_issue(item.ref.repo, item.ref.n)
         if cached is None:
             raise IssueNotCachedError(f"{item.ref} is {NOT_CACHED}")
-        self._refuse_tray_priority(item.ref.repo, item.ref.n)
         before = self._view_of(queue, items)
         target = label_key(band)
         current = next(i for i in before.items if i.item.key == item.key)
@@ -768,6 +768,9 @@ class QueueService:
         earlier = self._staged_priority(item.ref.repo, item.ref.n)
         changes = effective is None or label_key(effective) != target
         if changes:
+            # A move within the item's band is only local order (IR15); one into another band
+            # would override a priority the author staged from the tray, so it is refused.
+            self._refuse_tray_priority(item.ref.repo, item.ref.n)
             change = self._priority_change(cached, band)
             if earlier is not None:
                 change = replace(cast(SetDimension, earlier.change), value=band)

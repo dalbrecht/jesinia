@@ -537,8 +537,9 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   GitHub since is a conflict at apply time, not an overwrite. A second band move before the
   tray is applied replaces the first one's staged priority (keeping its precondition), and a
   move back to the issue's own band undoes it, so the issue gets one priority change. A band
-  move never overrides a priority the author staged from the tray (a picker, a menu): it is
-  refused (409, `TrayChangeStagedError`: undo that change there first).
+  move into another band never overrides a priority the author staged from the tray (a picker,
+  a menu): it is refused (409, `TrayChangeStagedError`: undo that change there first). A move
+  within the item's band only reorders, locally, and is always allowed.
 - **Undone from the queue:** the tray refuses to undo a change a queue item's Done holds (409,
   `PendingHeldError`), and "undo all" leaves those; undo the Done in its queue. If the tray's
   apply fails for that change (a conflict, a lost permission), the item still shows Done: undo

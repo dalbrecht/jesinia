@@ -1039,3 +1039,20 @@ async def test_a_band_move_never_overrides_a_priority_staged_from_the_tray(env: 
     assert [p.change for p in mine] == [
         SetDimension("priority", "priority: low", only_if_value="priority: high")
     ]
+
+
+async def test_an_issue_with_a_tray_priority_can_still_be_reordered_in_its_band(
+    env: Queues,
+) -> None:
+    await env.synced(issue(1, labels=HIGH), issue(2, labels=HIGH), issue(3, labels=HIGH))
+    q = env.queues.create("Mine").queue.id
+    for n in (1, 2, 3):
+        env.queues.add(q, "issue", REPO, n)
+    env.world.pending.stage(REPO, 3, SetDimension("priority", "priority: low"), "picker")
+    env.world.pending.stage(REPO, 2, SetDimension("priority", "priority: low"), "picker")
+    tray = env.world.pending.pending()
+    # #3 and #2 show in the low band (what the tray will give them): reordering there is local.
+    moved = env.queues.move_to_band(q, "issue", REPO, 2, "priority: low", 0)
+    assert moved.staged is None and env.world.pending.pending() == tray
+    low = next(b for b in env.queues.queue(q).bands if b.value == "priority: low")
+    assert [i.item.ref.n for i in low.items] == [2, 3]
