@@ -521,14 +521,28 @@ async def test_should_round_trip_the_suggestion_runner(env: Env) -> None:
     chosen = await env.client.patch(f"{API}/settings", json={"runner": "codex"}, headers=keyed())
     assert chosen.status_code == 200 and chosen.json() == {"runner": "codex"}
     assert env.host.settings.runner() == "codex"
-    kept = await env.client.patch(f"{API}/settings", json={}, headers=keyed())
-    assert kept.json() == {"runner": "codex"}  # nothing sent, nothing changed
+    # Like a repo's PATCH, a save must send something.
+    empty = await env.client.patch(f"{API}/settings", json={}, headers=keyed())
+    assert empty.status_code == 422
+    assert env.host.settings.runner() == "codex"
     cleared = await env.client.patch(f"{API}/settings", json={"runner": None}, headers=keyed())
     assert cleared.json() == {"runner": None}
     assert env.host.settings.runner() == "claude-code"
     for name in ("", "Codex", "a b", "x" * 41):
         refused = await env.client.patch(f"{API}/settings", json={"runner": name}, headers=keyed())
         assert refused.status_code == 422, name
+
+
+async def test_a_repo_patch_replayed_with_its_key_acts_once(env: Env) -> None:
+    await env.watch_and_sync()
+    key = keyed()
+    first = await env.client.patch(REPO_PATH, json={"settings_schema": SCHEMA}, headers=key)
+    assert first.status_code == 200
+    await env.client.patch(REPO_PATH, json={"settings_schema": None}, headers=keyed())
+    again = await env.client.patch(REPO_PATH, json={"settings_schema": SCHEMA}, headers=key)
+    assert again.json() == first.json()
+    repos = (await env.client.get(f"{API}/repos")).json()["repos"]
+    assert repos[0]["settings_schema"] is None  # the replay changed nothing
 
 
 async def test_a_runner_save_replayed_with_its_key_acts_once(env: Env) -> None:

@@ -243,9 +243,11 @@ run, and keep showing the cache.
   the default (readiness, priority, type, `area:` areas, `epic`, `initiative`). **Aliases** are
   existing labels that mean the same thing (for example `design needed` for `design-needed`).
   An alias counts toward completeness, and Jesinia writes the label name that exists on GitHub
-  until the repo is migrated. **Save labels** keeps the Settings schema; **Use the default**
-  clears it. Label names are shown with any hidden or direction-changing character as a
-  visible token.
+  until the repo is migrated. **Labels on GitHub not in the schema** lists the repo's labels
+  that count for nothing yet; **Alias of…** adds one, by its exact name, to the value it means.
+  **Save labels** keeps the Settings schema (the previews wait until it is saved). **Use the
+  default** clears it after a confirmation, with **Undo** to put it back. Label names are shown
+  with any hidden or direction-changing character as a visible token.
 - **Label setup:** Jesinia never creates a label implicitly. **Preview setup** lists the
   canonical labels the repo lacks; **Apply setup** creates exactly those, as your approval.
 - **Label migration, and why it is safe:** **Preview migration** lists, for each alias on
@@ -264,7 +266,7 @@ run, and keep showing the cache.
   the steps done so far are shown; preview again for what is left.
 - **The Pending changes tray:** approving a suggestion applies it to GitHub at once. Every
   other GitHub change (a drag onto an epic or a board column, a picker, a menu action, the
-  bulk bar, a queue's band move or Done) waits in the tray, bottom right, until **Apply**.
+  bulk bar, a queue's band move or Done) waits in the tray at the bottom of the window until **Apply**.
   Apply sends the whole tray as one batch: one ordered series per issue, checked against a
   fresh read. A step that GitHub changed underneath (a parent moved, a label already set) is
   shown as a conflict and never overwritten. A failure stops that issue's series and keeps what

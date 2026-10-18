@@ -259,9 +259,15 @@ class IssuesSettingsOut(BaseModel):
 
 class IssuesSettingsPatch(BaseModel):
     """A partial save: a field left out keeps its value. ``runner: null`` follows the agents
-    service's preferred runner again."""
+    service's preferred runner again. Like ``IssuesRepoPatch``, an empty body is refused."""
 
     runner: str | None = Field(default=None, pattern=RUNNER_NAME)
+
+    @model_validator(mode="after")
+    def _something_sent(self) -> IssuesSettingsPatch:
+        if not self.model_fields_set:
+            raise ValueError("send runner (null for the agents service's preferred one)")
+        return self
 
 
 class IssueRowOut(BaseModel):

@@ -249,16 +249,18 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 
 - **REST, under `/api/issues`.** Every route is owner-only, like all module routes, so agent
   session tokens get a 403. Every write takes an `Idempotency-Key` header.
-  - `GET /repos`: every added repo, with its schema and sync status.
+  - `GET /repos`: every added repo, with its schema and sync status, and `unmapped_labels`: its
+    cached labels the schema doesn't map, as GitHub spells them, for Settings to offer as aliases.
   - `PUT /repos/{owner}/{repo}` with `{watched, settings_schema}`: `settings_schema` is
     required; send `null` to clear it.
   - `PATCH /repos/{owner}/{repo}` with `{watched?, settings_schema?}`: a partial save, as
     Settings → Issues sends. Only the fields sent change (`settings_schema: null` clears it),
     so a save never puts back what another tab changed; `watched: true` adds a new repo. An empty
     body or `watched: null` is a 422.
-  - `GET /settings` and `PATCH /settings` with `{runner?}`: the runner suggestion asks use
-    (`null`: the agents service's preferred one, `claude-code` when it is available). A chosen
-    runner is asked even while unavailable, so the runs wait or fail with its cause.
+  - `GET /settings` and `PATCH /settings` with `{runner}`: the runner suggestion asks use
+    (`null`: the agents service's preferred one, `claude-code` when it is available). As with a
+    repo's PATCH, an empty body is a 422. A chosen runner is asked even while unavailable, so the
+    runs wait or fail with its cause.
   - `POST /repos/{owner}/{repo}/sync`: sync the repo now.
   - `GET /{inbox|backlog}?repo&filter`: a view, served from the cache, even without the
     `github` service. Each row carries GitHub's `state` and `linked_pr_state` (the linked PRs

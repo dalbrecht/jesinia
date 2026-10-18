@@ -453,10 +453,8 @@ def build_router(host: IssuesHost) -> APIRouter:
         """Save only the fields sent (``runner: null`` follows the agents service again)."""
 
         async def run() -> IssuesSettingsOut:
-            current = host.settings.settings()
-            if "runner" in body.model_fields_set:
-                current = host.settings.update(runner=body.runner)
-            return IssuesSettingsOut(runner=current.runner)
+            # ``runner`` is the only field, and a body must send something.
+            return IssuesSettingsOut(runner=host.settings.update(runner=body.runner).runner)
 
         return await idem.run(lambda: _respond(run, host.clock))
 

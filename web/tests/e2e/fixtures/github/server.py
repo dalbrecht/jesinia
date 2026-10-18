@@ -8,9 +8,11 @@ in memory: a test opens an issue with ``POST /__issues`` (``{title, body, labels
 now; ``parent`` makes it a sub-issue of that number, as a fixture), and writes change them as
 GitHub would: labels added and removed (an unknown label is refused rather than created, so a
 write that relies on GitHub creating a label fails loudly), labels created and deleted, sub-issues
-added (``replace_parent``), removed and reordered, issues created and closed, comments posted. It binds 127.0.0.1 on an ephemeral port and writes the
-port to ``--port-file`` once it is listening; nothing else is reachable and no real credential is
-ever read or needed (any ``Authorization: Bearer ...`` is accepted, none is a 401).
+added (``replace_parent``), removed and reordered, issues created and closed, comments posted.
+
+It binds 127.0.0.1 on an ephemeral port and writes the port to ``--port-file`` once it is
+listening; nothing else is reachable and no real credential is ever read or needed (any
+``Authorization: Bearer ...`` is accepted, none is a 401).
 
 Fixture text may hold ``{{sha:<branch>}}``, replaced by that branch's commit in the bare
 repository ``--repo`` (made by ``fixture.sh``), so the PRs name commits the review
@@ -395,7 +397,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 "state": {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}.get(
                     str(body.get("event")), "COMMENTED"
                 ),
-                "html_url": f"https://github.com/{REPO}/pull/{number}#pullrequestreview-{review_id}",
+                "html_url": (
+                    f"https://github.com/{REPO}/pull/{number}#pullrequestreview-{review_id}"
+                ),
                 "commit_id": body["commit_id"],
                 "submitted_at": "2026-10-17T12:00:00Z",
             }
