@@ -137,9 +137,9 @@ class ThemePublish:
     already: tuple[Ref, ...]
 
 
-def _origin(tag: str) -> str:
-    """The ledger origin of a theme's epic batches (IR56)."""
-    return f"theme:{tag}"
+def _origin(tag: str, repo: str) -> str:
+    """The ledger origin of a theme's epic batches: the theme and the epic's repo (IR57)."""
+    return f"theme:{tag}:{repo.casefold()}"
 
 
 class ThemeService:
@@ -453,7 +453,7 @@ class ThemeService:
                 uncached.append(ref)
             else:
                 members.append(found)
-        existing, ancestors = self._reusable_epic(tag)
+        existing, ancestors = self._reusable_epic(tag, home)
         plan = theme_epic_plan(tag, home, members, uncached, existing, ancestors)
         if digest is not None:
             if plan.digest != digest:
@@ -465,16 +465,17 @@ class ThemeService:
                 raise NothingToConvertError(f"the theme #{tag} has no issue left to link")
         return plan
 
-    def _reusable_epic(self, tag: str) -> tuple[Node | None, tuple[Key, ...]]:
-        """The theme's epic, with its ancestors, or ``None``: the epic a complete batch for the
-        theme made (or linked under), recorded in ``theme_epics`` and kept in the ledger after
-        the batch is pruned. Issues added later link under it rather than under a second epic
-        (IR56). A closed one is done with: the next plan makes a new epic."""
-        epic = self._store.theme_epic(tag)
+    def _reusable_epic(self, tag: str, home: str) -> tuple[Node | None, tuple[Key, ...]]:
+        """The theme's epic in ``home``, with its ancestors, or ``None``: the epic a complete
+        (or abandoned, IR58) batch for the theme made or linked under, recorded in
+        ``theme_epics`` and kept in the ledger after the batch is pruned. Issues added later
+        link under it rather than under a second epic (IR56). A closed one is done with: the
+        next plan makes a new epic."""
+        epic = self._store.theme_epic(tag, home)
         if epic is None:
-            for row in reversed(self._batches.origin_batches(_origin(tag))):
+            for row in reversed(self._batches.origin_batches(_origin(tag, home))):
                 made = row.created.get("epic")
-                if row.state == "complete" and made is not None:
+                if row.state in ("complete", "abandoned") and made is not None:
                     epic = made
                     self._store.set_epic(tag, row.batch_id, *made)
                     break
@@ -491,9 +492,10 @@ class ThemeService:
     ) -> AppliedBatch:
         """Approve the epic previewed with ``digest``: one batch through the apply engine, in
         the background (IR45); a replay of ``key`` answers its batch (IR46). Refused while an
-        earlier epic batch for the theme is running or didn't finish: it may have made the
-        epic, so it is resumed only by retrying it (IR56). The batch is recorded for the
-        theme on a replay too, so a record the first request couldn't write is never lost.
+        earlier epic batch for the theme (in that repo) is running or didn't finish: it may
+        have made the epic, so it is retried or abandoned instead (IR56, IR58). The batch is
+        recorded for the theme on a replay too, so a record the first request couldn't write is
+        never lost.
 
         Raises:
             EarlierBatchError: see above.
@@ -508,7 +510,7 @@ class ThemeService:
             planned.append(plan)
             return plan.changes
 
-        started = starter.start_batch(make, "epic", key, _origin(tag))
+        started = starter.start_batch(make, "epic", key, _origin(tag, home))
         reused = planned[0].epic if planned else None
         known = None if not isinstance(reused, IssueRef) else (reused.repo, reused.number)
         self._store.record_epic(tag, started.id, self._clock(), known)

@@ -18,6 +18,7 @@ from jesinia.apps.issues.application.ports import (
     creation_state,
 )
 from jesinia.apps.issues.domain.changes import (
+    CreatedIssue,
     EnsureLabel,
     Existing,
     IssueChange,
@@ -42,7 +43,7 @@ _BATCH_COLUMNS = (
 _ORIGINS: tuple[ApplyOrigin, ...] = ("pending", "suggestion", "epic")
 
 
-_STATES: tuple[CreationState, ...] = ("running", "complete", "incomplete")
+_STATES: tuple[CreationState, ...] = ("running", "complete", "incomplete", "abandoned")
 
 
 def _state(value: object) -> CreationState:
@@ -52,6 +53,26 @@ def _state(value: object) -> CreationState:
 def _created(text: str) -> dict[str, tuple[str, int]]:
     data = json.loads(text)
     return {temp: (str(ref[0]), int(ref[1])) for temp, ref in data.items()}
+
+
+def _created_refs_json(created: Mapping[str, tuple[str, int]]) -> str:
+    return json.dumps(
+        {temp: [repo, n] for temp, (repo, n) in created.items()}, ensure_ascii=False, sort_keys=True
+    )
+
+
+def _created_json(created: Mapping[str, CreatedIssue]) -> str:
+    return _created_refs_json({temp: (c.repo, c.n) for temp, c in created.items()})
+
+
+def _origin(batch_id: object, state: object, created: object, notes: object) -> OriginBatch:
+    found = json.loads(str(notes))
+    return OriginBatch(
+        str(batch_id),
+        _state(state),
+        _created(str(created)),
+        {str(k): str(v) for k, v in found.items()},
+    )
 
 
 def _time(value: datetime) -> str:
@@ -147,11 +168,7 @@ class SqliteApplyStore:
                 "WHERE batch_id = ?",
                 (
                     creation_state(applied),
-                    json.dumps(
-                        {t: [c.repo, c.n] for t, c in applied.result.created.items()},
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ),
+                    _created_json(applied.result.created),
                     _time(applied.updated_at),
                     applied.id,
                 ),
@@ -197,31 +214,56 @@ class SqliteApplyStore:
                 "UPDATE apply_batches SET status = 'interrupted' WHERE status = 'running'"
             ).rowcount
 
-    def add_origin(self, origin_key: str, batch_id: str, now: datetime) -> None:
-        found = self.batch(batch_id)
-        state = "running" if found is None else creation_state(found)
+    def begin_batch(self, applied: AppliedBatch, origin_key: str, notes: Mapping[str, str]) -> None:
+        with transaction(self._conn):
+            self._save(applied)
+            self._insert_origin(origin_key, applied, notes)
+
+    def _insert_origin(
+        self, origin_key: str, applied: AppliedBatch, notes: Mapping[str, str]
+    ) -> None:
         self._conn.execute(
             "INSERT OR IGNORE INTO batch_origins "
-            "(origin_key, batch_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (origin_key, batch_id, state, _time(now), _time(now)),
+            "(origin_key, batch_id, state, created_json, notes_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                origin_key,
+                applied.id,
+                creation_state(applied),
+                _created_json(applied.result.created),
+                json.dumps(dict(notes), ensure_ascii=False, sort_keys=True),
+                _time(applied.created_at),
+                _time(applied.updated_at),
+            ),
         )
 
     def origin_batches(self, origin_key: str) -> list[OriginBatch]:
         rows = self._conn.execute(
-            "SELECT batch_id, state, created_json FROM batch_origins WHERE origin_key = ? "
-            "ORDER BY created_at, rowid",
+            "SELECT batch_id, state, created_json, notes_json FROM batch_origins "
+            "WHERE origin_key = ? ORDER BY created_at, rowid",
             (origin_key,),
         )
-        return [
-            OriginBatch(str(batch_id), _state(state), _created(str(created)))
-            for batch_id, state, created in rows
-        ]
+        return [_origin(*row) for row in rows]
 
-    def created_by(self, batch_id: str) -> Mapping[str, tuple[str, int]]:
+    def origin_of(self, batch_id: str) -> tuple[str, OriginBatch] | None:
         row = self._conn.execute(
-            "SELECT created_json FROM batch_origins WHERE batch_id = ? LIMIT 1", (batch_id,)
+            "SELECT origin_key, batch_id, state, created_json, notes_json FROM batch_origins "
+            "WHERE batch_id = ? LIMIT 1",
+            (batch_id,),
         ).fetchone()
-        return {} if row is None else _created(str(row[0]))
+        return None if row is None else (str(row[0]), _origin(*row[1:]))
+
+    def abandon(self, batch_id: str, created: Mapping[str, tuple[str, int]], now: datetime) -> None:
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE batch_origins SET state = 'abandoned', created_json = ?, updated_at = ? "
+                "WHERE batch_id = ?",
+                (_created_refs_json(created), _time(now), batch_id),
+            )
+            self._conn.execute(
+                "UPDATE apply_batches SET status = 'abandoned', updated_at = ? WHERE id = ?",
+                (_time(now), batch_id),
+            )
 
     def prune_batches(self, before: datetime) -> int:
         return self._conn.execute(

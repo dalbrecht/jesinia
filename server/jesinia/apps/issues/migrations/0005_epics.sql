@@ -21,37 +21,27 @@ CREATE TABLE epic_briefs (
     PRIMARY KEY (repo, n)
 );
 
--- Every batch that may create issues, by its origin (`suggestion:<id>` for a group or split,
--- `conversion:<repo>#<n>`, `theme:<tag>`), with its state (`running`, `complete` or
--- `incomplete`) and the issues it created by temp id, kept current with every save of the
--- batch. Never pruned: an earlier batch that is running or incomplete refuses a new approval
--- for the same origin (resume it with Retry), and a complete one's issues are reused, even
--- after the batch itself is pruned (ruling IR56).
+-- Every batch that may create issues, by its origin: the semantic target, never a draft id
+-- (ruling IR57): `split:<repo>#<n>` (the issue split), `group:<hash of the sorted members>` (a
+-- new epic), `conversion:<repo>#<n>` (the epic) and `theme:<tag>:<repo>`. Written in the same
+-- transaction as the batch's first save and kept current with every later save: its `state`
+-- (`running`, `complete`, `incomplete`, or `abandoned` by the author, IR58), the issues it
+-- created by temp id (`created_json`) and the origin's own notes (`notes_json`: a conversion's
+-- item hashes and their temp ids). Never pruned: an earlier batch that is running or incomplete
+-- refuses a new approval for the origin (retry or abandon it), and the issues a complete or
+-- abandoned one created are reused, never created again (IR56).
 CREATE TABLE batch_origins (
     origin_key TEXT NOT NULL,
     batch_id TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'running' CHECK (state IN ('running', 'complete', 'incomplete')),
+    state TEXT NOT NULL DEFAULT 'running'
+        CHECK (state IN ('running', 'complete', 'incomplete', 'abandoned')),
     created_json TEXT NOT NULL DEFAULT '{}',
+    notes_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (origin_key, batch_id)
 );
 CREATE INDEX batch_origins_by_batch ON batch_origins (batch_id);
-
--- Each unlinked checklist item a conversion created an issue for, keyed by a hash of its
--- normalised text (and its occurrence), with the batch's temp id and, once known, the issue it
--- became. The checklist stays in the body, so a later preview matches the item to that issue
--- instead of creating it again.
-CREATE TABLE converted_items (
-    repo TEXT NOT NULL COLLATE NOCASE,
-    n INTEGER NOT NULL,
-    item_hash TEXT NOT NULL,
-    batch_id TEXT NOT NULL,
-    temp_id TEXT NOT NULL,
-    created_repo TEXT COLLATE NOCASE,
-    created_n INTEGER,
-    PRIMARY KEY (repo, n, item_hash)
-);
 
 -- A checklist conversion is a batch of its own (`epic`), beside the tray's and approvals'.
 -- SQLite can't alter a CHECK, so the table is rebuilt with its rows and indexes.
@@ -59,7 +49,8 @@ CREATE TABLE apply_batches_next (
     id TEXT PRIMARY KEY,
     origin TEXT NOT NULL CHECK (origin IN ('pending', 'suggestion', 'epic')),
     suggestion_id TEXT,
-    status TEXT NOT NULL DEFAULT 'finished' CHECK (status IN ('running', 'finished', 'interrupted')),
+    status TEXT NOT NULL DEFAULT 'finished'
+        CHECK (status IN ('running', 'finished', 'interrupted', 'abandoned')),
     request_key TEXT,
     batch_json TEXT NOT NULL,
     result_json TEXT NOT NULL,

@@ -38,7 +38,6 @@ from jesinia.apps.issues.domain.suggestions import SuggestionFilters, priority_s
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
-from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversionStore
 from jesinia.apps.issues.infrastructure.queue_store import SqliteQueueStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
@@ -199,7 +198,6 @@ async def env(cfg: Config, conn: sqlite3.Connection, tags: TagService) -> AsyncI
         suggest,
         briefs,
         clock,
-        conversions=SqliteConversionStore(conn),
         batches=applied,
     )
     publisher = BriefService(
@@ -282,6 +280,7 @@ WRITES: list[tuple[str, str, dict[str, object] | None]] = [
     ("DELETE", f"{API}/pending", None),
     ("POST", f"{API}/pending/apply", {"ids": None}),
     ("POST", f"{API}/pending/x/retry", None),
+    ("POST", f"{API}/pending/x/abandon", {"created": []}),
     ("POST", f"{EPIC}/conversion", {"digest": "0" * 64}),
     ("POST", f"{EPIC}/brief/draft", None),
     ("POST", f"{EPIC}/brief", {"text": "x"}),
@@ -1718,3 +1717,26 @@ async def test_theme_routes_map_their_errors(env: Env) -> None:
     env.host.themes._tags = lambda: None  # noqa: SLF001 - the kb service stopped
     away = await env.client.post(f"{THEMES}/sync/issues", json=one, headers=keyed())
     assert away.status_code == 503 and away.json()["error"] == "ThemesUnavailableError"
+
+
+async def test_an_incomplete_batch_is_abandoned_over_the_api(env: Env) -> None:
+    await _with_epic(env, body="- [ ] Alpha\n- [ ] Beta", count=0)
+    env.github.fail["create_issue:Beta"] = GitHubRequestError(410, "Issues are disabled")
+    digest = (await env.client.get(f"{EPIC3}/conversion")).json()["digest"]
+    started = await env.client.post(f"{EPIC3}/conversion", json={"digest": digest}, headers=keyed())
+    await _polled(env, started)
+    batch = started.json()["id"]
+    key = keyed()
+    body = {"created": [{"temp_id": "item-2", "repo": REPO, "n": 77}]}
+    out = await env.client.post(f"{PENDING}/{batch}/abandon", json=body, headers=key)
+    assert out.status_code == 200, out.text
+    assert out.json()["state"] == "abandoned" and out.json()["origin"] == "conversion:acme/web#3"
+    assert sorted(c["temp_id"] for c in out.json()["created"]) == ["item-1", "item-2"]
+    again = await env.client.post(f"{PENDING}/{batch}/abandon", json=body, headers=key)
+    assert again.json() == out.json()
+    retried = await env.client.post(f"{PENDING}/{batch}/retry", headers=keyed())
+    assert retried.status_code == 409 and retried.json()["error"] == "BatchAbandonedError"
+    missing = await env.client.post(
+        f"{PENDING}/nope/abandon", json={"created": []}, headers=keyed()
+    )
+    assert missing.status_code == 404

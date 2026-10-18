@@ -133,7 +133,6 @@ infrastructure/
   suggestion_store.py  SqliteSuggestionStore: drafts, runs, the similarity corpus
   apply_store.py  SqliteApplyStore: the pending tray and the applied batches
   brief_store.py  SqliteBriefStore: each epic's brief comment
-  conversion_store.py  SqliteConversionStore: approved conversions and the items they created
   queue_store.py  SqliteQueueStore: the work queues and their items
   theme_store.py  SqliteThemeStore: each issue's themes and the theme epics' batches
 api/
@@ -168,29 +167,33 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   (its `ref` names only the repo) a repo's label setup step, which a published theme stages.
 - `apply_batches`: every batch (from the tray, an approval or a checklist conversion, its
   `origin`), stored `running` before its first
-  GitHub write and updated after every step, then `finished` (or `interrupted` by a stop), with
-  the Idempotency-Key that started it. Kept 30
-  days for Retry (pruned by the daily job).
+  GitHub write and updated after every step, then `finished` (or `interrupted` by a stop, or
+  `abandoned` by the author), with the Idempotency-Key that started it. Kept 30 days for Retry
+  (pruned by the daily job). Pruning never forgets what a batch of an origin that creates
+  issues did: that is in `batch_origins`, and a pruned unfinished one is abandoned through it.
 - `schema_overlay`: schema entries the author approved (a new area). They are merged over the
   repo's schema on every read, a read-only labels.yml included, so a sync never drops them.
 - A suggestion's `apply_error` says why its last approval didn't apply.
 - `epic_briefs`: each epic's brief comment, by its GitHub comment id, with the body posted. It is
   `in_flight` from right before a new comment is posted until its id is stored (ruling IR8), with
   the attempt's nonce (IR48).
-- `converted_items`: each unlinked checklist item a conversion created an issue for (by a hash
-  of its normalised text and repeat), with the issue it became. The checklist stays in the body,
-  so this is what stops a second conversion creating the item again.
-- `batch_origins`: every batch that may create issues, by its origin (a group or split draft, an
-  epic's conversion, a theme's epic), with its state and the issues it created, kept current with
-  each save of the batch and never pruned (ruling IR56).
+- `batch_origins`: every batch that may create issues, by its origin, which is its semantic
+  target, never a draft id (ruling IR57): `split:<repo>#<n>` (the issue split), `group:<hash of
+  the sorted members>` (a new epic), `conversion:<repo>#<n>` (the epic) and `theme:<tag>:<repo>`.
+  It is written in the same transaction as the batch's first save and kept current with each
+  later save: the state (`running`, `complete`, `incomplete`, or `abandoned`, IR58), the issues
+  created by temp id, and a conversion's items (each unlinked item's hash, by its normalised text
+  and repeat, to its temp id: the checklist stays in the body, so this is what stops a second
+  conversion creating the item again). Never pruned (IR56).
 - `queues` and `queue_items`: the work queues, in the author's order, and each queue's items
   (`issue`, `epic` or `milestone`, by `owner/repo#n`) with their position, note, when they were
   added and, once done, when and the pending change Done staged. A done item keeps its position,
   so Undo puts it back where it was.
 - `issue_themes`: each issue's themes, by the catalog's canonical tag. The catalog itself is the
   KB's `Tags.md`, which this module never writes except through `TagService.ensure`.
-- `theme_epics`: the batches that turned a theme into an epic, so a second approval is refused
-  while one runs, and an unfinished one's epic is reused.
+- `theme_epics`: the batches that turned a theme into an epic, with the epic each made or
+  linked under, so issues added to the theme later link under it (an unfinished batch refuses a
+  new approval through `batch_origins`: retry or abandon it).
 
 ## Jobs
 
@@ -273,7 +276,13 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
       is no 503 and no `Retry-After`.
     - `POST /pending/{batch}/retry` (202) resumes a finished or interrupted batch, and never
       repeats a recorded step. A comment or new issue cut off mid-write is never re-sent blindly
-      (see below). A batch still running is a 409.
+      (see below). A batch still running, or abandoned, is a 409.
+    - `POST /pending/{batch}/abandon` with `{created?: [{temp_id, repo, n}]}` gives up on an
+      unfinished batch of an origin that creates issues, even a pruned one (found through its
+      origin's ledger): it never runs again, and the issues it created, plus `created` (issues
+      found on GitHub for a create cut off mid-write), are reused by the next approval for that
+      origin, which creates only what is missing (ruling IR58). It answers the origin and those
+      issues. A running batch is a 409, a complete one a 400.
   - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
     same batch. The batch keeps the key too, so a replay never applies the tray again, even
     across a crash (ruling IR46).
@@ -391,7 +400,8 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   setup's executor (ruling IR12).
 - **Conflicts:** a staged parent move records the parent the author saw. If GitHub's parent
   differs at apply time, the step fails as a conflict (`conflict: true`, "moved on GitHub") and
-  nothing moves (ruling IR39). A reorder whose child has left the epic is skipped with a cause,
+  nothing moves (ruling IR39). A link already in place on GitHub ("already the parent") is done, never a
+  conflict: nothing changes, so nothing is overwritten. A reorder whose child has left the epic is skipped with a cause,
   never sent to GitHub (IR41).
 - **Close comments:** a close's own comment is posted only when the close happened. A staged
   comment is always posted.
@@ -414,8 +424,9 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
     it (IR40).
     Claims a stop cut off are released at start.
   - A complete apply marks the suggestion approved. A failed one leaves it approvable, with the
-    cause, except a group or split draft, which creates issues: it resumes through Retry only
-    (approving it again is a 409, `EarlierBatchError`, IR56).
+    cause, except a group or split draft, which creates issues: its batch is retried or abandoned
+    (approving it, or a re-asked draft for the same target, again is a 409, `EarlierBatchError`,
+    IR56, IR57).
 - **Write-ahead, in the background (ruling IR45):**
   - A batch is stored `running` before its first GitHub write and updated after every step.
   - One task per batch runs it in the background, and batches still run one at a time, in the
@@ -452,17 +463,20 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   batch through the engine: the new issues first (`CreateIssue`), then each `SetParent` naming
   them by temp id. Every link is made against "no parent", so a parent set on GitHub since is a
   conflict, never a move. New issues carry no labels: a label is never created implicitly (IR4).
-- **Created once (IR56):** every origin that creates issues (a group or split draft, an epic's
-  conversion, a theme's epic) records its batches in `batch_origins`. While an earlier batch for
-  the same origin is running or didn't finish, approving again is refused (409, "retry batch
-  X"): Retry is the only way to resume it, and it never repeats a create. A complete one's
-  issues are reused and the origin settled (a draft is marked approved), even after the batch is
-  pruned.
+- **Created once (IR56–IR58):** every origin that creates issues records its batches in
+  `batch_origins`, keyed by the target (the issue split, the group's members, the epic, the theme
+  and repo), so re-asking the agent for a new draft about the same target meets the same ledger.
+  The row is written with the batch's first save, in one transaction. While an earlier batch for
+  the target is running or didn't finish, approving again is refused (409, "retry batch X, or
+  abandon it"): Retry resumes it without repeating a create, and Abandon gives up on it (for one
+  that can't complete, or was pruned) while keeping what it created. A complete batch's issues
+  are reused and the origin settled (a draft is marked approved); an abandoned one's are reused
+  by the next approval, which creates only what is missing.
 - **Never twice:** the checklist stays in the body, so each item a conversion creates is
-  recorded. A later preview matches it to the issue it became ("already converted"), or holds it
-  back while that is unknown: an earlier batch still running, one that didn't create it (retry
-  that batch), or one whose record is gone (check GitHub). Conversions of one epic run one at a
-  time.
+  recorded, before any GitHub write. A later preview matches it to the issue it became ("already
+  converted"), or holds it back while that is unknown: an earlier batch still running, one that
+  didn't create it (retry that batch), or one whose record is gone (check GitHub). An item an
+  abandoned batch never created is planned anew. Conversions of one epic run one at a time.
 - **Approve what was shown:** a conversion is approved by the digest of the plan the author saw;
   a plan that changed since (an edited checklist, a linked issue moved) is refused. A group or
   split draft is re-checked against the cache when approved: an issue closed, gone or under a
@@ -549,8 +563,9 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
 - **One epic per theme (IR56):** a theme epic is one approved batch keyed by the digest of the
   plan the author saw (IR27, IR45, IR46). The epic is created with no labels. Another repo's
   issue gets the "won't fit one PR" warning and another owner's is refused (IR17). An earlier
-  epic batch for the theme that is running or didn't finish refuses a new approval (409): it may
-  have made the epic, so it is resumed only by Retry. Once a batch made the epic (recorded in
+  epic batch for the theme (in that repo) that is running or didn't finish refuses a new approval
+  (409): it may have made the epic, so it is retried or abandoned (an abandon may confirm an epic
+  found on GitHub, which is then reused). Once a batch made the epic (recorded in
   `theme_epics` and the ledger, so pruning doesn't forget it), issues added to the theme later
   link under it while it is open. The batch is recorded for the theme on a replay of the key
   too, so a record the first request couldn't write isn't lost.

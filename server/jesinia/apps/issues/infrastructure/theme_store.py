@@ -77,9 +77,11 @@ class SqliteThemeStore:
             self._conn.execute("UPDATE OR IGNORE theme_epics SET tag = ? WHERE tag = ?", (new, old))
             self._conn.execute("DELETE FROM theme_epics WHERE tag = ?", (old,))
             # The ledger of the theme's epic batches follows it too (IR56).
+            prefix = f"theme:{old}:"
             self._conn.execute(
-                "UPDATE OR IGNORE batch_origins SET origin_key = ? WHERE origin_key = ?",
-                (f"theme:{new}", f"theme:{old}"),
+                "UPDATE OR IGNORE batch_origins SET origin_key = ? || substr(origin_key, ?) "
+                "WHERE substr(origin_key, 1, ?) = ?",
+                (f"theme:{new}:", len(prefix) + 1, len(prefix), prefix),
             )
 
     def record_epic(
@@ -97,10 +99,10 @@ class SqliteThemeStore:
             (repo, n, tag, batch_id),
         )
 
-    def theme_epic(self, tag: str) -> tuple[str, int] | None:
+    def theme_epic(self, tag: str, repo: str) -> tuple[str, int] | None:
         row = self._conn.execute(
-            "SELECT epic_repo, epic_n FROM theme_epics WHERE tag = ? AND epic_n IS NOT NULL "
-            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            (tag,),
+            "SELECT epic_repo, epic_n FROM theme_epics WHERE tag = ? AND epic_repo = ? "
+            "AND epic_n IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (tag, repo),
         ).fetchone()
         return None if row is None else (str(row[0]), int(row[1]))

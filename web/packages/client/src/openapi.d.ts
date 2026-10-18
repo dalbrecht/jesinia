@@ -1338,7 +1338,8 @@ export interface paths {
         post: operations["stage_pending_api_issues_pending_post"];
         /**
          * Clear Pending
-         * @description Undo every staged change.
+         * @description Undo every staged change no queue item's Done holds (those stay: undo them in their
+         *     queue).
          */
         delete: operations["clear_pending_api_issues_pending_delete"];
         options?: never;
@@ -1358,7 +1359,8 @@ export interface paths {
         post?: never;
         /**
          * Unstage Pending
-         * @description Undo one staged change.
+         * @description Undo one staged change. A change a queue item's Done holds is a 409
+         *     (``PendingHeldError``): undo that Done in its queue instead.
          */
         delete: operations["unstage_pending_api_issues_pending__pending_id__delete"];
         options?: never;
@@ -2091,6 +2093,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/issues/pending/{batch}/abandon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abandon Batch
+         * @description Give up on an unfinished batch of an origin that creates issues (a group or split, a
+         *     conversion, a theme's epic), even one already pruned: it never runs again, and the
+         *     issues it created (plus ``created``, confirmed on GitHub for a create cut off while
+         *     being sent) are reused by the next approval for its origin, which creates only what is
+         *     missing. A batch still running is a 409, a complete one a 400.
+         */
+        post: operations["abandon_batch_api_issues_pending__batch__abandon_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/issues/{view}": {
         parameters: {
             query?: never;
@@ -2485,6 +2511,33 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AbandonIn
+         * @description Abandoning a batch: ``created`` confirms issues found on GitHub for creates whose result
+         *     is unknown (cut off while being sent).
+         */
+        AbandonIn: {
+            /** Created */
+            created?: components["schemas"]["CreatedRefBody"][];
+        };
+        /**
+         * AbandonedOut
+         * @description An abandoned batch's ledger row: its ``origin`` (the target a new approval plans for) and
+         *     every issue it created, reused by that approval instead of created again.
+         */
+        AbandonedOut: {
+            /** Batch Id */
+            batch_id: string;
+            /** Origin */
+            origin: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "running" | "complete" | "incomplete" | "abandoned";
+            /** Created */
+            created: components["schemas"]["CreatedRefBody"][];
+        };
         /** AddAreaBody */
         AddAreaBody: {
             /**
@@ -2530,7 +2583,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "running" | "finished" | "interrupted";
+            status: "running" | "finished" | "interrupted" | "abandoned";
             /** Complete */
             complete: boolean;
             /** Repo Steps */
@@ -2772,6 +2825,18 @@ export interface components {
             /** Folders */
             folders: components["schemas"]["UnreadOut"][];
             views: components["schemas"]["ViewCountsOut"];
+        };
+        /**
+         * CreatedRefBody
+         * @description An issue a batch created, by its temp id.
+         */
+        CreatedRefBody: {
+            /** Temp Id */
+            temp_id: string;
+            /** Repo */
+            repo: string;
+            /** N */
+            n: number;
         };
         /**
          * CrossFindingOut
@@ -12985,6 +13050,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApplyBatchOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    abandon_batch_api_issues_pending__batch__abandon_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                batch: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AbandonIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AbandonedOut"];
                 };
             };
             /** @description Bad Request */

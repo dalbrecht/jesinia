@@ -6245,7 +6245,7 @@
           "issues"
         ],
         "summary": "Clear Pending",
-        "description": "Undo every staged change.",
+        "description": "Undo every staged change no queue item's Done holds (those stay: undo them in their\nqueue).",
         "operationId": "clear_pending_api_issues_pending_delete",
         "parameters": [
           {
@@ -6340,7 +6340,7 @@
           "issues"
         ],
         "summary": "Unstage Pending",
-        "description": "Undo one staged change.",
+        "description": "Undo one staged change. A change a queue item's Done holds is a 409\n(``PendingHeldError``): undo that Done in its queue instead.",
         "operationId": "unstage_pending_api_issues_pending__pending_id__delete",
         "parameters": [
           {
@@ -10967,6 +10967,129 @@
         }
       }
     },
+    "/api/issues/pending/{batch}/abandon": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Abandon Batch",
+        "description": "Give up on an unfinished batch of an origin that creates issues (a group or split, a\nconversion, a theme's epic), even one already pruned: it never runs again, and the\nissues it created (plus ``created``, confirmed on GitHub for a create cut off while\nbeing sent) are reused by the next approval for its origin, which creates only what is\nmissing. A batch still running is a 409, a complete one a 400.",
+        "operationId": "abandon_batch_api_issues_pending__batch__abandon_post",
+        "parameters": [
+          {
+            "name": "batch",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Batch"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbandonIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbandonedOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/{view}": {
       "get": {
         "tags": [
@@ -13778,6 +13901,59 @@
   },
   "components": {
     "schemas": {
+      "AbandonIn": {
+        "properties": {
+          "created": {
+            "items": {
+              "$ref": "#/components/schemas/CreatedRefBody"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "title": "AbandonIn",
+        "description": "Abandoning a batch: ``created`` confirms issues found on GitHub for creates whose result\nis unknown (cut off while being sent)."
+      },
+      "AbandonedOut": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "origin": {
+            "type": "string",
+            "title": "Origin"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "complete",
+              "incomplete",
+              "abandoned"
+            ],
+            "title": "State"
+          },
+          "created": {
+            "items": {
+              "$ref": "#/components/schemas/CreatedRefBody"
+            },
+            "type": "array",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "origin",
+          "state",
+          "created"
+        ],
+        "title": "AbandonedOut",
+        "description": "An abandoned batch's ledger row: its ``origin`` (the target a new approval plans for) and\nevery issue it created, reused by that approval instead of created again."
+      },
       "AddAreaBody": {
         "properties": {
           "kind": {
@@ -13841,7 +14017,8 @@
             "enum": [
               "running",
               "finished",
-              "interrupted"
+              "interrupted",
+              "abandoned"
             ],
             "title": "Status"
           },
@@ -14524,6 +14701,36 @@
           "views"
         ],
         "title": "CountsOut"
+      },
+      "CreatedRefBody": {
+        "properties": {
+          "temp_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Temp Id"
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 140,
+            "minLength": 3,
+            "title": "Repo"
+          },
+          "n": {
+            "type": "integer",
+            "maximum": 999999999.0,
+            "minimum": 1.0,
+            "title": "N"
+          }
+        },
+        "type": "object",
+        "required": [
+          "temp_id",
+          "repo",
+          "n"
+        ],
+        "title": "CreatedRefBody",
+        "description": "An issue a batch created, by its temp id."
       },
       "CrossFindingOut": {
         "properties": {

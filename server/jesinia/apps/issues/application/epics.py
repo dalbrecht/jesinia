@@ -30,7 +30,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Protocol, cast
@@ -42,11 +42,11 @@ from jesinia.apps.issues.application.ports import (
     BriefStore,
     BriefWrites,
     CachedIssue,
-    ConversionStore,
     EpicCache,
     RepoState,
     StoredBrief,
     SuggestionStore,
+    creation_state,
 )
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.domain.changes import ChangeBatch, Existing, New
@@ -155,6 +155,11 @@ BRIEF_ROLE = (
 _REQUEST = "Reply with only one JSON object, and nothing else, that matches the given schema."
 
 
+def _conversion_origin(repo: str, n: int) -> str:
+    """The ledger origin of an epic's checklist conversions: the epic (IR57)."""
+    return f"conversion:{repo.casefold()}#{n}"
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex
 
@@ -172,6 +177,7 @@ class BatchStarter(Protocol):
         origin: ApplyOrigin,
         key: str | None,
         origin_key: str | None = None,
+        notes: Callable[[], Mapping[str, str]] | None = None,
     ) -> AppliedBatch: ...
 
 
@@ -322,8 +328,7 @@ class EpicService:
         suggest: the suggestion service, whose one-shot asks and background runs this uses.
         briefs: the stored brief comments.
         clock: the current UTC time.
-        conversions: the conversions approved and the items they created.
-        batches: the stored batches (what a conversion's batch created).
+        batches: the stored batches and the ledger of what each conversion created.
         new_id: makes suggestion ids.
     """
 
@@ -335,7 +340,6 @@ class EpicService:
         briefs: BriefStore,
         clock: Clock,
         *,
-        conversions: ConversionStore,
         batches: BatchReads,
         new_id: Callable[[], str] = _new_id,
     ) -> None:
@@ -344,7 +348,6 @@ class EpicService:
         self._suggest = suggest
         self._briefs = briefs
         self._clock = clock
-        self._conversions = conversions
         self._batches = batches
         self._new_id = new_id
 
@@ -565,56 +568,52 @@ class EpicService:
         return plan
 
     def _converted(self, repo: str, n: int) -> dict[str, Converted]:
-        """What earlier conversions of this epic did with its unlinked items: the issue each
-        created (from its record, else its batch's result, then recorded), or why that isn't
-        known."""
+        """What earlier conversions of this epic did with its unlinked items, from the ledger
+        (written with each batch's first save, kept after it is pruned, N3): the issue an item
+        became, or why that isn't known, so it is held back. An item an abandoned batch never
+        created may be created anew (IR58)."""
         found: dict[str, Converted] = {}
-        for row in self._conversions.converted(repo, n):
-            if row.created_repo is not None and row.created_n is not None:
-                found[row.item_hash] = Converted((row.created_repo, row.created_n))
-                continue
-            batch = self._batches.batch(row.batch_id)
-            if batch is None:
-                ledger = self._batches.created_by(row.batch_id).get(row.temp_id)
-                made: tuple[str, int] | None = ledger
-            else:
-                hit = batch.result.created.get(row.temp_id)
-                made = None if hit is None else (hit.repo, hit.n)
-            if made is not None:
-                found[row.item_hash] = Converted(made)
-                self._remember(repo, n, row.item_hash, *made)
-            elif batch is None:
-                reason = "an earlier conversion may have created it, but its record is gone; "
-                found[row.item_hash] = Converted(None, f"{reason}check GitHub")
-            elif batch.status == "running":
-                found[row.item_hash] = Converted(None, f"being converted now (batch {batch.id})")
-            else:
-                found[row.item_hash] = Converted(
-                    None,
-                    f"an earlier conversion (batch {batch.id}) didn't create it; retry that batch",
-                )
+        for row in self._batches.origin_batches(_conversion_origin(repo, n)):
+            live = self._batches.batch(row.batch_id)
+            state = row.state if live is None else creation_state(live)
+            made_by = dict(row.created)
+            if live is not None:
+                made_by.update({t: (c.repo, c.n) for t, c in live.result.created.items()})
+            for item_hash, temp in row.notes.items():
+                # A later plan reuses an item an earlier batch created, so it never lists it.
+                made = made_by.get(temp)
+                if made is not None:
+                    found[item_hash] = Converted(made)
+                elif state == "abandoned":
+                    found.pop(item_hash, None)
+                elif state == "running":
+                    found[item_hash] = Converted(
+                        None, f"being converted now (batch {row.batch_id})"
+                    )
+                elif live is None:
+                    reason = "an earlier conversion may have created it, but its record is gone; "
+                    found[item_hash] = Converted(None, f"{reason}check GitHub")
+                else:
+                    found[item_hash] = Converted(
+                        None,
+                        f"an earlier conversion (batch {row.batch_id}) didn't create it; retry "
+                        "that batch",
+                    )
         return found
-
-    def _remember(self, repo: str, n: int, item_hash: str, made_repo: str, made_n: int) -> None:
-        """Record the issue an item became, so it outlives its batch (pruned after 30 days).
-        Best effort: the batch still answers until then."""
-        try:
-            self._conversions.set_created(repo, n, item_hash, made_repo, made_n)
-        except Exception:
-            log.exception("issues: recording %s#%d's converted item failed", repo, n)
 
     def start_conversion(
         self, repo: str, n: int, digest: str, key: str | None, starter: BatchStarter
     ) -> AppliedBatch:
         """Approve the conversion previewed with ``digest``: one batch through the apply engine,
-        in the background (IR45), with its new items recorded so a later conversion never
-        creates them again. A replay of ``key`` answers its batch (IR46).
+        in the background (IR45), with its new items recorded in the ledger in the same
+        transaction as its first save, so a later conversion never creates them again (N3). A
+        replay of ``key`` answers its batch (IR46).
 
         Raises:
             InvalidRepoError, IssueNotCachedError, ConversionOutdatedError,
             NothingToConvertError: see ``conversion``.
             EarlierBatchError: an earlier conversion of this epic is running or didn't finish
-                (retry it instead, IR56).
+                (retry or abandon it instead, IR56, IR58).
         """
         home = self._cached(repo, n).issue.repo
         planned: list[ConversionPlan] = []
@@ -624,16 +623,15 @@ class EpicService:
             planned.append(plan)
             return plan.changes
 
-        origin = f"conversion:{home.casefold()}#{n}"
-        started = starter.start_batch(make, "epic", key, origin)
-        if planned:  # a new batch, not a replay: nothing awaited since it was stored
-            items = [
-                (c.item_hash, c.target.temp_id)
+        def notes() -> dict[str, str]:
+            # The new items, recorded with the batch's first save, before any GitHub write.
+            return {
+                c.item_hash: c.target.temp_id
                 for c in planned[0].children
                 if c.item_hash is not None and isinstance(c.target, New)
-            ]
-            self._conversions.record(started.id, home, n, items)
-        return started
+            }
+
+        return starter.start_batch(make, "epic", key, _conversion_origin(home, n), notes)
 
     # Agent asks (IR37) ------------------------------------------------------------------
 

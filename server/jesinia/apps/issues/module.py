@@ -40,7 +40,6 @@ from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.triage import Triage
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
-from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversionStore
 from jesinia.apps.issues.infrastructure.queue_store import SqliteQueueStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
 from jesinia.apps.issues.infrastructure.suggestion_store import SqliteSuggestionStore
@@ -265,7 +264,6 @@ class IssuesModule:
             suggest,
             briefs,
             _utc_now,
-            conversions=SqliteConversionStore(self._conn),
             batches=applied,
         )
         self._queues = QueueService(

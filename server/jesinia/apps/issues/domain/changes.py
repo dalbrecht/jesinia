@@ -68,8 +68,9 @@ StepKind = Literal["ensure_label", "create_issue", "labels", "parent", "order", 
 StepState = Literal["done", "failed", "skipped"]
 # A stored batch: ``running`` (written ahead of its first GitHub write, updated per step),
 # ``finished`` (its result is final, complete or not), ``interrupted`` (a stop cut it off;
-# Retry resumes it without repeating what is done).
-BatchStatus = Literal["running", "finished", "interrupted"]
+# Retry resumes it without repeating what is done), ``abandoned`` (the author gave up on an
+# unfinished batch: it never runs again, and the next approval reuses what it created, IR58).
+BatchStatus = Literal["running", "finished", "interrupted", "abandoned"]
 BATCH_STATUSES: tuple[BatchStatus, ...] = get_args(BatchStatus)
 NOT_RUN = "not run yet"
 CLOSED_SKIP = "closed on GitHub since the draft, so nothing is set on it"
@@ -133,6 +134,11 @@ class BatchNotFoundError(ChangeDomainError):
 
 class BatchRunningError(ChangeDomainError):
     """The batch is still running: poll it; Retry is for one that finished or was cut off."""
+
+
+class BatchAbandonedError(ChangeDomainError):
+    """The batch was abandoned: it never runs again; approve its origin anew, which reuses what
+    it created (IR58)."""
 
 
 class EarlierBatchError(ChangeDomainError):

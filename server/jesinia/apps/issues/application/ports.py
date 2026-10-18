@@ -6,7 +6,7 @@ stores), ``services/github`` (``IssueClient`` satisfies ``IssueReads``) and ``se
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
@@ -440,17 +440,19 @@ class ApplyCache(Protocol):
         flag is cleared when it is now complete, never set."""
 
 
-CreationState = Literal["running", "complete", "incomplete"]
+CreationState = Literal["running", "complete", "incomplete", "abandoned"]
 
 
 @dataclass(frozen=True)
 class OriginBatch:
-    """A batch recorded for an origin that may create issues (IR56): its ``state`` and the issues
-    it created by temp id, as of its last save."""
+    """A batch recorded for an origin that may create issues (IR56, IR57): its ``state``, the
+    issues it created by temp id (as of its last save, or as the author confirmed when
+    abandoning it, IR58), and the origin's ``notes`` (a conversion's item hashes to temp ids)."""
 
     batch_id: str
     state: CreationState
     created: Mapping[str, tuple[str, int]]
+    notes: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -471,10 +473,10 @@ class AppliedBatch:
 
 
 def creation_state(applied: AppliedBatch) -> CreationState:
-    """``running``, ``complete`` (every step done) or ``incomplete`` (finished or cut off with a
-    step not done): what an origin's ledger records of the batch (IR56)."""
-    if applied.status == "running":
-        return "running"
+    """``running``, ``complete`` (every step done), ``incomplete`` (finished or cut off with a
+    step not done) or ``abandoned``: what an origin's ledger records of the batch (IR56)."""
+    if applied.status in ("running", "abandoned"):
+        return "running" if applied.status == "running" else "abandoned"
     return "complete" if applied.result.complete else "incomplete"
 
 
@@ -504,12 +506,20 @@ class ApplyStore(Protocol):
     def interrupt_running(self) -> int:
         """Mark every ``running`` batch ``interrupted`` (at start nothing runs yet)."""
 
-    def add_origin(self, origin_key: str, batch_id: str, now: datetime) -> None:
-        """Record that ``batch_id`` may create issues for ``origin_key`` (IR56); every later
-        ``save_batch`` keeps its state and the issues it created current."""
+    def begin_batch(self, applied: AppliedBatch, origin_key: str, notes: Mapping[str, str]) -> None:
+        """Store a new batch and its ledger row for ``origin_key`` (with ``notes``) in one
+        transaction (N3); every later ``save_batch`` keeps the row's state and created issues
+        current."""
 
     def origin_batches(self, origin_key: str) -> list[OriginBatch]:
         """The batches recorded for ``origin_key``, oldest first (kept after pruning)."""
+
+    def origin_of(self, batch_id: str) -> tuple[str, OriginBatch] | None:
+        """A recorded batch's origin and ledger row (found after the batch is pruned too)."""
+
+    def abandon(self, batch_id: str, created: Mapping[str, tuple[str, int]], now: datetime) -> None:
+        """Mark a batch abandoned in the ledger (with ``created``) and in ``apply_batches``
+        when it is still stored, in one transaction (IR58)."""
 
     def prune_batches(self, before: datetime) -> int:
         """Forget batches last updated before ``before``; how many."""
@@ -593,48 +603,12 @@ class EpicCache(SuggestionCache, Protocol):
         """The issues (open and closed) of the milestone titled ``title``, by number."""
 
 
-@dataclass(frozen=True)
-class ConvertedRow:
-    """An unlinked checklist item a conversion batch created an issue for: its ``item_hash``,
-    the batch and temp id, and the issue it became once known."""
-
-    item_hash: str
-    batch_id: str
-    temp_id: str
-    created_repo: str | None
-    created_n: int | None
-
-
-class ConversionStore(Protocol):
-    """``converted_items`` in ``issues.sqlite``."""
-
-    def record(
-        self,
-        batch_id: str,
-        repo: str,
-        n: int,
-        items: Sequence[tuple[str, str]],
-    ) -> None:
-        """Keep a started conversion's new items (``(item_hash, temp_id)``); an item recorded
-        before keeps its first record."""
-
-    def converted(self, repo: str, n: int) -> list[ConvertedRow]: ...
-
-    def set_created(
-        self, repo: str, n: int, item_hash: str, created_repo: str, created_n: int
-    ) -> None: ...
-
-
 class BatchReads(Protocol):
     """Stored batches and their origins' ledger (``SqliteApplyStore`` has it)."""
 
     def batch(self, batch_id: str) -> AppliedBatch | None: ...
 
     def origin_batches(self, origin_key: str) -> list[OriginBatch]: ...
-
-    def created_by(self, batch_id: str) -> Mapping[str, tuple[str, int]]:
-        """The issues a recorded batch created, by temp id, from the ledger (it outlives the
-        batch); empty when none is known."""
 
 
 class QueueStore(Protocol):
@@ -713,8 +687,8 @@ class ThemeStore(Protocol):
     def set_epic(self, tag: str, batch_id: str, repo: str, n: int) -> None:
         """Record the epic a theme's batch made."""
 
-    def theme_epic(self, tag: str) -> tuple[str, int] | None:
-        """The theme's epic, as last recorded."""
+    def theme_epic(self, tag: str, repo: str) -> tuple[str, int] | None:
+        """The theme's epic in ``repo``, as last recorded."""
 
 
 class ThemeTags(Protocol):

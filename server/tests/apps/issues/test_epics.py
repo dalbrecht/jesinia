@@ -22,6 +22,9 @@ import pytest
 from jesinia.apps.issues.application.epics import BriefService, EpicService, ancestors_of
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.domain.changes import (
+    BatchAbandonedError,
+    BatchNotFoundError,
+    BatchRunningError,
     EarlierBatchError,
     Existing,
     InvalidChangeError,
@@ -53,7 +56,6 @@ from jesinia.apps.issues.domain.suggestions import (
 )
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
-from jesinia.apps.issues.infrastructure.conversion_store import SqliteConversionStore
 from jesinia.apps.issues.module import ISSUES_DB
 from jesinia.core.db import open_db
 from jesinia.services.agents.application.packs import ContextPack
@@ -161,14 +163,12 @@ class Epics:
             self.world.clock,
         )
         self.briefs = SqliteBriefStore(conn)
-        self.conversions = SqliteConversionStore(conn)
         self.epics = EpicService(
             self.world.store,
             self.world.drafts,
             self.suggest,
             self.briefs,
             self.world.clock,
-            conversions=self.conversions,
             batches=self.world.applied,
         )
         self.limited_until: datetime | None = None
@@ -921,22 +921,6 @@ async def test_the_ancestor_walk_stops_at_its_depth_and_says_where(env: Epics) -
     assert found.warning == "ancestors beyond acme/web#9 aren't cached; GitHub will check"
 
 
-async def test_a_failure_to_record_a_converted_issue_is_logged(
-    env: Epics, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await env.synced(epic(1, body="- [ ] Write the docs"))
-    digest = env.epics.conversion(REPO, 1).digest
-    env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
-    await env.world.service.drain()
-
-    def broken(*args: object) -> None:
-        raise sqlite3.OperationalError("disk full")
-
-    monkeypatch.setattr(env.conversions, "set_created", broken)
-    assert env.epics.conversion(REPO, 1).skipped[0].reason.startswith("already converted")
-    assert "recording acme/web#1's converted item failed" in caplog.text
-
-
 async def test_an_initiative_is_ready_by_its_epics_children(env: Epics) -> None:
     env.github.put(
         issue(1, labels=("initiative", "priority: high"), sub_issue_count=1),
@@ -1061,3 +1045,159 @@ async def test_a_brief_comment_gone_on_github_is_posted_anew(env: Epics) -> None
     env.github.vanished.add(501)
     again = await env.publisher.approve(REPO, 1, "Again")
     assert again.comment_id == 502 and not any(w[0] == "edit_comment" for w in env.github.writes)
+
+
+# --- IR57, IR58, N3 ------------------------------------------------------------------------------
+
+
+async def test_a_split_re_asked_after_an_incomplete_approval_is_still_refused(env: Epics) -> None:
+    await env.synced(issue(2))
+    env.agent.replies = [TWO_PARTS, TWO_PARTS]
+    draft = await env.epics.propose_split(REPO, 2)
+    env.github.fail["add_sub_issue:2"] = GitHubRequestError(422, "Unprocessable")
+    first = await env.world.service.approve(draft.id)
+    asked = await env.epics.propose_split(REPO, 2)  # a new draft, the same target (IR57)
+    assert asked.id != draft.id
+    with pytest.raises(EarlierBatchError, match=f"retry batch {first.batch.id}"):
+        await env.world.service.approve(asked.id)
+    assert len(creates(env)) == 2
+
+
+async def test_a_re_asked_group_of_the_same_issues_is_still_refused(env: Epics) -> None:
+    await env.synced(issue(2), issue(3))
+    members = [{"repo": REPO, "number": 3}, {"repo": REPO, "number": 2}]
+    group = grouping(
+        groups=[{"title": "Sync", "scope": "s", "issues": members, "reason": "related"}]
+    )
+    env.agent.replies = [group, group]
+    (draft,) = await env.epics.propose_groups(REPO)
+    epic_n = max(n for (_, n) in env.github.issues) + 1
+    env.github.fail[f"add_sub_issue:{epic_n}"] = GitHubRequestError(422, "Unprocessable")
+    first = await env.world.service.approve(draft.id)
+    (again,) = await env.epics.propose_groups(REPO)
+    with pytest.raises(EarlierBatchError, match=f"retry batch {first.batch.id}"):
+        await env.world.service.approve(again.id)
+    assert len(creates(env)) == 1
+
+
+async def test_an_abandoned_split_is_planned_from_what_it_created(env: Epics) -> None:
+    await env.synced(issue(2))
+    env.agent.replies = [TWO_PARTS]
+    draft = await env.epics.propose_split(REPO, 2)
+    env.github.fail["add_sub_issue:2"] = GitHubRequestError(422, "Unprocessable")  # for good
+    first = await env.world.service.approve(draft.id)
+    origin, abandoned = env.world.service.abandon(first.batch.id, {})
+    assert (
+        origin == "split:acme/web#2"
+        and abandoned.state == "abandoned"
+        and len(abandoned.created) == 2
+    )
+    assert env.world.applied.batch(first.batch.id).status == "abandoned"  # type: ignore[union-attr]
+    with pytest.raises(BatchAbandonedError):
+        await env.world.service.retry(first.batch.id)
+    # The next approval reuses both parts: it creates nothing, and links what it can.
+    still = await env.world.service.approve(draft.id)
+    assert len(creates(env)) == 2 and not still.batch.result.complete
+    assert [s.step.kind for s in still.batch.result.results] == ["parent", "parent"]
+    env.world.service.abandon(still.batch.id, {})
+    del env.github.fail["add_sub_issue:2"]
+    done = await env.world.service.approve(draft.id)
+    assert done.batch.result.complete and len(creates(env)) == 2
+    assert done.suggestion.state == "approved"
+
+
+async def test_a_pruned_conversion_is_abandoned_through_its_origin(
+    env: Epics, conn: sqlite3.Connection
+) -> None:
+    await env.synced(epic(1, body="- [ ] Alpha\n- [ ] Beta"))
+    env.github.fail["create_issue:Beta"] = GitHubRequestError(410, "Issues are disabled")
+    digest = env.epics.conversion(REPO, 1).digest
+    first = env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    await env.world.service.drain()
+    conn.execute("DELETE FROM apply_batches")  # pruned while incomplete
+    with pytest.raises(EarlierBatchError, match=f"abandon batch {first.id}"):
+        env.epics.start_conversion(REPO, 1, digest, "convert:b", env.world.service)
+    env.world.service.abandon(first.id, {})
+    del env.github.fail["create_issue:Beta"]
+    plan = env.epics.conversion(REPO, 1)
+    assert [c.title for c in plan.children if c.is_new] == ["Beta"]  # Alpha exists already
+    assert plan.skipped[0].reason.startswith("already converted")
+    env.epics.start_conversion(REPO, 1, plan.digest, "convert:c", env.world.service)
+    await env.world.service.drain()
+    titles = [i.title for i in env.github.issues.values()]
+    assert titles.count("Alpha") == 1 and titles.count("Beta") == 1
+
+
+async def test_abandon_records_a_create_confirmed_on_github(env: Epics) -> None:
+    await env.synced(issue(2))
+    env.agent.replies = [TWO_PARTS]
+    draft = await env.epics.propose_split(REPO, 2)
+    env.github.fail["create_issue:`Two`"] = GitHubRequestError(500, "boom")
+    first = await env.world.service.approve(draft.id)
+    one = first.batch.result.created["part-1"]
+    with pytest.raises(InvalidChangeError):  # not a create of this batch
+        env.world.service.abandon(first.batch.id, {"part-9": (REPO, 77)})
+    with pytest.raises(InvalidChangeError):  # it was created already
+        env.world.service.abandon(first.batch.id, {"part-1": (REPO, 77)})
+    env.github.put(issue(40))  # the author found part two on GitHub
+    _, found = env.world.service.abandon(first.batch.id, {"part-2": (REPO, 40)})
+    assert found.created == {"part-1": (REPO, one.n), "part-2": (REPO, 40)}
+    assert env.world.service.abandon(first.batch.id, {})[1] == found  # again: unchanged
+    del env.github.fail["create_issue:`Two`"]
+    done = await env.world.service.approve(draft.id)
+    assert done.batch.result.complete and len(creates(env)) == 2  # one failed, one real
+
+
+async def test_a_complete_batch_has_nothing_to_abandon(env: Epics) -> None:
+    await env.synced(issue(2))
+    env.agent.replies = [TWO_PARTS]
+    draft = await env.epics.propose_split(REPO, 2)
+    done = await env.world.service.approve(draft.id)
+    with pytest.raises(InvalidChangeError, match="nothing to abandon"):
+        env.world.service.abandon(done.batch.id, {})
+    with pytest.raises(BatchNotFoundError):
+        env.world.service.abandon("unknown", {})
+
+
+async def test_the_ledger_is_written_with_the_batch_or_not_at_all(
+    env: Epics, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await env.synced(epic(1, body="- [ ] Write the docs"))
+    digest = env.epics.conversion(REPO, 1).digest
+    real = env.world.applied._insert_origin  # noqa: SLF001 - the failure the probe injected
+
+    def broken(*args: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(env.world.applied, "_insert_origin", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    assert env.world.applied.batch_by_key("convert:a") is None  # one transaction: nothing stored
+    monkeypatch.setattr(env.world.applied, "_insert_origin", real)
+    first = env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service)
+    with pytest.raises(EarlierBatchError):
+        env.epics.start_conversion(REPO, 1, digest, "convert:b", env.world.service)
+    with pytest.raises(BatchRunningError):  # a running batch can't be abandoned
+        env.world.service.abandon(first.id, {})
+    await env.world.service.drain()
+    assert (
+        env.epics.start_conversion(REPO, 1, digest, "convert:a", env.world.service).id == first.id
+    )
+    assert len(creates(env)) == 1
+
+
+async def test_an_abandoned_group_links_under_the_epic_it_made(env: Epics) -> None:
+    await env.synced(issue(2), issue(3))
+    members = [{"repo": REPO, "number": 2}, {"repo": REPO, "number": 3}]
+    env.agent.replies = [
+        grouping(groups=[{"title": "Sync", "scope": "s", "issues": members, "reason": "r"}])
+    ]
+    (draft,) = await env.epics.propose_groups(REPO)
+    epic_n = max(n for (_, n) in env.github.issues) + 1
+    env.github.fail[f"add_sub_issue:{epic_n}"] = GitHubRateLimitedError(429, "slow down", None)
+    first = await env.world.service.approve(draft.id)
+    env.world.service.abandon(first.batch.id, {})
+    del env.github.fail[f"add_sub_issue:{epic_n}"]
+    done = await env.world.service.approve(draft.id)
+    assert done.batch.result.complete and len(creates(env)) == 1
+    assert env.github.parents == {(REPO, 2): (REPO, epic_n), (REPO, 3): (REPO, epic_n)}

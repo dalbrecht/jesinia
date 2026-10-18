@@ -23,6 +23,8 @@ from jesinia.apps.issues.application.ports import (
     ApplyOrigin,
     BriefState,
     CachedIssue,
+    CreationState,
+    OriginBatch,
     RepoState,
     RunSource,
     RunStatus,
@@ -1677,3 +1679,43 @@ class ThemeEpicIn(BaseModel):
 
     repo: str = Field(min_length=3, max_length=REPO_MAX)
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+# Abandoning an unfinished batch (ruling IR58) ----------------------------------------------------
+
+
+class CreatedRefBody(BaseModel):
+    """An issue a batch created, by its temp id."""
+
+    temp_id: str = Field(min_length=1, max_length=64)
+    repo: str = Field(min_length=3, max_length=REPO_MAX)
+    n: int = Field(ge=1, le=999_999_999)
+
+
+class AbandonIn(BaseModel):
+    """Abandoning a batch: ``created`` confirms issues found on GitHub for creates whose result
+    is unknown (cut off while being sent)."""
+
+    created: list[CreatedRefBody] = Field(default_factory=list, max_length=100)
+
+
+class AbandonedOut(BaseModel):
+    """An abandoned batch's ledger row: its ``origin`` (the target a new approval plans for) and
+    every issue it created, reused by that approval instead of created again."""
+
+    batch_id: str
+    origin: str
+    state: CreationState
+    created: list[CreatedRefBody]
+
+    @classmethod
+    def of(cls, origin: str, row: OriginBatch) -> AbandonedOut:
+        return cls(
+            batch_id=row.batch_id,
+            origin=origin,
+            state=row.state,
+            created=[
+                CreatedRefBody(temp_id=temp, repo=repo, n=n)
+                for temp, (repo, n) in sorted(row.created.items())
+            ],
+        )

@@ -579,6 +579,10 @@ class ApplyEngine:
         issue = await self._fresh(run, target)
         repo, n = self._where(run, target)
         current = await self._read(lambda: self._github.parent(repo, n))
+        if change.parent is not None and current is not None:
+            if current.id == await self._id(run, change.parent):
+                # Already so on GitHub: nothing changes, so nothing is overwritten either.
+                return "already the parent"
         if change.expects_parent:
             self._check_parent(change.expected_parent, current)
         if change.parent is None:
@@ -592,8 +596,6 @@ class ApplyEngine:
             self._lost_child(run, current)
             return None
         wanted = await self._id(run, change.parent)
-        if current is not None and current.id == wanted:
-            return "already the parent"
         parent_repo, parent_n = self._where(run, change.parent)
         await self._write(
             run,

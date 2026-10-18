@@ -821,10 +821,38 @@ def _shape(suggestion: Suggestion) -> None:
         raise InvalidChangeError("a new group needs at least 2 issues")
 
 
+def proposal_origin(suggestion: Suggestion) -> str | None:
+    """The origin a ``group`` or ``split`` draft creates issues for: its semantic target, never
+    its id, so a re-asked draft for the same target meets the same ledger (ruling IR57). A split
+    is ``split:<repo>#<n>``; a new group is ``group:`` and a hash of its sorted members; an
+    addition to an existing epic creates nothing (``None``).
+
+    Raises:
+        InvalidChangeError: not a group or split draft, or a malformed one.
+    """
+    payload = suggestion.payload
+    try:
+        if suggestion.kind == "split":
+            whole = cast(dict[str, object], payload["issue"])
+            return f"split:{str(whole['repo']).casefold()}#{whole['n']}"
+        if suggestion.kind == "group" and "epic" not in payload:
+            refs = sorted(
+                f"{str(m['repo']).casefold()}#{m['n']}"
+                for m in cast(list[dict[str, object]], payload["issues"])
+            )
+            return "group:" + hashlib.sha256(",".join(refs).encode()).hexdigest()[:32]
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise InvalidChangeError(f"a malformed {suggestion.kind} proposal ({exc})") from exc
+    if suggestion.kind != "group":
+        raise InvalidChangeError(f"a {suggestion.kind} suggestion isn't a proposal to apply")
+    return None
+
+
 def proposal_batch(
     suggestion: Suggestion,
     known: Mapping[Key, Facts],
     ancestors: Mapping[Key, tuple[Key, ...]],
+    reused: Mapping[str, tuple[str, int]] | None = None,
 ) -> ChangeBatch:
     """What approving a ``group`` or ``split`` draft changes, after its premise check against
     the cache (``known``; ``ancestors`` by epic):
@@ -833,13 +861,17 @@ def proposal_batch(
     - an addition: link the issue under the existing epic;
     - a split: create each part in the issue's repo, then link the parts under the issue.
 
+    ``reused`` holds what an abandoned batch for the same origin created, by temp id (IR58): a
+    new group links under that ``epic``, and a split links those ``part-<i>`` instead of
+    creating them again; only what is missing is created.
+
     Raises:
         SuggestionStaleError: an issue is uncached, closed, under a parent now, or refused by
             ``can_contain``; nothing is applied.
         InvalidChangeError: not a group or split draft, or a malformed one.
     """
     try:
-        return _proposal_batch(suggestion, known, ancestors)
+        return _proposal_batch(suggestion, known, ancestors, reused or {})
     except (KeyError, TypeError, AttributeError) as exc:
         raise InvalidChangeError(f"a malformed {suggestion.kind} proposal ({exc})") from exc
 
@@ -848,6 +880,7 @@ def _proposal_batch(
     suggestion: Suggestion,
     known: Mapping[Key, Facts],
     ancestors: Mapping[Key, tuple[Key, ...]],
+    reused: Mapping[str, tuple[str, int]],
 ) -> ChangeBatch:
     payload = suggestion.payload
     if suggestion.kind not in ("group", "split"):
@@ -871,6 +904,19 @@ def _proposal_batch(
         )
         _stale(plan)
         return plan.changes
+    if suggestion.kind == "group" and "epic" in reused:
+        made = reused["epic"]
+        key = issue_key(*made)
+        node = known[key].node if key in known else Node(*made)
+        # Members already under the epic it made are done; the rest are linked under it.
+        members = [
+            m
+            for m in (_facts(known, item) for item in cast(list[object], payload["issues"]))
+            if m.parent is None or issue_key(*m.parent) != key
+        ]
+        plan = existing_epic_plan(node, ancestors.get(key, ()), members)
+        _stale(plan)
+        return plan.changes
     if suggestion.kind == "group":
         members = [_facts(known, item) for item in cast(list[object], payload["issues"])]
         scope = as_code(str(payload["scope"]))
@@ -883,19 +929,19 @@ def _proposal_batch(
     whole = _facts(known, payload["issue"])
     parts = cast(list[dict[str, str]], payload["parts"])
     footer = f"Part of {whole.repo}#{whole.n}, split by Jesinia from an approved proposal."
-    created: list[RepoChange] = [
-        CreateIssue(
-            f"part-{i}",
-            whole.repo,
-            inline_code(p["title"], limit=TITLE_LIMIT),
-            f"{as_code(p['body'])}\n\n{footer}".strip(),
-        )
-        for i, p in enumerate(parts, start=1)
-    ]
-    links: dict[Target, list[IssueChange]] = {
-        New(f"part-{i}"): [SetParent(Existing(whole.repo, whole.n), True)]
-        for i in range(1, len(parts) + 1)
-    }
+    created: list[RepoChange] = []
+    links: dict[Target, list[IssueChange]] = {}
+    for i, part in enumerate(parts, start=1):
+        temp = f"part-{i}"
+        target: Target
+        if temp in reused:
+            target = Existing(*reused[temp])  # an abandoned batch made it already
+        else:
+            target = New(temp)
+            title = inline_code(part["title"], limit=TITLE_LIMIT)
+            body = f"{as_code(part['body'])}\n\n{footer}".strip()
+            created.append(CreateIssue(temp, whole.repo, title, body))
+        links[target] = [SetParent(Existing(whole.repo, whole.n), True)]
     return ChangeBatch.of(links, created)
 
 

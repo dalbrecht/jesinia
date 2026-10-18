@@ -30,6 +30,8 @@ from pydantic import BaseModel
 
 from jesinia.apps.issues.api.schemas import (
     REPO_MAX,
+    AbandonedOut,
+    AbandonIn,
     ApplyBatchOut,
     ContainmentOut,
     ConversionIn,
@@ -104,6 +106,7 @@ from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.changes import (
+    BatchAbandonedError,
     BatchNotFoundError,
     BatchRunningError,
     ChangeDomainError,
@@ -237,6 +240,7 @@ _STATUS: dict[type[Exception], int] = {
     PendingNotFoundError: status.HTTP_404_NOT_FOUND,
     NothingPendingError: status.HTTP_409_CONFLICT,
     BatchRunningError: status.HTTP_409_CONFLICT,
+    BatchAbandonedError: status.HTTP_409_CONFLICT,
     EarlierBatchError: status.HTTP_409_CONFLICT,
     PendingHeldError: status.HTTP_409_CONFLICT,
     BatchNotFoundError: status.HTTP_404_NOT_FOUND,
@@ -620,7 +624,8 @@ def build_router(host: IssuesHost) -> APIRouter:
 
     @r.delete("/pending/{pending_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def unstage_pending(pending_id: ItemId, idem: IdempotentCall = keyed) -> Response:
-        """Undo one staged change."""
+        """Undo one staged change. A change a queue item's Done holds is a 409
+        (``PendingHeldError``): undo that Done in its queue instead."""
 
         async def run() -> Response:
             host.pending.unstage(pending_id)
@@ -630,7 +635,8 @@ def build_router(host: IssuesHost) -> APIRouter:
 
     @r.delete("/pending", status_code=status.HTTP_204_NO_CONTENT)
     async def clear_pending(idem: IdempotentCall = keyed) -> Response:
-        """Undo every staged change."""
+        """Undo every staged change no queue item's Done holds (those stay: undo them in their
+        queue)."""
 
         async def run() -> Response:
             host.pending.clear()
@@ -1236,6 +1242,25 @@ def build_router(host: IssuesHost) -> APIRouter:
                 tag, body.repo, body.digest, _request_key("theme-epic", idem), host.apply
             )
             return _started(started.id, ApplyBatchOut.of(started))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.post("/pending/{batch}/abandon", response_model=AbandonedOut)
+    async def abandon_batch(
+        batch: ItemId,
+        body: AbandonIn,
+        _owner: Annotated[Principal, Depends(require_owner)],
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Give up on an unfinished batch of an origin that creates issues (a group or split, a
+        conversion, a theme's epic), even one already pruned: it never runs again, and the
+        issues it created (plus ``created``, confirmed on GitHub for a create cut off while
+        being sent) are reused by the next approval for its origin, which creates only what is
+        missing. A batch still running is a 409, a complete one a 400."""
+
+        async def run() -> AbandonedOut:
+            confirmed = {c.temp_id: (c.repo, c.n) for c in body.created}
+            return AbandonedOut.of(*host.apply.abandon(batch, confirmed))
 
         return await idem.run(lambda: _respond(run, host.clock))
 

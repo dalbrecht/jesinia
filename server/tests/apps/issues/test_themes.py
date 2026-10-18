@@ -452,8 +452,7 @@ async def test_an_epic_whose_creation_may_have_gone_out_must_be_checked(env: The
         now,
         status="interrupted",
     )
-    env.world.applied.save_batch(stored)
-    env.world.applied.add_origin("theme:sync", "cut-off", now)
+    env.world.applied.begin_batch(stored, "theme:sync:acme/web", {})
     env.store.record_epic("sync", "cut-off", now)
     # It created no epic it knows of: the preview plans a new one, but approving waits.
     preview = await env.themes.to_epic("sync", REPO)
@@ -479,7 +478,9 @@ async def test_a_replay_records_an_epic_its_first_request_couldnt(
         await env.themes.start_epic("sync", REPO, plan.digest, "k", env.world.service)
     monkeypatch.setattr(env.store, "record_epic", real)
     replay = await env.themes.start_epic("sync", REPO, plan.digest, "k", env.world.service)
-    assert [b.batch_id for b in env.world.applied.origin_batches("theme:sync")] == [replay.id]
+    assert [b.batch_id for b in env.world.applied.origin_batches("theme:sync:acme/web")] == [
+        replay.id
+    ]
     await env.world.service.drain()
 
 
@@ -649,7 +650,9 @@ async def test_an_epic_skips_uncached_issues_and_forgets_pruned_batches(env: The
     started = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
     await env.world.service.drain()
     assert env.world.pending.batch(started.id).result.complete
-    assert [b.batch_id for b in env.world.applied.origin_batches("theme:sync")] == [started.id]
+    assert [b.batch_id for b in env.world.applied.origin_batches("theme:sync:acme/web")] == [
+        started.id
+    ]
 
 
 async def test_a_closed_theme_epic_is_done_with_and_a_new_one_is_planned(env: Themes) -> None:
@@ -665,3 +668,25 @@ async def test_a_closed_theme_epic_is_done_with_and_a_new_one_is_planned(env: Th
     await env.world.sync.sync(REPO)
     await env.themes.add([(REPO, 2)], "sync")
     assert isinstance((await env.themes.to_epic("sync", REPO)).epic, CreateIssue)
+
+
+async def test_an_abandoned_theme_epic_confirmed_on_github_is_reused(env: Themes) -> None:
+    await env.synced(issue(1), issue(77))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    batch = plan.changes
+    result = BatchResult.not_run(batch)
+    unsure = replace(result.results[0], state="failed", cause=UNSURE)
+    now = env.world.clock()
+    stored = AppliedBatch(
+        "cut-off", "epic", None, batch, replace(result, results=(unsure, *result.results[1:])),
+        now, now, status="interrupted",
+    )  # fmt: skip
+    env.world.applied.begin_batch(stored, "theme:sync:acme/web", {})
+    env.world.service.abandon("cut-off", {"epic": (REPO, 77)})  # the author found it on GitHub
+    again = await env.themes.to_epic("sync", REPO)
+    assert again.epic == IssueRef(REPO, 77)
+    started = await env.themes.start_epic("sync", REPO, again.digest, None, env.world.service)
+    await env.world.service.drain()
+    assert env.world.pending.batch(started.id).result.complete
+    assert [w for w in env.github.writes if w[0] == "create_issue"] == []

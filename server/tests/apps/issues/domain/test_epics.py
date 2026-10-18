@@ -58,6 +58,7 @@ from jesinia.apps.issues.domain.epics import (
     new_epic_plan,
     plan_conversion,
     proposal_batch,
+    proposal_origin,
     rolled_up_readiness,
     split_draft,
     split_scope,
@@ -793,3 +794,19 @@ def test_a_cycle_or_a_deep_chain_of_epics_terminates() -> None:
     conflicted = Member(REPO, 2, "E", True, triage(("epic", "initiative"), 1, DEFAULT_SCHEMA))
     blocked = epic_readiness(parent_member(1, initiative=True), [conflicted], tree({}))
     assert blocked.blockers[0].reason.startswith("conflicting labels")
+
+
+def test_a_proposal_origin_is_its_target_not_its_draft() -> None:
+    split: dict[str, object] = {"issue": {"repo": "Acme/Web", "n": 2}, "parts": []}
+    assert proposal_origin(suggestion("split", split)) == "split:acme/web#2"
+    one: dict[str, object] = {"issues": [{"repo": REPO, "n": 3}, {"repo": REPO, "n": 2}]}
+    two: dict[str, object] = {"issues": [{"repo": "ACME/web", "n": 2}, {"repo": REPO, "n": 3}]}
+    first = proposal_origin(suggestion("group", one))
+    assert first is not None and first.startswith("group:")
+    assert first == proposal_origin(suggestion("group", two))
+    addition: dict[str, object] = {"epic": {"repo": REPO, "n": 1}, "issues": []}
+    assert proposal_origin(suggestion("group", addition)) is None
+    with pytest.raises(InvalidChangeError, match="malformed"):
+        proposal_origin(suggestion("split", {}))
+    with pytest.raises(InvalidChangeError, match="isn't a proposal"):
+        proposal_origin(suggestion("brief", {}))

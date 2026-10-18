@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol, cast
@@ -45,6 +45,7 @@ from jesinia.apps.issues.application.ports import (
 )
 from jesinia.apps.issues.domain.changes import (
     CLOSED_SKIP,
+    BatchAbandonedError,
     BatchNotFoundError,
     BatchResult,
     BatchRunningError,
@@ -66,7 +67,13 @@ from jesinia.apps.issues.domain.changes import (
     parse_source,
     pending_batch,
 )
-from jesinia.apps.issues.domain.epics import Facts, Key, issue_key, proposal_batch
+from jesinia.apps.issues.domain.epics import (
+    Facts,
+    Key,
+    issue_key,
+    proposal_batch,
+    proposal_origin,
+)
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA
 from jesinia.apps.issues.domain.suggestions import (
     OPEN_STATES,
@@ -151,11 +158,6 @@ def _outcomes(result: BatchResult) -> dict[tuple[str, int], tuple[ItemState, str
         for step in result.results
         if step.step.target is not None
     }
-
-
-def _origin(suggestion_id: str) -> str:
-    """The ledger origin of a proposal that creates issues (IR56)."""
-    return f"suggestion:{suggestion_id}"
 
 
 def _approval_key(suggestion_id: str, key: str | None) -> str | None:
@@ -340,10 +342,16 @@ class ApplyService:
         origin: ApplyOrigin,
         suggestion_id: str | None,
         key: str | None,
+        origin_key: str | None = None,
+        notes: Mapping[str, str] | None = None,
     ) -> AppliedBatch:
-        """Store ``batch`` as ``running``, every step not run yet (write-ahead)."""
+        """Store ``batch`` as ``running``, every step not run yet (write-ahead), with its
+        origin's ledger row in the same transaction when it may create issues (N3)."""
         applied = self._new(batch, origin, suggestion_id, key)
-        self._store.save_batch(applied)
+        if origin_key is None:
+            self._store.save_batch(applied)
+        else:
+            self._store.begin_batch(applied, origin_key, notes or {})
         return applied
 
     def _new(
@@ -412,13 +420,15 @@ class ApplyService:
         origin: ApplyOrigin,
         key: str | None,
         origin_key: str | None = None,
+        notes: Callable[[], Mapping[str, str]] | None = None,
     ) -> AppliedBatch:
         """Store the batch ``make`` builds (an approved checklist conversion, say) ``running``
         and apply it in the background (IR45). A replay of ``key`` answers its batch as it
         stands, without calling ``make`` and never running it again (IR46). With
         ``origin_key`` (an origin that may create issues: a conversion, a theme's epic) an
         earlier batch for it that is running or unfinished refuses this one, and the batch is
-        recorded for it (IR56).
+        recorded for it, with ``notes()`` (asked after ``make``), in the same transaction as its
+        first save (IR56, N3).
 
         Raises:
             EarlierBatchError: see ``guard_origin``.
@@ -429,23 +439,23 @@ class ApplyService:
             return found
         if origin_key is not None:
             self.guard_origin(origin_key)
-        applied = self._begin(make(), origin, None, key)
-        if origin_key is not None:
-            self._store.add_origin(origin_key, applied.id, self._clock())
+        batch = make()
+        written = None if notes is None else notes()
+        applied = self._begin(batch, origin, None, key, origin_key, written)
         self._spawn(applied, None)
         return applied
 
     def guard_origin(self, origin_key: str) -> list[OriginBatch]:
-        """The complete batches recorded for ``origin_key``, oldest first, unless an earlier
-        one is running or didn't finish: then approving again could create its issues a second
-        time, so it is resumed only by Retry (ruling IR56). A pruned batch answers from the
-        ledger.
+        """The settled (complete or abandoned) batches recorded for ``origin_key``, oldest
+        first, unless an earlier one is running or didn't finish: then approving again could
+        create its issues a second time, so it is retried or abandoned instead (rulings IR56,
+        IR58). A pruned batch answers from the ledger.
 
         Raises:
             EarlierBatchError: an earlier batch is running, or finished or was cut off with a
                 step not done.
         """
-        complete: list[OriginBatch] = []
+        settled: list[OriginBatch] = []
         for row in self._store.origin_batches(origin_key):
             live = self._store.batch(row.batch_id)
             state = row.state if live is None else creation_state(live)
@@ -454,14 +464,71 @@ class ApplyService:
                     row.batch_id,
                     f"an earlier batch for this ({row.batch_id}) is still running; wait for it",
                 )
+            if state == "incomplete" and live is None:
+                raise EarlierBatchError(
+                    row.batch_id,
+                    f"an earlier batch for this ({row.batch_id}) didn't finish and was pruned, "
+                    "and it may have created issues; check GitHub, then abandon batch "
+                    f"{row.batch_id} (confirming any issue it created)",
+                )
             if state == "incomplete":
                 raise EarlierBatchError(
                     row.batch_id,
                     f"an earlier batch for this ({row.batch_id}) didn't finish, and it may have "
-                    f"created issues; retry batch {row.batch_id} instead of approving again",
+                    f"created issues; retry batch {row.batch_id}, or abandon it, instead of "
+                    "approving again",
                 )
-            complete.append(row)
-        return complete
+            settled.append(row)
+        return settled
+
+    @staticmethod
+    def reused(settled: Sequence[OriginBatch]) -> dict[str, tuple[str, int]]:
+        """The issues earlier settled batches created, by temp id (a later one wins)."""
+        found: dict[str, tuple[str, int]] = {}
+        for row in settled:
+            found.update(row.created)
+        return found
+
+    def abandon(
+        self, batch_id: str, confirmed: Mapping[str, tuple[str, int]]
+    ) -> tuple[str, OriginBatch]:
+        """Give up on an unfinished batch of an origin that creates issues (ruling IR58), even
+        one already pruned: it never runs again, and the issues it created (its done creates,
+        plus those ``confirmed`` on GitHub for a create whose result is unknown) are recorded,
+        so the next approval for its origin reuses them and creates only what is missing.
+        Abandoning it again changes nothing. Answers its origin and its ledger row.
+
+        Raises:
+            BatchNotFoundError: no batch recorded for an origin that creates issues.
+            BatchRunningError: it is still running.
+            InvalidChangeError: it completed (nothing to abandon), or a confirmed temp id isn't
+                one of its creates still unknown.
+        """
+        found = self._store.origin_of(batch_id)
+        if found is None:
+            raise BatchNotFoundError(f"no batch {batch_id} of an origin that creates issues")
+        origin_key, row = found
+        live = self._store.batch(batch_id)
+        state = row.state if live is None else creation_state(live)
+        if state == "running" or batch_id in self._tasks:
+            raise BatchRunningError(f"batch {batch_id} is still running; poll it")
+        if state == "abandoned":
+            return origin_key, row
+        if state == "complete":
+            raise InvalidChangeError(f"batch {batch_id} completed; there is nothing to abandon")
+        creates = (
+            None
+            if live is None
+            else {c.temp_id for c in live.batch.repo if isinstance(c, CreateIssue)}
+        )
+        for temp in confirmed:
+            if temp in row.created or (creates is not None and temp not in creates):
+                raise InvalidChangeError(
+                    f"{temp!r} isn't a create of batch {batch_id} whose result is unknown"
+                )
+        created = {**row.created, **confirmed}
+        self._store.abandon(batch_id, created, self._clock())
+        return origin_key, replace(row, state="abandoned", created=created)
 
     async def apply(self, batch: ChangeBatch, *, origin: ApplyOrigin) -> AppliedBatch:
         """Store ``batch``, apply it and wait for the result."""
@@ -478,6 +545,10 @@ class ApplyService:
         if stored.status == "running" or batch_id in self._tasks:
             # A task still holds it (its result may be stored while the cache update runs).
             raise BatchRunningError(f"batch {batch_id} is still running; poll it")
+        if stored.status == "abandoned":
+            raise BatchAbandonedError(
+                f"batch {batch_id} was abandoned; approve it anew, which reuses what it created"
+            )
         again = replace(stored, status="running", updated_at=self._clock())
         self._store.save_batch(again)
         return again
@@ -515,29 +586,34 @@ class ApplyService:
             raise SuggestionNotFoundError(f"no suggestion {suggestion_id}")
         if found.state not in OPEN_STATES:
             raise SuggestionStateError(f"suggestion {found.id} is {found.state} already")
-        creates = False
+        origin_key: str | None = None
+        reused: dict[str, tuple[str, int]] = {}
         if found.kind in ("group", "split"):
-            # Resumed only by Retry once a batch for it may have created issues (IR56).
-            done = self.guard_origin(_origin(found.id))
+            # Its target's ledger, whatever draft proposed it (IR56, IR57): retried or
+            # abandoned, never approved again over an unfinished batch.
+            origin_key = proposal_origin(found)
+        if origin_key is not None:
+            settled = self.guard_origin(origin_key)
+            done = [row for row in settled if row.state == "complete"]
             if done:
                 self._suggestions.save(approved(found, self._clock()))
                 raise SuggestionStateError(
                     f"suggestion {found.id} was applied by batch {done[-1].batch_id} already"
                 )
+            reused = self.reused(settled)
         if found.kind == "priority":
             # About a batch of issues: each change is guarded by the label the draft saw.
             batch = approval_batch(found)
         elif found.kind in ("group", "split"):
-            batch = self._proposal_batch(found)
-            creates = any(isinstance(c, CreateIssue) for c in batch.repo)
+            batch = self._proposal_batch(found, reused)
         else:
             batch = self._issue_batch(found)
         if not self._suggestions.claim(found.id, self._clock()):
             raise SuggestionStateError(f"suggestion {found.id} is being approved already")
         try:
-            applied = self._begin(batch, "suggestion", found.id, _approval_key(found.id, key))
-            if creates:
-                self._store.add_origin(_origin(found.id), applied.id, self._clock())
+            applied = self._begin(
+                batch, "suggestion", found.id, _approval_key(found.id, key), origin_key
+            )
         except BaseException:
             self._release(found.id)
             raise
@@ -697,7 +773,9 @@ class ApplyService:
             )
         return approval_batch(found, duplicate_id)
 
-    def _proposal_batch(self, found: Suggestion) -> ChangeBatch:
+    def _proposal_batch(
+        self, found: Suggestion, reused: Mapping[str, tuple[str, int]]
+    ) -> ChangeBatch:
         """The batch approving a ``group`` or ``split`` draft makes, after its premise check
         against the cache (``domain.epics.proposal_batch``).
 
@@ -709,6 +787,8 @@ class ApplyService:
             cast(dict[str, object], payload[name]) for name in ("epic", "issue") if name in payload
         ]
         refs += cast(list[dict[str, object]], payload.get("issues", []))
+        if "epic" in reused:  # the epic an abandoned batch made (IR58)
+            refs.append({"repo": reused["epic"][0], "n": reused["epic"][1]})
         known: dict[Key, Facts] = {}
         ancestors: dict[Key, tuple[Key, ...]] = {}
         for ref in refs:
@@ -717,7 +797,7 @@ class ApplyService:
             if facts is not None:
                 known[facts.key] = facts
                 ancestors[issue_key(repo, n)] = ancestors_of(self._cache, repo, n)
-        return proposal_batch(found, known, ancestors)
+        return proposal_batch(found, known, ancestors, reused)
 
     def _release(self, suggestion_id: str) -> None:
         """Release a claim, best effort: a failure here must not hide the apply's own outcome
