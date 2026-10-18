@@ -1145,6 +1145,29 @@ class SqliteReviewStore:
 
     # Stack reviews ----------------------------------------------------------------------
 
+    def stack_check(self, repo: str, signature: str) -> str | None:
+        """R77 for one set of heads: '' when the top head contains every member head, the
+        reason when it doesn't, ``None`` when it wasn't checked yet."""
+        row = self._conn.execute(
+            "SELECT reason FROM stack_checks WHERE repo = ? AND signature = ?",
+            (repo, signature),
+        ).fetchone()
+        return None if row is None else cast(str, row[0])
+
+    def put_stack_check(self, repo: str, signature: str, reason: str) -> None:
+        self._conn.execute(
+            "INSERT INTO stack_checks (repo, signature, reason) VALUES (?, ?, ?) "
+            "ON CONFLICT (repo, signature) DO UPDATE SET reason = excluded.reason",
+            (repo, signature, reason),
+        )
+
+    def restacks(self) -> dict[tuple[str, str], str]:
+        """Every checked set of heads that needs a restack, with its reason (R77)."""
+        rows = self._conn.execute(
+            "SELECT repo, signature, reason FROM stack_checks WHERE reason != ''"
+        )
+        return {(repo, signature): reason for repo, signature, reason in rows}
+
     def stack_review(self, repo: str, signature: str) -> int | None:
         """The stack review of ``repo``'s PRs at the heads ``signature`` names, if any."""
         row = self._conn.execute(

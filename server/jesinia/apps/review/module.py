@@ -274,6 +274,10 @@ class ReviewModule:
                 await scheduler.tick()
                 # New heads are classified in the background (git work), then it ticks again.
                 followups.start_refresh()
+                # And each stack's heads are checked (R77), so the queue files a stack needing
+                # a restack before anyone opens it.
+                if self._stacks is not None:
+                    self._stacks.start_verify()
 
             self._queue = QueueService(
                 prs, store, _utc_now, on_change=changed, on_refresh=followups.check
@@ -321,6 +325,7 @@ class ReviewModule:
         if self._scheduler is not None:
             self._scheduler.pause()  # cancelling an open frees a slot: nothing may take it
         if self._stacks is not None:
+            await self._stacks.stop_verify()
             await self._stacks.stop()
         if self._pipeline is not None:
             await self._pipeline.stop()

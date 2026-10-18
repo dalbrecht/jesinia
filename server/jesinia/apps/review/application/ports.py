@@ -170,6 +170,9 @@ class QueueStore(Protocol):
 
     def suggested_repos(self) -> list[str]: ...
 
+    def restacks(self) -> dict[tuple[str, str], str]:
+        """Sets of heads whose stack needs a restack, with the reason (R77)."""
+
     def confirm_repo(self, repo: str) -> None:
         """The author accepts ``repo``: watched, no longer suggested."""
 

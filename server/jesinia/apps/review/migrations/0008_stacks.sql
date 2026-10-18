@@ -13,6 +13,15 @@ CREATE TABLE stack_reviews (
 
 -- A stack review's artifacts by kind (agent output, schema-checked; and `jobs`, each stack
 -- job's state and cause), as `artifacts` holds a round's.
+-- Whether a chain's top head contains every member head (R77), per set of heads: `reason`
+-- is '' when it does, else why each PR is shown alone ("the stack needs a restack: ...").
+CREATE TABLE stack_checks (
+    repo TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (repo, signature)
+);
+
 CREATE TABLE stack_artifacts (
     stack_id INTEGER NOT NULL REFERENCES stack_reviews (id) ON DELETE CASCADE,
     kind TEXT NOT NULL,

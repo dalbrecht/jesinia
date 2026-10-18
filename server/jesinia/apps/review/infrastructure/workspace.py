@@ -298,6 +298,22 @@ class GitWorkspace:
         out = await self._git(_bare(self._mirror(repo)), "merge-base", check_sha(a), check_sha(b))
         return check_sha(out.strip())
 
+    async def is_ancestor(self, repo: str, ancestor: str, descendant: str) -> bool:
+        """Whether commit ``descendant`` contains ``ancestor`` (R77: a stack's top head holds
+        every member head).
+
+        Raises:
+            InvalidShaError: before git runs.
+            GitCommandError: either commit isn't in the mirror (git's own failure, not "no").
+        """
+        argv, _, err, code, _ = await self._execute(
+            _bare(self._mirror(repo)),
+            ("merge-base", "--is-ancestor", check_sha(ancestor), check_sha(descendant)),
+        )
+        if code in (0, 1):
+            return code == 0
+        raise GitCommandError(argv, code, err.decode(errors="replace"))
+
     async def patch_ids(self, repo: str, base_sha: str, head_sha: str) -> dict[str, str]:
         """Per-file patch IDs, keyed by the post-change path (a rename's new name).
 

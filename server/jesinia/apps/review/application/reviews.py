@@ -52,6 +52,8 @@ class ReviewReadStore(Protocol):
 
     def suggested_repos(self) -> list[str]: ...
 
+    def restacks(self) -> dict[tuple[str, str], str]: ...
+
     def latest_round(self, ref: PrRef) -> RoundRecord | None: ...
 
     def artifacts(self, round_id: int) -> dict[str, object]: ...
@@ -145,7 +147,7 @@ class ReviewReads:
         suggested = ref.repo in self._store.suggested_repos()
         followup = self._store.current_followups().get(ref)
         everyone = [s.pr for s in self._store.prs(include_dismissed=True)]
-        stack = stack_numbers(everyone).get(ref, ())
+        stack = stack_numbers(everyone, self._store.restacks()).get(ref, ())
         row = queue_row(stored, latest, self._store.viewer(), suggested, followup, stack)
         found = self._store.latest_round(ref)
         artifacts = {} if found is None else self._store.artifacts(found.id)

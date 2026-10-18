@@ -78,6 +78,19 @@ class StackMember(Protocol):
     @property
     def head_repo(self) -> str | None: ...
 
+    @property
+    def head_sha(self) -> str: ...
+
+
+# Stacks whose top head doesn't contain every member head (R77), by (repo, signature): the
+# reason each PR is shown alone. Kept per set of heads, so a restack is checked again.
+Restacks = Mapping[tuple[str, str], str]
+
+
+def restack_reason(lower: int, top: int) -> str:
+    """Why a chain isn't a stack while #``lower``'s head isn't in #``top``'s (R77)."""
+    return f"the stack needs a restack: #{lower}'s latest commits aren't in #{top}"
+
 
 @dataclass(frozen=True)
 class RefusedGroup:
@@ -144,7 +157,7 @@ class _Groups:
 
 
 def _repo_stacks[M: StackMember](
-    repo: str, prs: Sequence[M]
+    repo: str, prs: Sequence[M], restack: Restacks
 ) -> tuple[list[tuple[M, ...]], list[RefusedGroup]]:
     by_number = {pr.number: pr for pr in prs}
     # A PR's head branch can be built on only when it lives in this repo.
@@ -166,10 +179,14 @@ def _repo_stacks[M: StackMember](
         reason = _why_not_a_chain(group, parents)
         if reason is None:
             chain = _chain(group, parents)
+            members = tuple(by_number[n] for n in chain)
+            signature = stack_signature([(pr.number, pr.head_sha) for pr in members])
             if len(chain) > STACK_MAX:
                 reason = f"the chain has more than {STACK_MAX} PRs, so each is shown alone"
+            elif (repo, signature) in restack:
+                reason = restack[(repo, signature)]
             else:
-                found.append(tuple(by_number[n] for n in chain))
+                found.append(members)
                 continue
         refused.append(RefusedGroup(repo, tuple(group), reason))
     return found, refused
@@ -203,31 +220,36 @@ def _chain(group: list[int], parents: Mapping[int, list[int]]) -> list[int]:
     return chain
 
 
-def detect_stacks[M: StackMember](prs: Sequence[M]) -> StackDetection[M]:
+def detect_stacks[M: StackMember](
+    prs: Sequence[M], restack: Restacks | None = None
+) -> StackDetection[M]:
     """The stacks among open PRs ``prs`` (bottom-up, ordered by repo then bottom PR) and the
-    groups refused as stacks; the caller passes open PRs only."""
+    groups refused as stacks; the caller passes open PRs only. ``restack``: chains whose top
+    head was found not to contain every member head (R77), refused with their reason."""
     by_repo: dict[str, list[M]] = {}
     for pr in prs:
         by_repo.setdefault(pr.repo.lower(), []).append(pr)
     found: list[tuple[M, ...]] = []
     refused: list[RefusedGroup] = []
     for repo in sorted(by_repo):
-        repo_found, repo_refused = _repo_stacks(repo, by_repo[repo])
+        repo_found, repo_refused = _repo_stacks(repo, by_repo[repo], restack or {})
         found += repo_found
         refused += repo_refused
     found.sort(key=lambda stack: (stack[0].repo.lower(), stack[0].number))
     return StackDetection(tuple(found), tuple(refused))
 
 
-def stacks[M: StackMember](prs: Sequence[M]) -> list[list[M]]:
+def stacks[M: StackMember](prs: Sequence[M], restack: Restacks | None = None) -> list[list[M]]:
     """Every stack among open PRs ``prs``, each ordered bottom-up per the stack rule."""
-    return [list(stack) for stack in detect_stacks(prs).stacks]
+    return [list(stack) for stack in detect_stacks(prs, restack).stacks]
 
 
-def stack_numbers[M: StackMember](prs: Sequence[M]) -> dict[PrRef, tuple[int, ...]]:
+def stack_numbers[M: StackMember](
+    prs: Sequence[M], restack: Restacks | None = None
+) -> dict[PrRef, tuple[int, ...]]:
     """Each stacked PR's stack, as bottom-up PR numbers."""
     out: dict[PrRef, tuple[int, ...]] = {}
-    for stack in detect_stacks(prs).stacks:
+    for stack in detect_stacks(prs, restack).stacks:
         chain = tuple(pr.number for pr in stack)
         for pr in stack:
             out[PrRef(pr.repo, pr.number)] = chain

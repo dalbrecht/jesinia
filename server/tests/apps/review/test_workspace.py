@@ -195,6 +195,20 @@ async def test_patch_ids_equal_for_pure_rebase_and_differ_with_conflict_edit(
     assert conflicted["a.txt"] != approved["a.txt"]
 
 
+async def test_is_ancestor_says_whether_a_head_contains_a_commit(
+    tmp_path: Path, fixture: Fixture
+) -> None:
+    """R77: a stack's top head must contain every member head."""
+    ws = await fetched(tmp_path, fixture)
+    assert await ws.is_ancestor(REPO, fixture.base, fixture.head)
+    assert await ws.is_ancestor(REPO, fixture.head, fixture.head)
+    assert not await ws.is_ancestor(REPO, fixture.head, fixture.rebased_head)
+    with pytest.raises(InvalidShaError):
+        await ws.is_ancestor(REPO, "nope", fixture.head)
+    with pytest.raises(GitCommandError):
+        await ws.is_ancestor(REPO, "9" * 40, fixture.head)  # not in the mirror
+
+
 async def test_diff_and_merge_base(tmp_path: Path, fixture: Fixture) -> None:
     ws = await fetched(tmp_path, fixture)
     assert await ws.merge_base(REPO, fixture.rebased_head, fixture.conflict_head) == fixture.base

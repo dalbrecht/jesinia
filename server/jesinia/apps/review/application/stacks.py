@@ -58,10 +58,11 @@ from jesinia.apps.review.domain.stacks import (
     detect_stacks,
     known_stack_walkthrough,
     order_post_all,
+    restack_reason,
     shared_file_findings,
     stack_signature,
 )
-from jesinia.apps.review.domain.workspace import DiffTooLargeError
+from jesinia.apps.review.domain.workspace import DiffTooLargeError, WorkspaceError
 from jesinia.core.events import Event, EventBus
 from jesinia.services.github.application.service import GitHubError
 from jesinia.services.github.domain.pr import (
@@ -112,6 +113,12 @@ class StackStore(Protocol):
 
     def stack_jobs(self) -> dict[int, object]: ...
 
+    def stack_check(self, repo: str, signature: str) -> str | None: ...
+
+    def put_stack_check(self, repo: str, signature: str, reason: str) -> None: ...
+
+    def restacks(self) -> dict[tuple[str, str], str]: ...
+
 
 class StackOpener(Protocol):
     """Opening one PR (``Pipeline.open``), under its own gates."""
@@ -159,6 +166,8 @@ class StackWorkspace(Protocol):
     async def merge_base(self, repo: str, a: str, b: str) -> str: ...
 
     async def diff(self, repo: str, base_sha: str, head_sha: str) -> str: ...
+
+    async def is_ancestor(self, repo: str, ancestor: str, descendant: str) -> bool: ...
 
 
 class StackSlots(Protocol):
@@ -266,6 +275,7 @@ class StackReviews:
         self._knowledge = knowledge
         self._running: dict[int, set[JobKind]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
+        self._verify_task: asyncio.Task[int] | None = None
 
     # --- the stack ---------------------------------------------------------------------------
 
@@ -279,7 +289,7 @@ class StackReviews:
         stored = self._store.prs(include_dismissed=True)
         if not any(s.pr.ref == ref for s in stored):
             raise NotAStackError(f"{ref} is not in the review queue; load it first")
-        detection = detect_stacks([s.pr for s in stored])
+        detection = detect_stacks([s.pr for s in stored], self._store.restacks())
         found = detection.stack_of(ref.repo, ref.number)
         if found is None:
             why = detection.refusal_of(ref.repo, ref.number)
@@ -306,6 +316,67 @@ class StackReviews:
         across = agent_cross_findings(artifacts.get(JobKind.STACK_WALKTHROUGH.value))
         return StackView(repo, signature, views, stack_id, artifacts, (*shared, *across))
 
+    # --- the heads (R77) ---------------------------------------------------------------------
+
+    async def _contained(self, members: Sequence[StoredPr]) -> str:
+        """'' when the top head contains every member head, else why each PR is shown
+        alone; decided once per set of heads and kept (a restack is a new set).
+
+        Raises:
+            WorkspaceError: git couldn't check (nothing is recorded: checked again later).
+        """
+        repo = members[0].pr.ref.repo
+        signature = stack_signature([(m.pr.ref.number, m.pr.head_sha) for m in members])
+        known = self._store.stack_check(repo, signature)
+        if known is not None:
+            return known
+        top = members[-1].pr
+        await self._workspace.ensure_mirror(repo)
+        await self._workspace.fetch(repo, sorted({m.pr.head_sha for m in members}))
+        reason = ""
+        for member in members[:-1]:
+            if not await self._workspace.is_ancestor(repo, member.pr.head_sha, top.head_sha):
+                reason = restack_reason(member.pr.ref.number, top.ref.number)
+                break
+        self._store.put_stack_check(repo, signature, reason)
+        if reason:
+            log.info("review.stacks %s: %s", repo, reason)
+        return reason
+
+    async def verify_all(self) -> int:
+        """Check every stack whose heads weren't checked yet (after a sync), so the queue
+        files a stack needing a restack before it is opened; return how many were checked.
+        A stack git can't check is logged and left for the next run, never assumed."""
+        stored = [s for s in self._store.prs(include_dismissed=True)]
+        by_ref = {s.pr.ref: s for s in stored}
+        checked = 0
+        for chain in detect_stacks([s.pr for s in stored], self._store.restacks()).stacks:
+            members = [by_ref[pr.ref] for pr in chain]
+            repo = members[0].pr.ref.repo
+            signature = stack_signature([(m.pr.ref.number, m.pr.head_sha) for m in members])
+            if self._store.stack_check(repo, signature) is not None:
+                continue
+            try:
+                await self._contained(members)
+            except WorkspaceError as exc:
+                log.warning("review.stacks %s left unchecked: %s", repo, exc)
+                continue
+            checked += 1
+        return checked
+
+    def start_verify(self) -> None:
+        """Run ``verify_all`` in the background, one at a time."""
+        if self._verify_task is not None and not self._verify_task.done():
+            return
+        self._verify_task = asyncio.create_task(self.verify_all(), name="review-stack-checks")
+
+    async def stop_verify(self) -> None:
+        """Cancel a running background check."""
+        if self._verify_task is not None:
+            self._verify_task.cancel()
+            await asyncio.gather(self._verify_task, return_exceptions=True)
+            self._verify_task = None
+
     # --- opening -----------------------------------------------------------------------------
 
     async def open(self, ref: PrRef, *, retry: bool = False) -> StackOpenResult:
@@ -318,6 +389,15 @@ class StackReviews:
             PrNotInQueueError, ReviewNotAllowedError: a PR can't be opened.
         """
         members = self.members(ref)
+        try:
+            reason = await self._contained(members)
+        except WorkspaceError as exc:
+            raise NotAStackError(
+                f"{ref}'s stack couldn't be checked against its heads, so nothing ran: {exc}"
+            ) from exc
+        if reason:
+            # Never a stack review against a lower PR's stale code (R77).
+            raise NotAStackError(f"{ref} isn't part of a stack: {reason}")
         opened = tuple([(m.pr.ref.number, await self._opener.open(m.pr.ref)) for m in members])
         repo = members[0].pr.ref.repo
         signature = stack_signature([(m.pr.ref.number, m.pr.head_sha) for m in members])

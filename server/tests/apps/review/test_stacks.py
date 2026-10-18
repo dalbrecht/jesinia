@@ -41,6 +41,7 @@ from jesinia.apps.review.domain.coverage import hunk_index, parse_unified_diff
 from jesinia.apps.review.domain.jobs import STACK_JOBS, JobKind, Round, StackRound, on_open_jobs
 from jesinia.apps.review.domain.queue import (
     PrRef,
+    QueueFilter,
     RepoConfig,
     SyncStatus,
     queue_row,
@@ -59,11 +60,13 @@ from jesinia.apps.review.domain.stacks import (
     detect_stacks,
     known_stack_walkthrough,
     order_post_all,
+    restack_reason,
     shared_file_findings,
     stack_numbers,
     stack_signature,
     stacks,
 )
+from jesinia.apps.review.domain.workspace import GitCommandError
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.module import REVIEW_DB
 from jesinia.core.app import create_app
@@ -1178,3 +1181,84 @@ async def test_a_round_of_another_pr_is_a_409(api: ApiEnv) -> None:
     assert refused.status_code == 409 and refused.json()["error"] == "RoundNotOfPr"
     assert "stack_outcomes" not in refused.json()
     assert api.stack.github.posted == []
+
+
+# --- R77: the top head contains every member head --------------------------------------------
+
+
+def test_a_stack_needing_a_restack_is_each_pr_alone_with_the_reason() -> None:
+    prs = [stacked(1, "main"), stacked(2, "feature-1"), stacked(3, "feature-2")]
+    (chain,) = detect_stacks(prs).stacks
+    signature = stack_signature([(pr.number, pr.head_sha) for pr in chain])
+    reason = restack_reason(1, 3)
+    assert reason == "the stack needs a restack: #1's latest commits aren't in #3"
+    detection = detect_stacks(prs, {(REPO, signature): reason})
+    assert detection.stacks == ()
+    assert detection.refusal_of(REPO, 2) == reason
+    assert stack_numbers(prs, {(REPO, signature): reason}) == {}
+    # Another set of heads (a restack happened) is checked again: the verdict isn't reused.
+    moved = [*prs[:2], replace(prs[2], head_sha="f" * 40)]
+    assert len(detect_stacks(moved, {(REPO, signature): reason}).stacks) == 1
+
+
+async def test_a_lower_pr_pushed_after_the_upper_branched_is_no_stack(stack: StackEnv) -> None:
+    """Codex round 2 P1 on PR #63 (R77): #1 got a commit after #3 branched, so #3's head
+    doesn't hold #1's latest code: no stack, the reason shown, no stack job run."""
+    stack.workspace.not_contained = {(HEADS[1], HEADS[3])}
+    with pytest.raises(NotAStackError, match="needs a restack: #1's latest commits aren't in #3"):
+        await stack.service.open(stack.ref(2))
+    assert stack.jobs.ran == [] and stack.opener.opened == []
+    with pytest.raises(NotAStackError, match="needs a restack"):
+        stack.service.view(stack.ref(3))
+    queue = QueueService(FakePullRequests(), stack.store, stack.clock)
+    rows = {row.number: row for row in (await queue.list(QueueFilter())).rows}
+    assert rows[1].stack == () and rows[3].stack == ()
+
+
+async def test_a_contained_stack_is_checked_once_per_set_of_heads(stack: StackEnv) -> None:
+    await stack.service.open(stack.ref(1))
+    checks = list(stack.workspace.ancestry_checks)
+    assert sorted(checks) == [(HEADS[1], HEADS[3]), (HEADS[2], HEADS[3])]
+    await stack.service.open(stack.ref(1))
+    assert stack.workspace.ancestry_checks == checks  # the verdict is kept for these heads
+
+
+async def test_the_background_check_files_each_stack_before_it_is_opened(stack: StackEnv) -> None:
+    stack.workspace.not_contained = {(HEADS[2], HEADS[3])}
+    assert await stack.service.verify_all() == 1
+    with pytest.raises(NotAStackError, match="#2's latest commits aren't in #3"):
+        stack.service.members(stack.ref(1))
+    assert await stack.service.verify_all() == 0  # known: not checked again
+    # A check git can't make is left unknown (logged): tried again next time, never assumed.
+    other = await _fresh_heads(stack)
+    stack.workspace.ancestry_error = GitCommandError(("git", "merge-base"), 128, "bad object")
+    assert await stack.service.verify_all() == 0
+    assert other.stack_check(REPO, other_signature(stack)) is None
+    with pytest.raises(NotAStackError, match="couldn't be checked"):
+        await stack.service.open(stack.ref(1))
+
+
+async def _fresh_heads(stack: StackEnv) -> SqliteReviewStore:
+    """#3 restacked: a new head, so a new signature to check."""
+    pr = replace(stack.github.prs[3], head_sha="f" * 40)
+    stack.github.prs[3] = pr
+    snapshot = snapshot_of(pr, ci_state="passing", reviews=[], automated_reviewer=None,
+                           viewer="me")  # fmt: skip
+    stack.store.apply_sync([snapshot], [], [], stack.clock() - timedelta(minutes=20))
+    return stack.store
+
+
+def other_signature(stack: StackEnv) -> str:
+    return stack_signature([(1, HEADS[1]), (2, HEADS[2]), (3, "f" * 40)])
+
+
+async def test_the_background_check_runs_one_at_a_time_and_skips_known_heads(
+    stack: StackEnv,
+) -> None:
+    await stack.service.open(stack.ref(1))  # checked (contained) on opening
+    assert await stack.service.verify_all() == 0
+    stack.service.start_verify()
+    stack.service.start_verify()  # one at a time
+    await stack.service.stop_verify()
+    await stack.service.stop_verify()  # nothing running: a no-op
+    assert sorted(stack.workspace.ancestry_checks) == [(HEADS[1], HEADS[3]), (HEADS[2], HEADS[3])]

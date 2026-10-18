@@ -129,7 +129,7 @@ class QueueService:
         ]
         stored.sort(key=queue_order)
         everyone = [s.pr for s in self._store.prs(include_dismissed=True)]
-        stacked = stack_numbers(everyone)
+        stacked = stack_numbers(everyone, self._store.restacks())
         synced_at, sync_error = self._store.sync_status()
         suggested = self._store.suggested_repos()
         return QueueView(
@@ -383,7 +383,7 @@ class QueueService:
     def _stack_of(self, ref: PrRef) -> tuple[int, ...]:
         """The PR's stack (spec §4.3) among every cached PR, bottom-up; empty if none."""
         everyone = [s.pr for s in self._store.prs(include_dismissed=True)]
-        return stack_numbers(everyone).get(ref, ())
+        return stack_numbers(everyone, self._store.restacks()).get(ref, ())
 
     async def dismiss(self, repo: str, number: int) -> None:
         """Hide a PR from the queue until it is loaded again.
