@@ -810,3 +810,23 @@ def test_a_proposal_origin_is_its_target_not_its_draft() -> None:
         proposal_origin(suggestion("split", {}))
     with pytest.raises(InvalidChangeError, match="isn't a proposal"):
         proposal_origin(suggestion("brief", {}))
+
+
+# --- Codex round 1: CommonMark fences ----------------------------------------------------------
+
+
+def test_a_longer_fence_isnt_closed_by_a_shorter_one() -> None:
+    body = "````md\n```\n- [ ] inside one\n```\n- [ ] inside two\n````\n- [ ] outside"
+    assert [i.text for i in checklist(body, REPO)] == ["outside"]
+
+
+def test_a_tilde_fence_isnt_closed_by_backticks_or_a_shorter_tilde_run() -> None:
+    body = "~~~~\n```\n- [ ] inside\n~~~\n- [ ] still inside\n~~~~~  \n- [ ] outside"
+    assert [i.text for i in checklist(body, REPO)] == ["outside"]
+
+
+def test_a_closer_with_trailing_text_doesnt_close_the_fence() -> None:
+    body = "```\n``` not a closer\n- [ ] inside\n```\n- [ ] outside"
+    assert [i.text for i in checklist(body, REPO)] == ["outside"]
+    # A backtick run with a backtick in its info string isn't a fence at all.
+    assert [i.text for i in checklist("``` a`b\n- [ ] kept", REPO)] == ["kept"]

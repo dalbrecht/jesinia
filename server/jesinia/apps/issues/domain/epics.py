@@ -77,7 +77,9 @@ ACCEPTANCE_MAX = 30
 _NOT_CACHED = "not in the cache; sync its repo first"
 _OTHER_OWNER = "another owner's issue (GitHub's sub-issues require the same owner)"
 _TASK = re.compile(r"^\s{0,3}[-*+]\s+\[([ xX])\]\s+(.*\S)\s*$")
-_FENCE = re.compile(r"^\s{0,3}(```|~~~)")
+# A CommonMark fence: a run of 3+ backticks or tildes, indented at most 3 spaces; an opener's
+# info string may follow (a backtick fence's may hold no backtick), a closer only spaces.
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _URL_REF = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d{1,9})\b")
 _FULL_REF = re.compile(r"(?<![\w/])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d{1,9})\b")
@@ -384,17 +386,29 @@ def _first_ref(text: str, repo: str) -> tuple[str, int] | None:
     return min(found)[1] if found else None
 
 
+def _closes(run: re.Match[str] | None, fence: str) -> bool:
+    """Whether a line closes the open ``fence``: the same character, at least as long, and
+    nothing after it but spaces (CommonMark)."""
+    if run is None:
+        return False
+    marker, rest = run.group(1), run.group(2)
+    return marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip(" ")
+
+
 def checklist(body: str, repo: str) -> list[ChecklistItem]:
     """The task-list items of ``body`` outside fenced code blocks, in order."""
     items: list[ChecklistItem] = []
     fence: str | None = None
     for line in body.splitlines():
-        opened = _FENCE.match(line)
-        if opened:
-            marker = opened.group(1)
-            fence = marker if fence is None else (None if marker == fence else fence)
+        run = _FENCE.match(line)
+        if fence is None and run and not (run.group(1)[0] == "`" and "`" in run.group(2)):
+            fence = run.group(1)  # opened
             continue
-        task = None if fence is not None else _TASK.match(line)
+        if fence is not None:
+            if _closes(run, fence):
+                fence = None
+            continue
+        task = _TASK.match(line)
         if task is None:
             continue
         text = " ".join(_LINK.sub(r"\1", task.group(2)).split())
