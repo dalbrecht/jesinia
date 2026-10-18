@@ -1,21 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The pending-changes tray and approvals (spec §6.1, §6.2; plan Task 6; rulings IR14, IR16,
-IR18, IR36).
+IR18, IR36, IR45, IR46).
 
 Two ways reach GitHub, through one engine:
 
-- **Approving a suggestion applies at once** (``ApplyService.approve``): the approval is the
-  go-ahead. Its premise is checked first against the cache (an edited draft whose dimension was
-  filled since, say, is refused with ``SuggestionStaleError`` and nothing is applied). A
+- **Approving a suggestion applies at once** (``ApplyService.start_approval``, in the
+  background): the approval is the go-ahead. Its premise is checked first against the cache
+  (an edited draft whose dimension was filled since, say, is refused with
+  ``SuggestionStaleError`` and nothing is applied). A
   duplicate needs the original's database id from the cache (``DuplicateNotCachedError``
   otherwise). A complete apply marks the suggestion ``approved``; a failed one leaves it
   approvable, with the cause in ``apply_error``.
 - **Every other GitHub-changing action stages** in the tray (``PendingService.stage``: drags,
-  pickers, menus, the bulk bar, queue moves) until ``ApplyService.apply_pending`` sends them as
+  pickers, menus, the bulk bar, queue moves) until ``ApplyService.start_pending`` sends them as
   one batch.
 
-Every batch is stored with its result, so ``retry`` re-runs only the steps that didn't apply
-(and an approval's suggestion is marked approved once its batch completes).
+Every batch is written ahead and kept with its result, step by step, so ``retry`` re-runs only
+the steps that didn't apply (and an approval's suggestion is marked approved once its batch
+completes). See ``ApplyService``.
 """
 
 from __future__ import annotations
@@ -40,6 +42,8 @@ from jesinia.apps.issues.application.ports import (
 from jesinia.apps.issues.domain.changes import (
     BatchNotFoundError,
     BatchResult,
+    BatchRunningError,
+    BatchStatus,
     ChangeBatch,
     Existing,
     InvalidChangeError,
@@ -221,8 +225,20 @@ class Approval:
 
 
 class ApplyService:
-    """Applies the tray and approvals through the engine, and keeps every batch for Retry.
-    Batches run one at a time.
+    """Applies the tray and approvals through the engine, and keeps every batch for Retry
+    (rulings IR45, IR46).
+
+    - **Write-ahead:** a batch is stored ``running`` before its first GitHub write, with every
+      step ``not run yet``, and updated after each step; ``finished`` once its result is final.
+    - **Background:** ``start_pending``, ``start_retry`` and ``start_approval`` store the batch and
+      return at once; one task per batch runs it, and batches still run one at a time, in the
+      order started. Clients poll the batch. ``apply_pending``, ``retry`` and ``approve`` do the
+      same and wait for the result.
+    - **Replays:** a request's Idempotency-Key is kept on the batch it started; the same key
+      always answers that batch, so a replay never applies the tray again.
+    - **Stops:** ``stop`` cancels the running batches, which are marked ``interrupted``; ``recover``
+      (at start) marks those a crash left ``running``. Retry resumes either without repeating a
+      step already done. An approval's claim (IR40) is released whatever happens.
 
     Args:
         engine: the apply engine.
@@ -250,121 +266,236 @@ class ApplyService:
         self._clock = clock
         self._new_id = new_id
         self._lock = asyncio.Lock()
+        self._tasks: dict[str, asyncio.Task[AppliedBatch]] = {}
 
-    async def apply(self, batch: ChangeBatch, *, origin: ApplyOrigin) -> AppliedBatch:
-        """Apply ``batch`` and store it with its result."""
-        applied, _ = await self._apply(batch, origin, None)
+    # Starting ---------------------------------------------------------------------------
+
+    def _begin(
+        self,
+        batch: ChangeBatch,
+        origin: ApplyOrigin,
+        suggestion_id: str | None,
+        key: str | None,
+    ) -> AppliedBatch:
+        """Store ``batch`` as ``running``, every step not run yet (write-ahead)."""
+        now = self._clock()
+        applied = AppliedBatch(
+            self._new_id(),
+            origin,
+            suggestion_id,
+            batch,
+            BatchResult.not_run(batch),
+            now,
+            now,
+            status="running",
+            request_key=key,
+        )
+        self._store.save_batch(applied)
         return applied
 
-    async def _apply(
-        self, batch: ChangeBatch, origin: ApplyOrigin, suggestion: Suggestion | None
-    ) -> tuple[AppliedBatch, Suggestion | None]:
-        """Apply and store ``batch``; an approval's ``suggestion`` is settled (``_settle``) as
-        soon as the result is known, before the engine's cache update retires drafts."""
-        batch_id = self._new_id()
-        stored: list[AppliedBatch] = []
-        settled: list[Suggestion] = []
-
-        def keep(result: BatchResult) -> None:
-            now = self._clock()
-            sid = None if suggestion is None else suggestion.id
-            applied = AppliedBatch(batch_id, origin, sid, batch, result, now, now)
-            stored.append(applied)
-            try:
-                self._store.save_batch(applied)
-            except Exception:  # the writes happened: report them; only Retry is lost
-                log.exception("issues.apply: storing batch %s failed", batch_id)
-            if suggestion is not None:
-                settled.append(self._settle(suggestion, result))
-
-        await self._engine.apply(batch, on_result=keep)
-        return stored[0], settled[0] if settled else None
-
-    async def apply_pending(self, ids: Sequence[str] | None) -> AppliedBatch:
-        """Apply the staged changes (only ``ids`` when given) as one batch; they leave the tray
-        once the batch is stored, whatever its result (Retry resumes it).
+    def begin_pending(self, ids: Sequence[str] | None, key: str | None) -> AppliedBatch:
+        """Take the staged changes (only ``ids`` when given) out of the tray into a stored
+        ``running`` batch; the same ``key`` answers the batch it already started.
 
         Raises:
             NothingPendingError: nothing staged matches.
         """
-        async with self._lock:
-            staged = self._store.pending(ids)
-            if not staged:
-                raise NothingPendingError("nothing is pending to apply")
-            applied = await self.apply(pending_batch(staged), origin="pending")
-            self._store.delete_pending([change.id for change in staged])
-            return applied
+        if key is not None and (found := self._store.batch_by_key(key)) is not None:
+            return found
+        staged = self._store.pending(ids)
+        if not staged:
+            raise NothingPendingError("nothing is pending to apply")
+        applied = self._begin(pending_batch(staged), "pending", None, key)
+        self._store.delete_pending([change.id for change in staged])
+        return applied
 
-    async def retry(self, batch_id: str) -> AppliedBatch:
-        """Run again only the steps of a stored batch that didn't apply.
+    def start_pending(self, ids: Sequence[str] | None, key: str | None) -> AppliedBatch:
+        """``begin_pending``, then run the batch in the background."""
+        applied = self.begin_pending(ids, key)
+        self._spawn(applied, None)
+        return applied
+
+    async def apply_pending(self, ids: Sequence[str] | None) -> AppliedBatch:
+        """``begin_pending`` and wait for the result."""
+        return await self._run(self.begin_pending(ids, None), None)
+
+    async def apply(self, batch: ChangeBatch, *, origin: ApplyOrigin) -> AppliedBatch:
+        """Store ``batch``, apply it and wait for the result."""
+        return await self._run(self._begin(batch, origin, None, None), None)
+
+    def begin_retry(self, batch_id: str) -> AppliedBatch:
+        """Mark a stored batch ``running`` again, to resume what didn't apply.
 
         Raises:
             BatchNotFoundError: no such batch.
+            BatchRunningError: it is still running.
         """
-        async with self._lock:
-            stored = applied_batch(self._store, batch_id)
-            kept: list[AppliedBatch] = []
+        stored = applied_batch(self._store, batch_id)
+        if stored.status == "running":
+            raise BatchRunningError(f"batch {batch_id} is still running; poll it")
+        again = replace(stored, status="running", updated_at=self._clock())
+        self._store.save_batch(again)
+        return again
 
-            def keep(result: BatchResult) -> None:
-                retried = replace(stored, result=result, updated_at=self._clock())
-                kept.append(retried)
-                try:
-                    self._store.save_batch(retried)
-                except Exception:  # the writes happened: report them
-                    log.exception("issues.apply: storing batch %s failed", batch_id)
-                if stored.suggestion_id is not None:
-                    found = self._suggestions.suggestion(stored.suggestion_id)
-                    if found is not None and found.state in OPEN_STATES:
-                        self._settle(found, result)
+    def start_retry(self, batch_id: str) -> AppliedBatch:
+        """``begin_retry``, then run it in the background."""
+        again = self.begin_retry(batch_id)
+        self._spawn(again, self._retry_claim(again), resume=True)
+        return again
 
-            # A resumed approval protects its draft like the approval did (IR40).
-            sid = stored.suggestion_id
-            claimed = sid is not None and self._suggestions.claim(sid, self._clock())
-            try:
-                await self._engine.retry(stored.batch, stored.result, on_result=keep)
-            finally:
-                if claimed:
-                    self._release(cast(str, sid))
-            return kept[0]
+    async def retry(self, batch_id: str) -> AppliedBatch:
+        """``begin_retry`` and wait for the result."""
+        again = self.begin_retry(batch_id)
+        return await self._run(again, self._retry_claim(again), resume=True)
 
-    async def approve(self, suggestion_id: str) -> Approval:
-        """Approve a suggestion: apply it at once (see the module docstring).
+    def _retry_claim(self, applied: AppliedBatch) -> str | None:
+        """A resumed approval protects its open draft like the approval did (IR40)."""
+        sid = applied.suggestion_id
+        return sid if sid is not None and self._suggestions.claim(sid, self._clock()) else None
+
+    def begin_approval(self, suggestion_id: str, key: str | None) -> Approval:
+        """Check an approval, claim its draft and store its batch ``running``. The same
+        ``key`` answers the approval it already started.
 
         Raises:
             SuggestionNotFoundError: no such suggestion.
-            SuggestionStateError: it was approved or dismissed already.
+            SuggestionStateError: it was approved or dismissed already, or is being approved.
             IssueNotCachedError: its issue isn't cached.
-            SuggestionStaleError: its premise is gone, in the cache or on GitHub now (the
-                apply's fresh read); nothing of it was written.
+            SuggestionStaleError: its premise is gone in the cache; nothing is applied.
             DuplicateNotCachedError: a duplicate whose original isn't cached.
             InvalidChangeError: a kind that can't be approved yet.
         """
-        async with self._lock:
-            found = self._suggestions.suggestion(suggestion_id)
-            if found is None:
-                raise SuggestionNotFoundError(f"no suggestion {suggestion_id}")
-            if found.state not in OPEN_STATES:
-                raise SuggestionStateError(f"suggestion {found.id} is {found.state} already")
-            if found.kind == "priority":
-                # About a batch of issues: each change is guarded by the label the draft saw.
-                batch = approval_batch(found)
-            else:
-                batch = self._issue_batch(found)
-            if not self._suggestions.claim(found.id, self._clock()):
-                raise SuggestionStateError(f"suggestion {found.id} is being approved already")
+        if key is not None and (started := self._store.batch_by_key(key)) is not None:
+            current = self._suggestions.suggestion(cast(str, started.suggestion_id))
+            if current is None:
+                raise SuggestionNotFoundError(f"no suggestion {started.suggestion_id}")
+            return Approval(current, started)
+        found = self._suggestions.suggestion(suggestion_id)
+        if found is None:
+            raise SuggestionNotFoundError(f"no suggestion {suggestion_id}")
+        if found.state not in OPEN_STATES:
+            raise SuggestionStateError(f"suggestion {found.id} is {found.state} already")
+        if found.kind == "priority":
+            # About a batch of issues: each change is guarded by the label the draft saw.
+            batch = approval_batch(found)
+        else:
+            batch = self._issue_batch(found)
+        if not self._suggestions.claim(found.id, self._clock()):
+            raise SuggestionStateError(f"suggestion {found.id} is being approved already")
+        try:
+            applied = self._begin(batch, "suggestion", found.id, key)
+        except BaseException:
+            self._release(found.id)
+            raise
+        return Approval(found, applied)
+
+    def start_approval(self, suggestion_id: str, key: str | None) -> Approval:
+        """``begin_approval``, then apply it in the background (the request never waits)."""
+        approval = self.begin_approval(suggestion_id, key)
+        if approval.batch.status == "running" and approval.batch.id not in self._tasks:
+            self._spawn(approval.batch, approval.suggestion.id)
+        return approval
+
+    async def approve(self, suggestion_id: str) -> Approval:
+        """``begin_approval`` and wait for the result.
+
+        Raises:
+            SuggestionStaleError: as ``begin_approval``, or when the apply's fresh read
+                contradicts the premise (nothing of it was written).
+            Others: as ``begin_approval``.
+        """
+        approval = self.begin_approval(suggestion_id, None)
+        found = approval.suggestion
+        applied = await self._run(approval.batch, found.id)
+        settled = self._suggestions.suggestion(found.id) or found
+        conflict = next((r for r in applied.result.results if r.is_conflict), None)
+        if conflict is not None and found.kind != "priority":
+            # The fresh read contradicts the premise (I1): nothing of it was written. (A
+            # priority draft covers several issues: those that still fit applied, and the
+            # approval's failure names the rest.)
+            raise SuggestionStaleError(f"suggestion {found.id} no longer fits: {conflict.cause}")
+        return Approval(settled, applied)
+
+    # Running ----------------------------------------------------------------------------
+
+    def _spawn(self, applied: AppliedBatch, claimed: str | None, *, resume: bool = False) -> None:
+        task = asyncio.create_task(self._run(applied, claimed, resume=resume))
+        self._tasks[applied.id] = task
+        task.add_done_callback(lambda done: self._finished(applied.id, claimed, done))
+
+    def _finished(
+        self, batch_id: str, claimed: str | None, task: asyncio.Task[AppliedBatch]
+    ) -> None:
+        """A background run ended: whatever happened, its claim is released, and a run that was
+        cancelled (a stop) or broke is ``interrupted``. Best effort: start recovers the rest."""
+        self._tasks.pop(batch_id, None)
+        if claimed is not None:
+            self._release(claimed)
+        if not task.cancelled() and task.exception() is None:
+            return
+        if not task.cancelled():
+            log.error("issues.apply: batch %s failed", batch_id, exc_info=task.exception())
+        try:
+            stored = self._store.batch(batch_id)
+            if stored is not None and stored.status == "running":
+                self._store.save_batch(replace(stored, status="interrupted"))
+        except Exception:
+            log.exception("issues.apply: marking batch %s interrupted failed", batch_id)
+
+    async def _run(
+        self, applied: AppliedBatch, claimed: str | None, *, resume: bool = False
+    ) -> AppliedBatch:
+        """Run a stored ``running`` batch under the ordering lock, recording each step and the
+        final result; an approval's suggestion is settled as soon as the result is known."""
+        latest = [applied]
+
+        def record(result: BatchResult, status: BatchStatus) -> None:
+            latest[0] = replace(latest[0], result=result, status=status, updated_at=self._clock())
             try:
-                applied, settled = await self._apply(batch, "suggestion", found)
-            finally:
-                self._release(found.id)
-            conflict = next((r for r in applied.result.results if r.is_conflict), None)
-            if conflict is not None and found.kind != "priority":
-                # The fresh read contradicts the premise (I1): nothing of it was written. (A
-                # priority draft covers several issues: those that still fit applied, and the
-                # approval's failure names the rest.)
-                raise SuggestionStaleError(
-                    f"suggestion {found.id} no longer fits: {conflict.cause}"
-                )
-            return Approval(settled or found, applied)
+                self._store.save_batch(latest[0])
+            except Exception:  # the writes happened: report them; only the record lags
+                log.exception("issues.apply: storing batch %s failed", applied.id)
+
+        def keep(result: BatchResult) -> None:
+            record(result, "finished")
+            if applied.suggestion_id is not None:
+                found = self._suggestions.suggestion(applied.suggestion_id)
+                if found is not None and found.state in OPEN_STATES:
+                    self._settle(found, result)
+
+        def step(result: BatchResult) -> None:
+            record(result, "running")
+
+        try:
+            async with self._lock:
+                if resume:
+                    await self._engine.retry(
+                        applied.batch, applied.result, on_result=keep, on_step=step
+                    )
+                else:
+                    await self._engine.apply(applied.batch, on_result=keep, on_step=step)
+        except asyncio.CancelledError:
+            record(latest[0].result, "interrupted")
+            raise
+        finally:
+            if claimed is not None:
+                self._release(claimed)
+        return latest[0]
+
+    def recover(self) -> int:
+        """At start: mark the batches a stop or crash left ``running`` as ``interrupted``."""
+        return self._store.interrupt_running()
+
+    async def drain(self) -> None:
+        """Wait for the background batches started so far."""
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
+
+    async def stop(self) -> None:
+        """Cancel the background batches (each is marked ``interrupted``) and wait for them."""
+        for task in list(self._tasks.values()):
+            task.cancel()
+        await self.drain()
 
     def _issue_batch(self, found: Suggestion) -> ChangeBatch:
         """The batch approving a suggestion about one issue makes, after its premise check.

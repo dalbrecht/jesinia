@@ -114,7 +114,7 @@ async def test_priority_draft_keeps_order_and_reasons(asking: Asking) -> None:
     draft = await asking.suggest.suggest_priority([(REPO, 1), (REPO, 2), (REPO, 3)])
     assert draft.kind == "priority" and draft.state == "draft"
     assert draft.repo is None and draft.n is None
-    assert draft.scope == f"{REPO}#1,{REPO}#2,{REPO}#3"
+    assert draft.scope == priority_scope([(REPO, 1), (REPO, 2), (REPO, 3)])
     assert [(i["n"], i["rank"], i["priority"], i["reason"]) for i in items_of(draft)] == [
         (2, 1, "priority: high", "reason for 2"),
         (3, 2, "priority: high", "reason for 3"),
@@ -197,7 +197,7 @@ async def test_a_priority_ask_runs_in_the_background_and_reports_its_status(
     await asking.world.synced(issue(1), issue(2))
     asking.agent.replies = [reply((1, "priority: high", 1), (2, "priority: high", 2))]
     run = await asking.suggest.start_priority([(REPO, 2), (REPO, 1)])
-    assert run.status == "running" and run.scope == f"{REPO}#1,{REPO}#2"
+    assert run.status == "running" and run.scope == priority_scope([(REPO, 1), (REPO, 2)])
     assert asking.suggest.priority_run(run.scope) == run
     await asking.suggest.drain()
     done = asking.suggest.priority_run(run.scope)
@@ -407,10 +407,12 @@ def context(*, current: str | None = None, conflicted: bool = False) -> Priority
     return PriorityIssue(REPO, 1, current, conflicted, DEFAULT_SCHEMA)
 
 
-def test_priority_scope_is_sorted_and_case_insensitive() -> None:
-    assert priority_scope([("Acme/Web", 2), ("acme/api", 9), ("acme/web", 2)]) == (
-        "acme/api#9,acme/web#2"
-    )
+def test_priority_scope_is_sorted_case_insensitive_and_bounded() -> None:
+    scope = priority_scope([("Acme/Web", 2), ("acme/api", 9), ("acme/web", 2)])
+    assert scope == priority_scope([("acme/api", 9), ("acme/web", 2)])
+    assert scope.startswith("priority:") and len(scope) == len("priority:") + 32
+    wide = priority_scope([(f"owner/{'r' * 130}-{i}", i) for i in range(1, 101)])
+    assert len(wide) == len(scope)  # 100 long refs still fit the poll's query cap
 
 
 def test_priority_draft_drops_duplicates_blank_reasons_and_unasked_issues() -> None:

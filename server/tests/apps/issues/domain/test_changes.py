@@ -36,6 +36,7 @@ from jesinia.apps.issues.domain.changes import (
     label_edit,
     labels_needed,
     parse_batch,
+    parse_batch_status,
     parse_change,
     parse_issue_change,
     parse_result,
@@ -492,3 +493,9 @@ def test_a_readiness_approval_expects_the_readiness_it_was_made_against() -> Non
     assert gap == ChangeBatch.of(
         {E1: [SetDimension("readiness", "agent-ready", only_if_value="human-needed")]}
     )
+
+
+def test_batch_statuses_parse_or_refuse() -> None:
+    assert parse_batch_status("interrupted") == "interrupted"
+    with pytest.raises(InvalidChangeError):
+        parse_batch_status("exploded")

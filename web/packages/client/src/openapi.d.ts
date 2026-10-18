@@ -1303,10 +1303,12 @@ export interface paths {
         put?: never;
         /**
          * Approve Suggestion
-         * @description Approve a suggestion: it applies to GitHub at once, as one ordered series. Refused
-         *     with a 409 when its premise is gone (nothing applied), when it was approved or
-         *     dismissed, or for a duplicate whose original isn't cached. A failed apply leaves it
-         *     approvable with ``apply_error``; Retry its batch with ``/pending/{batch}/retry``.
+         * @description Approve a suggestion: it applies to GitHub at once, as one ordered series, in the
+         *     background. The answer is a 202 with the batch (``running``) and ``Location`` to poll;
+         *     the suggestion is ``approved`` once its batch completes, or stays approvable with
+         *     ``apply_error`` (a conflict with GitHub's fresh read included). Refused with a 409 when
+         *     its premise is gone in the cache (nothing applied), when it was approved or dismissed
+         *     or is being approved, or for a duplicate whose original isn't cached.
          */
         post: operations["approve_suggestion_api_issues_suggestions__suggestion_id__approve_post"];
         delete?: never;
@@ -1376,7 +1378,10 @@ export interface paths {
         /**
          * Apply Pending
          * @description Apply the staged changes (or only ``ids``) as one batch: per issue, one ordered
-         *     series against a fresh read. They leave the tray; Retry resumes what didn't apply.
+         *     series against a fresh read. They leave the tray at once, into a stored batch that runs
+         *     in the background: the answer is a 202 with it (``running``) and ``Location`` to poll.
+         *     A replay of the same request answers the same batch and never applies the tray
+         *     again.
          */
         post: operations["apply_pending_api_issues_pending_apply_post"];
         delete?: never;
@@ -1394,7 +1399,9 @@ export interface paths {
         };
         /**
          * Get Batch
-         * @description An applied batch and its result, step by step (no GitHub).
+         * @description A batch and its result, step by step (no GitHub): poll it while ``running``. A
+         *     ``finished`` batch that GitHub stopped says so in ``stopped`` (and
+         *     ``rate_limited_until``); resume it, or an ``interrupted`` one, with Retry.
          */
         get: operations["get_batch_api_issues_pending__batch__get"];
         put?: never;
@@ -1416,7 +1423,9 @@ export interface paths {
         put?: never;
         /**
          * Retry Batch
-         * @description Run again only the steps of a batch that didn't apply (failed or skipped).
+         * @description Run again only the steps of a batch that didn't apply (failed or skipped), in the
+         *     background: a 202 with the batch and ``Location`` to poll. A batch still running is a
+         *     409.
          */
         post: operations["retry_batch_api_issues_pending__batch__retry_post"];
         delete?: never;
@@ -1746,10 +1755,12 @@ export interface components {
         };
         /**
          * ApplyBatchOut
-         * @description An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,
-         *     with ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a
-         *     503 whose ``Location`` is its retry route, ``POST /pending/{id}/retry`` (the only way to
-         *     resume it: its changes already left the tray).
+         * @description A batch and its result. ``status``: ``running`` (poll ``GET /pending/{id}``; steps not
+         *     reached yet are ``skipped``, ``not run yet``), ``finished`` (the result is final) or
+         *     ``interrupted`` (a stop cut it off). ``stopped`` is set when GitHub stopped it (a rate
+         *     limit, with ``rate_limited_until``, or a rejected token). An interrupted or stopped batch is
+         *     resumed only with ``POST /pending/{id}/retry`` (its changes already left the tray); steps
+         *     already done are never repeated.
          */
         ApplyBatchOut: {
             /** Id */
@@ -1759,6 +1770,11 @@ export interface components {
              * @enum {string}
              */
             origin: "pending" | "suggestion";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "finished" | "interrupted";
             /** Complete */
             complete: boolean;
             /** Repo Steps */
@@ -7971,7 +7987,7 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8024,13 +8040,13 @@ export interface operations {
                     "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
-            /** @description GitHub stopped it */
+            /** @description Service Unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SuggestionApproveOut"];
+                    "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
         };
@@ -8350,7 +8366,7 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8403,13 +8419,13 @@ export interface operations {
                     "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
-            /** @description GitHub stopped the batch */
+            /** @description Service Unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApplyBatchOut"];
+                    "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
         };
@@ -8505,7 +8521,7 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8558,13 +8574,13 @@ export interface operations {
                     "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
-            /** @description GitHub stopped the batch */
+            /** @description Service Unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApplyBatchOut"];
+                    "application/json": components["schemas"]["IssuesErrorOut"];
                 };
             };
         };

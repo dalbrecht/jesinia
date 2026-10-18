@@ -7,7 +7,7 @@ convention. Later it adds suggestions, epics and work queues. The design is in
 `docs/specs/2026-10-16-issues-design.md`, and the plan is
 `docs/superpowers/plans/2026-10-16-issues.md`.
 
-This is PR 1 (plan Tasks 1–4). It adds:
+PR 1 (plan Tasks 1–4) added:
 
 - GitHub issue reads and writes (in the `github` service);
 - the label schema and completeness rules;
@@ -72,7 +72,7 @@ api/
   schemas.py      request and response bodies (the generated web client's types)
   tools.py        the MCP tools
 migrations/       issues.sqlite schema
-schemas/          JSON schemas of the agent jobs' replies (triage now; the rest for Tasks 7–9)
+schemas/          JSON schemas of the agent jobs' replies (triage and priority now; the rest for Tasks 8–9)
 module.py         IssuesModule: wiring, jobs, the 503 guards
 ```
 
@@ -96,7 +96,9 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `suggestion_runs`: each issue's latest suggestion run, with its status, when it is due, and
   the cause of a failure.
 - `pending`: the pending-changes tray, in the order staged.
-- `apply_batches`: every applied batch (from the tray or an approval) with its result, kept 30
+- `apply_batches`: every batch (from the tray or an approval), stored `running` before its first
+  GitHub write and updated after every step, then `finished` (or `interrupted` by a stop), with
+  the Idempotency-Key that started it. Kept 30
   days for Retry (pruned by the daily job).
 - `schema_overlay`: schema entries the author approved (a new area). They are merged over the
   repo's schema on every read, a read-only labels.yml included, so a sync never drops them.
@@ -163,19 +165,31 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     asked returns that run.
   - `PATCH /suggestions/{id}` with `{payload, reason?}` edits a draft, checked against the
     repo's schema. `POST /suggestions/{id}/dismiss` dismisses it. Neither touches GitHub.
-  - `POST /suggestions/{id}/approve` applies a draft to GitHub at once and answers with the
-    suggestion and its batch. A gone premise, a settled suggestion or a duplicate of an uncached
+  - `POST /suggestions/{id}/approve` applies a draft to GitHub at once, in the background. It
+    answers 202 with the suggestion and its batch (`running`), and `Location` names the batch
+    to poll. The suggestion is `approved` once the batch completes. Otherwise it stays
+    approvable with `apply_error`, a conflict with GitHub's fresh read included. A premise
+    already gone in the cache, a settled or claimed suggestion, or a duplicate of an uncached
     issue is a 409, and nothing is applied.
   - `GET /pending` lists the tray. `POST /pending` with `{repo, n, change, source}` stages a
     change (201). `DELETE /pending/{id}` undoes one, `DELETE /pending` all (204).
-  - `POST /pending/apply` with `{ids?}` applies the tray (or those ids) as one batch.
-    `GET /pending/{batch}` reads a batch's result, and `POST /pending/{batch}/retry` resumes it.
-    A batch GitHub stopped is a 503 whose `Location` is its retry route (its changes already
-    left the tray), with `Retry-After` for a rate limit. An empty tray is a 409.
+  - `POST /pending/apply` with `{ids?}` moves the tray (or those ids) into one batch and applies
+    it in the background. It answers 202 with the batch and `Location` (an empty tray is a 409).
+  - **Polling:** `GET /pending/{batch}` returns the batch step by step.
+    - Its `status` is `running` (steps not reached yet are `skipped`, "not run yet"),
+      `finished`, or `interrupted` (a stop cut it off).
+    - A finished batch that GitHub stopped says so in `stopped` and `rate_limited_until`. There
+      is no 503 and no `Retry-After`.
+    - `POST /pending/{batch}/retry` (202) resumes a finished or interrupted batch, and never
+      repeats a step already done (a posted comment included). A batch still running is a 409.
+  - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
+    same batch. The batch keeps the key too, so a replay never applies the tray again, even
+    across a crash (ruling IR46).
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
     `possible_duplicates`. The last two read the open suggestions.
-  - Typed errors come back as `{error, detail}`. A GitHub rate limit is a 503 with
-    `Retry-After`, so the response is never stored under the key.
+  - Typed errors come back as `{error, detail}`. A GitHub rate limit met by a request itself
+    (a sync or a preview, not a batch) is a 503 with `Retry-After`, so the response is never
+    stored under the key.
 - **MCP, read-only:** `issues_search {q, repo?}` and `issues_get {repo, n}`. Both read the
   cache only. Every value an issue's author wrote comes back inside `<untrusted-data>` fences.
 
@@ -248,6 +262,18 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
     Claims a stop cut off are released at start.
   - A complete apply marks the suggestion approved. A failed one leaves it approvable, with the
     cause.
+- **Write-ahead, in the background (ruling IR45):**
+  - A batch is stored `running` before its first GitHub write and updated after every step.
+  - One task per batch runs it in the background, and batches still run one at a time, in the
+    order started.
+  - A stop cancels the running batches and marks them `interrupted`. Start marks those a crash
+    left `running` the same way.
+  - Retry resumes either from the recorded steps, so a comment that went out is never posted
+    again.
+  - A close's comment withheld because the issue was already closed stays withheld on Retry.
+  - An unexpected error fails only its step, with its type, and the batch goes on.
+- **Claims:** an approval's (or its Retry's) claim is released whatever happens: done, failed,
+  cancelled or broken. While it is held, editing or dismissing the draft is a 409.
 - **Cache:** afterwards the touched issues, the labels and (for a new area) the recomputed triage
   are written to the cache, best effort. A failure there, or in storing the batch, is logged with
   its cause and never fails the writes. Issues the batch created arrive with the next sync.

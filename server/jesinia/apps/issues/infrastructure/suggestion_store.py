@@ -190,6 +190,12 @@ class SqliteSuggestionStore:
             ).rowcount
         )
 
+    def is_claimed(self, suggestion_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM suggestions WHERE id = ? AND claimed_at IS NOT NULL", (suggestion_id,)
+        ).fetchone()
+        return row is not None
+
     def release(self, suggestion_id: str) -> None:
         self._conn.execute(
             "UPDATE suggestions SET claimed_at = NULL WHERE id = ?", (suggestion_id,)

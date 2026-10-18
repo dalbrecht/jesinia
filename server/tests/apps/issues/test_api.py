@@ -7,6 +7,7 @@ The routes run in the real app (auth, idempotency, the module's 503 guard) over 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import uuid
@@ -14,6 +15,7 @@ from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -28,7 +30,7 @@ from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
 from jesinia.apps.issues.domain.changes import ChangeBatch, Comment, CreateIssue, New
-from jesinia.apps.issues.domain.suggestions import SuggestionFilters
+from jesinia.apps.issues.domain.suggestions import SuggestionFilters, priority_scope
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.store import SqliteIssuesStore
@@ -167,6 +169,7 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
             transport=transport, base_url=BASE_URL, headers=bearer(cfg.token)
         ) as client:
             yield Env(client, github, store, clock, host, agent)
+            await apply.stop()
             await suggest.stop()
 
 
@@ -529,6 +532,7 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
     await env.watch_and_sync()
     await env.client.post(PENDING, json=_staged(1, PRIORITY_HIGH), headers=keyed())
     batch = (await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())).json()["id"]
+    await env.host.apply.drain()
     calls: list[str] = []
     names = [
         "list_issues",
@@ -860,6 +864,20 @@ PRIORITY_HIGH: dict[str, object] = {
 }
 
 
+async def _polled(env: Env, started: httpx.Response) -> dict[str, Any]:
+    """A started batch's answer (202, ``Location`` its status), polled once it has run."""
+    assert started.status_code == 202, started.text
+    body = started.json()
+    batch = body["batch"]["id"] if "batch" in body else body["id"]
+    assert started.headers["Location"] == f"{PENDING}/{batch}"
+    await env.host.apply.drain()
+    polled = await env.client.get(f"{PENDING}/{batch}")
+    assert polled.status_code == 200 and "Retry-After" not in polled.headers
+    result: dict[str, Any] = polled.json()
+    assert result["status"] == "finished"
+    return result
+
+
 def _staged(n: int, change: Mapping[str, object], source: str = "picker") -> dict[str, object]:
     return {"repo": REPO, "n": n, "change": change, "source": source}
 
@@ -882,16 +900,16 @@ async def test_approve_applies_at_once_while_other_actions_stage(env: Env) -> No
 
     approved = await env.client.post(f"{SUGGESTIONS}/{sid}/approve", headers=keyed())
 
-    assert approved.status_code == 200
-    body = approved.json()
-    assert body["suggestion"]["state"] == "approved"
-    assert body["batch"]["complete"] and body["batch"]["origin"] == "suggestion"
+    assert approved.json()["batch"]["status"] == "running"
+    batch = await _polled(env, approved)
+    assert batch["complete"] and batch["origin"] == "suggestion"
+    assert env.host.suggest.suggestion(sid).state == "approved"
     assert env.github.writes == [("add_labels", (1, ("priority: high",)))]
     pending = (await env.client.get(PENDING)).json()["changes"]
     assert [(c["n"], c["source"]) for c in pending] == [(1, "drag")]
 
     applied = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
-    assert applied.status_code == 200 and applied.json()["complete"]
+    assert (await _polled(env, applied))["complete"]
     assert env.github.writes[-1] == ("add_labels", (1, ("area:web",)))
     assert (await env.client.get(PENDING)).json()["changes"] == []
 
@@ -943,48 +961,68 @@ async def test_applying_some_pending_changes_keeps_the_rest(env: Env) -> None:
     applied = await env.client.post(
         f"{PENDING}/apply", json={"ids": [first.json()["id"]]}, headers=keyed()
     )
-    assert applied.status_code == 200
-    (step,) = applied.json()["issues"]
+    (step,) = (await _polled(env, applied))["issues"]
     assert (step["repo"], step["n"], step["steps"][0]["kind"]) == (REPO, 1, "labels")
     assert [c["n"] for c in (await env.client.get(PENDING)).json()["changes"]] == [2]
-    stored = await env.client.get(f"{PENDING}/{applied.json()['id']}")
-    assert stored.status_code == 200 and stored.json() == applied.json()
 
 
-async def test_a_rate_limited_batch_says_retry_after_is_not_stored_and_retries(env: Env) -> None:
+async def test_a_replayed_apply_answers_its_batch_and_never_applies_the_tray_again(
+    env: Env,
+) -> None:
     await env.watch_and_sync()
     env.github.fail["add_labels:1"] = GitHubRateLimitedError(
         403, "secondary rate limit", env.clock.now + timedelta(seconds=30)
     )
     await env.client.post(PENDING, json=_staged(1, PRIORITY_HIGH), headers=keyed())
     key = keyed()
-    limited = await env.client.post(f"{PENDING}/apply", json={}, headers=key)
-    assert limited.status_code == 503 and limited.headers["Retry-After"] == "30"
-    assert limited.json()["rate_limited"] and not limited.json()["complete"]
-    batch = limited.json()["id"]
-    # A stopped batch is resumed through its retry route, which the answer points at.
-    assert limited.headers["Location"] == f"{PENDING}/{batch}/retry"
-    # Not stored under the key: the same key runs again (and finds nothing left to stage).
+    limited = await _polled(env, await env.client.post(f"{PENDING}/apply", json={}, headers=key))
+    assert limited["rate_limited"] and not limited["complete"] and limited["stopped"]
+    # The author stages B, and the client replays the same request (IR46).
+    await env.client.post(
+        PENDING, json=_staged(2, {"kind": "comment", "body": "B"}), headers=keyed()
+    )
+    writes = list(env.github.writes)
     again = await env.client.post(f"{PENDING}/apply", json={}, headers=key)
-    assert again.status_code == 409
+    assert again.status_code == 202 and again.json()["id"] == limited["id"]
+    assert "Retry-After" not in again.headers
+    await env.host.apply.drain()
+    assert [c["n"] for c in (await env.client.get(PENDING)).json()["changes"]] == [2]
+    assert env.github.writes == writes  # nothing for B
 
     env.github.fail.clear()
     key = keyed()
-    retried = await env.client.post(f"{PENDING}/{batch}/retry", headers=key)
-    assert retried.status_code == 200 and retried.json()["complete"]
+    started = await env.client.post(f"{PENDING}/{limited['id']}/retry", headers=key)
+    assert (await _polled(env, started))["complete"]
     writes = list(env.github.writes)
-    replay = await env.client.post(f"{PENDING}/{batch}/retry", headers=key)
-    assert replay.json() == retried.json() and env.github.writes == writes
+    replay = await env.client.post(f"{PENDING}/{limited['id']}/retry", headers=key)
+    await env.host.apply.drain()
+    assert replay.json() == started.json() and env.github.writes == writes
 
 
-async def test_a_rate_limited_approval_is_a_503_with_retry_after(env: Env) -> None:
+async def test_a_rate_limited_approval_leaves_the_draft_approvable(env: Env) -> None:
     await env.watch_and_sync()
     sid = await _draft(env, ("priority", "priority: high"))
     env.github.fail["add_labels:1"] = GitHubRateLimitedError(403, "limit", None)
-    response = await env.client.post(f"{SUGGESTIONS}/{sid}/approve", headers=keyed())
-    assert response.status_code == 503 and "Retry-After" in response.headers
-    assert response.json()["suggestion"]["state"] == "draft"
-    assert response.json()["suggestion"]["apply_error"]
+    started = await env.client.post(f"{SUGGESTIONS}/{sid}/approve", headers=keyed())
+    batch = await _polled(env, started)
+    assert batch["rate_limited"] and "Retry-After" not in started.headers
+    found = env.host.suggest.suggestion(sid)
+    assert found.state == "draft" and found.apply_error
+
+
+async def test_a_long_approval_never_holds_the_request(env: Env) -> None:
+    await env.watch_and_sync()
+    sid = await _draft(env, ("priority", "priority: high"))
+    entered, release = asyncio.Event(), asyncio.Event()
+    env.github.entered, env.github.release = entered, release
+    started = await env.client.post(f"{SUGGESTIONS}/{sid}/approve", headers=keyed())
+    assert started.status_code == 202  # answered while GitHub's write is still held
+    batch = started.json()["batch"]["id"]
+    await entered.wait()
+    running = (await env.client.get(f"{PENDING}/{batch}")).json()
+    assert running["status"] == "running" and not running["complete"]
+    release.set()
+    assert (await _polled(env, started))["complete"]
 
 
 async def test_apply_routes_refuse_bad_requests(env: Env) -> None:
@@ -1020,8 +1058,7 @@ async def test_a_new_area_approval_reports_its_label_step(env: Env) -> None:
     await env.watch_and_sync()
     sid = await _draft(env, ("area", "sync"))
     approved = await env.client.post(f"{SUGGESTIONS}/{sid}/approve", headers=keyed())
-    assert approved.status_code == 200, approved.text
-    (step,) = approved.json()["batch"]["repo_steps"]
+    (step,) = (await _polled(env, approved))["repo_steps"]
     assert (step["kind"], step["label"], step["state"]) == ("ensure_label", "area:sync", "done")
     repo = (await env.client.get(f"{API}/repos")).json()["repos"][0]
     assert "area:sync" in [area["name"] for area in repo["label_schema"]["areas"]]
@@ -1032,7 +1069,7 @@ async def test_a_staged_close_and_comment_apply_in_order(env: Env) -> None:
     close = {"kind": "close", "reason": "not_planned", "comment": "won't do"}
     await env.client.post(PENDING, json=_staged(1, close, "menu"), headers=keyed())
     applied = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
-    assert applied.status_code == 200 and applied.json()["complete"]
+    assert (await _polled(env, applied))["complete"]
     assert env.github.writes == [
         ("close", (1, "not_planned", None)),
         ("comment", (1, "won't do")),
@@ -1059,13 +1096,13 @@ async def test_a_batch_names_the_issues_it_created(env: Env) -> None:
     assert out["created"] == [{"temp_id": "a", "repo": REPO, "n": 3}]
 
 
-async def test_a_batch_stopped_by_a_rejected_token_points_at_its_retry(env: Env) -> None:
+async def test_a_batch_stopped_by_a_rejected_token_answers_its_stored_state(env: Env) -> None:
     await env.watch_and_sync()
     await env.client.post(PENDING, json=_staged(1, PRIORITY_HIGH), headers=keyed())
     env.github.fail["get:1"] = GitHubUnavailable("token rejected")
-    stopped = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
-    assert stopped.status_code == 503 and "Retry-After" not in stopped.headers
-    assert stopped.headers["Location"].endswith(f"/{stopped.json()['id']}/retry")
+    started = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
+    stopped = await _polled(env, started)
+    assert stopped["stopped"] and not stopped["rate_limited"]
 
 
 async def test_priority_is_asked_in_the_background_and_approved_through_the_engine(
@@ -1080,7 +1117,9 @@ async def test_priority_is_asked_in_the_background_and_approved_through_the_engi
     assert asked.status_code == 202
     run = asked.json()
     assert (
-        run["status"] == "running" and run["scope"] == f"{REPO}#1" and run["suggestion_id"] is None
+        run["status"] == "running"
+        and run["scope"] == priority_scope([(REPO, 1)])
+        and run["suggestion_id"] is None
     )
     replay = await env.client.post(f"{SUGGESTIONS}/priority", json=body, headers=key)
     assert replay.status_code == 202 and replay.json() == run
@@ -1096,8 +1135,10 @@ async def test_priority_is_asked_in_the_background_and_approved_through_the_engi
     assert draft["payload"]["items"][0]["reason"] == "blocks the release"
 
     approved = await env.client.post(f"{SUGGESTIONS}/{draft['id']}/approve", headers=keyed())
-    assert approved.status_code == 200 and approved.json()["suggestion"]["state"] == "approved"
-    outcome = approved.json()["suggestion"]["payload"]["items"][0]["outcome"]
+    assert (await _polled(env, approved))["complete"]
+    settled = env.host.suggest.suggestion(draft["id"])
+    assert settled.state == "approved"
+    outcome = cast(list[dict[str, object]], settled.payload["items"])[0]["outcome"]
     assert outcome == {"state": "applied", "cause": None}
     assert "priority: high" in env.github.issues[(REPO, 1)].labels
 

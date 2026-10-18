@@ -125,6 +125,26 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     assert module.clock().tzinfo is not None
     await module.stop()
 
+    # A batch a crash left running (IR45): start marks it interrupted, for Retry.
+    conn = open_db(cfg.data_dir, ISSUES_DB)
+    conn.execute(
+        "INSERT INTO apply_batches (id, origin, status, batch_json, result_json, created_at, "
+        "updated_at) VALUES ('b', 'pending', 'running', ?, ?, '2026-10-16', '2026-10-16')",
+        (
+            json.dumps({"issues": [], "repo": []}),
+            json.dumps(
+                {
+                    "results": [],
+                    "created": {},
+                    "stopped": None,
+                    "is_rate_limited": False,
+                    "rate_limited_until": None,
+                }
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
     ctx = AppContext(cfg, EventBus(), Scheduler())
     github = GitHubService(_no_token, _NoCache())
     ctx.services["github"] = github
@@ -132,6 +152,7 @@ async def test_sync_needs_the_github_service_and_runs_as_a_job(cfg: Config) -> N
     assert isinstance(module.sync, SyncService)
     assert isinstance(module.labels, LabelSetupService)
     assert isinstance(module.apply, ApplyService)
+    assert module.pending.batch("b").status == "interrupted"
     # Without a token a repo can't be added (GitHub names it), ...
     with pytest.raises(GitHubUnavailable):
         await module.sync.configure("acme/web", watched=True, settings_schema=None)

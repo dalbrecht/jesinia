@@ -24,6 +24,7 @@ from jesinia.apps.issues.application.reads import IssueDetail
 from jesinia.apps.issues.application.suggest import MAX_BACKLOG_REFS
 from jesinia.apps.issues.domain.changes import (
     AddArea,
+    BatchStatus,
     Close,
     Comment,
     CreateIssue,
@@ -797,13 +798,16 @@ class ApplyCreatedOut(BaseModel):
 
 
 class ApplyBatchOut(BaseModel):
-    """An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,
-    with ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a
-    503 whose ``Location`` is its retry route, ``POST /pending/{id}/retry`` (the only way to
-    resume it: its changes already left the tray)."""
+    """A batch and its result. ``status``: ``running`` (poll ``GET /pending/{id}``; steps not
+    reached yet are ``skipped``, ``not run yet``), ``finished`` (the result is final) or
+    ``interrupted`` (a stop cut it off). ``stopped`` is set when GitHub stopped it (a rate
+    limit, with ``rate_limited_until``, or a rejected token). An interrupted or stopped batch is
+    resumed only with ``POST /pending/{id}/retry`` (its changes already left the tray); steps
+    already done are never repeated."""
 
     id: str
     origin: ApplyOrigin
+    status: BatchStatus
     complete: bool
     repo_steps: list[ApplyRepoStepOut]
     issues: list[ApplyIssueOut]
@@ -850,6 +854,7 @@ class ApplyBatchOut(BaseModel):
         return cls(
             id=applied.id,
             origin=applied.origin,
+            status=applied.status,
             complete=result.complete,
             repo_steps=repo_steps,
             issues=issues,

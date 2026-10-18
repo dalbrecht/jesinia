@@ -48,6 +48,8 @@ from jesinia.apps.issues.application.labels import (
 from jesinia.apps.issues.application.ports import ApplyCache, IssueWrites
 from jesinia.apps.issues.application.sync import OnTriaged
 from jesinia.apps.issues.domain.changes import (
+    ALREADY_CLOSED,
+    NOT_RUN,
     BatchResult,
     ChangeBatch,
     ChangeDomainError,
@@ -182,23 +184,40 @@ class ApplyEngine:
         self._blocked_until = blocked_until or (lambda: None)
         self._lock = asyncio.Lock()
 
-    async def apply(self, batch: ChangeBatch, *, on_result: OnResult | None = None) -> BatchResult:
+    async def apply(
+        self,
+        batch: ChangeBatch,
+        *,
+        on_result: OnResult | None = None,
+        on_step: OnResult | None = None,
+    ) -> BatchResult:
         """Run every step of ``batch``; never raises for GitHub's answers (they are results).
-        ``on_result`` is called with the result before the cache is updated (an approval
-        settles its suggestion there, so the update's draft retiring sees it approved)."""
-        return await self._run(batch, None, on_result)
+        ``on_step`` is told the result so far after every step (steps still to run are ``not
+        run yet``), so a write-ahead record knows what went out. ``on_result`` is called with
+        the result before the cache is updated (an approval settles its suggestion there, so
+        the update's draft retiring sees it approved)."""
+        return await self._run(batch, None, on_result, on_step)
 
     async def retry(
-        self, batch: ChangeBatch, previous: BatchResult, *, on_result: OnResult | None = None
+        self,
+        batch: ChangeBatch,
+        previous: BatchResult,
+        *,
+        on_result: OnResult | None = None,
+        on_step: OnResult | None = None,
     ) -> BatchResult:
         """Run again only the steps of ``previous`` that didn't apply (failed or skipped),
         with the issues it already created."""
-        return await self._run(batch, previous, on_result)
+        return await self._run(batch, previous, on_result, on_step)
 
     # The run ----------------------------------------------------------------------------
 
     async def _run(
-        self, batch: ChangeBatch, previous: BatchResult | None, on_result: OnResult | None
+        self,
+        batch: ChangeBatch,
+        previous: BatchResult | None,
+        on_result: OnResult | None,
+        on_step: OnResult | None,
     ) -> BatchResult:
         async with self._lock:
             steps = series(batch)
@@ -214,6 +233,12 @@ class ApplyEngine:
                 {},
             )
             kept = previous.results if previous else ()
+            # A close the first run found already closed withheld its comment: so does Retry.
+            run.closed_before.update(
+                cast(Target, r.step.target).key
+                for r in kept
+                if r.step.kind == "close" and r.state == "done" and r.cause == ALREADY_CLOSED
+            )
             results: list[StepResult] = []
             stopped: _BatchStoppedError | None = None
             until = self._blocked_until()
@@ -232,6 +257,7 @@ class ApplyEngine:
                     except _BatchStoppedError as exc:
                         stopped = exc
                         results.append(StepResult(step, "failed", str(exc)))
+                    self._progress(on_step, steps, kept, results, run)
             result = BatchResult(
                 tuple(results),
                 run.created,
@@ -246,6 +272,28 @@ class ApplyEngine:
                 on_result(result)
             await self._update_cache(run)
             return result
+
+    @staticmethod
+    def _progress(
+        on_step: OnResult | None,
+        steps: Sequence[Step],
+        kept: Sequence[StepResult],
+        results: Sequence[StepResult],
+        run: _Run,
+    ) -> None:
+        """Tell ``on_step`` the result so far; best effort (the write already happened)."""
+        if on_step is None:
+            return
+        rest = [
+            kept[i]
+            if i < len(kept) and kept[i].state == "done"
+            else StepResult(s, "skipped", NOT_RUN)
+            for i, s in enumerate(steps)
+        ][len(results) :]
+        try:
+            on_step(BatchResult((*results, *rest), dict(run.created)))
+        except Exception:
+            log.exception("issues.apply: recording a step's progress failed")
 
     @staticmethod
     def _not_run(stopped: _BatchStoppedError) -> str:
@@ -270,6 +318,11 @@ class ApplyEngine:
             return self._failed(run, step, str(exc))
         except _STEP_ERRORS as exc:
             return self._failed(run, step, str(exc))
+        except _BatchStoppedError:
+            raise
+        except Exception as exc:  # a bug or a local failure: this step fails, the batch goes on
+            log.exception("issues.apply: a %s step failed unexpectedly", step.kind)
+            return self._failed(run, step, f"unexpected {type(exc).__name__} (see the server log)")
         return StepResult(step, "done", cause)
 
     @staticmethod
@@ -539,7 +592,7 @@ class ApplyEngine:
                     f"({issue.state_reason or 'no reason'}), so it isn't closed again"
                 )
             run.closed_before.add(target.key)
-            return "already closed"
+            return ALREADY_CLOSED
         repo, n = self._where(run, target)
         closed = await self._write(
             run, lambda: self._github.close(repo, n, change.reason, change.duplicate_of_id)

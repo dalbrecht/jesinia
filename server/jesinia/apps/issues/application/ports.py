@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
-from jesinia.apps.issues.domain.changes import BatchResult, ChangeBatch, PendingChange
+from jesinia.apps.issues.domain.changes import (
+    BatchResult,
+    BatchStatus,
+    ChangeBatch,
+    PendingChange,
+)
 from jesinia.apps.issues.domain.labels import LabelPlan
 from jesinia.apps.issues.domain.schema import LabelSchema, SchemaEntry
 from jesinia.apps.issues.domain.suggestions import Suggestion, SuggestionFilters, SuggestionKind
@@ -327,6 +332,9 @@ class SuggestionStore(Protocol):
     def retire(self, suggestion_ids: Sequence[str]) -> None:
         """Delete these suggestions if they are still untouched drafts no approval claims."""
 
+    def is_claimed(self, suggestion_id: str) -> bool:
+        """Whether an approval is applying the suggestion now (IR40)."""
+
     def queue_run(
         self, repo: str, n: int, due_at: datetime, source: RunSource, now: datetime
     ) -> None:
@@ -431,7 +439,8 @@ class ApplyCache(Protocol):
 @dataclass(frozen=True)
 class AppliedBatch:
     """A batch as applied, kept so Retry can resume it: where it came from (the tray or a
-    suggestion's approval), its changes and its result so far."""
+    suggestion's approval), its changes, its result so far and its ``status``; ``request_key``
+    is the Idempotency-Key that started it."""
 
     id: str
     origin: ApplyOrigin
@@ -440,6 +449,8 @@ class AppliedBatch:
     result: BatchResult
     created_at: datetime
     updated_at: datetime
+    status: BatchStatus = "finished"
+    request_key: str | None = None
 
 
 class ApplyStore(Protocol):
@@ -459,6 +470,12 @@ class ApplyStore(Protocol):
         """Store (or replace) an applied batch and its result."""
 
     def batch(self, batch_id: str) -> AppliedBatch | None: ...
+
+    def batch_by_key(self, request_key: str) -> AppliedBatch | None:
+        """The batch a request with this Idempotency-Key started."""
+
+    def interrupt_running(self) -> int:
+        """Mark every ``running`` batch ``interrupted`` (at start nothing runs yet)."""
 
     def prune_batches(self, before: datetime) -> int:
         """Forget batches last updated before ``before``; how many."""

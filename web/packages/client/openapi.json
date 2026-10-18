@@ -5952,7 +5952,7 @@
           "issues"
         ],
         "summary": "Approve Suggestion",
-        "description": "Approve a suggestion: it applies to GitHub at once, as one ordered series. Refused\nwith a 409 when its premise is gone (nothing applied), when it was approved or\ndismissed, or for a duplicate whose original isn't cached. A failed apply leaves it\napprovable with ``apply_error``; Retry its batch with ``/pending/{batch}/retry``.",
+        "description": "Approve a suggestion: it applies to GitHub at once, as one ordered series, in the\nbackground. The answer is a 202 with the batch (``running``) and ``Location`` to poll;\nthe suggestion is ``approved`` once its batch completes, or stays approvable with\n``apply_error`` (a conflict with GitHub's fresh read included). Refused with a 409 when\nits premise is gone in the cache (nothing applied), when it was approved or dismissed\nor is being approved, or for a duplicate whose original isn't cached.",
         "operationId": "approve_suggestion_api_issues_suggestions__suggestion_id__approve_post",
         "parameters": [
           {
@@ -5986,7 +5986,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -6037,14 +6037,14 @@
             "description": "Bad Gateway"
           },
           "503": {
-            "description": "GitHub stopped it",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuggestionApproveOut"
+                  "$ref": "#/components/schemas/IssuesErrorOut"
                 }
               }
-            }
+            },
+            "description": "Service Unavailable"
           },
           "422": {
             "description": "Validation Error",
@@ -6446,7 +6446,7 @@
           "issues"
         ],
         "summary": "Apply Pending",
-        "description": "Apply the staged changes (or only ``ids``) as one batch: per issue, one ordered\nseries against a fresh read. They leave the tray; Retry resumes what didn't apply.",
+        "description": "Apply the staged changes (or only ``ids``) as one batch: per issue, one ordered\nseries against a fresh read. They leave the tray at once, into a stored batch that runs\nin the background: the answer is a 202 with it (``running``) and ``Location`` to poll.\nA replay of the same request answers the same batch and never applies the tray\nagain.",
         "operationId": "apply_pending_api_issues_pending_apply_post",
         "parameters": [
           {
@@ -6479,7 +6479,7 @@
           }
         },
         "responses": {
-          "200": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -6530,14 +6530,14 @@
             "description": "Bad Gateway"
           },
           "503": {
-            "description": "GitHub stopped the batch",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApplyBatchOut"
+                  "$ref": "#/components/schemas/IssuesErrorOut"
                 }
               }
-            }
+            },
+            "description": "Service Unavailable"
           },
           "422": {
             "description": "Validation Error",
@@ -6558,7 +6558,7 @@
           "issues"
         ],
         "summary": "Get Batch",
-        "description": "An applied batch and its result, step by step (no GitHub).",
+        "description": "A batch and its result, step by step (no GitHub): poll it while ``running``. A\n``finished`` batch that GitHub stopped says so in ``stopped`` (and\n``rate_limited_until``); resume it, or an ``interrupted`` one, with Retry.",
         "operationId": "get_batch_api_issues_pending__batch__get",
         "parameters": [
           {
@@ -6653,7 +6653,7 @@
           "issues"
         ],
         "summary": "Retry Batch",
-        "description": "Run again only the steps of a batch that didn't apply (failed or skipped).",
+        "description": "Run again only the steps of a batch that didn't apply (failed or skipped), in the\nbackground: a 202 with the batch and ``Location`` to poll. A batch still running is a\n409.",
         "operationId": "retry_batch_api_issues_pending__batch__retry_post",
         "parameters": [
           {
@@ -6687,7 +6687,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -6738,14 +6738,14 @@
             "description": "Bad Gateway"
           },
           "503": {
-            "description": "GitHub stopped the batch",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApplyBatchOut"
+                  "$ref": "#/components/schemas/IssuesErrorOut"
                 }
               }
-            }
+            },
+            "description": "Service Unavailable"
           },
           "422": {
             "description": "Validation Error",
@@ -9007,6 +9007,15 @@
             ],
             "title": "Origin"
           },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "finished",
+              "interrupted"
+            ],
+            "title": "Status"
+          },
           "complete": {
             "type": "boolean",
             "title": "Complete"
@@ -9064,6 +9073,7 @@
         "required": [
           "id",
           "origin",
+          "status",
           "complete",
           "repo_steps",
           "issues",
@@ -9073,7 +9083,7 @@
           "rate_limited_until"
         ],
         "title": "ApplyBatchOut",
-        "description": "An applied batch and its result. ``stopped`` is set when GitHub stopped it (a rate limit,\nwith ``rate_limited_until`` and ``Retry-After``, or a rejected token): the answer is then a\n503 whose ``Location`` is its retry route, ``POST /pending/{id}/retry`` (the only way to\nresume it: its changes already left the tray)."
+        "description": "A batch and its result. ``status``: ``running`` (poll ``GET /pending/{id}``; steps not\nreached yet are ``skipped``, ``not run yet``), ``finished`` (the result is final) or\n``interrupted`` (a stop cut it off). ``stopped`` is set when GitHub stopped it (a rate\nlimit, with ``rate_limited_until``, or a rejected token). An interrupted or stopped batch is\nresumed only with ``POST /pending/{id}/retry`` (its changes already left the tray); steps\nalready done are never repeated."
       },
       "ApplyCreatedOut": {
         "properties": {

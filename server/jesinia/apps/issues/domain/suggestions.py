@@ -23,6 +23,7 @@ carry a ``scope`` instead of ``repo`` and ``n``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -467,9 +468,12 @@ class PriorityIssue:
 
 
 def priority_scope(refs: Sequence[tuple[str, int]]) -> str:
-    """The ``scope`` of a priority draft about ``refs``: the batch, sorted and without repeats
-    (ruling IR11), so asking again for the same issues finds the same scope."""
-    return ",".join(sorted({f"{repo.casefold()}#{n}" for repo, n in refs}))
+    """The ``scope`` of a priority draft about ``refs``: an opaque digest of the batch, sorted
+    and without repeats (ruling IR11), so asking again for the same issues finds the same scope,
+    and it stays short enough to poll as a query parameter however many issues it covers. The
+    issues themselves are in the draft's payload."""
+    batch = ",".join(sorted({f"{repo.casefold()}#{n}" for repo, n in refs}))
+    return "priority:" + hashlib.sha256(batch.encode("utf-8")).hexdigest()[:32]
 
 
 def priority_draft(

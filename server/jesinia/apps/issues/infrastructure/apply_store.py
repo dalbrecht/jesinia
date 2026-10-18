@@ -17,6 +17,7 @@ from jesinia.apps.issues.domain.changes import (
     batch_json,
     change_json,
     parse_batch,
+    parse_batch_status,
     parse_issue_change,
     parse_result,
     parse_source,
@@ -24,7 +25,10 @@ from jesinia.apps.issues.domain.changes import (
 )
 
 _PENDING_COLUMNS = "id, ref, change_json, created_at, source"
-_BATCH_COLUMNS = "id, origin, suggestion_id, batch_json, result_json, created_at, updated_at"
+_BATCH_COLUMNS = (
+    "id, origin, suggestion_id, batch_json, result_json, created_at, updated_at, status, "
+    "request_key"
+)
 _ORIGINS: tuple[ApplyOrigin, ...] = ("pending", "suggestion")
 
 
@@ -49,7 +53,7 @@ def _pending(row: tuple[object, ...]) -> PendingChange:
 
 
 def _batch(row: tuple[object, ...]) -> AppliedBatch:
-    bid, origin, suggestion_id, batch_text, result_text, created, updated = row
+    bid, origin, suggestion_id, batch_text, result_text, created, updated, status, key = row
     batch = parse_batch(json.loads(str(batch_text)))
     return AppliedBatch(
         id=str(bid),
@@ -59,6 +63,8 @@ def _batch(row: tuple[object, ...]) -> AppliedBatch:
         result=parse_result(batch, json.loads(str(result_text))),
         created_at=datetime.fromisoformat(str(created)),
         updated_at=datetime.fromisoformat(str(updated)),
+        status=parse_batch_status(status),
+        request_key=cast(str | None, key),
     )
 
 
@@ -100,9 +106,9 @@ class SqliteApplyStore:
 
     def save_batch(self, applied: AppliedBatch) -> None:
         self._conn.execute(
-            f"INSERT INTO apply_batches ({_BATCH_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            f"INSERT INTO apply_batches ({_BATCH_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET result_json = excluded.result_json, "
-            "updated_at = excluded.updated_at",
+            "updated_at = excluded.updated_at, status = excluded.status",
             (
                 applied.id,
                 applied.origin,
@@ -111,6 +117,8 @@ class SqliteApplyStore:
                 json.dumps(result_json(applied.result), ensure_ascii=False),
                 _time(applied.created_at),
                 _time(applied.updated_at),
+                applied.status,
+                applied.request_key,
             ),
         )
 
@@ -120,7 +128,19 @@ class SqliteApplyStore:
         ).fetchone()
         return None if row is None else _batch(row)
 
+    def batch_by_key(self, request_key: str) -> AppliedBatch | None:
+        row = self._conn.execute(
+            f"SELECT {_BATCH_COLUMNS} FROM apply_batches WHERE request_key = ?", (request_key,)
+        ).fetchone()
+        return None if row is None else _batch(row)
+
+    def interrupt_running(self) -> int:
+        return self._conn.execute(
+            "UPDATE apply_batches SET status = 'interrupted' WHERE status = 'running'"
+        ).rowcount
+
     def prune_batches(self, before: datetime) -> int:
         return self._conn.execute(
-            "DELETE FROM apply_batches WHERE updated_at < ?", (_time(before),)
+            "DELETE FROM apply_batches WHERE updated_at < ? AND status != 'running'",
+            (_time(before),),
         ).rowcount

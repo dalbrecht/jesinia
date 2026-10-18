@@ -54,12 +54,12 @@ from jesinia.apps.issues.api.schemas import (
 )
 from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
-from jesinia.apps.issues.application.ports import AppliedBatch
 from jesinia.apps.issues.application.reads import IssueQueries
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
 from jesinia.apps.issues.domain.changes import (
     BatchNotFoundError,
+    BatchRunningError,
     ChangeDomainError,
     NothingPendingError,
     PendingNotFoundError,
@@ -150,6 +150,7 @@ _STATUS: dict[type[Exception], int] = {
     SuggestionRunError: status.HTTP_502_BAD_GATEWAY,
     PendingNotFoundError: status.HTTP_404_NOT_FOUND,
     NothingPendingError: status.HTTP_409_CONFLICT,
+    BatchRunningError: status.HTTP_409_CONFLICT,
     BatchNotFoundError: status.HTTP_404_NOT_FOUND,
     # GitHub, not this server, failed: the cause is in ``detail``.
     GitHubUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -226,21 +227,20 @@ def _repo(owner: str, repo: str) -> str:
     return f"{owner}/{repo}"
 
 
-def _batch_response(
-    applied: AppliedBatch, now: Callable[[], datetime], out: BaseModel | None = None
-) -> Response:
-    """A batch's answer: 200, or a 503 when GitHub stopped it, so the response is never stored
-    under the idempotency key. A stopped batch is resumed only through its retry route, which
-    ``Location`` names (its changes already left the tray); ``Retry-After`` says when, for a
-    rate limit."""
-    body = jsonable_encoder(out or ApplyBatchOut.of(applied))
-    result = applied.result
-    if result.stopped is None:
-        return JSONResponse(body)
-    headers = {"Location": f"/api/issues/pending/{applied.id}/retry"}
-    if result.is_rate_limited:
-        headers["Retry-After"] = str(retry_after(result.rate_limited_until, now()))
-    return JSONResponse(body, status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers=headers)
+def _started(batch_id: str, body: BaseModel) -> Response:
+    """A started batch's answer: 202, with the batch to poll as ``Location`` (IR45). It is
+    stored under the idempotency key like any answer, and the batch keeps the key too, so a
+    replay always answers this batch (IR46)."""
+    return JSONResponse(
+        jsonable_encoder(body),
+        status_code=status.HTTP_202_ACCEPTED,
+        headers={"Location": f"/api/issues/pending/{batch_id}"},
+    )
+
+
+def _request_key(route: str, idem: IdempotentCall) -> str | None:
+    """The key a batch keeps, by route (one key on two routes is two requests)."""
+    return None if idem.key is None else f"{route}:{idem.key}"
 
 
 def build_router(host: IssuesHost) -> APIRouter:
@@ -455,32 +455,30 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run, host.clock))
 
-    stopped_responses: dict[int | str, dict[str, Any]] = {
-        503: {"model": ApplyBatchOut, "description": "GitHub stopped the batch"}
-    }
-
     @r.post(
         "/suggestions/{suggestion_id}/approve",
         response_model=SuggestionApproveOut,
-        responses={503: {"model": SuggestionApproveOut, "description": "GitHub stopped it"}},
+        status_code=status.HTTP_202_ACCEPTED,
     )
     async def approve_suggestion(
         suggestion_id: SuggestionId,
         _owner: Annotated[Principal, Depends(require_owner)],
         idem: IdempotentCall = keyed,
     ) -> Response:
-        """Approve a suggestion: it applies to GitHub at once, as one ordered series. Refused
-        with a 409 when its premise is gone (nothing applied), when it was approved or
-        dismissed, or for a duplicate whose original isn't cached. A failed apply leaves it
-        approvable with ``apply_error``; Retry its batch with ``/pending/{batch}/retry``."""
+        """Approve a suggestion: it applies to GitHub at once, as one ordered series, in the
+        background. The answer is a 202 with the batch (``running``) and ``Location`` to poll;
+        the suggestion is ``approved`` once its batch completes, or stays approvable with
+        ``apply_error`` (a conflict with GitHub's fresh read included). Refused with a 409 when
+        its premise is gone in the cache (nothing applied), when it was approved or dismissed
+        or is being approved, or for a duplicate whose original isn't cached."""
 
         async def run() -> Response:
-            approval = await host.apply.approve(suggestion_id)
+            approval = host.apply.start_approval(suggestion_id, _request_key("approve", idem))
             out = SuggestionApproveOut(
                 suggestion=IssueSuggestionOut.of(approval.suggestion),
                 batch=ApplyBatchOut.of(approval.batch),
             )
-            return _batch_response(approval.batch, host.clock, out)
+            return _started(approval.batch.id, out)
 
         return await idem.run(lambda: _respond(run, host.clock))
 
@@ -527,39 +525,52 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run, host.clock))
 
-    @r.post("/pending/apply", response_model=ApplyBatchOut, responses=stopped_responses)
+    @r.post("/pending/apply", response_model=ApplyBatchOut, status_code=status.HTTP_202_ACCEPTED)
     async def apply_pending(
         body: PendingApplyIn,
         _owner: Annotated[Principal, Depends(require_owner)],
         idem: IdempotentCall = keyed,
     ) -> Response:
         """Apply the staged changes (or only ``ids``) as one batch: per issue, one ordered
-        series against a fresh read. They leave the tray; Retry resumes what didn't apply."""
+        series against a fresh read. They leave the tray at once, into a stored batch that runs
+        in the background: the answer is a 202 with it (``running``) and ``Location`` to poll.
+        A replay of the same request answers the same batch and never applies the tray
+        again."""
 
         async def run() -> Response:
-            return _batch_response(await host.apply.apply_pending(body.ids), host.clock)
+            started = host.apply.start_pending(body.ids, _request_key("apply", idem))
+            return _started(started.id, ApplyBatchOut.of(started))
 
         return await idem.run(lambda: _respond(run, host.clock))
 
     @r.get("/pending/{batch}", response_model=ApplyBatchOut)
     async def get_batch(batch: ItemId) -> Response:
-        """An applied batch and its result, step by step (no GitHub)."""
+        """A batch and its result, step by step (no GitHub): poll it while ``running``. A
+        ``finished`` batch that GitHub stopped says so in ``stopped`` (and
+        ``rate_limited_until``); resume it, or an ``interrupted`` one, with Retry."""
 
         async def run() -> ApplyBatchOut:
             return ApplyBatchOut.of(host.pending.batch(batch))
 
         return await _respond(run, host.clock)
 
-    @r.post("/pending/{batch}/retry", response_model=ApplyBatchOut, responses=stopped_responses)
+    @r.post(
+        "/pending/{batch}/retry",
+        response_model=ApplyBatchOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
     async def retry_batch(
         batch: ItemId,
         _owner: Annotated[Principal, Depends(require_owner)],
         idem: IdempotentCall = keyed,
     ) -> Response:
-        """Run again only the steps of a batch that didn't apply (failed or skipped)."""
+        """Run again only the steps of a batch that didn't apply (failed or skipped), in the
+        background: a 202 with the batch and ``Location`` to poll. A batch still running is a
+        409."""
 
         async def run() -> Response:
-            return _batch_response(await host.apply.retry(batch), host.clock)
+            again = host.apply.start_retry(batch)
+            return _started(again.id, ApplyBatchOut.of(again))
 
         return await idem.run(lambda: _respond(run, host.clock))
 

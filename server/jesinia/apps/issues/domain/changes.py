@@ -65,6 +65,13 @@ SingleDimension = Literal["readiness", "priority", "type"]
 SINGLE_DIMENSIONS: tuple[SingleDimension, ...] = get_args(SingleDimension)
 StepKind = Literal["ensure_label", "create_issue", "labels", "parent", "order", "close", "comment"]
 StepState = Literal["done", "failed", "skipped"]
+# A stored batch: ``running`` (written ahead of its first GitHub write, updated per step),
+# ``finished`` (its result is final, complete or not), ``interrupted`` (a stop cut it off;
+# Retry resumes it without repeating what is done).
+BatchStatus = Literal["running", "finished", "interrupted"]
+BATCH_STATUSES: tuple[BatchStatus, ...] = get_args(BatchStatus)
+NOT_RUN = "not run yet"
+ALREADY_CLOSED = "already closed"
 STEP_STATES: tuple[StepState, ...] = get_args(StepState)
 PendingSource = Literal["drag", "picker", "menu", "bulk", "queue"]
 PENDING_SOURCES: tuple[PendingSource, ...] = get_args(PendingSource)
@@ -111,6 +118,10 @@ class PendingNotFoundError(ChangeDomainError):
 
 class BatchNotFoundError(ChangeDomainError):
     """No applied batch with that id."""
+
+
+class BatchRunningError(ChangeDomainError):
+    """The batch is still running: poll it; Retry is for one that finished or was cut off."""
 
 
 @contextmanager
@@ -722,6 +733,11 @@ class BatchResult:
                 grouped.setdefault(result.step.target, []).append(result)
         return {target: IssueResult(target, tuple(steps)) for target, steps in grouped.items()}
 
+    @classmethod
+    def not_run(cls, batch: ChangeBatch) -> BatchResult:
+        """A batch's result before it runs: every step ``skipped``, ``not run yet``."""
+        return cls(tuple(StepResult(step, "skipped", NOT_RUN) for step in series(batch)))
+
     def first_failure(self) -> str | None:
         """The first failed step's cause (what a suggestion records when its apply failed)."""
         return next((r.cause for r in self.results if r.state == "failed"), None)
@@ -1093,6 +1109,14 @@ def parse_step_state(value: object) -> StepState:
         if value == state:
             return state
     raise InvalidChangeError(f"a step state is one of {', '.join(STEP_STATES)}")
+
+
+def parse_batch_status(value: object) -> BatchStatus:
+    """Raises: InvalidChangeError: not a batch status."""
+    for status in BATCH_STATUSES:
+        if value == status:
+            return status
+    raise InvalidChangeError(f"a batch status is one of {', '.join(BATCH_STATUSES)}")
 
 
 def result_json(result: BatchResult) -> Json:

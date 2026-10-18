@@ -16,6 +16,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -88,6 +89,15 @@ class FakeWrites(FakeGitHub):
         super().__init__()
         self.parents: dict[tuple[str, int], tuple[str, int]] = {}
         self.comments_posted: list[tuple[int, str]] = []
+        # Set both to hold ``add_labels`` until ``release`` (a write still in flight).
+        self.entered: asyncio.Event | None = None
+        self.release: asyncio.Event | None = None
+
+    async def add_labels(self, repo: str, n: int, names: Sequence[str]) -> tuple[str, ...]:
+        if self.entered is not None and self.release is not None:
+            self.entered.set()
+            await self.release.wait()
+        return await super().add_labels(repo, n, names)
 
     async def get(self, repo: str, n: int) -> Issue:
         self.calls.append(("get", (repo, n)))
@@ -842,17 +852,20 @@ def test_deleting_no_pending_changes_deletes_nothing(world: World) -> None:
 
 
 class Held(FakeWrites):
-    """``FakeWrites`` whose ``add_labels`` waits for ``release`` (an approval held mid-flight)."""
+    """``FakeWrites`` whose ``add_labels`` waits for ``release`` (a write held mid-flight)."""
 
     def __init__(self) -> None:
         super().__init__()
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def add_labels(self, repo: str, n: int, names: Sequence[str]) -> tuple[str, ...]:
-        self.entered.set()
-        await self.release.wait()
-        return await super().add_labels(repo, n, names)
+    @property
+    def started(self) -> asyncio.Event:
+        return cast(asyncio.Event, self.entered)
+
+    @property
+    def go(self) -> asyncio.Event:
+        return cast(asyncio.Event, self.release)
 
 
 async def test_a_staged_parent_move_refuses_when_github_moved_it(world: World) -> None:
@@ -907,12 +920,12 @@ async def test_an_approval_in_flight_survives_retiring_and_reruns(conn: sqlite3.
     sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
 
     approving = asyncio.create_task(world.service.approve(sid))
-    await held.entered.wait()
+    await held.started.wait()
     # Meanwhile a sync retires drafts whose premise went, and a rerun replaces untouched ones.
     filled = replace(held.issues[(REPO, 1)], labels=("bug", "priority: high"))
     world.suggest.retire_stale(REPO, [(filled, triage(filled.labels, 0, AMICUS))])
     world.drafts.replace_drafts(REPO, 1, [])
-    held.release.set()
+    held.go.set()
     approval = await approving
 
     assert approval.suggestion.state == "approved"
@@ -1018,12 +1031,14 @@ async def test_a_failing_batch_store_still_returns_the_result(
 ) -> None:
     await world.synced(issue(1))
     world.pending.stage(REPO, 1, Comment("x"), "menu")
+    started = world.service.begin_pending(None, key=None)  # the write-ahead row is stored
+    # The database breaks after that: each step's record and the final one fail.
 
     def broken(*args: object) -> None:
         raise sqlite3.OperationalError("disk full")
 
     monkeypatch.setattr(world.applied, "save_batch", broken)
-    applied = await world.service.apply_pending(None)
+    applied = await world.service._run(started, None)
     assert applied.result.complete and "disk full" in caplog.text
     assert world.pending.pending() == []  # the writes happened: never re-applied
 
@@ -1070,8 +1085,9 @@ async def test_a_failing_store_on_retry_still_returns_the_result(
     def broken(*args: object) -> None:
         raise sqlite3.OperationalError("disk full")
 
+    again = world.service.begin_retry(applied.id)
     monkeypatch.setattr(world.applied, "save_batch", broken)
-    retried = await world.service.retry(applied.id)
+    retried = await world.service._run(again, None, resume=True)
     assert retried.result.complete and "disk full" in caplog.text
 
 
@@ -1127,10 +1143,10 @@ async def test_a_retried_approval_claims_its_suggestion(conn: sqlite3.Connection
     held.fail.clear()
 
     retrying = asyncio.create_task(world.service.retry(approval.batch.id))
-    await held.entered.wait()
+    await held.started.wait()
     assert not world.drafts.claim(sid, world.clock())  # the retry holds it
     world.drafts.replace_drafts(REPO, 1, [])
-    held.release.set()
+    held.go.set()
     await retrying
 
     found = world.drafts.suggestion(sid)
@@ -1162,3 +1178,226 @@ async def test_an_apply_runs_once_the_back_off_lapses(world: World) -> None:
     assert blocked.is_rate_limited and len(world.github.calls) == calls  # asked GitHub nothing
     world.clock.now = RESET + timedelta(seconds=1)
     assert (await engine.apply(one(E1, Comment("x")))).complete
+
+
+# --- PR 2 final fix wave: write-ahead batches, 202 and polling, replays (IR45, IR46) -----------
+
+
+def held_world(conn: sqlite3.Connection) -> tuple[World, Held]:
+    world = World(conn)
+    held = Held()
+    held.files, held.repo_labels = world.github.files, world.github.repo_labels
+    world.github = held
+    world.engine = ApplyEngine(held, world.store, world.clock, pause=world.pauses)
+    world.service = ApplyService(
+        world.engine, world.applied, world.drafts, world.store, world.clock
+    )
+    world.sync = SyncService(held, world.store, world.clock)
+    return world, held
+
+
+async def test_a_started_batch_is_stored_running_before_any_write(conn: sqlite3.Connection) -> None:
+    world, held = held_world(conn)
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, SetDimension("priority", "priority: high"), "picker")
+
+    started = world.service.start_pending(None, key="k1")
+
+    assert started.status == "running" and world.pending.pending() == []
+    stored = world.applied.batch(started.id)
+    assert stored is not None and stored.status == "running"
+    assert [r.cause for r in stored.result.results] == ["not run yet"]
+    await held.started.wait()
+    assert world.write_names() == []
+    held.go.set()
+    await world.service.drain()
+    done = world.applied.batch(started.id)
+    assert done is not None and done.status == "finished" and done.result.complete
+
+
+async def test_a_stop_mid_batch_is_interrupted_and_retry_never_reposts(
+    conn: sqlite3.Connection,
+) -> None:
+    world, held = held_world(conn)
+    await world.synced(issue(1), issue(2))
+    world.pending.stage(REPO, 1, Comment("posted once"), "menu")
+    world.pending.stage(REPO, 2, SetDimension("priority", "priority: high"), "picker")
+    started = world.service.start_pending(None, key=None)
+    await held.started.wait()  # issue 1's comment went out; issue 2's write is in flight
+
+    await world.service.stop()
+
+    stopped = world.applied.batch(started.id)
+    assert stopped is not None and stopped.status == "interrupted"
+    assert [r.state for r in stopped.result.results] == ["done", "skipped"]
+    held.go.set()
+    world.service = ApplyService(
+        world.engine, world.applied, world.drafts, world.store, world.clock
+    )
+    retried = await world.service.retry(started.id)
+    assert retried.status == "finished" and retried.result.complete
+    assert held.comments_posted == [(1, "posted once")]
+
+
+async def test_start_marks_batches_a_crash_left_running_interrupted(world: World) -> None:
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, Comment("x"), "menu")
+    started = world.service.begin_pending(None, key=None)  # stored, never run
+    assert world.service.recover() == 1
+    found = world.applied.batch(started.id)
+    assert found is not None and found.status == "interrupted"
+    assert (await world.service.retry(started.id)).result.complete
+
+
+async def test_a_running_batch_cant_be_retried(conn: sqlite3.Connection) -> None:
+    from jesinia.apps.issues.domain.changes import BatchRunningError
+
+    world, held = held_world(conn)
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, SetDimension("priority", "priority: high"), "picker")
+    started = world.service.start_pending(None, key=None)
+    with pytest.raises(BatchRunningError):
+        world.service.start_retry(started.id)
+    held.go.set()
+    await world.service.drain()
+
+
+async def test_a_keyed_apply_maps_to_its_batch_and_never_applies_the_tray_again(
+    world: World,
+) -> None:
+    await world.synced(issue(1), issue(2))
+    world.pending.stage(REPO, 1, Comment("A"), "menu")
+    first = world.service.begin_pending(None, key="key-1")
+    world.pending.stage(REPO, 2, Comment("B"), "menu")
+    again = world.service.begin_pending(None, key="key-1")
+    assert again.id == first.id
+    assert [p.target for p in world.pending.pending()] == [E2]  # B is still pending
+
+
+async def test_a_keyed_approval_maps_to_its_batch(world: World) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    first = world.service.start_approval(sid, key="key-2")
+    await world.service.drain()
+    again = world.service.start_approval(sid, key="key-2")
+    assert again.batch.id == first.batch.id and again.suggestion.state == "approved"
+    assert world.write_names() == ["add_labels"]
+
+
+async def test_a_stop_before_an_approval_runs_releases_its_claim(world: World) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    started = world.service.start_approval(sid, key=None)
+    await world.service.stop()  # cancelled before it ever ran
+    assert world.drafts.claim(sid, world.clock())  # released
+    found = world.applied.batch(started.batch.id)
+    assert found is not None and found.status == "interrupted"
+
+
+async def test_a_retry_withholds_a_close_comment_the_first_run_withheld(world: World) -> None:
+    await world.synced(issue(1))
+    world.github.put(replace(world.github.issues[(REPO, 1)], state="closed"))
+    world.github.fail["comment:1"] = GitHubRateLimitedError(403, "limit", None)
+    applied = await world.service.apply(
+        one(E1, Close("not_planned", comment="won't do"), Comment("noted")), origin="pending"
+    )
+    assert [r.cause for r in applied.result.per_issue[E1].steps][0] == "already closed"
+    world.github.fail.clear()
+    await world.service.retry(applied.id)
+    assert world.github.comments_posted == [(1, "noted")]
+
+
+async def test_edits_and_dismissals_wait_for_an_approval_in_flight(world: World) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    assert world.drafts.claim(sid, world.clock())
+    with pytest.raises(SuggestionStateError, match="being approved"):
+        world.suggest.edit(sid, {"dimension": "priority", "value": "priority: medium"}, None)
+    with pytest.raises(SuggestionStateError, match="being approved"):
+        world.suggest.dismiss(sid)
+
+
+async def test_an_unexpected_step_error_fails_that_step_and_the_batch_goes_on(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    await world.synced(issue(1), issue(2))
+
+    async def broken(repo: str, n: int, body: str) -> CommentRef:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(world.github, "comment", broken)
+    result = await world.engine.apply(
+        ChangeBatch.of({E1: [Comment("x")], E2: [SetDimension("priority", "priority: high")]})
+    )
+    (failed,) = result.per_issue[E1].steps
+    assert failed.state == "failed" and "RuntimeError" in (failed.cause or "")
+    assert [s.state for s in result.per_issue[E2].steps] == ["done"]
+    assert "boom" in caplog.text
+
+
+async def test_a_failing_progress_record_never_stops_the_engine(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    await world.synced(issue(1))
+
+    def broken(result: object) -> None:
+        raise sqlite3.OperationalError("disk full")
+
+    result = await world.engine.apply(one(E1, Comment("x")), on_step=broken)
+    assert result.complete and "recording a step's progress failed" in caplog.text
+
+
+async def test_a_replayed_approval_whose_suggestion_is_gone_is_not_found(
+    world: World, conn: sqlite3.Connection
+) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+    world.service.start_approval(sid, key="k")
+    await world.service.drain()
+    conn.execute("DELETE FROM suggestions WHERE id = ?", (sid,))
+    from jesinia.apps.issues.domain.suggestions import SuggestionNotFoundError
+
+    with pytest.raises(SuggestionNotFoundError):
+        world.service.start_approval(sid, key="k")
+
+
+async def test_a_failing_write_ahead_releases_the_claim_and_writes_nothing(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+
+    def broken(*args: object) -> None:
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(world.applied, "save_batch", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        world.service.start_approval(sid, key=None)
+    assert not world.drafts.is_claimed(sid) and world.write_names() == []
+
+
+async def test_a_background_batch_that_breaks_is_interrupted_and_logged(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    await world.synced(issue(1))
+    sid = world.draft(1, "label", {"dimension": "priority", "value": "priority: high"})
+
+    async def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("engine bug")
+
+    monkeypatch.setattr(world.engine, "apply", broken)
+    started = world.service.start_approval(sid, key=None)
+    await world.service.drain()
+    found = world.applied.batch(started.batch.id)
+    assert found is not None and found.status == "interrupted"
+    assert not world.drafts.is_claimed(sid) and "engine bug" in caplog.text
+
+    world.pending.stage(REPO, 1, Comment("x"), "menu")
+    again = world.service.start_pending(None, key=None)
+
+    def unreadable(batch_id: str) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(world.applied, "batch", unreadable)
+    await world.service.drain()
+    assert "marking batch" in caplog.text and again.status == "running"

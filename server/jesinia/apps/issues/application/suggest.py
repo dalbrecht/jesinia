@@ -62,6 +62,7 @@ from jesinia.apps.issues.domain.suggestions import (
     SuggestionRunError,
     SuggestionRunnerUnavailableError,
     SuggestionState,
+    SuggestionStateError,
     TriageContext,
     TriageReply,
     dismiss,
@@ -204,6 +205,8 @@ class SuggestService:
         self._new_id = new_id
         self._timeout = timeout
         self._tick = asyncio.Lock()
+        # Every agent ask (triage runs and priority asks alike) shares CONCURRENCY slots.
+        self._agents = asyncio.Semaphore(CONCURRENCY)
         self._tasks: set[asyncio.Task[None]] = set()
         self._drive_wanted = False
         self._priority_tasks: set[asyncio.Task[None]] = set()
@@ -293,10 +296,9 @@ class SuggestService:
         async with self._tick:
             # Batches never overlap (this lock), so no run is due twice at once.
             due = self._store.due_runs(self._clock(), RUNS_PER_TICK)
-            gate = asyncio.Semaphore(CONCURRENCY)
 
             async def one(run: SuggestionRun) -> None:
-                async with gate:
+                async with self._agents:
                     await self._run_one(run)
 
             await asyncio.gather(*(one(run) for run in due))
@@ -481,7 +483,8 @@ class SuggestService:
         cause: str | None = None
         made: str | None = None
         try:
-            made = (await self.suggest_priority(refs)).id
+            async with self._agents:
+                made = (await self.suggest_priority(refs)).id
             status = "done"
         except SuggestionRunnerUnavailableError as exc:
             status, cause = "waiting", str(exc)
@@ -701,15 +704,28 @@ class SuggestService:
         """The issue's latest suggestion run; ``None`` when it never had one."""
         return self._store.run(validate_repo(repo), n)
 
+    def _unclaimed(self, suggestion_id: str) -> Suggestion:
+        """The suggestion, unless an approval is applying it: its outcome would overwrite an
+        edit or a dismissal made meanwhile.
+
+        Raises:
+            SuggestionNotFoundError, SuggestionStateError ("being approved").
+        """
+        current = self.suggestion(suggestion_id)
+        if self._store.is_claimed(suggestion_id):
+            raise SuggestionStateError(f"suggestion {suggestion_id} is being approved; wait for it")
+        return current
+
     def edit(
         self, suggestion_id: str, payload: Mapping[str, object], reason: str | None
     ) -> Suggestion:
         """The author's edit of a draft, checked against its repo's schema.
 
         Raises:
-            SuggestionNotFoundError, SuggestionStateError, InvalidSuggestionEditError.
+            SuggestionNotFoundError, SuggestionStateError (settled, or being approved),
+            InvalidSuggestionEditError.
         """
-        current = self.suggestion(suggestion_id)
+        current = self._unclaimed(suggestion_id)
         state = None if current.repo is None else self._cache.repo(current.repo)
         schema = DEFAULT_SCHEMA if state is None else state.schema
         edited = edit(current, payload, reason, schema, self._clock())
@@ -720,9 +736,10 @@ class SuggestService:
         """Dismiss a draft; dismissing it again is a no-op.
 
         Raises:
-            SuggestionNotFoundError, SuggestionStateError (it was approved).
+            SuggestionNotFoundError, SuggestionStateError (it was approved, or is being
+            approved).
         """
-        current = self.suggestion(suggestion_id)
+        current = self._unclaimed(suggestion_id)
         # The basis stays the content the draft was made from (set when it was stored).
         dismissed = dismiss(current, self._clock())
         if dismissed is not current:

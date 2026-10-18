@@ -223,9 +223,14 @@ class IssuesModule:
             self._apply = ApplyService(
                 engine, applied, SqliteSuggestionStore(self._conn), store, _utc_now
             )
+            # Single process and nothing applies yet: a batch left running was cut off (IR45).
+            if interrupted := self._apply.recover():
+                log.info("marked %d issues apply batches interrupted after a stop", interrupted)
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_repos, at_start=True)
 
     async def stop(self) -> None:
+        if self._apply is not None:
+            await self._apply.stop()  # running batches are marked interrupted
         if self._suggest is not None:
             await self._suggest.stop()
             self._suggest = None
