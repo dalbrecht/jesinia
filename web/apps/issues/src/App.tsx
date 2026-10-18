@@ -16,6 +16,7 @@ import s from "./issues.module.css";
 import { IssueView } from "./IssueView";
 import { Queues } from "./Queues";
 import { loadTabs, sameTab, saveTabs, type OpenTab } from "./tabs";
+import { RevisionsProvider } from "./revisions";
 import { TrayProvider, useTray } from "./Tray";
 
 type Fixed = "inbox" | "backlog" | "epics" | "queues";
@@ -268,7 +269,9 @@ export function App({ client }: { client?: JesiniaClient }) {
     >
       <div className={s.app} data-density="compact">
         <TrayProvider>
-          <Workspace />
+          <RevisionsProvider>
+            <Workspace />
+          </RevisionsProvider>
         </TrayProvider>
       </div>
     </AppShell>

@@ -28,6 +28,7 @@ import { useDrafts } from "./drafts";
 import { Drops, type DropAction } from "./drops";
 import s from "./issues.module.css";
 import { QueueDraft, QueueView } from "./QueueView";
+import { useRevision } from "./revisions";
 
 /** Something to add: a list row (an issue or epic, which the cache tells apart) or a queue item,
  * which keeps its kind so a milestone stays a milestone. */
@@ -42,6 +43,8 @@ export function useAddToQueue(onChanged?: () => void) {
   const keys = useRef(new ActionKeys());
   const changed = useRef(onChanged);
   changed.current = onChanged;
+  // Every mounted Queues pane reads the queues again after an add or its Undo.
+  const { bump } = useRevision("queues");
   return useCallback(
     async (queue: { id: string; name: string }, items: readonly Addable[], position?: number) => {
       const added: { kind: ItemKind; repo: string; n: number }[] = [];
@@ -72,6 +75,7 @@ export function useAddToQueue(onChanged?: () => void) {
           }
         }
         if (removed > 0) toast.show({ tone: "info", message: `Took ${plural(removed, "item", "items")} back out of ${queue.name}.` }); // prettier-ignore
+        bump();
         changed.current?.();
       };
       if (added.length > 0)
@@ -80,10 +84,11 @@ export function useAddToQueue(onChanged?: () => void) {
           message: `Added ${plural(added.length, "item", "items")} to ${queue.name}.`,
           action: { label: "Undo", onAction: () => void undo() },
         });
+      if (added.length > 0) bump();
       changed.current?.();
       return added.length;
     },
-    [client, toast],
+    [client, toast, bump],
   );
 }
 
@@ -138,10 +143,18 @@ export function Queues() {
     }
   }, [client, toast]);
 
+  const shared = useRevision("queues");
   useEffect(() => {
     void read();
-  }, [read]);
-  const add = useAddToQueue(() => void read());
+  }, [read, shared.revision]);
+  // An add from another pane: the open queue reads its items again too.
+  const seen = useRef(shared.revision);
+  useEffect(() => {
+    if (seen.current === shared.revision) return;
+    seen.current = shared.revision;
+    setRevision((n) => n + 1);
+  }, [shared.revision]);
+  const add = useAddToQueue();
 
   const create = async () => {
     const wanted = name.trim();

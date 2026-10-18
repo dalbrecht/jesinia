@@ -28,6 +28,7 @@ import {
 import type { DropAction } from "./drops";
 import s from "./issues.module.css";
 import { PlanDiff } from "./Plans";
+import { useRevision } from "./revisions";
 import { useTray } from "./Tray";
 
 const plural = (n: number, one: string, other: string) => `${n} ${n === 1 ? one : other}`;
@@ -42,6 +43,8 @@ export function useThemes() {
   const client = useClient();
   const toast = useToast();
   const [themes, setThemes] = useState<Theme[]>([]);
+  // Another pane's add or Undo moves the shared revision: read the themes again.
+  const { revision } = useRevision("themes");
   const reload = useCallback(async () => {
     try {
       setThemes(await getThemes(client));
@@ -51,15 +54,21 @@ export function useThemes() {
   }, [client, toast]);
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, revision]);
   return { themes, reload };
 }
 
 /** Give issues a theme at once, with an Undo that takes it off those issues again (IR22). */
-export function useAddTheme(onChanged: () => void) {
+export function useAddTheme(onChange: () => void) {
   const client = useClient();
   const toast = useToast();
   const keys = useRef(new ActionKeys());
+  // The caller re-reads its own list; the other kept-alive lists follow the shared revision.
+  const { bump } = useRevision("themes");
+  const onChanged = useCallback(() => {
+    onChange();
+    bump();
+  }, [onChange, bump]);
 
   const keyed = useCallback(async <T,>(action: string, work: (key: string) => Promise<T>): Promise<T> => {
     try {
