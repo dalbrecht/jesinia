@@ -1675,10 +1675,12 @@ class ThemeEpicPlanOut(BaseModel):
 
 
 class ThemeEpicIn(BaseModel):
-    """The approval of a previewed theme epic: its repo and ``digest``."""
+    """The approval of a previewed theme epic: its repo and ``digest``; ``new_epic`` when the
+    preview asked for a new epic beside the theme's existing one (ruling IR59)."""
 
     repo: str = Field(min_length=3, max_length=REPO_MAX)
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    new_epic: bool = False
 
 
 # Abandoning an unfinished batch (ruling IR58) ----------------------------------------------------

@@ -69,6 +69,7 @@ from jesinia.apps.issues.domain.themes import (
     InvalidThemeError,
     NothingToPublishError,
     ThemeCatalogError,
+    ThemeEpicClosedError,
     ThemeNearDuplicateError,
     ThemeNotFoundError,
     ThemesUnavailableError,
@@ -421,25 +422,29 @@ class ThemeService:
 
     # An epic (one approved batch, IR27) -------------------------------------------------
 
-    async def to_epic(self, raw: str, repo: str, digest: str | None = None) -> ConversionPlan:
+    async def to_epic(
+        self, raw: str, repo: str, digest: str | None = None, *, new_epic: bool = False
+    ) -> ConversionPlan:
         """The plan turning the theme into an epic created in ``repo`` (one of its issues'
         repos): its cached issues become the children (those in ``repo`` first, then by repo
         and number), each checked like a conversion's link (another owner's refused, another
         repo warned, one with a parent skipped). When an earlier epic for the theme didn't
         finish, the plan reuses the epic it created and links only the missing children
-        (IR53). With ``digest`` (an approval) the plan must still be the one the author saw and
-        must have children.
+        (IR53). Once the theme has an epic the plan links under it; a new epic is planned only
+        with ``new_epic`` (IR59). With ``digest`` (an approval) the plan must still be the one
+        the author saw and must have children.
 
         Raises:
             InvalidThemeError: not a tag, or ``repo`` isn't one of the theme's repos.
             ThemeNotFoundError: no issue carries it.
+            ThemeEpicClosedError: the theme's epic is closed and ``new_epic`` isn't asked.
             ConversionOutdatedError: the plan changed since ``digest``.
             NothingToConvertError: approving a plan with no children.
         """
         home = validate_repo(repo)
-        return self._plan(await self._tag(raw), home, digest)
+        return self._plan(await self._tag(raw), home, digest, new_epic)
 
-    def _plan(self, tag: str, home: str, digest: str | None) -> ConversionPlan:
+    def _plan(self, tag: str, home: str, digest: str | None, new_epic: bool) -> ConversionPlan:
         members: list[Facts] = []
         uncached: list[Ref] = []
         # The epic's own repo first, then the others, each by number.
@@ -453,7 +458,7 @@ class ThemeService:
                 uncached.append(ref)
             else:
                 members.append(found)
-        existing, ancestors = self._reusable_epic(tag, home)
+        existing, ancestors = (None, ()) if new_epic else self._reusable_epic(tag, home)
         plan = theme_epic_plan(tag, home, members, uncached, existing, ancestors)
         if digest is not None:
             if plan.digest != digest:
@@ -466,29 +471,55 @@ class ThemeService:
         return plan
 
     def _reusable_epic(self, tag: str, home: str) -> tuple[Node | None, tuple[Key, ...]]:
-        """The theme's epic in ``home``, with its ancestors, or ``None``: the epic a complete
-        (or abandoned, IR58) batch for the theme made or linked under, recorded in
-        ``theme_epics`` and kept in the ledger after the batch is pruned. Issues added later
-        link under it rather than under a second epic (IR56). A closed one is done with: the
-        next plan makes a new epic."""
-        epic = self._store.theme_epic(tag, home)
-        if epic is None:
-            for row in reversed(self._batches.origin_batches(_origin(tag, home))):
-                made = row.created.get("epic")
-                if row.state in ("complete", "abandoned") and made is not None:
-                    epic = made
-                    self._store.set_epic(tag, row.batch_id, *made)
-                    break
+        """The theme's latest epic in ``home``, with its ancestors, or ``None`` when it has
+        none yet (ruling IR59): the epic its newest settled batch (complete, or abandoned,
+        IR58) made, or linked under, kept in ``theme_epics`` and the ledger after the batch is
+        pruned. Issues added later link under it, never under a new epic, unless the author
+        asks for one.
+
+        Raises:
+            ThemeEpicClosedError: that epic is closed (reopen it, or ask for a new epic).
+        """
+        epic = self._latest_epic(tag, home)
         if epic is None:
             return None, ()
         found = facts_of(self._cache, *epic)
         if found is not None and not found.is_open:
-            return None, ()
+            raise ThemeEpicClosedError(
+                f"the theme #{tag}'s epic {epic[0]}#{epic[1]} is closed; reopen it or ask for a "
+                "new epic"
+            )
         node = Node(*epic) if found is None else found.node
         return node, ancestors_of(self._cache, *epic)
 
+    def _latest_epic(self, tag: str, home: str) -> tuple[str, int] | None:
+        """The epic of the theme's newest batch in ``home`` that has one: recorded with the
+        batch (an existing epic linked under), or made by it once settled (from the ledger)."""
+        ledger = {row.batch_id: row for row in self._batches.origin_batches(_origin(tag, home))}
+        for batch_id, epic in self._store.epic_rows(tag):
+            if epic is not None and epic[0].casefold() == home.casefold():
+                return epic
+            row = ledger.get(batch_id)
+            made = None if row is None else row.created.get("epic")
+            if row is not None and made is not None and row.state in ("complete", "abandoned"):
+                self._store.set_epic(tag, batch_id, *made)
+                return made
+        # A settled batch the theme's own record missed: the ledger still knows its epic.
+        for row in reversed(list(ledger.values())):
+            made = row.created.get("epic")
+            if made is not None and row.state in ("complete", "abandoned"):
+                return made
+        return None
+
     async def start_epic(
-        self, raw: str, repo: str, digest: str, key: str | None, starter: BatchStarter
+        self,
+        raw: str,
+        repo: str,
+        digest: str,
+        key: str | None,
+        starter: BatchStarter,
+        *,
+        new_epic: bool = False,
     ) -> AppliedBatch:
         """Approve the epic previewed with ``digest``: one batch through the apply engine, in
         the background (IR45); a replay of ``key`` answers its batch (IR46). Refused while an
@@ -497,8 +528,12 @@ class ThemeService:
         recorded for the theme on a replay too, so a record the first request couldn't write is
         never lost.
 
+        A new epic is made only when the theme has none yet or ``new_epic`` asks for one
+        (IR59).
+
         Raises:
             EarlierBatchError: see above.
+            ThemeEpicClosedError: the theme's epic is closed and ``new_epic`` isn't asked.
             Others: as ``to_epic``.
         """
         home = validate_repo(repo)
@@ -506,7 +541,7 @@ class ThemeService:
         planned: list[ConversionPlan] = []
 
         def make() -> ChangeBatch:
-            plan = self._plan(tag, home, digest)
+            plan = self._plan(tag, home, digest, new_epic)
             planned.append(plan)
             return plan.changes
 

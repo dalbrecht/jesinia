@@ -99,10 +99,13 @@ class SqliteThemeStore:
             (repo, n, tag, batch_id),
         )
 
-    def theme_epic(self, tag: str, repo: str) -> tuple[str, int] | None:
-        row = self._conn.execute(
-            "SELECT epic_repo, epic_n FROM theme_epics WHERE tag = ? AND epic_repo = ? "
-            "AND epic_n IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            (tag, repo),
-        ).fetchone()
-        return None if row is None else (str(row[0]), int(row[1]))
+    def epic_rows(self, tag: str) -> list[tuple[str, tuple[str, int] | None]]:
+        rows = self._conn.execute(
+            "SELECT batch_id, epic_repo, epic_n FROM theme_epics WHERE tag = ? "
+            "ORDER BY created_at DESC, rowid DESC",
+            (tag,),
+        )
+        return [
+            (str(batch_id), None if n is None else (str(repo), int(n)))
+            for batch_id, repo, n in rows
+        ]

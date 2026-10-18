@@ -120,6 +120,7 @@ from jesinia.apps.issues.domain.epics import (
     BriefRecoveryIncompleteError,
     ConversionOutdatedError,
     EpicDomainError,
+    GroupEpicExistsError,
     ItemKind,
     NotAnEpicError,
     NothingToConvertError,
@@ -159,6 +160,7 @@ from jesinia.apps.issues.domain.themes import (
     NothingToPublishError,
     ThemeCatalogError,
     ThemeDomainError,
+    ThemeEpicClosedError,
     ThemeNearDuplicateError,
     ThemeNotFoundError,
     ThemesUnavailableError,
@@ -255,6 +257,8 @@ _STATUS: dict[type[Exception], int] = {
     QueueItemExistsError: status.HTTP_409_CONFLICT,
     QueueItemStateError: status.HTTP_409_CONFLICT,
     ThemeNotFoundError: status.HTTP_404_NOT_FOUND,
+    ThemeEpicClosedError: status.HTTP_409_CONFLICT,
+    GroupEpicExistsError: status.HTTP_409_CONFLICT,
     ThemeNearDuplicateError: status.HTTP_409_CONFLICT,
     NothingToPublishError: status.HTTP_409_CONFLICT,
     # The KB tag catalog, not the request, is away or failed: the cause is in ``detail``.
@@ -1208,15 +1212,21 @@ def build_router(host: IssuesHost) -> APIRouter:
 
     @r.get(f"{theme_path}/epic", response_model=ThemeEpicPlanOut)
     async def get_theme_epic(
-        tag: Tag, repo: Annotated[str, Query(min_length=3, max_length=REPO_MAX)]
+        tag: Tag,
+        repo: Annotated[str, Query(min_length=3, max_length=REPO_MAX)],
+        new_epic: bool = False,
     ) -> Response:
-        """What turning the theme into an epic created in ``repo`` (one of its issues' repos)
-        would do: its issues become the children (another repo's warned, "won't fit one PR";
-        another owner's refused), and what is skipped and why. Writes nothing."""
+        """What turning the theme into an epic in ``repo`` (one of its issues' repos) would do:
+        its issues become the children (another repo's warned, "won't fit one PR"; another
+        owner's refused), and what is skipped and why. Writes nothing. Once the theme has an
+        epic, the plan links under it; a new epic is planned only with ``new_epic``, and a
+        closed epic without it is a 409 (``ThemeEpicClosedError``: reopen it or ask for a new
+        one)."""
 
         async def run() -> ThemeEpicPlanOut:
             name = await host.themes.canonical(tag)
-            return ThemeEpicPlanOut.of(name, await host.themes.to_epic(name, repo))
+            plan = await host.themes.to_epic(name, repo, new_epic=new_epic)
+            return ThemeEpicPlanOut.of(name, plan)
 
         return await _respond(run, host.clock)
 
@@ -1234,12 +1244,18 @@ def build_router(host: IssuesHost) -> APIRouter:
         """Approve the epic previewed with ``digest``: one batch (create the epic, then link the
         children) applied in the background, a 202 with the batch and ``Location`` to poll. A
         409 when the plan changed since (preview again) or has no children, or while an earlier
-        epic batch for the theme runs or didn't finish (retry that batch: it may have made the
-        epic). Once a batch made the epic, issues added to the theme later link under it."""
+        epic batch for the theme runs or didn't finish (retry or abandon that batch: it may have
+        made the epic), or when its epic is closed and ``new_epic`` isn't asked. Once the theme
+        has an epic, issues added later link under it."""
 
         async def run() -> Response:
             started = await host.themes.start_epic(
-                tag, body.repo, body.digest, _request_key("theme-epic", idem), host.apply
+                tag,
+                body.repo,
+                body.digest,
+                _request_key("theme-epic", idem),
+                host.apply,
+                new_epic=body.new_epic,
             )
             return _started(started.id, ApplyBatchOut.of(started))
 

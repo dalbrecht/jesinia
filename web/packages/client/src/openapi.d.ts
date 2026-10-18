@@ -2072,9 +2072,12 @@ export interface paths {
         };
         /**
          * Get Theme Epic
-         * @description What turning the theme into an epic created in ``repo`` (one of its issues' repos)
-         *     would do: its issues become the children (another repo's warned, "won't fit one PR";
-         *     another owner's refused), and what is skipped and why. Writes nothing.
+         * @description What turning the theme into an epic in ``repo`` (one of its issues' repos) would do:
+         *     its issues become the children (another repo's warned, "won't fit one PR"; another
+         *     owner's refused), and what is skipped and why. Writes nothing. Once the theme has an
+         *     epic, the plan links under it; a new epic is planned only with ``new_epic``, and a
+         *     closed epic without it is a 409 (``ThemeEpicClosedError``: reopen it or ask for a new
+         *     one).
          */
         get: operations["get_theme_epic_api_issues_themes__tag__epic_get"];
         put?: never;
@@ -2083,8 +2086,9 @@ export interface paths {
          * @description Approve the epic previewed with ``digest``: one batch (create the epic, then link the
          *     children) applied in the background, a 202 with the batch and ``Location`` to poll. A
          *     409 when the plan changed since (preview again) or has no children, or while an earlier
-         *     epic batch for the theme runs or didn't finish (retry that batch: it may have made the
-         *     epic). Once a batch made the epic, issues added to the theme later link under it.
+         *     epic batch for the theme runs or didn't finish (retry or abandon that batch: it may have
+         *     made the epic), or when its epic is closed and ``new_epic`` isn't asked. Once the theme
+         *     has an epic, issues added later link under it.
          */
         post: operations["make_theme_epic_api_issues_themes__tag__epic_post"];
         delete?: never;
@@ -4980,13 +4984,19 @@ export interface components {
         };
         /**
          * ThemeEpicIn
-         * @description The approval of a previewed theme epic: its repo and ``digest``.
+         * @description The approval of a previewed theme epic: its repo and ``digest``; ``new_epic`` when the
+         *     preview asked for a new epic beside the theme's existing one (ruling IR59).
          */
         ThemeEpicIn: {
             /** Repo */
             repo: string;
             /** Digest */
             digest: string;
+            /**
+             * New Epic
+             * @default false
+             */
+            new_epic: boolean;
         };
         /**
          * ThemeEpicPlanOut
@@ -12951,6 +12961,7 @@ export interface operations {
         parameters: {
             query: {
                 repo: string;
+                new_epic?: boolean;
             };
             header?: never;
             path: {

@@ -45,18 +45,20 @@ from jesinia.apps.issues.application.ports import (
 )
 from jesinia.apps.issues.domain.changes import (
     CLOSED_SKIP,
+    IN_FLIGHT,
+    UNSURE,
     BatchAbandonedError,
     BatchNotFoundError,
     BatchResult,
     BatchRunningError,
     BatchStatus,
     ChangeBatch,
-    CreateIssue,
     EarlierBatchError,
     EnsureLabel,
     Existing,
     InvalidChangeError,
     IssueChange,
+    New,
     NothingPendingError,
     PendingChange,
     PendingHeldError,
@@ -69,9 +71,11 @@ from jesinia.apps.issues.domain.changes import (
 )
 from jesinia.apps.issues.domain.epics import (
     Facts,
+    GroupEpicExistsError,
     Key,
     issue_key,
     proposal_batch,
+    proposal_notes,
     proposal_origin,
 )
 from jesinia.apps.issues.domain.schema import DEFAULT_SCHEMA
@@ -158,6 +162,25 @@ def _outcomes(result: BatchResult) -> dict[tuple[str, int], tuple[ItemState, str
         for step in result.results
         if step.step.target is not None
     }
+
+
+# The temp ids each kind of origin creates (a pruned batch can be checked only this far).
+_TEMP_PREFIX = {"split": "part-", "group": "epic", "theme": "epic", "conversion": "item-"}
+
+
+def _unknown_create(live: AppliedBatch | None, origin_key: str, temp: str) -> bool:
+    """Whether ``temp`` is a create whose result is unknown: cut off while being sent (R4). For
+    a pruned batch, only that the origin's kind creates such a temp id."""
+    if live is None:
+        prefix = _TEMP_PREFIX.get(origin_key.split(":", 1)[0], "")
+        return bool(prefix) and temp.startswith(prefix)
+    return any(
+        r.step.kind == "create_issue"
+        and isinstance(r.step.target, New)
+        and r.step.target.temp_id == temp
+        and r.cause in (IN_FLIGHT, UNSURE)
+        for r in live.result.results
+    )
 
 
 def _approval_key(suggestion_id: str, key: str | None) -> str | None:
@@ -481,6 +504,77 @@ class ApplyService:
             settled.append(row)
         return settled
 
+    def _settle_done(self, found: Suggestion, done: OriginBatch) -> None:
+        """A complete batch already applied this draft's target: the draft whose batch it was
+        is settled (its settling was lost); another draft is refused and left open (R3).
+
+        Raises:
+            SuggestionStateError: always.
+        """
+        live = self._store.batch(done.batch_id)
+        owner = done.notes.get("suggestion") or (None if live is None else live.suggestion_id)
+        if owner == found.id:
+            self._suggestions.save(approved(found, self._clock()))
+            raise SuggestionStateError(
+                f"suggestion {found.id} was applied by batch {done.batch_id} already"
+            )
+        if found.kind == "split":
+            whole = cast(dict[str, object], found.payload["issue"])
+            what = f"{whole['repo']}#{whole['n']} was split"
+        else:
+            what = "those issues were grouped"
+        raise SuggestionStateError(
+            f"{what} already by batch {done.batch_id}; dismiss suggestion {found.id}"
+        )
+
+    @staticmethod
+    def _check_reuse(
+        found: Suggestion,
+        settled: Sequence[OriginBatch],
+        reused: Mapping[str, tuple[str, int]],
+        notes: Mapping[str, str],
+    ) -> None:
+        """Reused parts must be the parts the abandoned batch made (R5): the same title at the
+        same place, else the approved draft wouldn't be what is applied.
+
+        Raises:
+            SuggestionStaleError: an abandoned batch made other parts.
+        """
+        for row in settled:
+            for temp in row.created:
+                made = row.notes.get(f"title:{temp}")
+                if (
+                    temp.startswith("part-")
+                    and made is not None
+                    and notes.get(f"title:{temp}") != made
+                ):
+                    raise SuggestionStaleError(
+                        f"abandoned batch {row.batch_id} made other parts than suggestion "
+                        f"{found.id} proposes; approve a draft with the same parts, or link them "
+                        "by hand"
+                    )
+
+    def _check_overlap(self, found: Suggestion, origin_key: str) -> None:
+        """A new group never gets a second epic for issues another group's open epic was made
+        for (ruling IR60).
+
+        Raises:
+            GroupEpicExistsError: it overlaps a group whose epic exists and is open.
+        """
+        mine = set(proposal_notes(found)["members"].split(","))
+        for other, row in self._store.origins("group:"):
+            epic = row.created.get("epic")
+            shared = mine & set(row.notes.get("members", "").split(","))
+            if other == origin_key or epic is None or not shared - {""}:
+                continue
+            cached = facts_of(self._cache, *epic)
+            if cached is not None and not cached.is_open:
+                continue
+            names = ", ".join(f"#{ref.rsplit('#', 1)[1]}" for ref in sorted(shared))
+            raise GroupEpicExistsError(
+                f"an epic for {names} already exists ({epic[0]}#{epic[1]}); add the issues to it"
+            )
+
     @staticmethod
     def reused(settled: Sequence[OriginBatch]) -> dict[str, tuple[str, int]]:
         """The issues earlier settled batches created, by temp id (a later one wins)."""
@@ -516,13 +610,8 @@ class ApplyService:
             return origin_key, row
         if state == "complete":
             raise InvalidChangeError(f"batch {batch_id} completed; there is nothing to abandon")
-        creates = (
-            None
-            if live is None
-            else {c.temp_id for c in live.batch.repo if isinstance(c, CreateIssue)}
-        )
         for temp in confirmed:
-            if temp in row.created or (creates is not None and temp not in creates):
+            if temp in row.created or not _unknown_create(live, origin_key, temp):
                 raise InvalidChangeError(
                     f"{temp!r} isn't a create of batch {batch_id} whose result is unknown"
                 )
@@ -592,15 +681,17 @@ class ApplyService:
             # Its target's ledger, whatever draft proposed it (IR56, IR57): retried or
             # abandoned, never approved again over an unfinished batch.
             origin_key = proposal_origin(found)
+        notes: dict[str, str] = {}
         if origin_key is not None:
             settled = self.guard_origin(origin_key)
             done = [row for row in settled if row.state == "complete"]
             if done:
-                self._suggestions.save(approved(found, self._clock()))
-                raise SuggestionStateError(
-                    f"suggestion {found.id} was applied by batch {done[-1].batch_id} already"
-                )
+                self._settle_done(found, done[-1])
             reused = self.reused(settled)
+            notes = proposal_notes(found)
+            self._check_reuse(found, settled, reused, notes)
+            if found.kind == "group" and "epic" not in reused:
+                self._check_overlap(found, origin_key)
         if found.kind == "priority":
             # About a batch of issues: each change is guarded by the label the draft saw.
             batch = approval_batch(found)
@@ -612,7 +703,7 @@ class ApplyService:
             raise SuggestionStateError(f"suggestion {found.id} is being approved already")
         try:
             applied = self._begin(
-                batch, "suggestion", found.id, _approval_key(found.id, key), origin_key
+                batch, "suggestion", found.id, _approval_key(found.id, key), origin_key, notes
             )
         except BaseException:
             self._release(found.id)

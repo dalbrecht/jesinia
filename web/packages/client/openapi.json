@@ -10746,7 +10746,7 @@
           "issues"
         ],
         "summary": "Get Theme Epic",
-        "description": "What turning the theme into an epic created in ``repo`` (one of its issues' repos)\nwould do: its issues become the children (another repo's warned, \"won't fit one PR\";\nanother owner's refused), and what is skipped and why. Writes nothing.",
+        "description": "What turning the theme into an epic in ``repo`` (one of its issues' repos) would do:\nits issues become the children (another repo's warned, \"won't fit one PR\"; another\nowner's refused), and what is skipped and why. Writes nothing. Once the theme has an\nepic, the plan links under it; a new epic is planned only with ``new_epic``, and a\nclosed epic without it is a 409 (``ThemeEpicClosedError``: reopen it or ask for a new\none).",
         "operationId": "get_theme_epic_api_issues_themes__tag__epic_get",
         "parameters": [
           {
@@ -10769,6 +10769,16 @@
               "minLength": 3,
               "maxLength": 140,
               "title": "Repo"
+            }
+          },
+          {
+            "name": "new_epic",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "New Epic"
             }
           }
         ],
@@ -10850,7 +10860,7 @@
           "issues"
         ],
         "summary": "Make Theme Epic",
-        "description": "Approve the epic previewed with ``digest``: one batch (create the epic, then link the\nchildren) applied in the background, a 202 with the batch and ``Location`` to poll. A\n409 when the plan changed since (preview again) or has no children, or while an earlier\nepic batch for the theme runs or didn't finish (retry that batch: it may have made the\nepic). Once a batch made the epic, issues added to the theme later link under it.",
+        "description": "Approve the epic previewed with ``digest``: one batch (create the epic, then link the\nchildren) applied in the background, a 202 with the batch and ``Location`` to poll. A\n409 when the plan changed since (preview again) or has no children, or while an earlier\nepic batch for the theme runs or didn't finish (retry or abandon that batch: it may have\nmade the epic), or when its epic is closed and ``new_epic`` isn't asked. Once the theme\nhas an epic, issues added later link under it.",
         "operationId": "make_theme_epic_api_issues_themes__tag__epic_post",
         "parameters": [
           {
@@ -20401,6 +20411,11 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
             "title": "Digest"
+          },
+          "new_epic": {
+            "type": "boolean",
+            "title": "New Epic",
+            "default": false
           }
         },
         "type": "object",
@@ -20409,7 +20424,7 @@
           "digest"
         ],
         "title": "ThemeEpicIn",
-        "description": "The approval of a previewed theme epic: its repo and ``digest``."
+        "description": "The approval of a previewed theme epic: its repo and ``digest``; ``new_epic`` when the\npreview asked for a new epic beside the theme's existing one (ruling IR59)."
       },
       "ThemeEpicPlanOut": {
         "properties": {

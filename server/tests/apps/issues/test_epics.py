@@ -37,6 +37,7 @@ from jesinia.apps.issues.domain.epics import (
     BriefRecoveryIncompleteError,
     ContainmentRefusedError,
     ConversionOutdatedError,
+    GroupEpicExistsError,
     InvalidBriefError,
     NotAnEpicError,
     NothingToConvertError,
@@ -1132,20 +1133,88 @@ async def test_abandon_records_a_create_confirmed_on_github(env: Epics) -> None:
     await env.synced(issue(2))
     env.agent.replies = [TWO_PARTS]
     draft = await env.epics.propose_split(REPO, 2)
-    env.github.fail["create_issue:`Two`"] = GitHubRequestError(500, "boom")
-    first = await env.world.service.approve(draft.id)
-    one = first.batch.result.created["part-1"]
+    env.github.fail["create_issue:`Two`"] = asyncio.CancelledError()  # type: ignore[assignment]
+    with pytest.raises(asyncio.CancelledError):  # cut off while part two was being sent
+        await env.world.service.approve(draft.id)
+    (first,) = env.world.applied.origin_batches("split:acme/web#2")
+    one = env.world.applied.batch(first.batch_id).result.created["part-1"]  # type: ignore[union-attr]
     with pytest.raises(InvalidChangeError):  # not a create of this batch
-        env.world.service.abandon(first.batch.id, {"part-9": (REPO, 77)})
+        env.world.service.abandon(first.batch_id, {"part-9": (REPO, 77)})
     with pytest.raises(InvalidChangeError):  # it was created already
-        env.world.service.abandon(first.batch.id, {"part-1": (REPO, 77)})
+        env.world.service.abandon(first.batch_id, {"part-1": (REPO, 77)})
     env.github.put(issue(40))  # the author found part two on GitHub
-    _, found = env.world.service.abandon(first.batch.id, {"part-2": (REPO, 40)})
+    _, found = env.world.service.abandon(first.batch_id, {"part-2": (REPO, 40)})
     assert found.created == {"part-1": (REPO, one.n), "part-2": (REPO, 40)}
-    assert env.world.service.abandon(first.batch.id, {})[1] == found  # again: unchanged
+    assert env.world.service.abandon(first.batch_id, {})[1] == found  # again: unchanged
     del env.github.fail["create_issue:`Two`"]
     done = await env.world.service.approve(draft.id)
-    assert done.batch.result.complete and len(creates(env)) == 2  # one failed, one real
+    assert done.batch.result.complete and len(creates(env)) == 2  # one cut off, one real
+
+
+async def test_abandon_confirms_only_creates_whose_result_is_unknown(
+    env: Epics, conn: sqlite3.Connection
+) -> None:
+    await env.synced(issue(2))
+    env.agent.replies = [TWO_PARTS]
+    draft = await env.epics.propose_split(REPO, 2)
+    env.github.fail["create_issue:`Two`"] = GitHubRequestError(422, "Unprocessable")
+    first = await env.world.service.approve(draft.id)
+    with pytest.raises(InvalidChangeError, match="unknown"):  # it failed for certain
+        env.world.service.abandon(first.batch.id, {"part-2": (REPO, 40)})
+    conn.execute("DELETE FROM apply_batches")  # pruned: only this origin's kind of temp id
+    with pytest.raises(InvalidChangeError, match="unknown"):
+        env.world.service.abandon(first.batch.id, {"epic": (REPO, 40)})
+    _, found = env.world.service.abandon(first.batch.id, {"part-2": (REPO, 40)})
+    assert found.created["part-2"] == (REPO, 40)
+
+
+async def test_a_new_split_of_an_issue_already_split_is_refused_not_approved(
+    env: Epics,
+) -> None:
+    await env.synced(issue(2))
+    env.agent.replies = [TWO_PARTS, TWO_PARTS]
+    draft = await env.epics.propose_split(REPO, 2)
+    done = await env.world.service.approve(draft.id)
+    asked = await env.epics.propose_split(REPO, 2)
+    with pytest.raises(SuggestionStateError, match=f"split already by batch {done.batch.id}"):
+        await env.world.service.approve(asked.id)
+    assert env.world.drafts.suggestion(asked.id).state == "draft"  # type: ignore[union-attr]
+
+
+async def test_reused_parts_must_be_the_parts_the_abandoned_batch_made(env: Epics) -> None:
+    await env.synced(issue(2))
+    other = grouping(
+        splits=[{"issue": {"repo": REPO, "number": 2}, "parts": [
+            {"title": "Two", "body": ""}, {"title": "One", "body": ""}], "reason": "r"}]
+    )  # fmt: skip
+    env.agent.replies = [TWO_PARTS, other]
+    draft = await env.epics.propose_split(REPO, 2)
+    env.github.fail["add_sub_issue:2"] = GitHubRequestError(422, "Unprocessable")
+    first = await env.world.service.approve(draft.id)
+    env.world.service.abandon(first.batch.id, {})
+    asked = await env.epics.propose_split(REPO, 2)  # the parts in another order
+    with pytest.raises(SuggestionStaleError, match=f"batch {first.batch.id} made other parts"):
+        await env.world.service.approve(asked.id)
+    assert len(creates(env)) == 2
+
+
+async def test_an_overlapping_group_beside_an_open_epic_is_refused(env: Epics) -> None:
+    await env.synced(issue(2), issue(3), issue(4))
+    small = [{"repo": REPO, "number": 2}, {"repo": REPO, "number": 3}]
+    big = [*small, {"repo": REPO, "number": 4}]
+    env.agent.replies = [
+        grouping(groups=[{"title": "Sync", "scope": "s", "issues": small, "reason": "r"}]),
+        grouping(groups=[{"title": "Sync", "scope": "s", "issues": big, "reason": "r"}]),
+    ]
+    (draft,) = await env.epics.propose_groups(REPO)
+    epic_n = max(n for (_, n) in env.github.issues) + 1
+    env.github.fail[f"add_sub_issue:{epic_n}"] = GitHubRequestError(422, "Unprocessable")
+    first = await env.world.service.approve(draft.id)
+    env.world.service.abandon(first.batch.id, {})  # its epic exists, unlinked
+    (again,) = await env.epics.propose_groups(REPO)
+    with pytest.raises(GroupEpicExistsError, match=f"already exists \\({REPO}#{epic_n}\\)"):
+        await env.world.service.approve(again.id)
+    assert len(creates(env)) == 1
 
 
 async def test_a_complete_batch_has_nothing_to_abandon(env: Epics) -> None:
@@ -1201,3 +1270,45 @@ async def test_an_abandoned_group_links_under_the_epic_it_made(env: Epics) -> No
     done = await env.world.service.approve(draft.id)
     assert done.batch.result.complete and len(creates(env)) == 1
     assert env.github.parents == {(REPO, 2): (REPO, epic_n), (REPO, 3): (REPO, epic_n)}
+
+
+async def test_a_group_already_made_by_another_draft_is_refused_not_approved(env: Epics) -> None:
+    await env.synced(issue(2), issue(3))
+    members = [{"repo": REPO, "number": 2}, {"repo": REPO, "number": 3}]
+    group = grouping(groups=[{"title": "Sync", "scope": "s", "issues": members, "reason": "r"}])
+    env.agent.replies = [group]
+    (draft,) = await env.epics.propose_groups(REPO)
+    done = await env.world.service.approve(draft.id)
+    # Another draft proposing the same group (an earlier ask's, say).
+    again = replace(draft, id="again", state="draft")
+    env.world.drafts.replace_scope_drafts(str(draft.scope), "group", [again])
+    with pytest.raises(SuggestionStateError, match=f"grouped already by batch {done.batch.id}"):
+        await env.world.service.approve(again.id)
+    assert env.world.drafts.suggestion("again").state == "draft"  # type: ignore[union-attr]
+
+
+async def test_a_group_beside_a_closed_epic_may_make_its_own(env: Epics) -> None:
+    await env.synced(issue(2), issue(3), issue(4), issue(5), issue(6))
+    small = [{"repo": REPO, "number": 2}, {"repo": REPO, "number": 3}]
+    big = [*small, {"repo": REPO, "number": 4}]
+    apart = [{"repo": REPO, "number": 5}, {"repo": REPO, "number": 6}]
+    env.agent.replies = [
+        grouping(groups=[{"title": "A", "scope": "s", "issues": small, "reason": "r"}]),
+        grouping(groups=[{"title": "B", "scope": "s", "issues": big, "reason": "r"}]),
+        grouping(groups=[{"title": "C", "scope": "s", "issues": apart, "reason": "r"}]),
+    ]
+    (draft,) = await env.epics.propose_groups(REPO)
+    epic_n = max(n for (_, n) in env.github.issues) + 1
+    env.github.fail[f"add_sub_issue:{epic_n}"] = GitHubRequestError(422, "Unprocessable")
+    first = await env.world.service.approve(draft.id)
+    env.world.service.abandon(first.batch.id, {})
+    made = env.github.issues[(REPO, epic_n)]
+    env.github.put(replace(made, state="closed", updated_at=made.updated_at + timedelta(days=60)))
+    env.world.clock.now += timedelta(minutes=1)
+    await env.world.sync.sync(REPO)  # its epic is closed: done with
+    (bigger,) = await env.epics.propose_groups(REPO)
+    second = await env.world.service.approve(bigger.id)
+    assert second.batch.result.complete
+    (other,) = await env.epics.propose_groups(REPO)  # no overlap with either group
+    third = await env.world.service.approve(other.id)
+    assert third.batch.result.complete and len(creates(env)) == 3

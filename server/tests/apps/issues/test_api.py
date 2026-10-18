@@ -1727,11 +1727,11 @@ async def test_an_incomplete_batch_is_abandoned_over_the_api(env: Env) -> None:
     await _polled(env, started)
     batch = started.json()["id"]
     key = keyed()
-    body = {"created": [{"temp_id": "item-2", "repo": REPO, "n": 77}]}
+    body: dict[str, list[object]] = {"created": []}
     out = await env.client.post(f"{PENDING}/{batch}/abandon", json=body, headers=key)
     assert out.status_code == 200, out.text
     assert out.json()["state"] == "abandoned" and out.json()["origin"] == "conversion:acme/web#3"
-    assert sorted(c["temp_id"] for c in out.json()["created"]) == ["item-1", "item-2"]
+    assert [c["temp_id"] for c in out.json()["created"]] == ["item-1"]
     again = await env.client.post(f"{PENDING}/{batch}/abandon", json=body, headers=key)
     assert again.json() == out.json()
     retried = await env.client.post(f"{PENDING}/{batch}/retry", headers=keyed())

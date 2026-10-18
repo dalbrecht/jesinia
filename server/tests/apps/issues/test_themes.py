@@ -43,6 +43,7 @@ from jesinia.apps.issues.domain.themes import (
     InvalidThemeError,
     NothingToPublishError,
     ThemeCatalogError,
+    ThemeEpicClosedError,
     ThemeNearDuplicateError,
     ThemeNotFoundError,
     ThemesUnavailableError,
@@ -667,7 +668,9 @@ async def test_a_closed_theme_epic_is_done_with_and_a_new_one_is_planned(env: Th
     env.world.clock.now += timedelta(minutes=1)
     await env.world.sync.sync(REPO)
     await env.themes.add([(REPO, 2)], "sync")
-    assert isinstance((await env.themes.to_epic("sync", REPO)).epic, CreateIssue)
+    with pytest.raises(ThemeEpicClosedError, match=f"#{epic_n} is closed"):
+        await env.themes.to_epic("sync", REPO)
+    assert isinstance((await env.themes.to_epic("sync", REPO, new_epic=True)).epic, CreateIssue)
 
 
 async def test_an_abandoned_theme_epic_confirmed_on_github_is_reused(env: Themes) -> None:
@@ -690,3 +693,95 @@ async def test_an_abandoned_theme_epic_confirmed_on_github_is_reused(env: Themes
     await env.world.service.drain()
     assert env.world.pending.batch(started.id).result.complete
     assert [w for w in env.github.writes if w[0] == "create_issue"] == []
+
+
+async def _epic_of(env: Themes, batch_id: str) -> int:
+    return env.world.pending.batch(batch_id).result.created["epic"].n
+
+
+async def _close(env: Themes, n: int) -> None:
+    made = env.github.issues[(REPO, n)]
+    env.github.put(replace(made, state="closed", updated_at=made.updated_at + timedelta(days=60)))
+    env.world.clock.now += timedelta(minutes=1)
+    await env.world.sync.sync(REPO)
+
+
+async def _cache_epic(env: Themes, n: int, *children: int) -> None:
+    """Sync the epic, and its ``children`` as now under it (as GitHub reports them)."""
+    made = env.github.issues[(REPO, n)]
+    later = made.updated_at + timedelta(days=70)
+    env.github.put(replace(made, updated_at=later))
+    for child in children:
+        found = env.github.issues[(REPO, child)]
+        env.github.put(replace(found, parent=IssueRef(REPO, n), updated_at=later))
+    env.world.clock.now += timedelta(minutes=1)
+    await env.world.sync.sync(REPO)
+
+
+async def test_a_theme_gets_a_new_epic_only_when_asked_and_then_reuses_it(env: Themes) -> None:
+    await env.synced(issue(1), issue(2), issue(3))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    first = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    e1 = await _epic_of(env, first.id)
+    await _cache_epic(env, e1, 1)
+    await _close(env, e1)
+    await env.themes.add([(REPO, 2)], "sync")
+    plan = await env.themes.to_epic("sync", REPO, new_epic=True)
+    second = await env.themes.start_epic(
+        "sync", REPO, plan.digest, None, env.world.service, new_epic=True
+    )
+    await env.world.service.drain()
+    e2 = await _epic_of(env, second.id)
+    await _cache_epic(env, e2, 2)
+    await env.themes.add([(REPO, 3)], "sync")
+    again = await env.themes.to_epic("sync", REPO)  # the latest epic, E2, not a third
+    assert again.epic == IssueRef(REPO, e2)
+    third = await env.themes.start_epic("sync", REPO, again.digest, None, env.world.service)
+    await env.world.service.drain()
+    assert env.world.pending.batch(third.id).result.complete
+    assert len([w for w in env.github.writes if w[0] == "create_issue"]) == 2
+
+
+async def test_an_abandoned_new_epic_is_the_themes_epic_too(env: Themes) -> None:
+    await env.synced(issue(1), issue(2), issue(3))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    first = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    e1 = await _epic_of(env, first.id)
+    await _cache_epic(env, e1, 1)
+    await _close(env, e1)
+    await env.themes.add([(REPO, 2)], "sync")
+    plan = await env.themes.to_epic("sync", REPO, new_epic=True)
+    env.github.fail["get:2"] = GitHubRequestError(500, "boom")  # #2's link fails
+    second = await env.themes.start_epic(
+        "sync", REPO, plan.digest, None, env.world.service, new_epic=True
+    )
+    await env.world.service.drain()
+    del env.github.fail["get:2"]
+    env.world.service.abandon(second.id, {})
+    e2 = await _epic_of(env, second.id)
+    await env.themes.add([(REPO, 3)], "sync")
+    again = await env.themes.to_epic("sync", REPO)
+    assert again.epic == IssueRef(REPO, e2)
+    assert len([w for w in env.github.writes if w[0] == "create_issue"]) == 2
+
+
+async def test_new_epic_creates_exactly_one_even_beside_an_open_epic(env: Themes) -> None:
+    await env.synced(issue(1), issue(2))
+    await env.themes.add([(REPO, 1)], "sync")
+    plan = await env.themes.to_epic("sync", REPO)
+    first = await env.themes.start_epic("sync", REPO, plan.digest, None, env.world.service)
+    await env.world.service.drain()
+    await _cache_epic(env, await _epic_of(env, first.id), 1)
+    await env.themes.add([(REPO, 2)], "sync")
+    fresh = await env.themes.to_epic("sync", REPO, new_epic=True)
+    assert isinstance(fresh.epic, CreateIssue)
+    started = await env.themes.start_epic(
+        "sync", REPO, fresh.digest, None, env.world.service, new_epic=True
+    )
+    await env.world.service.drain()
+    assert env.world.pending.batch(started.id).result.complete
+    assert len([w for w in env.github.writes if w[0] == "create_issue"]) == 2

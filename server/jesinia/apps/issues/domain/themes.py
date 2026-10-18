@@ -71,6 +71,11 @@ class NothingToPublishError(ThemeDomainError):
     """No issue in that repo still needs the theme's label."""
 
 
+class ThemeEpicClosedError(ThemeDomainError):
+    """The theme's latest epic is closed: reopen it, or ask for a new epic explicitly (ruling
+    IR59); a new one is never made implicitly."""
+
+
 class ThemesUnavailableError(ThemeDomainError):
     """The KB tag catalog isn't available (the kb service isn't running): new themes wait."""
 

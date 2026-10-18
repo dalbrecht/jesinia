@@ -112,6 +112,11 @@ class InvalidBriefError(EpicDomainError):
     """A brief that can't be posted (blank, or over GitHub's comment limit)."""
 
 
+class GroupEpicExistsError(EpicDomainError):
+    """A new group overlaps a group whose epic exists and is open: its issues go under that
+    epic, never under a second one (ruling IR60)."""
+
+
 class BriefEditedOnGitHubError(EpicDomainError):
     """The brief comment was edited on GitHub since Jesinia posted it: approving would overwrite
     those edits, so nothing is changed unless the author chooses to overwrite."""
@@ -846,6 +851,26 @@ def proposal_origin(suggestion: Suggestion) -> str | None:
     if suggestion.kind != "group":
         raise InvalidChangeError(f"a {suggestion.kind} suggestion isn't a proposal to apply")
     return None
+
+
+def proposal_notes(suggestion: Suggestion) -> dict[str, str]:
+    """What a ``group`` or ``split`` draft's ledger row keeps besides its created issues: the
+    draft (``suggestion``), a group's ``members`` (its sorted refs, IR60) and a split's part
+    titles as they are created (``title:part-<i>``, R5)."""
+    notes = {"suggestion": suggestion.id}
+    payload = suggestion.payload
+    if suggestion.kind == "split":
+        parts = cast(list[dict[str, str]], payload["parts"])
+        for i, part in enumerate(parts, start=1):
+            notes[f"title:part-{i}"] = inline_code(part["title"], limit=TITLE_LIMIT)
+    else:
+        notes["members"] = ",".join(
+            sorted(
+                f"{str(m['repo']).casefold()}#{m['n']}"
+                for m in cast(list[dict[str, object]], payload["issues"])
+            )
+        )
+    return notes
 
 
 def proposal_batch(

@@ -280,8 +280,10 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     - `POST /pending/{batch}/abandon` with `{created?: [{temp_id, repo, n}]}` gives up on an
       unfinished batch of an origin that creates issues, even a pruned one (found through its
       origin's ledger): it never runs again, and the issues it created, plus `created` (issues
-      found on GitHub for a create cut off mid-write), are reused by the next approval for that
-      origin, which creates only what is missing (ruling IR58). It answers the origin and those
+      found on GitHub for a create cut off mid-write: only a create whose result is unknown,
+      or for a pruned batch a temp id of its origin's kind), are reused by the next approval for
+      that origin, which creates only what is missing (ruling IR58). Reused split parts must be
+      the parts the abandoned batch made, in the same places. It answers the origin and those
       issues. A running batch is a 409, a complete one a 400.
   - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
     same batch. The batch keeps the key too, so a replay never applies the tray again, even
@@ -337,12 +339,14 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
     additions (201 with the staged changes; steps already in the tray are reused). A theme no
     issue has is a 404; a repo where no cached issue of the theme lacks the label is a 409
     (`NothingToPublishError`).
-  - `GET /themes/{tag}/epic?repo`: the plan turning the theme into an epic created in `repo`,
+  - `GET /themes/{tag}/epic?repo&new_epic`: the plan turning the theme into an epic in `repo`,
     with its `title`, `body`, children, what is skipped and `digest`; nothing is written. `POST`
-    the same path with `{repo, digest}` approves it: a 202 with the batch (`origin` `epic`) and
-    `Location`. A plan changed since, or with no children, is a 409, and so is an approval
-    while an earlier epic batch for the theme is running or didn't finish (`EarlierBatchError`:
-    retry that batch). Once the theme has its epic, issues added later link under it.
+    the same path with `{repo, digest, new_epic?}` approves it: a 202 with the batch (`origin`
+    `epic`) and `Location`. A plan changed since, or with no children, is a 409, and so is an
+    approval while an earlier epic batch for the theme is running or didn't finish
+    (`EarlierBatchError`: retry or abandon that batch). Once the theme has an epic, the plan
+    links under its latest one; a new epic is planned only with `new_epic` (ruling IR59), and
+    without it a closed epic is a 409 (`ThemeEpicClosedError`: reopen it, or ask for a new one).
   - The tray (`GET /pending`) shows a label setup step with `n` `null` and
     `change.kind` `ensure_label`, and a label addition as `add_label`.
   - Saved filters: `incomplete`, `stale_90d`, `human_needed_could_be_ready` and
@@ -400,9 +404,9 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   setup's executor (ruling IR12).
 - **Conflicts:** a staged parent move records the parent the author saw. If GitHub's parent
   differs at apply time, the step fails as a conflict (`conflict: true`, "moved on GitHub") and
-  nothing moves (ruling IR39). A link already in place on GitHub ("already the parent") is done, never a
-  conflict: nothing changes, so nothing is overwritten. A reorder whose child has left the epic is skipped with a cause,
-  never sent to GitHub (IR41).
+  nothing moves (ruling IR39). A link already in place on GitHub ("already the parent") is
+  done, never a conflict: nothing changes, so nothing is overwritten. A reorder whose child has
+  left the epic is skipped with a cause, never sent to GitHub (IR41).
 - **Close comments:** a close's own comment is posted only when the close happened. A staged
   comment is always posted.
 - **Failures:** an issue stops at its first failed step, and its other steps are skipped. Other
@@ -470,8 +474,12 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   the target is running or didn't finish, approving again is refused (409, "retry batch X, or
   abandon it"): Retry resumes it without repeating a create, and Abandon gives up on it (for one
   that can't complete, or was pruned) while keeping what it created. A complete batch's issues
-  are reused and the origin settled (a draft is marked approved); an abandoned one's are reused
-  by the next approval, which creates only what is missing.
+  are reused and the origin settled: the draft whose batch it was is marked approved, and
+  another draft for the same target is refused ("split already by batch X") and left open. An
+  abandoned batch's issues are reused by the next approval, which creates only what is missing.
+- **One epic per group of issues (IR60):** a new group that shares issues with another group
+  whose epic exists and is open is refused (409, `GroupEpicExistsError`: add the issues to that
+  epic), so overlapping members never get a second epic.
 - **Never twice:** the checklist stays in the body, so each item a conversion creates is
   recorded, before any GitHub write. A later preview matches it to the issue it became ("already
   converted"), or holds it back while that is unknown: an earlier batch still running, one that
@@ -560,15 +568,17 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   live before each add). The label is created only by the staged setup step: if the author undoes
   it, the additions fail with `MissingLabelError` and nothing is created (IR4). A publish that
   can't stage every change takes back what it staged.
-- **One epic per theme (IR56):** a theme epic is one approved batch keyed by the digest of the
-  plan the author saw (IR27, IR45, IR46). The epic is created with no labels. Another repo's
+- **One epic per theme (IR56, IR59):** a theme epic is one approved batch keyed by the digest of
+  the plan the author saw (IR27, IR45, IR46). The epic is created with no labels. Another repo's
   issue gets the "won't fit one PR" warning and another owner's is refused (IR17). An earlier
   epic batch for the theme (in that repo) that is running or didn't finish refuses a new approval
   (409): it may have made the epic, so it is retried or abandoned (an abandon may confirm an epic
   found on GitHub, which is then reused). Once a batch made the epic (recorded in
   `theme_epics` and the ledger, so pruning doesn't forget it), issues added to the theme later
-  link under it while it is open. The batch is recorded for the theme on a replay of the key
-  too, so a record the first request couldn't write isn't lost.
+  link under the theme's latest epic, made by its newest complete or abandoned batch. A new
+  epic is made only when the author asks for one (`new_epic`); a closed latest epic without it
+  is refused, never replaced silently. The batch is recorded for the theme on a replay of the
+  key too, so a record the first request couldn't write isn't lost.
 - **Catalog renames and merges (IR54):** every theme call resolves the stored tags through the
   KB catalog's aliases and rewrites the rows to the canonical name, so a renamed or merged tag
   lists and filters under its new name, and the old name still finds it. Without the catalog
@@ -615,5 +625,6 @@ make ci           # the full gate
 ```
 
 Tests use in-memory GitHub doubles (`tests/apps/issues/test_sync.py` `FakeIssues`,
-`test_labels.py` `FakeGitHub`, `test_apply.py` `FakeWrites`) and a scripted agent (`test_suggest.py` `FakeAgent`), with a
-fake clock, so they make no network calls and never sleep.
+`test_labels.py` `FakeGitHub`, `test_apply.py` `FakeWrites`) and a scripted agent
+(`test_suggest.py` `FakeAgent`), with a fake clock, so they make no network calls and never
+sleep.

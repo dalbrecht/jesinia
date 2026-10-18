@@ -253,6 +253,14 @@ class SqliteApplyStore:
         ).fetchone()
         return None if row is None else (str(row[0]), _origin(*row[1:]))
 
+    def origins(self, prefix: str) -> list[tuple[str, OriginBatch]]:
+        rows = self._conn.execute(
+            "SELECT origin_key, batch_id, state, created_json, notes_json FROM batch_origins "
+            "WHERE substr(origin_key, 1, ?) = ? ORDER BY created_at, rowid",
+            (len(prefix), prefix),
+        )
+        return [(str(row[0]), _origin(*row[1:])) for row in rows]
+
     def abandon(self, batch_id: str, created: Mapping[str, tuple[str, int]], now: datetime) -> None:
         with transaction(self._conn):
             self._conn.execute(
