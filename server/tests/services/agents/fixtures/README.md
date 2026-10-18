@@ -11,3 +11,6 @@
 - `codex_turn.jsonl`: a real `codex exec --json` turn (codex-cli 0.163.0), thread id scrubbed.
 - `codex_tool.jsonl`, `codex_failed.jsonl`: the same event schema with an MCP tool call and
   with a failed turn.
+- `codex_preamble.jsonl`: the shape of a real review-job turn (codex-cli, Oct 2026): a
+  preamble `agent_message` ("I'll check..."), an MCP tool call, then the JSON answer as a
+  second `agent_message`. Each `agent_message` is its own message; the last is the reply.

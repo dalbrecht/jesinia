@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import cache
 from importlib.resources import files
 from pathlib import Path
@@ -56,6 +56,7 @@ from jesinia.services.agents.application.packs import (
     UntrustedDoc,
     wrap_untrusted,
 )
+from jesinia.services.agents.domain.failures import redact_secrets
 from jesinia.services.agents.domain.session import Session, Subject
 from jesinia.services.github.domain.pr import PrCommit
 
@@ -82,6 +83,9 @@ JOB_SUBJECT = "review-job"
 CORRECTNESS_READS = "correctness_reads"
 # Seconds one agent turn of a job may take (a deep correctness pass reads a lot of code).
 JOB_TIMEOUT = 900.0
+# Pauses before each retry of a turn the provider failed only for now (at capacity, rate
+# limited, a 5xx): two retries, backing off. Past them the job fails with that error.
+TRANSIENT_BACKOFF: tuple[float, ...] = (15.0, 45.0)
 # Bytes of commit messages read from the mirror when GitHub's commit list was cut short.
 COMMIT_LOG_LIMIT = 4 * 1024 * 1024
 _ERRORS_SHOWN = 5
@@ -119,6 +123,8 @@ SYSTEM_NOTES_INSTRUCTION: Final = (
 # Headings, fences and separators the inlined pack adds around its files.
 _PACK_OVERHEAD = 2_000
 _FENCED_REPLY = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\n(.*)\n```$", re.DOTALL)
+# A fenced JSON block anywhere in a reply that also has prose around it.
+_FENCED_JSON = re.compile(r"```(?:json)?[ \t]*\n(.*?)\n?```", re.DOTALL | re.IGNORECASE)
 
 ROLE = (
     "You are a code reviewer working for the author inside Jesinia. You review one pull "
@@ -380,9 +386,66 @@ def _problem(error: ValidationError) -> str:
     return f"{error.json_path} fails {error.validator}{detail}"
 
 
+def _load(body: str) -> object:
+    """``body`` parsed as bounded JSON. Raises ``json.JSONDecodeError`` for text that isn't
+    JSON, ``InvalidAgentOutput`` for JSON past the bounds."""
+    try:
+        return json.loads(body, parse_int=_bounded_int, parse_constant=_no_constant)
+    except (InvalidAgentOutput, json.JSONDecodeError):
+        raise
+    except (ValueError, RecursionError) as exc:
+        # Hostile input the guards didn't anticipate: still an invalid reply.
+        raise InvalidAgentOutput(f"the reply could not be parsed ({type(exc).__name__})") from exc
+
+
+def _top_level_objects(text: str) -> list[str]:
+    """The ``{...}`` spans at the top level of ``text``, in order. Braces inside JSON strings
+    don't count; quotes in the prose between objects are ignored."""
+    spans: list[str] = []
+    depth = start = 0
+    in_string = escaped = False
+    for index, char in enumerate(text):
+        if depth == 0:
+            if char == "{":
+                depth, start = 1, index
+        elif in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                spans.append(text[start : index + 1])
+    return spans
+
+
+def _embedded_object(body: str) -> dict[str, object] | None:
+    """The JSON object a prose reply carries: its last fenced JSON block, else its last
+    top-level object that parses; None when it has neither."""
+    candidates = [*_top_level_objects(body), *_FENCED_JSON.findall(body)]
+    for candidate in reversed(candidates):
+        if _nesting_depth(candidate) > MAX_REPLY_DEPTH:
+            continue
+        try:
+            data = _load(candidate.strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
 def parse_job_output(text: str, schema: Mapping[str, object]) -> dict[str, object]:
-    """The JSON object in an agent's reply (bare, or alone in one fenced code block),
-    validated against ``schema``.
+    """The JSON object in an agent's reply (bare, or alone in one fenced code block; failing
+    those, the last fenced JSON block or top-level object in prose around it), validated
+    against ``schema``.
 
     Raises:
         InvalidAgentOutput: too long, nested too deep, an over-long integer, not JSON,
@@ -397,16 +460,15 @@ def parse_job_output(text: str, schema: Mapping[str, object]) -> dict[str, objec
     if _nesting_depth(body) > MAX_REPLY_DEPTH:
         raise InvalidAgentOutput(f"the reply nests deeper than {MAX_REPLY_DEPTH} levels")
     try:
-        data = json.loads(body, parse_int=_bounded_int, parse_constant=_no_constant)
-    except InvalidAgentOutput:
-        raise
+        data = _load(body)
     except json.JSONDecodeError as exc:
-        raise InvalidAgentOutput(
-            f"the reply is not valid JSON ({exc.msg} at line {exc.lineno} column {exc.colno})"
-        ) from exc
-    except (ValueError, RecursionError) as exc:
-        # Hostile input the guards above didn't anticipate: still an invalid reply.
-        raise InvalidAgentOutput(f"the reply could not be parsed ({type(exc).__name__})") from exc
+        # Prose around the answer ("Here it is: ..."): fall back to its last fenced JSON
+        # block or last top-level object before asking the agent again.
+        data = _embedded_object(body)
+        if data is None:
+            raise InvalidAgentOutput(
+                f"the reply is not valid JSON ({exc.msg} at line {exc.lineno} column {exc.colno})"
+            ) from exc
     if not isinstance(data, dict):
         raise InvalidAgentOutput("the reply is not a JSON object")
     # The guards above bound what validation recurses into and how long it takes.
@@ -523,6 +585,9 @@ class JobRunner:
         registry: binds a job's session to its worktree for the repo tools.
         store: artifacts, standards overrides and settings (``review.sqlite``).
         timeout: seconds each agent turn may take.
+        backoff: the pause before each retry of a transiently failed turn (one retry per
+            entry).
+        sleep: waits out a pause (``asyncio.sleep``; tests pass a recorder).
     """
 
     def __init__(
@@ -534,6 +599,8 @@ class JobRunner:
         registry: ReviewSessionRegistry,
         store: JobStore,
         timeout: float = JOB_TIMEOUT,
+        backoff: Sequence[float] = TRANSIENT_BACKOFF,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._sessions = sessions
         self._workspace = workspace
@@ -541,6 +608,8 @@ class JobRunner:
         self._registry = registry
         self._store = store
         self._timeout = timeout
+        self._backoff = tuple(backoff)
+        self._sleep = sleep
 
     async def run(self, job: JobKind, round: Round) -> dict[str, object]:
         """Run ``job`` for ``round``; store and return its schema-valid output.
@@ -891,19 +960,56 @@ class JobRunner:
             # Off the loop: even a capped reply takes a while to validate.
             return await asyncio.to_thread(parse, reply)
         except InvalidAgentOutput as first:
-            log.warning("review.jobs %s output rejected, retrying once: %s", job.value, first)
+            log.warning(
+                "review.jobs %s output rejected, retrying once (session %s): %s",
+                job.value,
+                session_id,
+                first,
+            )
+            # A resumed turn of its own: only its final message is read.
             retry = await self._turn(job, session_id, _corrective(first))
         try:
             return await asyncio.to_thread(parse, retry)
         except InvalidAgentOutput as second:
-            raise JobFailed(job, second) from second
+            raise self._failed(job, session_id, second, str(second)) from second
 
     async def _turn(self, job: JobKind, session_id: str, prompt: str) -> str:
-        try:
-            return await self._sessions.ask(session_id, prompt, timeout=self._timeout)
-        except TimeoutError as exc:
-            timed_out = TimeoutError(f"the agent timed out after {self._timeout:g}s")
-            timed_out.__cause__ = exc
-            raise JobFailed(job, timed_out) from exc
-        except (TurnFailed, SessionBusy, SessionClosed, SessionNotFound) as exc:
-            raise JobFailed(job, exc) from exc
+        """The final message of one turn; a turn the provider failed only for now is asked
+        again after each ``backoff`` pause, then the job fails with the provider's error."""
+        retries = iter(self._backoff)
+        while True:
+            try:
+                return await self._sessions.ask(session_id, prompt, timeout=self._timeout)
+            except TurnFailed as exc:
+                pause = next(retries, None) if exc.transient else None
+                if pause is None:
+                    detail = f"the agent reported an error: {exc}"
+                    raise self._failed(job, session_id, exc, detail) from exc
+                log.warning(
+                    "review.jobs %s turn failed for now, retrying in %gs (session %s): %s",
+                    job.value,
+                    pause,
+                    session_id,
+                    redact_secrets(str(exc)),
+                )
+                await self._sleep(pause)
+            except TimeoutError as exc:
+                timed_out = TimeoutError(f"the agent timed out after {self._timeout:g}s")
+                timed_out.__cause__ = exc
+                raise self._failed(job, session_id, timed_out, str(timed_out)) from exc
+            except SessionBusy as exc:
+                detail = "the agent session was still running its previous turn"
+                raise self._failed(job, session_id, exc, detail) from exc
+            except SessionClosed as exc:
+                raise self._failed(job, session_id, exc, "the agent session was closed") from exc
+            except SessionNotFound as exc:
+                detail = "the agent session no longer exists"
+                raise self._failed(job, session_id, exc, detail) from exc
+
+    @staticmethod
+    def _failed(job: JobKind, session_id: str, cause: BaseException, detail: str) -> JobFailed:
+        """The job's failure in readable words, secrets masked, the session id secondary;
+        logged here since the caller only sees the summary."""
+        readable = f"{redact_secrets(detail)} (session {session_id})"
+        log.warning("review.jobs %s failed (%s): %s", job.value, type(cause).__name__, readable)
+        return JobFailed(job, cause, readable)

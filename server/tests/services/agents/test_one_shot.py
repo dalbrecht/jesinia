@@ -241,3 +241,73 @@ async def test_restart_closes_stranded_one_shot_sessions(make) -> None:  # type:
     assert not restarted.dir_for(session.id).exists()
     with pytest.raises(SessionClosed):
         await restarted.send(session.id, "again")
+
+
+class LingeringRunner:
+    """Replies with the next scripted final message, then lingers like a CLI that has sent
+    its last record but not yet exited (the real Codex process does)."""
+
+    name = "fake"
+
+    def __init__(self, replies: list[str], linger: float = 0.05) -> None:
+        self.replies, self.linger = replies, linger
+        self.requests: list[TurnRequest] = []
+
+    async def status(self) -> RunnerStatus:
+        return RunnerStatus(True, "linger", "lingers after its turn")
+
+    async def run(self, req: TurnRequest) -> AsyncIterator[AgentEvent]:
+        self.requests.append(req)
+        reply = self.replies.pop(0)
+        yield TextDelta("Let me check.")
+        yield TextDelta(reply)
+        yield TurnDone(f"agent-{len(self.requests)}", None, reply)
+        await asyncio.sleep(self.linger)
+
+
+async def test_ask_returns_only_the_turns_final_message(make) -> None:  # type: ignore[no-untyped-def]
+    answer = '{"summary": "x"}'
+    runner = FakeRunner(
+        [
+            TextDelta("I’ll check the changed code."),
+            TextDelta(answer),
+            TurnDone("agent-1", None, answer),
+        ]
+    )
+    svc: SessionService = make(runner)
+    session = await svc.create(SUBJ, "fake", _pack())
+    assert await svc.ask(session.id, "go") == answer
+
+
+async def test_a_second_ask_runs_its_own_resumed_turn_while_the_first_winds_down(make) -> None:  # type: ignore[no-untyped-def]
+    """The corrective retry of a review job asks again the moment the first reply is in:
+    it must really run a resumed turn, and get only that turn's final message."""
+    runner = LingeringRunner(["not json", '{"ok": true}'])
+    svc: SessionService = make(runner)
+    session = await svc.create(SUBJ, "fake", _pack())
+    assert await svc.ask(session.id, "first") == "not json"
+    assert await svc.ask(session.id, "fix it") == '{"ok": true}'
+    first, retry = runner.requests
+    assert retry.prompt == "fix it" and retry.resume_id == "agent-1"
+    asked = [e.data["text"] for e in svc.store.events(session.id) if e.kind == "user_message"]
+    assert asked == ["first", "fix it"]
+
+
+async def test_ask_fails_with_its_cause_when_the_turn_has_no_final_message(make) -> None:  # type: ignore[no-untyped-def]
+    svc: SessionService = make(FakeRunner([TurnDone("agent-1", None)]))
+    session = await svc.create(SUBJ, "fake", _pack())
+    with pytest.raises(TurnFailed, match="no final message"):
+        await svc.ask(session.id, "hi")
+
+
+async def test_ask_without_a_final_message_falls_back_to_the_turns_text(make) -> None:  # type: ignore[no-untyped-def]
+    """A runner that reports no final message (the scripted test runner) still replies with
+    its text."""
+    svc: SessionService = make(FakeRunner([TextDelta("a"), TextDelta("b"), TurnDone("x", None)]))
+    session = await svc.create(SUBJ, "fake", _pack())
+    assert await svc.ask(session.id, "hi") == "ab"
+
+
+def test_turn_failures_say_whether_they_are_transient() -> None:
+    assert TurnFailed("Selected model is at capacity. Please try a different model.").transient
+    assert not TurnFailed("the CLI is logged out").transient

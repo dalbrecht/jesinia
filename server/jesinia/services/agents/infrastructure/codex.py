@@ -86,6 +86,9 @@ class CodexStreamParser:
     def __init__(self) -> None:
         self.thread_id: str | None = None
         self.malformed: str | None = None  # the first unparseable record, if any
+        # Each completed agent_message item is a whole message of its own (a preamble
+        # before the tool calls is one); the last one is the turn's reply.
+        self.last_message: str | None = None
 
     def feed(self, line: str) -> list[AgentEvent]:
         try:
@@ -102,7 +105,8 @@ class CodexStreamParser:
         if kind in ("item.started", "item.completed"):
             item = d.get("item") or {}
             if item.get("type") == "agent_message" and kind == "item.completed":
-                return [TextDelta(str(item.get("text", "")))]
+                self.last_message = str(item.get("text", ""))
+                return [TextDelta(self.last_message)]
             if item.get("type") == "mcp_tool_call":
                 name = str(item.get("tool", ""))
                 if kind == "item.started":
@@ -113,7 +117,7 @@ class CodexStreamParser:
         if kind == "turn.completed":
             if self.malformed is not None:
                 return [RunError(f"codex sent a malformed record: {self.malformed!r}")]
-            return [TurnDone(self.thread_id or "", None)]
+            return [TurnDone(self.thread_id or "", None, self.last_message)]
         if kind == "turn.failed":
             return [RunError(str((d.get("error") or {}).get("message", "turn failed")))]
         return []

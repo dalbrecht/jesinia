@@ -53,7 +53,7 @@ def test_parse_codex_real_turn() -> None:
     evs = _events("codex_turn.jsonl")
     assert evs == [
         TextDelta("hello from codex"),
-        TurnDone("22222222-2222-4222-8222-222222222222", None),
+        TurnDone("22222222-2222-4222-8222-222222222222", None, "hello from codex"),
     ]
 
 
@@ -61,6 +61,26 @@ def test_parse_codex_tool_turn() -> None:
     evs = _events("codex_tool.jsonl")
     assert evs[:2] == [ToolUse("kb_read", {"id": "p1"}), ToolResult("kb_read", True)]
     assert TextDelta("Read it.") in evs and isinstance(evs[-1], TurnDone)
+
+
+def test_each_agent_message_is_its_own_message_and_the_last_is_the_reply() -> None:
+    """Codex sends a preamble ("I'll check...") as its own ``agent_message`` before its tool
+    calls; the turn's reply is only the final message, never the messages run together."""
+    evs = _events("codex_preamble.jsonl")
+    answer = '{"summary": "Fixes a crash.", "sources": ["pr.md"]}'
+    assert evs == [
+        TextDelta("I\u2019ll check the changed code against the PR\u2019s stated purpose."),
+        ToolUse("repo_git", {"cmd": "show"}),
+        ToolResult("repo_git", True),
+        TextDelta(answer),
+        TurnDone("33333333-3333-4333-8333-333333333333", None, answer),
+    ]
+
+
+def test_a_turn_with_no_agent_message_has_no_final_message() -> None:
+    p = CodexStreamParser()
+    p.feed('{"type": "thread.started", "thread_id": "t-1"}')
+    assert p.feed('{"type": "turn.completed"}') == [TurnDone("t-1", None, None)]
 
 
 def test_parse_codex_failure() -> None:
