@@ -7,6 +7,8 @@ import re
 from datetime import UTC, datetime
 
 _LABEL = re.compile(r"[^\w.:/@+-]")
+# A context-window suffix some runners report (``claude-opus-5-5[1m]``, issue #15).
+_CONTEXT_SUFFIX = re.compile(r"\[[^\]]*\]$")
 
 
 def inert(text: str) -> str:
@@ -15,8 +17,9 @@ def inert(text: str) -> str:
 
 
 def provenance_label(value: str) -> str:
-    """An agent or model name safe inside the marker: one token, no comment syntax."""
-    return _LABEL.sub("-", value)[:80] or "unknown"
+    """An agent or model name safe inside the marker: one token, no comment syntax, and no
+    bracketed context suffix (``claude-opus-5-5[1m]`` is ``claude-opus-5-5``)."""
+    return _LABEL.sub("-", _CONTEXT_SUFFIX.sub("", value.strip()))[:80] or "unknown"
 
 
 def wrap_ai(text: str, *, agent: str, model: str, at: datetime, session: str) -> str:

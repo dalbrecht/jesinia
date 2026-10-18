@@ -54,6 +54,7 @@ describe("Settings layout (R27: one section per view)", () => {
       ["Git sync", "#sync"],
       ["Agents", "#agents"],
       ["Tags", "#tags"],
+      ["Review", "#review"],
       ["RSS", "#rss"],
       ["Issues", "#issues"],
       ["Conflicts", "#conflicts"],

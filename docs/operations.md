@@ -171,10 +171,39 @@ picks it up (no restart). `/healthz` reports the `github` module as "no token: r
   GitHub says the limit resets. A failed sync keeps the cached queue and says why.
 - **Pre-reviews:** once CI passes and pushes have settled (10 minutes), Jesinia
   runs the correctness pass, findings and recommendation in the background (the default,
-  *triage*; *everything* and *on open* are set through `PUT /api/review/settings` until
-  Review's settings page ships in a later release). Your agent (default Codex, or Claude Code)
-  reads the PR's checkout only through read-only repo tools. A PR you **Load** or open skips
-  the wait. **Review anyway** goes ahead past a failing CI.
+  *triage*; choose *everything* or *on open only* in **Settings → Review**, for every repo or
+  per repo). Your agent (default Codex, or Claude Code, also in Settings → Review) reads the
+  PR's checkout only through read-only repo tools. A PR you **Load** or open skips the wait.
+  **Review anyway** goes ahead past a failing CI.
+- **Settings → Review** (`/settings/#review`):
+  - **Repos:** whether each is watched; its pre-review; its automated reviewer (a GitHub
+    login such as `copilot`: Jesinia waits up to 30 minutes for its review on a new head);
+    and its **metrics**, one criterion per line. Leave the metrics empty to let the standards
+    decide what is scored. A change to a repo's metrics applies from its next review round:
+    rounds already started keep the set they began with. Each save sends only what it
+    changes, so a repo confirmed in the queue or edited in another tab is never put back.
+  - **Standards:** your coding-standards checkout (the base layer) and an optional folder of
+    your own standards documents (the last layer), each an absolute path or `~/…` (not `/`
+    or your home folder itself). Only the `*.md` files directly in a folder are read;
+    subfolders and symlinks are skipped.
+  - **What Jesinia thinks you know:** each folder and topic Jesinia has a record of, how
+    familiar it thinks you are, and why (your commits, the reviews you finished, quiz
+    results). Mark one **I know this** or **I don't know this**, or clear the mark; a mark on a
+    folder covers everything beneath it and the list says where an inherited mark comes from.
+    **Show more** reads the next areas. KB pages aren't counted yet.
+- **Kept reviews:** a deep review you post or mark **Done** is kept in your KB as
+  `Reviews/<owner>-<repo>/#<n> <title>.md`, with its overview, the findings that mattered and
+  your notes; keeping it again updates its section and keeps your edits. The PR view's last
+  page says where it went, or why it couldn't be written, with **Retry** (**Keep it** before
+  a first keep).
+- **How it works:** each repo has a KB page, `Reviews/<owner>-<repo>/How it works.md`,
+  describing its main parts. The first deep review drafts it and later approved deep reviews
+  draft updates: nothing is written until you choose **Accept** (**Not now** leaves the page
+  as it is). If you edited the page since the draft was made, the accept is refused and a
+  fresh draft is made against your edit. Deep reviews read the page and flag PRs that
+  contradict it as design findings.
+- **Metrics trend:** a deep review's **Metrics** page ends with the repo's quality trend: one
+  point per scored round, its mean score from 0 to 10, with the numbers in a table beneath.
 - **Checkouts:** each watched repo gets a bare mirror under `review/repos/` and one checkout
   per reviewed head; unneeded ones are pruned daily. Jesinia never pushes.
 - **Posting:** nothing reaches GitHub until you choose **Comment**, **Request changes** or

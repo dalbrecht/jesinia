@@ -214,6 +214,8 @@
   color: var(--jx-danger);
   font-size: var(--jx-text-sm);
 }
+
+/* Settings → Review and Issues: one fieldset per repo, and Review's knowledge model units. */
 .repo {
   display: grid;
   gap: var(--jx-space-3);
@@ -243,4 +245,48 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--jx-space-2);
+}
+.units {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.unit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px auto;
+  align-items: center;
+  gap: var(--jx-space-1) var(--jx-space-3);
+  padding: var(--jx-space-2) 0;
+  border-bottom: 1px solid var(--jx-border);
+}
+.unitName {
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-sm);
+  overflow-wrap: anywhere;
+}
+.unitSource {
+  grid-column: 1 / -1;
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-xs);
+}
+.familiarity {
+  display: block;
+  height: 6px;
+  border-radius: var(--jx-radius-full);
+  background: var(--jx-surface-sunken);
+  overflow: hidden;
+}
+.familiarity > span {
+  display: block;
+  height: 100%;
+  background: var(--jx-accent);
+}
+@media (max-width: 560px) {
+  .unit {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .familiarity {
+    grid-column: 1 / -1;
+  }
 }

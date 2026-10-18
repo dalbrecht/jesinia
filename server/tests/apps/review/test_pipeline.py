@@ -11,7 +11,7 @@ import asyncio
 import json
 import sqlite3
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
@@ -398,7 +398,7 @@ async def test_triage_setting_runs_only_triage_jobs(env: Env) -> None:
     assert row.depth == "quick"
     artifacts = env.artifacts(round_id)
     assert artifacts["depth"] == {
-        "proposed": "quick", "correctness": "quick", "lines": 15, "files": 2
+        "proposed": "quick", "familiarity": None, "correctness": "quick", "lines": 15, "files": 2
     }  # fmt: skip
     coverage = artifacts["coverage"]
     assert isinstance(coverage, dict) and coverage["source"] == "correctness"
@@ -628,8 +628,8 @@ async def test_recommend_sees_depth_coverage_and_deduplicated_findings(env: Env)
         "pct": 42.9, "reviewable_pct": 60.0, "complete": True,
         "claimed_pct": 42.9, "claimed_reviewable_pct": 60.0,
     }  # fmt: skip
-    assert artifacts["depth"] == {"proposed": "quick", "correctness": "deep", "lines": 15,
-                                  "files": 2}  # fmt: skip
+    assert artifacts["depth"] == {"proposed": "quick", "familiarity": None,
+                                  "correctness": "deep", "lines": 15, "files": 2}  # fmt: skip
 
 
 async def test_pr_text_never_reaches_the_knowledge_summary(env: Env) -> None:
@@ -639,19 +639,24 @@ async def test_pr_text_never_reaches_the_knowledge_summary(env: Env) -> None:
     env.github.pr = hostile
     env.github.commits = [PrCommit("c" * 40, INJECTION, "alice", None)]
     env.files.script = [[PrFile(f"{INJECTION}.py", "added", 1, 0, None, None)]]
-    asked: list[str] = []
+    asked: list[tuple[str, tuple[str, ...]]] = []
 
-    def knowledge(repo: str) -> str:
-        asked.append(repo)
-        return "The author knows src/ well."
+    class Knowledge:
+        def assess(self, repo: str, paths: Sequence[str]) -> tuple[float | None, str]:
+            return None, self.summary(repo, paths)
 
+        def summary(self, repo: str, paths: Sequence[str]) -> str:
+            asked.append((repo, tuple(paths)))
+            return "The author knows src/ well."
+
+    knowledge = Knowledge()
     pipeline = Pipeline(
         github=env.github, files=env.files, workspace=env.workspace, jobs=env.jobs,
         store=env.store, bus=EventBus(), clock=env.clock, knowledge=knowledge,
     )  # fmt: skip
     ref = env.add(hostile)
     await pipeline.prereview(env.request(ref, "triage"))
-    assert asked == ["acme/web"]
+    assert asked == [("acme/web", ("src/app.py", "uv.lock"))]  # the diff's paths, as names
     assert {r.knowledge for r in env.jobs.rounds} == {"The author knows src/ well."}
     assert all(INJECTION not in r.knowledge for r in env.jobs.rounds)
     # The PR's text reaches the jobs only as the PR, which they fence as untrusted.
@@ -1513,3 +1518,54 @@ async def test_a_depth_switch_while_the_round_is_still_preparing_reaches_the_new
     by_kind = dict(zip(env.jobs.ran, env.jobs.rounds, strict=True))
     for kind in (JobKind.BACKGROUND, JobKind.METRICS, JobKind.QUIZ):
         assert by_kind[kind].depth == "deep", kind
+
+
+# --- per-repo metric overrides (plan Task 15) ---------------------------------------------------
+
+
+async def test_a_repos_metric_overrides_apply_to_the_next_round_not_an_existing_one(
+    env: Env,
+) -> None:
+    env.store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Security", "Tests")))
+    ref = env.add()
+    await prereview(env)  # round 1 is prepared: it keeps the criteria in force now
+    first, _ = latest(env, ref)
+    assert env.artifacts(first)["metric_criteria"] == ["Security", "Tests"]
+    env.store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Docs",)))
+    env.jobs.rounds.clear()
+    env.jobs.ran.clear()
+    await env.pipeline.open(ref, depth="deep")  # the same round, prepared again on open
+    await env.pipeline.drain()
+    ran = zip(env.jobs.rounds, env.jobs.ran, strict=True)
+    (scored,) = [r for r, job in ran if job is JobKind.METRICS]
+    assert scored.id == first and scored.metric_criteria == ("Security", "Tests")
+    assert env.artifacts(first)["metric_criteria"] == ["Security", "Tests"]
+    # The next round of the repo is scored on the new set.
+    env.jobs.rounds.clear()
+    request = env.request(ref, "everything")
+    await env.pipeline.prereview(request)
+    assert request.round_id != first
+    assert env.artifacts(request.round_id)["metric_criteria"] == ["Docs"]
+    assert {r.metric_criteria for r in env.jobs.rounds} == {("Docs",)}
+
+
+async def test_a_repo_without_metric_overrides_leaves_the_criteria_to_the_standards(
+    env: Env,
+) -> None:
+    ref = env.add()
+    await prereview(env)
+    round_id, _ = latest(env, ref)
+    assert env.artifacts(round_id)["metric_criteria"] is None
+    assert {r.metric_criteria for r in env.jobs.rounds} == {None}
+
+
+async def test_a_round_keeps_the_metric_set_in_force_when_it_started(env: Env) -> None:
+    """Fix round 1 M2: the set is taken when the round starts, so a change saved between a
+    round's start and its preparation still waits for the next round."""
+    env.store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Security",)))
+    ref = env.add()
+    request = env.request(ref, "everything")
+    env.store.upsert_repo(RepoConfig("acme/web", watched=True, metrics=("Docs",)))
+    await env.pipeline.prereview(request)
+    assert env.artifacts(request.round_id)["metric_criteria"] == ["Security"]
+    assert {r.metric_criteria for r in env.jobs.rounds} == {("Security",)}

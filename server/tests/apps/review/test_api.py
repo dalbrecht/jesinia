@@ -23,6 +23,8 @@ from fastapi import APIRouter, FastAPI
 
 from jesinia.apps.review.api.routes import build_router
 from jesinia.apps.review.api.tools import build_review_tools
+from jesinia.apps.review.application.keep import KeepService
+from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import QueueService
@@ -30,6 +32,7 @@ from jesinia.apps.review.application.reviews import ReviewReads
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.posting import Draft
 from jesinia.apps.review.domain.queue import PrNotInQueueError, PrRef, RepoConfig, snapshot_of
+from jesinia.apps.review.infrastructure.knowledge_store import SqliteKnowledgeStore
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.module import REVIEW_DB, ReviewModule
 from jesinia.core.app import create_app
@@ -42,7 +45,12 @@ from jesinia.core.module import AppContext, CallContext, ModuleHealth, ToolDef
 from jesinia.registry import modules
 from jesinia.services.github.application.service import GitHubRequestError, GitHubUnavailable
 from jesinia.services.github.domain.pr import PrFile
+from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.tags import TagService
+from jesinia.services.kb.infrastructure.fs import LocalFiles
+from jesinia.services.kb.infrastructure.index import SqliteIndex
 from tests.apps.review.fakes import HEAD, FakeClock, FakePullRequests, pull
+from tests.apps.review.test_keep import KB_DB
 from tests.apps.review.test_pipeline import (
     FakeFiles as PipelineFiles,
 )
@@ -72,6 +80,11 @@ class Host:
     reviews: ReviewReads
     idempotency: SqliteIdempotencyStore
     stacks: StackReviews
+    knowledge: KnowledgeService
+    keeper: KeepService
+
+    async def keep_finished(self, round_id: int) -> None:
+        await self.keeper.keep_finished(round_id)
 
 
 class HostModule:
@@ -127,6 +140,16 @@ class StackJobsUnused:
         raise AssertionError("no stack job runs for a single PR")
 
 
+def keeper_in(
+    tmp_path: Path, store: SqliteReviewStore, clock: FakeClock
+) -> tuple[KeepService, sqlite3.Connection]:
+    """A keeper over a fresh KB in ``tmp_path`` (and its index's connection, to close)."""
+    (tmp_path / "kb").mkdir()
+    kb_conn = open_db(tmp_path / "kbdata", KB_DB)
+    kb = KbService(LocalFiles(tmp_path / "kb"), SqliteIndex(kb_conn), EventBus())
+    return KeepService(kb=kb, tags=TagService(kb, None), store=store, clock=clock), kb_conn
+
+
 def keyed() -> dict[str, str]:
     return {IDEMPOTENCY_HEADER: str(uuid.uuid4())}
 
@@ -139,7 +162,7 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @pytest.fixture
-async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
+async def env(cfg: Config, conn: sqlite3.Connection, tmp_path: Path) -> AsyncIterator[Env]:
     store = SqliteReviewStore(conn)
     store.upsert_repo(RepoConfig("acme/web", watched=True))
     store.set_viewer("me")
@@ -175,7 +198,11 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
         clock=clock,
         bus=EventBus(),
     )
-    host = Host(queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks)
+    knowledge = KnowledgeService(store=SqliteKnowledgeStore(conn), clock=clock, email_key=b"k" * 32)
+    keeper, kb_conn = keeper_in(tmp_path, store, clock)
+    host = Host(
+        queue, pipeline, posting, reads, SqliteIdempotencyStore(conn), stacks, knowledge, keeper
+    )
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
         transport = httpx.ASGITransport(app=app)
@@ -184,11 +211,19 @@ async def env(cfg: Config, conn: sqlite3.Connection) -> AsyncIterator[Env]:
         ) as client:
             yield Env(client, store, prs, clock, jobs, poster, host, snapshot.ref)
     await pipeline.drain()
+    kb_conn.close()
 
 
 # --- auth and idempotency (carry g) -------------------------------------------------------------
 
-READS = [("GET", f"{API}/queue"), ("GET", PR), ("GET", f"{PR}/drafts"), ("GET", f"{API}/settings")]
+READS = [
+    ("GET", f"{API}/queue"),
+    ("GET", PR),
+    ("GET", f"{PR}/drafts"),
+    ("GET", f"{API}/settings"),
+    ("GET", f"{API}/knowledge"),
+    ("GET", f"{API}/metrics?repo=acme/web"),
+]
 WRITES = [
     ("POST", f"{API}/load", {"ref": "acme/web#1"}),
     ("POST", f"{API}/queue/acme/web/1/dismiss", None),
@@ -200,7 +235,11 @@ WRITES = [
     ("PUT", f"{PR}/drafts", {"summary": "", "drafts": []}),
     ("POST", f"{PR}/post", {"event": "COMMENT", "confirm": [], "digest": "x"}),
     ("POST", f"{PR}/done", None),
+    ("POST", f"{PR}/keep", None),
+    ("POST", f"{PR}/system/accept", {"round_id": 1, "base_rev": None}),
     ("PUT", f"{API}/settings", {"prereview": "triage", "runner": "codex", "repos": []}),
+    ("PUT", f"{API}/knowledge/repo/acme/web/src", {"override": "known"}),
+    ("POST", f"{PR}/quiz", {"round_id": 1, "right": 1, "answered": 1}),
     ("POST", f"{API}/stacks/acme/web/1/open", None),
     (
         "POST",
@@ -544,12 +583,95 @@ async def test_done_marks_the_latest_round(env: Env) -> None:
     assert done.status_code == 200 and done.json()["id"] == round_id and done.json()["done"]
 
 
+def _deep(env: Env) -> int:
+    """A finished deep round with an overview (enough to keep and to seed How it works)."""
+    round_id = env.round()
+    env.store._conn.execute("UPDATE rounds SET depth = 'deep' WHERE id = ?", (round_id,))
+    env.store.put_artifact(
+        round_id, "overview", {"summary": "s", "purpose": "Greets people.", "sources": []}
+    )
+    return round_id
+
+
+async def test_done_keeps_a_deep_review_and_its_page_can_be_kept_again(env: Env) -> None:
+    round_id = _deep(env)
+    done = await env.client.post(f"{PR}/done", headers=keyed(), json={"round_id": round_id})
+    assert done.status_code == 200
+    artifacts = (await env.client.get(PR)).json()["artifacts"]
+    assert artifacts["kept"]["state"] == "kept"
+    assert artifacts["kept"]["path"].startswith("Reviews/acme-web/#1 ")
+    assert artifacts["system_draft"]["kind"] == "seed"
+    assert "Greets people." in artifacts["system_draft"]["text"]
+
+    again = await env.client.post(f"{PR}/keep", headers=keyed(), json={"round_id": round_id})
+    assert again.status_code == 200
+    assert again.json()["page_id"] == artifacts["kept"]["page_id"]
+
+    # Without the KB the answer says why, as the round does; nothing fails.
+    env.host.keeper._kb.set_files(None, "no KB path is configured")
+    failed = await env.client.post(f"{PR}/keep", headers=keyed())
+    assert failed.status_code == 200
+    assert failed.json() == {
+        "state": "failed",
+        "page_id": None,
+        "path": None,
+        "error": "no KB path is configured",
+    }
+
+
+async def test_a_quick_review_isnt_kept(env: Env) -> None:
+    round_id = env.round()
+    assert (await env.client.post(f"{PR}/done", headers=keyed())).status_code == 200
+    assert "kept" not in (await env.client.get(PR)).json()["artifacts"]
+    refused = await env.client.post(f"{PR}/keep", headers=keyed(), json={"round_id": round_id})
+    assert refused.status_code == 409 and refused.json()["error"] == "NotKeepable"
+    missing = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": round_id, "base_rev": None}
+    )
+    assert missing.status_code == 404 and missing.json()["error"] == "NoSystemDraft"
+
+
+async def test_how_it_works_is_written_on_accept_and_never_over_an_edit(env: Env) -> None:
+    round_id = _deep(env)
+    await env.client.post(f"{PR}/done", headers=keyed())
+    accept = {"round_id": round_id, "base_rev": None}
+    written = await env.client.post(f"{PR}/system/accept", headers=keyed(), json=accept)
+    assert written.status_code == 200
+    assert written.json()["path"] == "Reviews/acme-web/How it works.md"
+    # The author was shown a different draft: refused, nothing written.
+    stale = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": round_id, "base_rev": "0" * 64}
+    )
+    assert stale.status_code == 200  # accepted already: the page as it is
+    other = _deep(env)
+    env.store.mark_round_done(other)
+    await env.host.keeper.retry_keep(env.ref, other)  # no approval: no update drafted
+    refused = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": other, "base_rev": None}
+    )
+    assert refused.status_code == 404
+
+
+async def test_a_conflicting_or_unwritable_how_it_works_is_typed(env: Env) -> None:
+    round_id = _deep(env)
+    await env.client.post(f"{PR}/done", headers=keyed())
+    accept = {"round_id": round_id, "base_rev": "f" * 64}
+    changed = await env.client.post(f"{PR}/system/accept", headers=keyed(), json=accept)
+    assert changed.status_code == 409 and changed.json()["error"] == "SystemPageChanged"
+    env.host.keeper._kb.set_files(None, "no KB path is configured")
+    gone = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": round_id, "base_rev": None}
+    )
+    assert gone.status_code == 503 and gone.json()["error"] == "KbUnavailable"
+
+
 async def test_settings_round_trip(env: Env) -> None:
     default = (await env.client.get(f"{API}/settings")).json()
     assert default["prereview"] == "triage" and default["runner"] == "codex"
+    assert default["standards_dir"] is None and default["standards_user_dir"] is None
     assert default["repos"] == [
         {"repo": "acme/web", "watched": True, "suggested": False, "prereview": None,
-         "automated_reviewer": None}
+         "automated_reviewer": None, "metrics": None}
     ]  # fmt: skip
     wanted = {
         "prereview": "everything",
@@ -567,6 +689,105 @@ async def test_settings_round_trip(env: Env) -> None:
         f"{API}/settings", json={**wanted, "runner": "../bin/sh"}, headers=keyed()
     )
     assert bad.status_code == 400 and bad.json()["error"] == "InvalidSettingError"
+
+
+async def test_every_review_setting_round_trips(env: Env, tmp_path: Path) -> None:
+    """Settings → Review (plan Task 15): the pre-review default, the runner, the standards
+    folders, and per repo whether it is watched, its pre-review, automated reviewer and
+    metrics."""
+    standards, mine = tmp_path / "coding-standards", tmp_path / "my-standards"
+    web = {"repo": "acme/web", "watched": False, "suggested": False, "prereview": "everything",
+           "automated_reviewer": "copilot", "metrics": ["Security", "Tests"]}  # fmt: skip
+    api = {"repo": "acme/api", "watched": True, "suggested": False, "prereview": None,
+           "automated_reviewer": None, "metrics": None}  # fmt: skip
+    wanted = {
+        "prereview": "on_open",
+        "runner": "claude",
+        "standards_dir": str(standards),
+        "standards_user_dir": str(mine),
+        "repos": [web, api],
+    }
+    saved = await env.client.put(f"{API}/settings", json=wanted, headers=keyed())
+    assert saved.status_code == 200
+    now = (await env.client.get(f"{API}/settings")).json()
+    assert now == {**wanted, "repos": [api, web]}  # sorted by repo
+    assert env.store.standards_dir() == standards and env.store.standards_user_dir() == mine
+    assert env.store.repo_configs()["acme/web"].metrics == ("Security", "Tests")
+    # Fields left out keep their values; an empty folder clears it.
+    partial = {"prereview": "triage", "runner": "codex",
+               "repos": [{"repo": "acme/web", "watched": True}]}  # fmt: skip
+    kept = (await env.client.put(f"{API}/settings", json=partial, headers=keyed())).json()
+    assert kept["standards_dir"] == str(standards)
+    kept_web = next(r for r in kept["repos"] if r["repo"] == "acme/web")
+    assert kept_web["watched"] is True and kept_web["metrics"] == ["Security", "Tests"]
+    # Codex P2: every per-repo field left out keeps its value, not only metrics.
+    assert kept_web["prereview"] == "everything" and kept_web["automated_reviewer"] == "copilot"
+    only_metrics = {"prereview": "triage", "runner": "codex",
+                    "repos": [{"repo": "acme/web", "metrics": ["Docs"]}]}  # fmt: skip
+    after_metrics = (
+        await env.client.put(f"{API}/settings", json=only_metrics, headers=keyed())
+    ).json()
+    web_now = next(r for r in after_metrics["repos"] if r["repo"] == "acme/web")
+    assert web_now == {**web, "watched": True, "metrics": ["Docs"]}
+    # Codex P2 round 3: the pre-review default and the runner left out keep theirs too.
+    set_elsewhere = {"prereview": "everything", "runner": "claude", "repos": []}
+    await env.client.put(f"{API}/settings", json=set_elsewhere, headers=keyed())
+    repo_only = {"repos": [{"repo": "acme/web", "metrics": ["Docs"]}]}
+    kept_globals = (await env.client.put(f"{API}/settings", json=repo_only, headers=keyed())).json()
+    assert kept_globals["prereview"] == "everything" and kept_globals["runner"] == "claude"
+    # A repo not yet known, sent with only its name, gets the defaults.
+    fresh = {"prereview": "triage", "runner": "codex", "repos": [{"repo": "acme/new"}]}
+    new = next(
+        r
+        for r in (await env.client.put(f"{API}/settings", json=fresh, headers=keyed())).json()[
+            "repos"
+        ]
+        if r["repo"] == "acme/new"
+    )
+    assert new == {"repo": "acme/new", "watched": False, "suggested": False, "prereview": None,
+                   "automated_reviewer": None, "metrics": None}  # fmt: skip
+    cleared = {**partial, "standards_dir": "", "standards_user_dir": None,
+               "repos": [{"repo": "acme/web", "watched": True, "metrics": []}]}  # fmt: skip
+    after = (await env.client.put(f"{API}/settings", json=cleared, headers=keyed())).json()
+    assert after["standards_dir"] is None and after["standards_user_dir"] is None
+    assert next(r for r in after["repos"] if r["repo"] == "acme/web")["metrics"] is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"standards_dir": "relative/path"},
+        {"standards_user_dir": "/tmp/bad\x00name"},
+        {"repos": [{"repo": "acme/web", "watched": True, "metrics": ["a\u202eb"]}]},
+        {"repos": [{"repo": "acme/web", "watched": True, "metrics": ["x" * 121]}]},
+    ],
+)
+async def test_review_settings_refuse_bad_folders_and_metrics(
+    env: Env, change: dict[str, object]
+) -> None:
+    body = {"prereview": "triage", "runner": "codex", "repos": [], **change}
+    response = await env.client.put(f"{API}/settings", json=body, headers=keyed())
+    assert response.status_code == 400 and response.json()["error"] == "InvalidSettingError"
+    assert env.store.standards_dir() is None
+
+
+async def test_metrics_history_serves_a_repos_points(env: Env) -> None:
+    empty = await env.client.get(f"{API}/metrics", params={"repo": "acme/web"})
+    assert empty.status_code == 200 and empty.json() == {"repo": "acme/web", "points": []}
+    round_id = env.round()
+    scores = [{"criterion": INJECTION, "rule": {"id": "x.md", "layer": "base"}, "score": 7,
+               "note": "n"}]  # fmt: skip
+    env.store.put_artifact(round_id, "metrics", {"scores": scores})
+    body = (await env.client.get(f"{API}/metrics", params={"repo": "Acme/Web"})).json()
+    assert body["repo"] == "acme/web"
+    (point,) = body["points"]
+    assert point["round_id"] == round_id and point["number"] == 1 and point["mean"] == 7.0
+    assert point["scores"] == [{"criterion": INJECTION, "score": 7.0}]
+    assert point["head_sha"] == HEAD and point["at"].startswith("20")
+    bad = await env.client.get(f"{API}/metrics", params={"repo": "not a repo"})
+    assert bad.status_code == 400 and bad.json()["error"] == "InvalidPrRefError"
+    missing = await env.client.get(f"{API}/metrics")
+    assert missing.status_code == 422
 
 
 # --- MCP: read-only, PR text fenced (carry h) ---------------------------------------------------
@@ -706,12 +927,15 @@ async def test_no_get_route_ever_calls_github(env: Env) -> None:
 
         setattr(env.poster, name, tripped)
     calls.clear()
+    queries = {f"{API}/metrics": "?repo=acme/web"}
     gets = [
-        str(getattr(route, "path", "")).format(owner="acme", repo="web", number=1)
+        (path := str(getattr(route, "path", "")).format(owner="acme", repo="web", number=1))
+        + queries.get(path, "")
         for route in build_router(env.host).routes
         if "GET" in getattr(route, "methods", set())
     ]
-    assert len(gets) == 5  # queue, the PR, its drafts, its stack, settings
+    # queue, the PR, its drafts, its stack, knowledge, metrics, settings
+    assert len(gets) == 7
     # PR 1 is alone: its stack answers "not a stack", from the cache too.
     expected = {f"{API}/stacks/acme/web/1": 404}
     # M4: walked with the head's files cached (the PR view's diff) and without (drafts
@@ -891,3 +1115,111 @@ async def test_done_is_bound_to_the_round_shown(env: Env) -> None:
     assert shown is not None and not shown.done
     current = await env.client.post(f"{PR}/done", json={"round_id": new}, headers=keyed())
     assert current.status_code == 200 and current.json()["done"] is True
+
+
+# --- the knowledge model (plan Task 14) ----------------------------------------------------------
+
+
+async def test_knowledge_lists_units_and_takes_overrides(env: Env) -> None:
+    empty = await env.client.get(f"{API}/knowledge")
+    assert empty.status_code == 200 and empty.json() == {
+        "units": [],
+        "total": 0,
+        "truncated": False,
+        "offset": 0,
+    }
+    key = keyed()
+    put = await env.client.put(
+        f"{API}/knowledge/repo/Acme/Web/src", json={"override": "known"}, headers=key
+    )
+    assert put.status_code == 200
+    unit = put.json()
+    assert unit["unit"] == "repo/acme/web/src" and unit["familiarity"] == 1.0
+    assert unit["override"] == "known" and unit["kind"] == "path" and unit["path"] == "src"
+    replay = await env.client.put(
+        f"{API}/knowledge/repo/Acme/Web/src", json={"override": "known"}, headers=key
+    )
+    assert replay.json() == unit
+    listed = (await env.client.get(f"{API}/knowledge", params={"repo": "acme/web"})).json()
+    assert [u["unit"] for u in listed["units"]] == ["repo/acme/web/src"]
+    tag = await env.client.put(f"{API}/knowledge/tag/ops", json={"override": "unknown"},
+                               headers=keyed())  # fmt: skip
+    assert tag.json()["familiarity"] == 0.0 and tag.json()["tag"] == "ops"
+    cleared = await env.client.put(
+        f"{API}/knowledge/repo/acme/web/src", json={"override": None}, headers=keyed()
+    )
+    assert cleared.json()["override"] is None and cleared.json()["familiarity"] == 0.0
+    assert [u["unit"] for u in (await env.client.get(f"{API}/knowledge")).json()["units"]] == [
+        "tag/ops"
+    ]
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["repo/acme/web/a/b/c/d", "repo/acme/web/..", "topic/x", "tag/Not%20A%20Tag", "repo/acme"],
+)
+async def test_knowledge_refuses_what_is_not_a_unit(env: Env, unit: str) -> None:
+    response = await env.client.put(
+        f"{API}/knowledge/{unit}", json={"override": "known"}, headers=keyed()
+    )
+    assert response.status_code == 400 and response.json()["error"] == "InvalidUnitError"
+
+
+async def test_knowledge_refuses_a_bad_override_and_a_bad_repo_filter(env: Env) -> None:
+    bad = await env.client.put(
+        f"{API}/knowledge/repo/acme/web", json={"override": "maybe"}, headers=keyed()
+    )
+    assert bad.status_code == 422
+    listed = await env.client.get(f"{API}/knowledge", params={"repo": "not a repo"})
+    assert listed.status_code == 400 and listed.json()["error"] == "InvalidUnitError"
+
+
+async def test_a_quiz_result_is_recorded_once_for_its_own_round(env: Env) -> None:
+    round_id = env.round()
+    body = {"round_id": round_id, "right": 3, "answered": 4}
+    first = await env.client.post(f"{PR}/quiz", json=body, headers=keyed())
+    assert first.status_code == 200 and first.json() == {"recorded": True}
+    again = await env.client.post(f"{PR}/quiz", json=body, headers=keyed())
+    assert again.json() == {"recorded": False}
+    other = await env.client.post(f"{API}/prs/acme/web/2/quiz", json=body, headers=keyed())
+    assert other.status_code == 409 and other.json()["error"] == "RoundNotOfPr"
+    impossible = {"round_id": round_id, "right": 4, "answered": 3}
+    refused = await env.client.post(f"{PR}/quiz", json=impossible, headers=keyed())
+    assert refused.status_code == 400 and refused.json()["error"] == "KnowledgeInputError"
+    too_many = {"round_id": round_id, "right": 1, "answered": 11}
+    assert (await env.client.post(f"{PR}/quiz", json=too_many, headers=keyed())).status_code == 422
+
+
+async def test_a_quiz_result_over_the_rounds_questions_is_refused(env: Env) -> None:
+    """Codex P2: with the quiz's question count known, more answered (or right) than it
+    has is a 422, never absorbed."""
+    round_id = env.round()
+    env.store.put_artifact(round_id, "quiz", {"questions": [{"q": 1}, {"q": 2}, {"q": 3}]})
+    over = {"round_id": round_id, "right": 4, "answered": 4}
+    refused = await env.client.post(f"{PR}/quiz", json=over, headers=keyed())
+    assert refused.status_code == 422 and refused.json()["error"] == "QuizResultTooLarge"
+    fine = {"round_id": round_id, "right": 2, "answered": 3}
+    assert (await env.client.post(f"{PR}/quiz", json=fine, headers=keyed())).json() == {
+        "recorded": True
+    }
+
+
+async def test_a_metric_of_any_size_is_bounded_before_the_domain_sees_it(env: Env) -> None:
+    """Fix round 1 M3: each criterion is capped at the schema (422) as well as the domain."""
+    body = {"prereview": "triage", "runner": "codex",
+            "repos": [{"repo": "acme/web", "watched": True, "metrics": ["x" * 2000]}]}  # fmt: skip
+    response = await env.client.put(f"{API}/settings", json=body, headers=keyed())
+    assert response.status_code == 422
+
+
+async def test_knowledge_pages_through_every_unit(env: Env) -> None:
+    """I4: past the first page, every unit can be reached (offset and limit)."""
+    for unit in ("repo/acme/web/a", "repo/acme/web/b", "repo/acme/zed/c"):
+        await env.client.put(f"{API}/knowledge/{unit}", json={"override": "known"}, headers=keyed())
+    first = (await env.client.get(f"{API}/knowledge", params={"limit": 2})).json()
+    assert [u["unit"] for u in first["units"]] == ["repo/acme/web/a", "repo/acme/web/b"]
+    assert first["truncated"] and first["total"] == 3 and first["offset"] == 0
+    rest = (await env.client.get(f"{API}/knowledge", params={"limit": 2, "offset": 2})).json()
+    assert [u["unit"] for u in rest["units"]] == ["repo/acme/zed/c"] and not rest["truncated"]
+    bad = await env.client.get(f"{API}/knowledge", params={"limit": 0})
+    assert bad.status_code == 422

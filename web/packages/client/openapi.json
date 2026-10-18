@@ -13715,6 +13715,323 @@
         }
       }
     },
+    "/api/review/prs/{owner}/{repo}/{number}/keep": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Keep",
+        "description": "Keep the round's review page in the KB again (Retry), and draft its How it works\nagain unless one was accepted. A KB failure is the answer's ``error``, not a 5xx.",
+        "operationId": "keep_api_review_prs__owner___repo___number__keep_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "Number"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/KeepReviewIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeptReviewOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
+    "/api/review/prs/{owner}/{repo}/{number}/system/accept": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Accept System",
+        "description": "Write the round's drafted How it works (spec \u00a76.2: never automatic). Refused with\n409 SystemPageChanged when the page changed since the draft was made.",
+        "operationId": "accept_system_api_review_prs__owner___repo___number__system_accept_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "Number"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemAcceptIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemPageOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
     "/api/review/stacks/{owner}/{repo}/{number}": {
       "get": {
         "tags": [
@@ -14169,6 +14486,534 @@
         }
       }
     },
+    "/api/review/prs/{owner}/{repo}/{number}/quiz": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Record Quiz",
+        "description": "Record the round's quiz result for the knowledge model (spec \u00a73.1); the first\nresult of a round counts.",
+        "operationId": "record_quiz_api_review_prs__owner___repo___number__quiz_post",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999,
+              "minimum": 1,
+              "title": "Number"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuizIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuizOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
+    "/api/review/knowledge": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Knowledge",
+        "description": "What Jesinia thinks you know (spec \u00a76.1): each unit with a record or a correction,\nits familiarity and why, one page at a time (``truncated``: more follow). Derived\ndata, from the cache only.",
+        "operationId": "get_knowledge_api_review_knowledge_get",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 140
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000000,
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 500,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
+    "/api/review/knowledge/{unit}": {
+      "put": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Put Knowledge",
+        "description": "Mark a unit known (familiarity 1) or unknown (0), or clear the mark (``null``).",
+        "operationId": "put_knowledge_api_review_knowledge__unit__put",
+        "parameters": [
+          {
+            "name": "unit",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 600,
+              "title": "Unit"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OverrideIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnitOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
+    "/api/review/metrics": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Metrics",
+        "description": "A repo's metrics over time, for the trend (spec \u00a75.2). From the cache only.",
+        "operationId": "get_metrics_api_review_metrics_get",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsHistoryOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
     "/api/review/settings": {
       "get": {
         "tags": [
@@ -14264,7 +15109,7 @@
           "review"
         ],
         "summary": "Put Settings",
-        "description": "Save Settings \u2192 Review; repos not listed keep their settings.",
+        "description": "Save Settings \u2192 Review. Repos not listed keep their settings; a listed repo's\nmetrics, and either folder, keep theirs when left out. A metrics change applies from\nthe repo's next round.",
         "operationId": "put_settings_api_review_settings_put",
         "parameters": [
           {
@@ -17462,6 +18307,114 @@
         ],
         "title": "KeepOut"
       },
+      "KeepReviewIn": {
+        "properties": {
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "KeepReviewIn",
+        "description": "Keep a round's review page again (Retry); the PR's latest round when omitted."
+      },
+      "KeptReviewOut": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "kept",
+              "failed"
+            ],
+            "title": "State"
+          },
+          "page_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Id"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path",
+            "description": "The page's KB path (it carries the PR's title)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Why the page couldn't be written (the cause)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "page_id",
+          "path",
+          "error"
+        ],
+        "title": "KeptReviewOut",
+        "description": "Where a round's review page went in the KB, or why it couldn't be kept."
+      },
+      "KnowledgeOut": {
+        "properties": {
+          "units": {
+            "items": {
+              "$ref": "#/components/schemas/UnitOut"
+            },
+            "type": "array",
+            "title": "Units"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "units",
+          "total",
+          "truncated"
+        ],
+        "title": "KnowledgeOut",
+        "description": "What Jesinia thinks you know: one page of the units, from ``offset``, of ``total``;\n``truncated`` when more follow."
+      },
       "LabelApplyIn": {
         "properties": {
           "kind": {
@@ -18016,6 +18969,28 @@
         ],
         "title": "MessageIn"
       },
+      "MetricsHistoryOut": {
+        "properties": {
+          "repo": {
+            "type": "string",
+            "title": "Repo"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/PointOut"
+            },
+            "type": "array",
+            "title": "Points"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo",
+          "points"
+        ],
+        "title": "MetricsHistoryOut",
+        "description": "A repo's metrics over time (spec \u00a75.2): its latest scored rounds, oldest first."
+      },
       "MilestoneDetailOut": {
         "properties": {
           "milestone": {
@@ -18249,6 +19224,32 @@
           "opml"
         ],
         "title": "OpmlIn"
+      },
+      "OverrideIn": {
+        "properties": {
+          "override": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "known",
+                  "unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "override"
+        ],
+        "title": "OverrideIn",
+        "description": "Mark a unit known or unknown; ``null`` clears the correction."
       },
       "PageIn": {
         "properties": {
@@ -18594,6 +19595,51 @@
         ],
         "title": "PendingOut",
         "description": "A staged change: to the issue ``repo#n``, or (``n`` is ``null``) the repo's label setup\nstep (``ensure_label``), which runs before every issue's steps."
+      },
+      "PointOut": {
+        "properties": {
+          "round_id": {
+            "type": "integer",
+            "title": "Round Id"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "head_sha": {
+            "type": "string",
+            "title": "Head Sha"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "mean": {
+            "type": "number",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Mean"
+          },
+          "scores": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreOut"
+            },
+            "type": "array",
+            "title": "Scores"
+          }
+        },
+        "type": "object",
+        "required": [
+          "round_id",
+          "number",
+          "head_sha",
+          "at",
+          "mean",
+          "scores"
+        ],
+        "title": "PointOut",
+        "description": "One scored round of the repo; ``mean`` is its overall score from 0 to 10."
       },
       "PollSummaryOut": {
         "properties": {
@@ -19626,6 +20672,50 @@
         "title": "QueueRowOut",
         "description": "A queue row (spec \u00a72 \"Each row shows\"); ``title`` is the PR author's text."
       },
+      "QuizIn": {
+        "properties": {
+          "round_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Round Id"
+          },
+          "right": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Right"
+          },
+          "answered": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Answered"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "round_id",
+          "right",
+          "answered"
+        ],
+        "title": "QuizIn",
+        "description": "A finished quiz: how many of the answered questions were right (skips don't count)."
+      },
+      "QuizOut": {
+        "properties": {
+          "recorded": {
+            "type": "boolean",
+            "title": "Recorded",
+            "description": "False when the round already had a result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "recorded"
+        ],
+        "title": "QuizOut"
+      },
       "ReadAboveIn": {
         "properties": {
           "post_id": {
@@ -20046,7 +21136,8 @@
           },
           "watched": {
             "type": "boolean",
-            "title": "Watched"
+            "title": "Watched",
+            "default": false
           },
           "suggested": {
             "type": "boolean",
@@ -20081,14 +21172,31 @@
               }
             ],
             "title": "Automated Reviewer"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "type": "array",
+                "maxItems": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics",
+            "description": "The criteria this repo's reviews are scored on, from the next round on; null or empty: the standards decide. Left out of a PUT: kept"
           }
         },
         "type": "object",
         "required": [
-          "repo",
-          "watched"
+          "repo"
         ],
-        "title": "ReviewRepoSettingBody"
+        "title": "ReviewRepoSettingBody",
+        "description": "One repo's settings. In a PUT, every field left out keeps its value (a repo not yet\nknown gets the defaults), so a save never puts back what changed elsewhere."
       },
       "ReviewSettingsBody": {
         "properties": {
@@ -20099,14 +21207,16 @@
               "everything",
               "on_open"
             ],
-            "title": "Prereview"
+            "title": "Prereview",
+            "default": "triage"
           },
           "runner": {
             "type": "string",
             "maxLength": 64,
             "minLength": 1,
             "title": "Runner",
-            "description": "The agent runner"
+            "description": "The agent runner",
+            "default": "codex"
           },
           "repos": {
             "items": {
@@ -20115,15 +21225,37 @@
             "type": "array",
             "maxItems": 500,
             "title": "Repos"
+          },
+          "standards_dir": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Standards Dir",
+            "description": "The coding-standards checkout (the base layer): absolute, or ~/\u2026"
+          },
+          "standards_user_dir": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Standards User Dir",
+            "description": "The folder of your own standards documents (the user layer)"
           }
         },
         "type": "object",
-        "required": [
-          "prereview",
-          "runner"
-        ],
         "title": "ReviewSettingsBody",
-        "description": "Settings \u2192 Review."
+        "description": "Settings \u2192 Review. In a PUT every field left out keeps its value (the pre-review\ndefault, the runner, each folder, each repo's fields); a folder's null or \"\" clears it."
       },
       "RoundOut": {
         "properties": {
@@ -20308,6 +21440,27 @@
           "agent_text"
         ],
         "title": "SaveIn"
+      },
+      "ScoreOut": {
+        "properties": {
+          "criterion": {
+            "type": "string",
+            "title": "Criterion"
+          },
+          "score": {
+            "type": "number",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "criterion",
+          "score"
+        ],
+        "title": "ScoreOut",
+        "description": "One criterion's score (agent text: render ``criterion`` as text)."
       },
       "SessionIn": {
         "properties": {
@@ -20801,6 +21954,58 @@
           "sync_error"
         ],
         "title": "SyncOut"
+      },
+      "SystemAcceptIn": {
+        "properties": {
+          "round_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Round Id"
+          },
+          "base_rev": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Rev"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "round_id"
+        ],
+        "title": "SystemAcceptIn",
+        "description": "Accept the round's drafted How it works. ``base_rev`` is the page revision of the\ndraft the author was shown (null for a seed); another one answers 409."
+      },
+      "SystemPageOut": {
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "title": "Page Id"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "rev": {
+            "type": "string",
+            "title": "Rev"
+          }
+        },
+        "type": "object",
+        "required": [
+          "page_id",
+          "path",
+          "rev"
+        ],
+        "title": "SystemPageOut",
+        "description": "The How it works page as written."
       },
       "TagCheckOut": {
         "properties": {
@@ -21456,6 +22661,135 @@
           "count"
         ],
         "title": "UncatalogedOut"
+      },
+      "UnitOut": {
+        "properties": {
+          "unit": {
+            "type": "string",
+            "title": "Unit",
+            "description": "repo/<owner>/<name>[/<path>] or tag/<tag>"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "path",
+              "tag"
+            ],
+            "title": "Kind"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tag"
+          },
+          "familiarity": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Familiarity"
+          },
+          "override": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "known",
+                  "unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override",
+            "description": "The override in force: the unit's own, or its nearest folder's"
+          },
+          "override_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Unit",
+            "description": "Where the override is set"
+          },
+          "exposures": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "propertyNames": {
+              "enum": [
+                "commit",
+                "review_quick",
+                "review_deep",
+                "quiz_pass",
+                "quiz_fail"
+              ]
+            },
+            "type": "object",
+            "title": "Exposures"
+          },
+          "last_exposure": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Exposure"
+          },
+          "changes_since_last": {
+            "type": "integer",
+            "title": "Changes Since Last"
+          },
+          "distance": {
+            "type": "number",
+            "title": "Distance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "unit",
+          "kind",
+          "repo",
+          "path",
+          "tag",
+          "familiarity",
+          "override",
+          "exposures",
+          "last_exposure",
+          "changes_since_last",
+          "distance"
+        ],
+        "title": "UnitOut",
+        "description": "One unit of the author's knowledge, as Settings \u2192 Review shows it."
       },
       "UnreadOut": {
         "properties": {

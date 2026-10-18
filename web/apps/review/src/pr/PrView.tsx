@@ -10,10 +10,13 @@ import { Badge, Button, useToast } from "@jesinia/design";
 import { ChatRail, useClient, type Runners } from "@jesinia/shell";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  acceptSystemUpdate,
   ActionKeys,
   errorCause,
   getPr,
+  keepReview,
   markDone,
+  recordQuiz,
   openPr,
   refreshPr,
   retryPr,
@@ -29,7 +32,9 @@ import { refOf } from "../Queue";
 import { Background } from "./Background";
 import { DraftsEditor, useDrafts } from "./Drafts";
 import { Findings } from "./Findings";
+import { KeptReview } from "./Kept";
 import { Metrics } from "./Metrics";
+import { Trend } from "./Trend";
 import {
   coverageLine,
   findingsByStep,
@@ -40,6 +45,7 @@ import {
   type Depth,
   type Entry,
   type Finding,
+  type SystemDraft,
 } from "./model";
 import { Overview } from "./Overview";
 import { PostDialog } from "./Posting";
@@ -225,9 +231,14 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     }
   }, []);
 
+  // An action's key names what it acts on (Codex P2 on PR #68): the head shown (and, for a
+  // round's writes, the round), so a key kept for a lost answer is never replayed onto a newer
+  // head or round, where its stored success would stand in for a write that never ran.
+  const headShown = useRef("none");
+  headShown.current = view?.pr.head_sha ?? "none";
   const open = useCallback(
     (action: string, request?: OpenRequest) =>
-      keyed(`${action}:${repo}#${number}`, (key) => openPr(client, repo, number, key, request)),
+      keyed(`${action}:${repo}#${number}@${headShown.current}`, (key) => openPr(client, repo, number, key, request)),
     [client, keyed, repo, number],
   );
 
@@ -247,6 +258,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     if (lastReview.current !== null && lastReview.current !== shownReview) {
       setDepth(null);
       setSession(null);
+      keys.current = new ActionKeys(); // keys kept for the old review never act on this one
     }
     lastReview.current = shownReview;
   }, [shownReview]);
@@ -390,6 +402,15 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     );
   };
 
+  /** A finished quiz feeds the knowledge model; best-effort, it never gets in the way. */
+  const quizFinished = (right: number, answered: number) => {
+    const roundId = round?.id;
+    if (roundId == null) return;
+    keyed(`quiz:${repo}#${number}:${roundId}`, (key) =>
+      recordQuiz(client, repo, number, key, { roundId, right, answered }),
+    ).catch((e: unknown) => console.warn(`The quiz result wasn't recorded: ${errorCause(e)}`));
+  };
+
   /** Your own PR's quiz is off until you ask for it (spec §3.3). */
   const askQuiz = () => {
     open("quiz", { quiz: true }).then(
@@ -421,7 +442,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   };
 
   const anyway = () => {
-    keyed(`anyway:${repo}#${number}`, (key) => reviewAnyway(client, repo, number, key)).then(
+    keyed(`anyway:${repo}#${number}@${headShown.current}`, (key) => reviewAnyway(client, repo, number, key)).then(
       (r) => {
         setNotice(noticeOf(r));
         reread();
@@ -430,7 +451,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
     );
   };
   const retry = () => {
-    keyed(`retry:${repo}#${number}`, (key) => retryPr(client, repo, number, key)).then(
+    keyed(`retry:${repo}#${number}@${headShown.current}`, (key) => retryPr(client, repo, number, key)).then(
       (r) => {
         setNotice(noticeOf(r));
         reread();
@@ -444,7 +465,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
    * its own gates (R60, R66); the same head opens again here, to say it is up to date.
    */
   const reviewNewHead = () => {
-    keyed(`refresh:${repo}#${number}`, (key) => refreshPr(client, repo, number, key)).then(
+    keyed(`refresh:${repo}#${number}@${headShown.current}`, (key) => refreshPr(client, repo, number, key)).then(
       (row) => {
         if (row.head_sha === pr.head_sha) retryOpen(true);
         else {
@@ -474,7 +495,9 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   };
   retryLater.current = () => retryOpen();
   const done = () => {
-    keyed(`done:${repo}#${number}`, (key) => markDone(client, repo, number, key, round?.id ?? null)).then(
+    keyed(`done:${repo}#${number}:${round?.id ?? "none"}`, (key) =>
+      markDone(client, repo, number, key, round?.id ?? null),
+    ).then(
       () => {
         toast.show({ tone: "success", message: `${refOf(pr)} is done; nothing was posted.` });
         reread();
@@ -487,6 +510,44 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       },
     );
   };
+
+  /** Keep the finished round's KB page again (spec §8); a KB failure shows on the round. */
+  const keepAgain = () =>
+    keyed(`keep:${repo}#${number}:${round?.id ?? "none"}`, (key) =>
+      keepReview(client, repo, number, key, round?.id ?? null),
+    ).then(
+      (kept) => {
+        if (kept.state === "kept") toast.show({ tone: "success", message: "The review is kept in your KB." });
+        reread();
+      },
+      (e: unknown) => {
+        reread();
+        throw new Error(`Couldn't keep the review page: ${errorCause(e)}`);
+      },
+    );
+  /** Write the drafted How it works the author accepted (spec §6.2); never over an edit. */
+  const acceptDraft = (roundId: number, draft: SystemDraft) =>
+    keyed(`system:${repo}#${number}:${roundId}:${draft.kind}:${draft.base_rev ?? "seed"}`, (key) =>
+      acceptSystemUpdate(client, repo, number, key, { roundId, baseRev: draft.base_rev }),
+    ).then(
+      () => {
+        toast.show({ tone: "success", message: "How it works is updated." });
+        reread();
+      },
+      (e: unknown) => {
+        if (e instanceof ReviewRequestError && e.code === "SystemPageChanged") {
+          // The server drafted again against the page as it is (or withdrew the draft):
+          // the next read shows what can be accepted now.
+          reread();
+          throw new Error(
+            "How it works changed since that draft was made, so nothing was written and the edit is kept. " +
+              "Jesinia drafted it again against the page as it is now.",
+          );
+        }
+        reread(); // an answer may be lost: show what is there now
+        throw new Error(`Couldn't update How it works: ${errorCause(e)}`);
+      },
+    );
 
   const commentsId = entries.some((e) => e.kind === "comments") ? "comments" : "recommendation";
   const draftOn = (finding: Finding | undefined) => {
@@ -598,9 +659,19 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
       case "findings":
         return artifacts.findings ? <Findings findings={artifacts.findings} /> : pendingPage("Findings");
       case "metrics":
-        return artifacts.metrics ? <Metrics scores={artifacts.metrics} /> : pendingPage("Metrics");
+        // The repo's trend shows even before (or without) this PR's own scores (M7).
+        return artifacts.metrics ? (
+          <Metrics scores={artifacts.metrics} repo={repo} />
+        ) : (
+          <article className={s.page} aria-label="Metrics">
+            <h2>Metrics</h2>
+            {pendingNote("Metrics")}
+            <Trend repo={repo} />
+          </article>
+        );
       case "quiz":
-        if (artifacts.quiz) return <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} />;
+        if (artifacts.quiz)
+          return <Quiz key={round?.id ?? "none"} questions={artifacts.quiz} onFinish={quizFinished} />;
         if (own && !artifacts.jobs.quiz)
           return (
             <article className={s.page} aria-label="Quiz">
@@ -635,6 +706,14 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
                   Done without posting
                 </Button>
               </div>
+            ) : null}
+            {round?.done && round.depth === "deep" && !artifacts.isRebase ? (
+              <KeptReview
+                kept={artifacts.kept}
+                draft={artifacts.systemDraft}
+                onKeep={keepAgain}
+                onAccept={(draft) => acceptDraft(round.id, draft)}
+              />
             ) : null}
           </Recommendation>
         );

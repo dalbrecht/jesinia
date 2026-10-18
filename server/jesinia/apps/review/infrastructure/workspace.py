@@ -32,9 +32,12 @@ import uuid
 # banned-builtin pattern also matches the name of this safe asyncio function.
 from asyncio import create_subprocess_exec as spawn
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
+from jesinia.apps.review.application.knowledge import CommitLog
 from jesinia.apps.review.application.ports import KeepProvider
+from jesinia.apps.review.domain.knowledge import LoggedCommit
 from jesinia.apps.review.domain.repo_access import CappedOutput, RegexDialect
 from jesinia.apps.review.domain.workspace import (
     DiffTooLargeError,
@@ -52,7 +55,14 @@ from jesinia.apps.review.domain.workspace import (
     parse_repo,
 )
 
-__all__ = ["DIFF_LIMIT", "EMPTY_TREE", "GitWorkspace", "github_remote_url"]
+__all__ = [
+    "DIFF_LIMIT",
+    "EMPTY_TREE",
+    "LOG_LIMIT",
+    "GitWorkspace",
+    "github_remote_url",
+    "parse_commit_log",
+]
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +115,23 @@ _TREE_READ_OPTIONS = (
     *("-c", "mailmap.blob="),
     *("-c", "core.quotePath=true"),  # non-ASCII paths in git's output stay escaped text
 )
+# For the knowledge model's history reads (`commit_log`): as `_TREE_READ_OPTIONS`, but paths
+# stay as they are (they become unit names) and no mailmap rewrites an author's email.
+_LOG_READ_OPTIONS = (
+    *("-c", "color.ui=never"),
+    *("-c", "log.showSignature=false"),
+    *("-c", "log.mailmap=false"),
+    *("-c", "mailmap.file="),
+    *("-c", "mailmap.blob="),
+    *("-c", "core.quotePath=false"),
+)
+# Bytes of `commit_log` output read at most; past it the log is cut (newest commits kept).
+LOG_LIMIT = 32 * 1024 * 1024
+# `commit_log`'s records (R81): with `-z`, every field and numstat entry ends with NUL, and
+# each record starts with one, so paths can hold anything but NUL.
+_LOG_FORMAT = "%x00%H%x00%cI%x00%aI%x00%ae"
+_SHA = re.compile(rb"[0-9a-f]{40}")
+_NUMSTAT = re.compile(rb"\n?(\d+|-)\t(\d+|-)\t(.+)", re.DOTALL)
 # git's stderr kept for error messages; the rest is drained and dropped.
 _STDERR_LIMIT = 64 * 1024
 # Pinned so the user's diff.* settings never change what later steps parse.
@@ -414,6 +441,90 @@ class GitWorkspace:
             )
         return await self._run(mirror, "cat-file", "blob", object_id.decode())
 
+    def has_mirror(self, repo: str) -> bool:
+        """Whether ``repo`` has a mirror yet (nothing is fetched to find out).
+
+        Raises:
+            InvalidRepoError: not an ``owner/name``.
+        """
+        return (self._mirror(repo) / "HEAD").is_file()
+
+    async def commit_log(
+        self,
+        repo: str,
+        tip: str,
+        *,
+        after: str | None,
+        since: datetime | None,
+        limit: int,
+        skip: int = 0,
+    ) -> CommitLog:
+        """The non-merge commits reachable from ``tip`` (only those after ``after`` when
+        given; only those since ``since`` when given), newest first, past the first ``skip``,
+        at most ``limit``, each with its author's email and its files' changed lines (renames
+        as delete plus add). Only ``tip``'s history is read: the caller passes the default
+        branch's tip, so a commit on any other branch never counts (R80). ``truncated`` when
+        ``limit`` or ``LOG_LIMIT`` bytes cut older commits.
+
+        Raises:
+            InvalidShaError: before git runs.
+            GitCommandError, GitTimeoutError: e.g. a commit isn't in the mirror.
+        """
+        head = check_sha(tip)
+        revision = head if after is None else f"{check_sha(after)}..{head}"
+        args = [
+            "log",
+            "--no-color",
+            "--no-merges",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--numstat",
+            "-z",
+            f"--format={_LOG_FORMAT}",
+            f"--max-count={max(limit, 1)}",
+            f"--skip={max(skip, 0)}",
+        ]
+        if since is not None:
+            args.append(f"--since={since.astimezone(UTC).isoformat(timespec='seconds')}")
+        argv, out, err, code, cut = await self._execute(
+            (*_bare(self._mirror(repo)), *_LOG_READ_OPTIONS),
+            (*args, "--end-of-options", revision),
+            extra_env={"GIT_CONFIG_NOSYSTEM": "1"},  # local reads need no credential helper
+            output_limit=LOG_LIMIT,
+        )
+        if not cut and code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        # Up to LOG_LIMIT bytes: parsed off the event loop.
+        commits = await asyncio.to_thread(parse_commit_log, out, complete=not cut)
+        return CommitLog(tuple(commits), cut or len(commits) >= limit)
+
+    async def reviewed_commits(self, repo: str, base: str, head: str) -> list[str]:
+        """The commits of ``base..head`` in the mirror: a reviewed PR's own (R87).
+
+        Raises:
+            InvalidShaError: before git runs.
+            GitCommandError, GitTimeoutError: e.g. a commit isn't in the mirror.
+        """
+        out = await self._git(
+            _bare(self._mirror(repo)),
+            "rev-list",
+            "--end-of-options",
+            f"{check_sha(base)}..{check_sha(head)}",
+        )
+        return [check_sha(line) for line in out.split()]
+
+    async def identity_email(self) -> str | None:
+        """The email of the user's global git identity (``user.email``), if set."""
+        argv, out, err, code, _ = await self._execute(
+            (), ("config", "--global", "--get", "user.email")
+        )
+        if code == 1:
+            return None  # not set
+        if code:
+            raise GitCommandError(argv, code, err.decode(errors="replace"))
+        return out.decode(errors="replace").strip() or None
+
     async def commit_messages(
         self, repo: str, base_sha: str, head_sha: str, *, limit: int
     ) -> CappedOutput:
@@ -707,6 +818,73 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
         while await proc.stdout.read(65536):
             pass
     await proc.wait()
+
+
+def parse_commit_log(data: bytes, *, complete: bool = True) -> list[LoggedCommit]:
+    """``commit_log``'s output as commits, read by its structure (R81): NUL-separated tokens;
+    a record is an empty token (its leading NUL), the SHA, the committer and author dates
+    and the email, then one token per file (``added\tdeleted\tpath``, the first after a
+    newline) up to the next empty token. Paths can hold anything but NUL. A record that
+    doesn't parse, and anything between records, is skipped and logged; nothing raises.
+    When the output was cut (``complete`` false), the last record is dropped: nothing
+    after it proves it ended."""
+    tokens = data.split(b"\0")
+    count = len(tokens)
+    commits: list[LoggedCommit] = []
+    position = 0
+    while position < count:
+        if not tokens[position] and position + 1 < count and _SHA.fullmatch(tokens[position + 1]):
+            end = position + 5
+            if end > count:
+                break  # a header cut short
+            while end < count and tokens[end]:
+                end += 1
+            if end >= count - 1 and not complete:
+                # The last record: a cut, even on a NUL boundary, can't prove it ended (N3).
+                break
+            parsed = _parse_record(tokens[position + 1 : end])
+            if parsed is not None:
+                commits.append(parsed)
+            position = end
+            continue
+        if tokens[position]:
+            stray = position
+            while position < count and tokens[position]:
+                position += 1
+            # Counts only: a stray field can be a commit's email (M2).
+            log.warning(
+                "skipping an unreadable commit record: %d stray fields at field %d",
+                position - stray,
+                stray,
+            )
+            continue
+        position += 1
+    return commits
+
+
+def _parse_record(fields: list[bytes]) -> LoggedCommit | None:
+    """One record's tokens (header and files), or ``None`` (logged) when they don't parse."""
+    try:
+        sha, landed, authored, email = (f.decode() for f in fields[:4])
+        files: list[tuple[str, int]] = []
+        for entry in fields[4:]:
+            match = _NUMSTAT.fullmatch(entry)
+            if match is None:
+                raise ValueError("not a numstat entry")
+            added, deleted, path = match.groups()
+            lines = sum(int(n) for n in (added, deleted) if n != b"-")
+            files.append((path.decode(errors="replace"), lines))
+        return LoggedCommit(
+            check_sha(sha),
+            datetime.fromisoformat(authored),
+            email,
+            tuple(files),
+            datetime.fromisoformat(landed),
+        )
+    except (ValueError, WorkspaceError) as exc:  # UnicodeDecodeError is a ValueError
+        # The kind only: a misaligned field could be an email, and messages quote fields (M2).
+        log.warning("skipping an unreadable commit record: %s", type(exc).__name__)
+        return None
 
 
 def _bare(mirror: Path) -> tuple[str, ...]:

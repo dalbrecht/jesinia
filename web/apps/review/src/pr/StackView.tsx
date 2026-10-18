@@ -494,9 +494,13 @@ export function StackView({ repo, number, refresh, active = true, onClose }: Sta
     };
   }, [client, repo, number, refresh, reads, active]);
 
+  // The key names the stack's heads (Codex P2 on PR #68): a key kept for a lost answer is
+  // never replayed onto a newer set of heads.
+  const heads = useRef("none");
+  heads.current = view?.signature ?? "none";
   const open = useCallback(
     (retry: boolean) => {
-      const action = `stack-open:${repo}#${number}:${retry ? "retry" : "open"}`;
+      const action = `stack-open:${repo}#${number}@${heads.current}:${retry ? "retry" : "open"}`;
       openStack(client, repo, number, keys.current.keyFor(action), retry).then(
         (r) => {
           keys.current.settle(action);

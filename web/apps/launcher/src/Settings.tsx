@@ -5,17 +5,19 @@ import { RUNNER_NAMES, useClient, type KbPathInfo, type ServerStatus, type SyncS
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { clock, MODE_LABEL } from "./format";
 import { IssuesSection } from "./settings/Issues";
+import { ReviewSection } from "./settings/Review";
 import { RssSection } from "./settings/Rss";
 import { TagsSection } from "./settings/Tags";
 import { unreachable } from "./settings/unreachable";
 import s from "./settings.module.css";
 
-/** The outline, in the design pass's order (Review joins when it ships, before Issues). */
+/** The outline, in the design pass's order. */
 const SECTIONS = [
   ["kb", "Knowledge base"],
   ["sync", "Git sync"],
   ["agents", "Agents"],
   ["tags", "Tags"],
+  ["review", "Review"],
   ["rss", "RSS"],
   ["issues", "Issues"],
   ["conflicts", "Conflicts"],
@@ -343,6 +345,7 @@ export function Settings({ status }: { status: ServerStatus }) {
     sync: <SyncSection status={status} />,
     agents: <AgentsSection status={status} />,
     tags: <TagsSection />,
+    review: <ReviewSection />,
     rss: <RssSection />,
     issues: <IssuesSection status={status} />,
     conflicts: <ConflictsSection status={status} />,

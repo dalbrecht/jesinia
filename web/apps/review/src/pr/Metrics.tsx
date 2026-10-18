@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Metrics (spec §5.2): scores from 0 to 10 against the applied standards, each naming its rule.
+// Metrics (spec §5.2): scores from 0 to 10 against the applied standards, each naming its rule,
+// then the repo's trend over time.
 import { SafeMarkdown } from "@jesinia/shell";
 import type { Score } from "./model";
 import s from "./pr.module.css";
+import { Trend } from "./Trend";
 
-export function Metrics({ scores }: { scores: Score[] }) {
+export function Metrics({ scores, repo }: { scores: Score[]; repo: string }) {
   return (
     <article className={s.page} aria-label="Metrics">
       <h2>Metrics</h2>
@@ -44,6 +46,7 @@ export function Metrics({ scores }: { scores: Score[] }) {
           ))}
         </tbody>
       </table>
+      <Trend repo={repo} />
     </article>
   );
 }

@@ -3,6 +3,7 @@
 // server, so read here only for shape), the book's outline, a patch's hunks, and the words
 // for coverage and the verdict. Every string read here is the PR's or an agent's text: it is
 // only ever rendered as text or through the safe Markdown renderer.
+import { hasHidden } from "@jesinia/shell";
 import type { PrFile, PrView } from "../api";
 
 export type Depth = "quick" | "deep";
@@ -96,6 +97,20 @@ export type Rereview = {
   coverage: WalkCoverage | null;
 };
 
+/** Where a finished deep review's KB page went, or why it couldn't be kept (spec §8). */
+export type KeptPage = { state: "kept" | "failed"; page_id: string | null; path: string | null; error: string | null };
+/**
+ * A drafted How it works (spec §6.2): a seed (no page yet) or an update, made against the page's
+ * revision `base_rev`. Its text holds the page as it is in the KB: anyone's to have edited.
+ */
+export type SystemDraft = {
+  kind: "seed" | "update";
+  text: string;
+  base_rev: string | null;
+  state: "proposed" | "accepted" | "failed" | "withdrawn";
+  error: string | null;
+};
+
 /** A round's artifacts, by what the PR view shows; null where a job hasn't stored one. */
 export type Artifacts = {
   overview: Overview | null;
@@ -116,9 +131,14 @@ export type Artifacts = {
   isRereview: boolean;
   previous: PreviousReview | null;
   rereview: Rereview | null;
+  kept: KeptPage | null;
+  systemDraft: SystemDraft | null;
+  /** A rebase round (spec §8): Jesinia never keeps it as a page. */
+  isRebase: boolean;
 };
 
 const REREVIEW_KINDS = new Set(["rereview", "changed_hunks_only"]);
+const REBASE_KINDS = new Set(["still_approved", "changed_hunks_only"]);
 
 type Json = Record<string, unknown>;
 const record = (x: unknown): Json | null =>
@@ -172,7 +192,27 @@ export function readArtifacts(view: PrView): Artifacts {
       REREVIEW_KINDS.has(String(record(a.followup)?.kind)) || "rereview" in jobs || record(a.previous_review) !== null,
     previous: previousOf(a.previous_review),
     rereview: rereviewOf(a.rereview),
+    kept: keptOf(a.kept),
+    systemDraft: systemDraftOf(a.system_draft),
+    isRebase: REBASE_KINDS.has(String(record(a.followup)?.kind)),
   };
+}
+
+const DRAFT_STATES = new Set<SystemDraft["state"]>(["proposed", "accepted", "failed", "withdrawn"]);
+const text = (x: unknown): string | null => (typeof x === "string" ? x : null);
+
+function keptOf(x: unknown): KeptPage | null {
+  const k = record(x);
+  if (k?.state !== "kept" && k?.state !== "failed") return null;
+  return { state: k.state, page_id: text(k.page_id), path: text(k.path), error: text(k.error) };
+}
+
+function systemDraftOf(x: unknown): SystemDraft | null {
+  const d = record(x);
+  if (!d || (d.kind !== "seed" && d.kind !== "update")) return null;
+  if (!DRAFT_STATES.has(d.state as SystemDraft["state"])) return null;
+  const state = d.state as SystemDraft["state"];
+  return { kind: d.kind, text: text(d.text) ?? "", base_rev: text(d.base_rev), state, error: text(d.error) };
 }
 
 function previousOf(x: unknown): PreviousReview | null {
@@ -349,64 +389,9 @@ export function stepId(step: Step): string {
 }
 
 // --- hidden and direction-changing characters (Trojan Source, I6) ---------------------------
+// The rules live in the shell, so every app shows untrusted names the same way (R62).
 
-export type Run = { text: string } | { code: string; kind: "bidi" | "invisible" | "control" };
-
-function hiddenKind(cp: number): "bidi" | "invisible" | "control" | null {
-  if (
-    (cp >= 0x202a && cp <= 0x202e) ||
-    (cp >= 0x2066 && cp <= 0x2069) ||
-    cp === 0x200e ||
-    cp === 0x200f ||
-    cp === 0x061c
-  )
-    return "bidi";
-  if (
-    (cp >= 0x200b && cp <= 0x200d) ||
-    (cp >= 0x2060 && cp <= 0x2064) ||
-    [0xfeff, 0x00ad, 0x180e, 0x034f, 0x115f, 0x1160, 0x3164, 0xffa0].includes(cp)
-  )
-    return "invisible";
-  if ((cp < 0x20 && cp !== 0x09) || (cp >= 0x7f && cp <= 0x9f)) return "control";
-  return null;
-}
-
-const code = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
-
-/**
- * Text split into plain runs and the characters that hide or reorder what is read: bidi
- * controls, zero-width and invisible characters, and control characters (a tab, and the CR of a
- * CRLF line ending, are ordinary). Each becomes a token the UI shows visibly.
- */
-export function revealHidden(text: string): Run[] {
-  const out: Run[] = [];
-  let plain = "";
-  const chars = [...text];
-  chars.forEach((ch, i) => {
-    const cp = ch.codePointAt(0) as number;
-    const kind = cp === 0x0d && i === chars.length - 1 ? null : hiddenKind(cp);
-    if (kind === null) {
-      plain += ch;
-      return;
-    }
-    if (plain) out.push({ text: plain });
-    plain = "";
-    out.push({ code: code(cp), kind });
-  });
-  if (plain || out.length === 0) out.push({ text: plain });
-  return out;
-}
-
-/** Text with each hidden character as its token, for accessible names and plain strings. */
-export function visibleText(text: string): string {
-  return revealHidden(text)
-    .map((r) => ("code" in r ? `⟪${r.code}⟫` : r.text))
-    .join("");
-}
-
-export function hasHidden(text: string): boolean {
-  return revealHidden(text).some((r) => "code" in r);
-}
+export { hasHidden, revealHidden, visibleText, type HiddenRun as Run } from "@jesinia/shell";
 
 /** Whether a hunk (or a file's patch) has any hidden or direction-changing character. */
 export const hunkHasHidden = (hunk: Hunk) => hasHidden(hunk.header) || hunk.lines.some((l) => hasHidden(l.text));

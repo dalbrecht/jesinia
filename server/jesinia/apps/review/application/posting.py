@@ -32,7 +32,7 @@ import contextlib
 import logging
 import math
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from typing import Final, Literal, Protocol
@@ -245,6 +245,8 @@ class PostingService:
         files: GitHub's file lists per head (``QueueService``), for where comments anchor.
         store: ``review.sqlite``.
         clock: the current UTC time.
+        on_posted: hears each round this service posted (keeping its KB page, spec §8);
+            secondary, so a failure there never fails the post.
     """
 
     def __init__(
@@ -255,7 +257,9 @@ class PostingService:
         files: PostingFiles,
         store: PostingStore,
         clock: Clock,
+        on_posted: Callable[[int], Awaitable[None]] | None = None,
     ) -> None:
+        self._on_posted = on_posted
         self._github = github
         self._writer = writer
         self._files = files
@@ -686,7 +690,18 @@ class PostingService:
             raise PostingFailed(exc, maybe_posted=False) from exc
         self._store.finish_posting(attempt.id, url)
         log.info("review.post round=%d posting=%d posted %s", rnd.id, attempt.id, url)
+        await self._after_post(rnd.id)
         return url
+
+    async def _after_post(self, round_id: int) -> None:
+        if self._on_posted is None:
+            return
+        try:
+            await self._on_posted(round_id)
+        except Exception as exc:  # secondary: the review is on GitHub whatever happens here
+            log.warning(
+                "review.post round=%d after-post work failed: %s", round_id, exc, exc_info=exc
+            )
 
     async def _reconcile(self, rnd: RoundRecord) -> Posting | None:
         """Settle the round's attempts whose outcome isn't known (a crash leaves
@@ -731,6 +746,8 @@ class PostingService:
             self._store.finish_posting(attempt.id, url)
             adopted = replace(attempt, state="posted", review_url=url)
             log.info("review.post round=%d posting=%d adopted %s", rnd.id, attempt.id, url)
+        if adopted is not None:  # posted after all: as after a post that answered (spec §8)
+            await self._after_post(rnd.id)
         return adopted
 
 

@@ -5,11 +5,15 @@ the repo workspace, the repo tools and the agent jobs. Starts last (after ``agen
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import secrets
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -17,6 +21,8 @@ from jesinia.apps.review.api.routes import build_router
 from jesinia.apps.review.api.tools import build_review_tools, build_tools
 from jesinia.apps.review.application.followup import FollowUps
 from jesinia.apps.review.application.jobs import JobRunner
+from jesinia.apps.review.application.keep import KeepService
+from jesinia.apps.review.application.knowledge import KnowledgeService
 from jesinia.apps.review.application.pipeline import Pipeline
 from jesinia.apps.review.application.posting import PostingService
 from jesinia.apps.review.application.queue import SYNC_INTERVAL, QueueService
@@ -32,6 +38,8 @@ from jesinia.apps.review.application.scheduler import (
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.queue import SyncStatus
+from jesinia.apps.review.infrastructure.knowledge_store import SqliteKnowledgeStore
+from jesinia.apps.review.infrastructure.merges import GitHubMerges
 from jesinia.apps.review.infrastructure.standards_loader import StandardsLoader
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace, github_remote_url
@@ -41,6 +49,8 @@ from jesinia.core.module import AppContext, ModuleHealth, ToolDef
 from jesinia.services.agents.application.sessions import SessionService
 from jesinia.services.github.application.prs import PrClient
 from jesinia.services.github.application.service import GitHubService
+from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.tags import TagService
 
 log = logging.getLogger(__name__)
 
@@ -51,8 +61,18 @@ SYNC_JOB = "review.sync"
 PRUNE_JOB = "review.prune"
 IDEMPOTENCY_PRUNE_JOB = "review.idempotency-prune"
 RECONCILE_JOB = "review.reconcile-postings"
+KNOWLEDGE_JOB = "review.knowledge-ingest"
+# How often the knowledge model reads its signals again (each source once, incrementally).
+KNOWLEDGE_INTERVAL = timedelta(minutes=30)
 # How often postings a crash or a lost response left unsettled are checked against GitHub.
 RECONCILE_INTERVAL = timedelta(minutes=5)
+# How long a post or Done waits for its review page before answering; the keep goes on in
+# the background past that (the PWA reads the round's ``kept`` record when it re-reads).
+KEEP_WAIT_SECONDS = 10.0
+# How long stop() waits for keeps in flight before cancelling them (N2).
+KEEP_STOP_SECONDS = 15.0
+# The per-install secret the knowledge model's emails digest is keyed with (M3).
+KNOWLEDGE_KEY_FILE = "knowledge.key"
 
 
 def _not_started() -> HTTPException:
@@ -61,6 +81,63 @@ def _not_started() -> HTTPException:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _log_keep_failure(round_id: int, task: asyncio.Task[object]) -> None:
+    """A keep's own errors are caught inside it; anything else is logged, never lost."""
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        log.warning("review.keep round=%d failed in the background: %s", round_id, exc,
+                    exc_info=exc)  # fmt: skip
+
+
+KNOWLEDGE_KEY_BYTES = 32
+
+
+def _knowledge_key(data_dir: Path) -> bytes:
+    """The per-install secret for the emails digest (M3), readable by the user only. A key
+    that is missing or the wrong length is made again (written atomically: a private temp
+    file, synced, then renamed into place); the new key changes the digest, so the history
+    is read again in full. A key that can't be read or written is replaced by one held in
+    memory, so the app still starts. Nothing about the key itself is logged."""
+    path = data_dir / "review" / KNOWLEDGE_KEY_FILE
+    try:
+        if path.is_file():
+            key = path.read_bytes()
+            if len(key) == KNOWLEDGE_KEY_BYTES:
+                return key
+            log.warning(
+                "review %s is %d bytes, not %d: made a new one; the history will be re-read",
+                KNOWLEDGE_KEY_FILE, len(key), KNOWLEDGE_KEY_BYTES,
+            )  # fmt: skip
+        else:
+            log.info("made a new %s; the history will be re-read", KNOWLEDGE_KEY_FILE)
+        return _write_key(path)
+    except OSError as exc:
+        log.warning(
+            "review %s can't be read or written (%s): using a key held in memory, so the "
+            "history will be re-read after each restart",
+            KNOWLEDGE_KEY_FILE, type(exc).__name__,
+        )  # fmt: skip
+        return secrets.token_bytes(KNOWLEDGE_KEY_BYTES)
+
+
+def _write_key(path: Path) -> bytes:
+    """A fresh key at ``path``, atomically: temp file (0600) in the same folder, fsync,
+    rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(KNOWLEDGE_KEY_BYTES)
+    temporary = path.parent / f".{path.name}.{secrets.token_hex(4)}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as out:
+            out.write(key)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return key
 
 
 class ReviewModule:
@@ -83,6 +160,10 @@ class ReviewModule:
         self._idempotency: SqliteIdempotencyStore | None = None
         self._followups: FollowUps | None = None
         self._stacks: StackReviews | None = None
+        self._knowledge: KnowledgeService | None = None
+        self._keeper: KeepService | None = None
+        self._keeps: set[asyncio.Task[object]] = set()
+        self._stopping = False
         # Review jobs bind their agent sessions here; the repo tools read through it.
         self.sessions = ReviewSessionRegistry()
 
@@ -165,6 +246,70 @@ class ReviewModule:
         return self._reviews
 
     @property
+    def knowledge(self) -> KnowledgeService:
+        """The knowledge model (spec §6.1)."""
+        if self._knowledge is None:
+            raise _not_started()
+        return self._knowledge
+
+    @property
+    def keeper(self) -> KeepService:
+        """Kept review pages and How it works (needs the kb service)."""
+        if self._keeper is None:
+            if self._workspace is not None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "keeping review pages requires the kb service",
+                )
+            raise _not_started()
+        return self._keeper
+
+    def _start_keep(self, round_id: int) -> asyncio.Task[object] | None:
+        """Start keeping a round's KB page, tracked so stop() can wait for it; none without
+        the KB or once stopping (N2). A failure that lands after nobody waits is logged."""
+        if self._keeper is None or self._stopping:
+            return None
+        task: asyncio.Task[object] = asyncio.create_task(self._keeper.keep_finished(round_id))
+        self._keeps.add(task)
+        task.add_done_callback(self._keeps.discard)
+        task.add_done_callback(lambda done: _log_keep_failure(round_id, done))
+        return task
+
+    async def keep_in_background(self, round_id: int) -> None:
+        """Hand a posted round on to be kept, without waiting (M5: a stack's Post all posts
+        PR after PR, and must not wait on the KB for each)."""
+        self._start_keep(round_id)
+
+    async def keep_finished(self, round_id: int) -> None:
+        """Keep a finished deep round's KB page (spec §8): best effort, so Done never fails
+        on it, and bounded, so it never waits on a slow KB for more than
+        ``KEEP_WAIT_SECONDS`` (the keep then finishes in the background). Without the KB
+        nothing is kept."""
+        task = self._start_keep(round_id)
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), KEEP_WAIT_SECONDS)
+        except TimeoutError:
+            log.info("review.keep round=%d goes on in the background", round_id)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise  # the caller itself is being cancelled
+            # stop() cancelled the keep this Done waited on: the Done still stands.
+            log.info("review.keep round=%d was cut short by a stop", round_id)
+
+    async def ingest_knowledge(self) -> None:
+        """Read the knowledge model's signals (the ``review.knowledge-ingest`` job); failures
+        are logged and reported, never raised."""
+        if self._knowledge is not None:
+            report = await self._knowledge.ingest()
+            log.info(
+                "knowledge ingest: %d commits, %d reviews, %d quizzes, %d errors",
+                report.commits, report.reviews, report.quizzes, len(report.errors),
+            )  # fmt: skip
+
+    @property
     def idempotency(self) -> IdempotencyStore:
         if self._idempotency is None:
             raise _not_started()
@@ -210,6 +355,7 @@ class ReviewModule:
         return [*build_tools(self), *build_review_tools(self)]
 
     async def start(self, ctx: AppContext) -> None:
+        self._stopping = False
         self._conn = open_db(ctx.cfg.data_dir, REVIEW_DB)
         self._workspace = GitWorkspace(
             ctx.cfg.data_dir / "review" / "repos", self._remote_url or github_remote_url
@@ -240,6 +386,23 @@ class ReviewModule:
         self._reviews = ReviewReads(store, cached_status)
         agents = ctx.services.get("agents")
         github = ctx.services.get("github")
+        kb, tags = ctx.services.get("kb"), ctx.services.get("tags")
+        if isinstance(kb, KbService) and isinstance(tags, TagService):
+            self._keeper = KeepService(kb=kb, tags=tags, store=store, clock=_utc_now)
+
+        def knowledge_repos() -> list[str]:
+            return [*store.watched_repos(), *(stored.pr.ref.repo for stored in store.prs())]
+
+        self._knowledge = KnowledgeService(
+            store=SqliteKnowledgeStore(self._conn),
+            clock=_utc_now,
+            workspace=self._workspace,
+            identity=PrClient(github) if isinstance(github, GitHubService) else None,
+            merges=GitHubMerges(PrClient(github)) if isinstance(github, GitHubService) else None,
+            repos=knowledge_repos,
+            email_key=_knowledge_key(ctx.cfg.data_dir),
+        )
+        ctx.scheduler.every(KNOWLEDGE_JOB, KNOWLEDGE_INTERVAL, self.ingest_knowledge, at_start=True)
         reviews = isinstance(agents, SessionService) and isinstance(github, GitHubService)
         # The review pipeline runs the pre-reviews; without agents and GitHub the gates are
         # still applied and ready PRs show as queued.
@@ -284,7 +447,12 @@ class ReviewModule:
             )
             self._reviews = ReviewReads(store, self._queue.status)
             self._posting = PostingService(
-                github=prs, writer=github, files=self._queue, store=store, clock=_utc_now
+                github=prs,
+                writer=github,
+                files=self._queue,
+                store=store,
+                clock=_utc_now,
+                on_posted=self.keep_in_background,
             )
             ctx.scheduler.every(SYNC_JOB, SYNC_INTERVAL, self.sync_queue, at_start=True)
             ctx.scheduler.every(
@@ -302,6 +470,8 @@ class ReviewModule:
                     slots=self._scheduler,
                     followups=followups,
                     rereviews=Rereviews(github=prs, workspace=self._workspace, store=store),
+                    knowledge=self._knowledge,
+                    system_notes=self._keeper,
                 )
                 # A head classified after its round was planned gets its re-review then.
                 followups.on_classified = self._pipeline.replan
@@ -316,12 +486,21 @@ class ReviewModule:
                     clock=_utc_now,
                     slots=self._scheduler,
                     bus=ctx.bus,
+                    knowledge=self._knowledge,
                 )
                 # Nothing runs yet: a stack job left running was cut short by a stop (R73).
                 if swept := self._stacks.recover():
                     log.info("marked stack jobs of %d stack reviews interrupted", swept)
 
     async def stop(self) -> None:
+        self._stopping = True  # no keep starts from here on (N2)
+        if self._keeps:  # keeps in flight get a bounded wait, then are cancelled
+            _, pending = await asyncio.wait(set(self._keeps), timeout=KEEP_STOP_SECONDS)
+            if pending:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                log.warning("review.keep stop cancelled %d keep(s) still running", len(pending))
         if self._scheduler is not None:
             self._scheduler.pause()  # cancelling an open frees a slot: nothing may take it
         if self._stacks is not None:
@@ -339,6 +518,8 @@ class ReviewModule:
         self._posting = None
         self._reviews = None
         self._idempotency = None
+        self._knowledge = None
+        self._keeper = None
         self._scheduler = None
         self._jobs = None
         self._queue = None

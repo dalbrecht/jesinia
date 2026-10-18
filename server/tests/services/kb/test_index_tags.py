@@ -78,3 +78,10 @@ async def test_catalog_page_does_not_count_as_a_use(kb: KbService) -> None:
     (_root(kb) / "P.md").write_text("---\nid: 01HZZZZZZZZZZZZZZZZZZZZZZX\ntitle: P\n---\n#used\n")
     await scan(kb)
     assert kb.index.tag_counts() == {"used": 1}
+
+
+async def test_pages_by_source_lists_every_page_with_the_url(kb: KbService) -> None:
+    a = await kb.write(PageDraft(None, "A", N, "a", {"source": "https://x.test/u"}))
+    b = await kb.write(PageDraft(None, "B", N, "b", {"source": "https://x.test/u"}))
+    assert kb.index.pages_by_source("https://x.test/u") == sorted([a.page.id, b.page.id])
+    assert kb.index.pages_by_source("https://nope.test") == []

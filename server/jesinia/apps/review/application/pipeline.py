@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Final, Literal, Protocol
@@ -82,6 +82,7 @@ from jesinia.apps.review.domain.rereview import (
     only_hunks,
     rereview_artifact,
 )
+from jesinia.apps.review.domain.skip import auto_skip_reason
 from jesinia.apps.review.domain.workspace import DiffTooLargeError, WorkspaceError
 from jesinia.core.events import Event, EventBus
 from jesinia.services.github.application.prs import GitHubPayloadError
@@ -151,13 +152,37 @@ def _github_failure(message: str, exc: Exception) -> RoundPreparationError:
 
 
 Clock = Callable[[], datetime]
-# The author's knowledge of a repo, from the knowledge model (plan Task 14). Trusted
-# context for the agents, so it is built from Jesinia's own records only, never PR text.
-KnowledgeSource = Callable[[str], str]
+
+
+class KnowledgeSource(Protocol):
+    """The author's knowledge, from the knowledge model (plan Task 14, ``KnowledgeService``).
+    The summary names folders anyone could write, so the jobs fence it as untrusted (R79)."""
+
+    def assess(self, repo: str, paths: Sequence[str]) -> tuple[float | None, str]:
+        """The lowest familiarity over the units ``paths`` touch (``None`` when unknown) and
+        the knowledge summary, from one read of the model."""
+        ...
+
+    def summary(self, repo: str, paths: Sequence[str]) -> str: ...
+
+
+class SystemNotesSource(Protocol):
+    """The repo's "How it works" page (plan Task 16, ``KeepService``). It is anyone's to
+    edit, so the jobs fence it as untrusted, and only a deep findings job gets it."""
+
+    async def system_notes(self, repo: str) -> str:
+        """The page's body, ``""`` when the repo has none."""
+        ...
+
+
 OpenState = Literal["started", "running", "up_to_date", "failed", "checking"] | GateState
 # Why an open waits (Codex P1 on PR #63): planning a round before its head is classified would
 # leave out the re-review for good.
 CHECKING = "checking this head against your previous review first"
+# The metric set a round is scored on, taken when the round started.
+METRIC_CRITERIA: Final = "metric_criteria"
+# The touched paths a round keeps for the knowledge model.
+ROUND_PATHS_MAX = 5_000
 ProgressState = Literal["started", "job_started", "job_done", "job_failed", "finished", "failed"]
 
 
@@ -181,8 +206,14 @@ def background_jobs(mode: PreReviewMode, depth: Depth, *, loaded: bool) -> tuple
     return ()
 
 
-def _nothing_known(repo: str) -> str:
-    return ""
+class NothingKnown:
+    """No knowledge model: no familiarity and an empty summary."""
+
+    def assess(self, repo: str, paths: Sequence[str]) -> tuple[float | None, str]:
+        return None, ""
+
+    def summary(self, repo: str, paths: Sequence[str]) -> str:
+        return ""
 
 
 class PipelineGitHub(Protocol):
@@ -349,6 +380,8 @@ class Pipeline:
             re-review of a changed rebase reviews only the files that differ (spec §4.1).
         rereviews: incremental re-reviews (spec §4.2): a re-review's head also runs the
             ``rereview`` job, and a changed rebase marks its unchanged hunks (R69).
+        system_notes: the repo's "How it works" page, which deep reviews check the PR
+            against (spec §6.2); read for every round, best effort.
     """
 
     def __init__(
@@ -361,11 +394,13 @@ class Pipeline:
         store: PipelineStore,
         bus: EventBus,
         clock: Clock,
-        knowledge: KnowledgeSource = _nothing_known,
+        knowledge: KnowledgeSource | None = None,
         slots: RoundSlots | None = None,
         followups: RoundFollowUps | None = None,
         rereviews: RoundRereviews | None = None,
+        system_notes: SystemNotesSource | None = None,
     ) -> None:
+        self._system_notes = system_notes
         self._slots: RoundSlots = _Unlimited() if slots is None else slots
         self._followups = followups
         self._rereviews = rereviews
@@ -376,7 +411,7 @@ class Pipeline:
         self._store = store
         self._bus = bus
         self._clock = clock
-        self._knowledge = knowledge
+        self._knowledge: KnowledgeSource = knowledge or NothingKnown()
         self._job_flights: _SingleFlight[tuple[int, JobKind], dict[str, object] | None] = (
             _SingleFlight()
         )
@@ -796,26 +831,40 @@ class Pipeline:
                 raise _github_failure(f"couldn't read CI on {ref}", exc) from exc
             ci = None
             warnings.append(f"CI on this head couldn't be read, so it counts as missing: {exc}")
-        proposed = propose_depth(pull.additions + pull.deletions, pull.changed_files, None)
+        paths = [f.path for f in diff.files]
+        # What the knowledge model may count before the jobs say what they covered: not the
+        # files the skip rules leave out (lockfiles, generated, vendored, binaries: I1).
+        reviewable = [f.path for f in diff.files if auto_skip_reason(f.path, f.is_binary) is None]
+        familiarity, summary = self._known(ref, paths, warnings)
+        proposed = propose_depth(pull.additions + pull.deletions, pull.changed_files, familiarity)
+        # The author's own choice for this head always wins over the proposal (R57).
         depth = self._store.chosen_depth(ref, head) or proposed
         index = await asyncio.to_thread(hunk_index, diff) if diff.complete else None
+        system_notes = await self._read_system_notes(ref, warnings)
         round = Round(
             round_id,
             pull,
             tuple(commits),
             depth,
-            knowledge=self._knowledge(repo),
+            knowledge=summary,
             merge_base=base,
             hunk_index=index,
             own_pr=self._is_own(ref),
+            metric_criteria=self._metric_criteria(round_id),
+            # Read whatever the depth: the author may switch a round to deep later.
+            system_notes=system_notes,
         )
         correctness_depth = await self._jobs.correctness_depth(round)
         self._store.set_depth(ref, head, round_id, depth)
+        # Kept with the round, so the knowledge model counts it once it is done, even after
+        # the PR has left the queue (and its cached file list with it).
+        self._store.put_artifact(round_id, "paths", reviewable[:ROUND_PATHS_MAX])
         self._store.put_artifact(
             round_id,
             "depth",
             {
                 "proposed": proposed,
+                "familiarity": familiarity,
                 "correctness": correctness_depth,
                 "lines": pull.additions + pull.deletions,
                 "files": pull.changed_files,
@@ -825,6 +874,38 @@ class Pipeline:
         return _Prepared(
             ref, round, diff, ci, correctness_depth, tuple(warnings), followup, new_hunks
         )
+
+    def _metric_criteria(self, round_id: int) -> tuple[str, ...] | None:
+        """The metric set the round is scored on: the repo's set when the round started
+        (stored by ``start_round``), so a change saved since applies from the next round,
+        never to this one (spec §5.2). None stored: the standards decide."""
+        stored = self._store.artifact(round_id, METRIC_CRITERIA)
+        items = stored if isinstance(stored, list) else []
+        return tuple(item for item in items if isinstance(item, str)) or None
+
+    async def _read_system_notes(self, ref: PrRef, warnings: list[str]) -> str:
+        """The repo's "How it works" body. Secondary: a failure leaves it out, with a
+        warning."""
+        if self._system_notes is None:
+            return ""
+        try:
+            return await self._system_notes.system_notes(ref.repo)
+        except Exception as exc:  # secondary: the round goes on without the notes
+            log.warning("reading How it works for %s failed: %s", ref, exc, exc_info=exc)
+            warnings.append(f"your system notes (How it works) couldn't be read: {exc}")
+            return ""
+
+    def _known(
+        self, ref: PrRef, paths: Sequence[str], warnings: list[str]
+    ) -> tuple[float | None, str]:
+        """The lowest familiarity over the touched paths and the knowledge summary. The model
+        is secondary: a failure leaves the depth to the PR's size, with a warning."""
+        try:
+            return self._knowledge.assess(ref.repo, paths)
+        except Exception as exc:  # secondary: the round goes on without the model
+            log.warning("reading the knowledge model for %s failed: %s", ref, exc, exc_info=exc)
+            warnings.append(f"the knowledge model couldn't be read, so it was left out: {exc}")
+            return None, ""
 
     async def _follow_up(
         self,
@@ -1129,6 +1210,7 @@ class Pipeline:
         read; ``correctness_claimed`` is what it said it checked). ``nothing_to_walk``: the
         diff changes no line, so the UI says so rather than showing 100% (M3)."""
         round_id, pr = prepared.round.id, prepared.round.pr
+        self._put_covered_paths(round_id, walkthrough, correctness)
         old = self._store.artifact(round_id, "coverage")
         before = old if isinstance(old, Mapping) else {}
         walk = walkthrough.as_json() if walkthrough else before.get("walkthrough")
@@ -1152,6 +1234,17 @@ class Pipeline:
                 "correctness_claimed": said,
             },
         )
+
+    def _put_covered_paths(self, round_id: int, *parts: Coverage | None) -> None:
+        """The files the round's review actually read (walked or checked), merged across its
+        jobs: once there is one, the knowledge model counts only these (I1)."""
+        new = [path for part in parts if part is not None for path in part.covered_paths]
+        if not new:
+            return
+        old = self._store.artifact(round_id, "covered_paths")
+        known = [str(p) for p in old] if isinstance(old, list) else []
+        merged = list(dict.fromkeys([*known, *new]))[:ROUND_PATHS_MAX]
+        self._store.put_artifact(round_id, "covered_paths", merged)
 
     async def _progress(
         self,

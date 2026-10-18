@@ -4,7 +4,7 @@
 // `fake` runner, whose review outputs are valid against the real job schemas. Nothing here
 // touches the developer's GitHub, `gh` config or credentials.
 import { expect, test, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const home = process.env.E2E_HOME ?? "";
@@ -128,10 +128,79 @@ test("a deep review shows its coverage; approving with a BLOCKING comment warns,
   expect(review.comments[0]?.body).toContain("BLOCKING");
   expect(JSON.stringify(review)).toContain("jesinia-posting");
 
+  // The posted deep review is kept as a page in the throwaway KB (spec §8), through the KB
+  // service: everything Jesinia owns under `jesinia:`, the agent's text inside provenance.
+  await outline.getByRole("link", { name: /Recommendation/ }).click();
+  const kept = page.getByRole("region", { name: "Kept in your KB" });
+  await expect(kept.getByRole("link", { name: /Reviews\/e2e-dev-greeter\/#1 / })).toBeVisible();
+  const folder = join(home, "kb", "Reviews", "e2e-dev-greeter");
+  const name = readdirSync(folder).find((file) => file.startsWith("#1 "));
+  expect(name).toBeDefined();
+  const text = readFileSync(join(folder, name ?? ""), "utf8");
+  expect(text).toMatch(/^---\nid: [0-9a-f-]{36}\ntitle: /);
+  expect(text).toContain("kind: review/pr");
+  expect(text).toContain("source: https://github.com/e2e-dev/greeter/pull/1");
+  expect(text).toContain("<!-- jesinia:ai agent=fake ");
+  expect(text).toContain("Tags: #code-review #greeter");
+
+  // How it works is only drafted: it is written when the author accepts the seed.
+  const seed = kept.getByRole("region", { name: "Start How it works" });
+  await expect(seed.getByLabel("Drafted How it works")).toContainText("How greetings work today");
+  expect(existsSync(join(folder, "How it works.md"))).toBe(false);
+  await seed.getByRole("button", { name: "Accept" }).click();
+  await expect(kept.getByText("How it works is updated with this review.")).toBeVisible();
+  expect(readFileSync(join(folder, "How it works.md"), "utf8")).toContain("How greetings work today");
+
   // Back in the queue the reviewed PR shows its finished pre-review and coverage.
   await page.getByRole("link", { name: /Queue/ }).click();
   await page.getByRole("tab", { name: /Loaded/ }).click();
   const row = page.getByRole("article").filter({ hasText: "e2e-dev/greeter#1" });
   await expect(row.getByText("Pre-review ready")).toBeVisible();
   await expect(row.getByText(/100%/)).toBeVisible();
+});
+
+test("Settings → Review saves a repo's metrics and corrects what Jesinia thinks you know", async ({ page }) => {
+  await login(page);
+  const auth = { Authorization: `Bearer ${token()}` };
+  type Repo = { repo: string; watched: boolean; metrics: string[] | null };
+  const before = (await (await page.request.get("/api/review/settings", { headers: auth })).json()) as {
+    repos: Repo[];
+  };
+  const original = before.repos.find((r) => r.repo === "e2e-dev/greeter");
+  expect(original).toBeDefined();
+  // A mark on a repo no other test reviews (a mark would change a greeter PR's depth).
+  const unit = "repo/e2e-dev/other/my docs";
+  const marked = await page.request.put(`/api/review/knowledge/${encodeURI(unit)}`, {
+    headers: { ...auth, "Idempotency-Key": "e2e-knowledge-mark" },
+    data: { override: "known" },
+  });
+  expect(marked.ok()).toBe(true);
+
+  await page.goto("/settings/#review");
+  const review = page.getByRole("region", { name: "Review", exact: true });
+  await expect(review.getByRole("combobox", { name: "Pre-review", exact: true })).toHaveValue("on_open");
+  const greeter = review.getByRole("group", { name: "e2e-dev/greeter" });
+  const metrics = greeter.getByLabel("Metrics");
+  await metrics.fill("");
+  await metrics.focus();
+  await page.keyboard.insertText("Security\nTests");
+  await greeter.getByRole("button", { name: "Save e2e-dev/greeter" }).click();
+  await expect(page.getByText("e2e-dev/greeter saved.").first()).toBeVisible();
+  const saved = await page.request.get("/api/review/settings", { headers: auth });
+  const repos = ((await saved.json()) as { repos: Repo[] }).repos;
+  expect(repos.find((r) => r.repo === "e2e-dev/greeter")?.metrics).toEqual(["Security", "Tests"]);
+
+  // The correction is cleared through the page: the unit's id travels with its slashes intact.
+  const known = page.getByRole("region", { name: "What Jesinia thinks you know" });
+  const docs = known.getByRole("listitem", { name: "e2e-dev/other / my docs" });
+  await expect(docs.getByText("Known: you marked it")).toBeVisible();
+  await docs.getByRole("combobox", { name: "Correct e2e-dev/other / my docs" }).selectOption("");
+  await expect(known.getByRole("listitem", { name: "e2e-dev/other / my docs" })).toHaveCount(0);
+
+  // Leave the repo as it was.
+  const restored = await page.request.put("/api/review/settings", {
+    headers: { ...auth, "Idempotency-Key": "e2e-review-metrics-reset" },
+    data: { prereview: "on_open", runner: "fake", repos: [original] },
+  });
+  expect(restored.ok()).toBe(true);
 });

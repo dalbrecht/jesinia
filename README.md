@@ -19,8 +19,8 @@ The apps:
 - **Issues:** triage the issues of the repos you watch with agent suggestions you approve,
   group them into epics, and build ordered work queues by drag and drop. Every other change
   to GitHub waits in a Pending changes tray until you apply it. It also uses `gh`.
-- **Settings:** the KB folder, git sync, agents, the tag catalog, RSS and Issues (watched
-  repos, label schema and setup). (Review's settings page comes in a later release.)
+- **Settings:** the KB folder, git sync, agents, the tag catalog, Review, RSS and Issues
+  (watched repos, label schema and setup).
 
 ## Quickstart
 

@@ -291,6 +291,48 @@ class PrClient:
         except (GitHubRequestError, GitHubPayloadError) as exc:
             return _pull_request_from_search(repo, item, str(exc))
 
+    async def merge_state(self, repo: str, number: int) -> tuple[str, str | None, str | None]:
+        """Whether the PR is ``open``, ``merged`` (with the commit that landed it, GitHub's
+        ``merge_commit_sha``, and the PR's ``head.sha`` it merged) or ``closed`` unmerged."""
+        validate_repo(repo)
+        validate_pull_number(number)
+        path = f"/repos/{repo}/pulls/{number}"
+        data = _mapping(await self._get_json(path), path)
+        if data.get("merged_at"):
+            sha = data.get("merge_commit_sha")
+            head = data.get("head")
+            head_sha = head.get("sha") if isinstance(head, Mapping) else None
+            return (
+                "merged",
+                sha if isinstance(sha, str) and sha else None,
+                head_sha if isinstance(head_sha, str) and head_sha else None,
+            )
+        return ("open", None, None) if _text(data, "state") == "open" else ("closed", None, None)
+
+    async def viewer_emails(self) -> list[str]:
+        """The viewer's email addresses, lowercase: the profile's public email, GitHub's
+        ``noreply`` addresses for the account, and every verified address ``/user/emails``
+        lists when the token may read it (the ``user:email`` scope; without it, the rest)."""
+        user = _mapping(await self._get_json("/user"), "/user")
+        login = _text(user, "login")
+        emails = [f"{login}@users.noreply.github.com"]
+        if isinstance(user.get("id"), int):
+            emails.append(f"{user['id']}+{login}@users.noreply.github.com")
+        if isinstance(public := user.get("email"), str) and public:
+            emails.append(public)
+        try:
+            listed = await self._get_pages("/user/emails")
+        except GitHubRequestError as exc:
+            if exc.status not in (403, 404):
+                raise
+            listed = []  # the token can't read them: the public ones still match
+        emails += [
+            address
+            for item in listed
+            if item.get("verified") is True and isinstance(address := item.get("email"), str)
+        ]
+        return list(dict.fromkeys(email.lower() for email in emails))
+
     async def viewer_orgs(self) -> list[str]:
         """Logins of the orgs the viewer belongs to, lowercase (every page)."""
         return [_text(org, "login").lower() for org in await self._get_pages("/user/orgs")]

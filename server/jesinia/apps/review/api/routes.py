@@ -23,9 +23,15 @@ from jesinia.apps.review.api.schemas import (
     DoneIn,
     DraftsIn,
     DraftsOut,
+    KeepReviewIn,
+    KeptReviewOut,
+    KnowledgeOut,
     LoadIn,
+    MetricsHistoryOut,
     OpenIn,
     OpenOut,
+    OverrideIn,
+    PointOut,
     PostAllIn,
     PostAllOut,
     PostedOut,
@@ -36,20 +42,34 @@ from jesinia.apps.review.api.schemas import (
     PrOut,
     QueueOut,
     QueueRowOut,
+    QuizIn,
+    QuizOut,
     ReviewErrorOut,
     ReviewSettingsBody,
     RoundOut,
     StackOpenIn,
     StackOpenOut,
     StackOut,
+    SystemAcceptIn,
+    SystemPageOut,
+    UnitOut,
 )
+from jesinia.apps.review.application.keep import KeepService
+from jesinia.apps.review.application.knowledge import VIEW_LIMIT, KnowledgeService
 from jesinia.apps.review.application.pipeline import OpenResult, Pipeline
 from jesinia.apps.review.application.posting import PostingFailed, PostingService
 from jesinia.apps.review.application.queue import QueueService
-from jesinia.apps.review.application.reviews import ReviewReads
+from jesinia.apps.review.application.reviews import KEEP, ReviewReads
 from jesinia.apps.review.application.stacks import StackReviews
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.gates import GateInputError
+from jesinia.apps.review.domain.kept import (
+    KeptPageError,
+    NoSystemDraft,
+    NotKeepable,
+    SystemPageChanged,
+)
+from jesinia.apps.review.domain.knowledge import KnowledgeError, QuizResultTooLarge, parse_unit
 from jesinia.apps.review.domain.posting import (
     CommentOnlyOnOwnPr,
     EarlierReviewPosted,
@@ -76,6 +96,7 @@ from jesinia.apps.review.domain.queue import (
     PrRef,
     QueueDomainError,
     QueueFilter,
+    RepoConfig,
     ReviewNotAllowedError,
 )
 from jesinia.apps.review.domain.stacks import (
@@ -92,6 +113,7 @@ from jesinia.services.github.application.service import (
     GitHubUnavailable,
 )
 from jesinia.services.github.domain.pr import PullRequestDomainError
+from jesinia.services.kb.application.errors import KbError, KbUnavailable
 
 
 class ReviewHost(Protocol):
@@ -115,11 +137,28 @@ class ReviewHost(Protocol):
     @property
     def idempotency(self) -> IdempotencyStore: ...
 
+    @property
+    def knowledge(self) -> KnowledgeService: ...
+
+    @property
+    def keeper(self) -> KeepService: ...
+
+    async def keep_finished(self, round_id: int) -> None:
+        """Keep a finished round's review page, best effort (never raises)."""
+        ...
+
 
 _STATUS: dict[type[Exception], int] = {
     PrNotInQueueError: status.HTTP_404_NOT_FOUND,
     NoReviewRound: status.HTTP_404_NOT_FOUND,
     NotAStackError: status.HTTP_404_NOT_FOUND,
+    NoSystemDraft: status.HTTP_404_NOT_FOUND,
+    NotKeepable: status.HTTP_409_CONFLICT,
+    SystemPageChanged: status.HTTP_409_CONFLICT,
+    KeptPageError: status.HTTP_400_BAD_REQUEST,
+    # The KB, not this request, failed: the cause is in ``detail``.
+    KbUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
+    KbError: status.HTTP_500_INTERNAL_SERVER_ERROR,
     InvalidPostAllError: status.HTTP_400_BAD_REQUEST,
     RoundNotOfPr: status.HTTP_409_CONFLICT,
     InvalidPrRefError: status.HTTP_400_BAD_REQUEST,
@@ -149,6 +188,8 @@ _STATUS: dict[type[Exception], int] = {
     PostingDomainError: status.HTTP_400_BAD_REQUEST,
     PullRequestDomainError: status.HTTP_400_BAD_REQUEST,
     GateInputError: status.HTTP_400_BAD_REQUEST,
+    QuizResultTooLarge: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    KnowledgeError: status.HTTP_400_BAD_REQUEST,
     # The app's own failure (a workspace or job error, say): still typed, structured JSON.
     ReviewError: status.HTTP_500_INTERNAL_SERVER_ERROR,
 }
@@ -156,6 +197,7 @@ _TYPED = (
     ReviewError,
     GitHubError,
     PullRequestDomainError,
+    KbError,
 )
 # ``Any`` is FastAPI's own type for ``responses`` (free-form OpenAPI fragments).
 _ERRORS: dict[int | str, dict[str, Any]] = {
@@ -165,6 +207,8 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
 Owner = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Name = Annotated[str, Path(min_length=1, max_length=REPO_MAX)]
 Number = Annotated[int, Path(ge=1, le=999_999_999)]
+# repo/<owner>/<name>[/<path>] or tag/<tag>; validated by ``parse_unit`` (400 otherwise).
+UnitPath = Annotated[str, Path(min_length=1, max_length=600)]
 
 
 def _status_of(exc: Exception) -> int:
@@ -444,7 +488,44 @@ def build_router(host: ReviewHost) -> APIRouter:
         shown = None if body is None else body.round_id
 
         async def run() -> RoundOut:
-            return RoundOut.of(host.reviews.done(_ref(owner, repo, number), shown))
+            finished = host.reviews.done(_ref(owner, repo, number), shown)
+            # A deep review is kept as a KB page; best effort, so Done never fails on it.
+            await host.keep_finished(finished.id)
+            return RoundOut.of(finished)
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.post(f"{pr_path}/keep", response_model=KeptReviewOut)
+    async def keep(
+        owner: Owner,
+        repo: Name,
+        number: Number,
+        body: KeepReviewIn | None = None,
+        idem: IdempotentCall = keyed,
+    ) -> Response:
+        """Keep the round's review page in the KB again (Retry), and draft its How it works
+        again unless one was accepted. A KB failure is the answer's ``error``, not a 5xx."""
+        round_id = None if body is None else body.round_id
+
+        async def run() -> KeptReviewOut:
+            return KeptReviewOut.of(
+                await host.keeper.retry_keep(_ref(owner, repo, number), round_id)
+            )
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.post(f"{pr_path}/system/accept", response_model=SystemPageOut)
+    async def accept_system(
+        owner: Owner, repo: Name, number: Number, body: SystemAcceptIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Write the round's drafted How it works (spec §6.2: never automatic). Refused with
+        409 SystemPageChanged when the page changed since the draft was made."""
+
+        async def run() -> SystemPageOut:
+            page = await host.keeper.accept_system_update(
+                _ref(owner, repo, number), body.round_id, body.base_rev
+            )
+            return SystemPageOut.of(page)
 
         return await idem.run(lambda: _respond(run))
 
@@ -510,17 +591,82 @@ def build_router(host: ReviewHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run))
 
+    @r.post(f"{pr_path}/quiz", response_model=QuizOut)
+    async def record_quiz(
+        owner: Owner, repo: Name, number: Number, body: QuizIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Record the round's quiz result for the knowledge model (spec §3.1); the first
+        result of a round counts."""
+
+        async def run() -> QuizOut:
+            recorded = host.knowledge.record_quiz(
+                _ref(owner, repo, number), body.round_id, right=body.right, answered=body.answered
+            )
+            return QuizOut(recorded=recorded)
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.get("/knowledge", response_model=KnowledgeOut)
+    async def get_knowledge(
+        repo: Annotated[str | None, Query(max_length=REPO_MAX)] = None,
+        offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
+        limit: Annotated[int, Query(ge=1, le=VIEW_LIMIT)] = VIEW_LIMIT,
+    ) -> Response:
+        """What Jesinia thinks you know (spec §6.1): each unit with a record or a correction,
+        its familiarity and why, one page at a time (``truncated``: more follow). Derived
+        data, from the cache only."""
+
+        async def run() -> KnowledgeOut:
+            return KnowledgeOut.of(host.knowledge.view(repo, limit=limit, offset=offset))
+
+        return await _respond(run)
+
+    @r.put("/knowledge/{unit:path}", response_model=UnitOut)
+    async def put_knowledge(
+        unit: UnitPath, body: OverrideIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Mark a unit known (familiarity 1) or unknown (0), or clear the mark (``null``)."""
+
+        async def run() -> UnitOut:
+            return UnitOut.of(host.knowledge.set_override(parse_unit(unit), body.override))
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.get("/metrics", response_model=MetricsHistoryOut)
+    async def get_metrics(
+        repo: Annotated[str, Query(min_length=3, max_length=REPO_MAX)],
+    ) -> Response:
+        """A repo's metrics over time, for the trend (spec §5.2). From the cache only."""
+
+        async def run() -> MetricsHistoryOut:
+            points = host.reviews.metrics_history(repo)
+            canonical = RepoConfig(repo).repo
+            return MetricsHistoryOut(repo=canonical, points=[PointOut.of(p) for p in points])
+
+        return await _respond(run)
+
     @r.get("/settings", response_model=ReviewSettingsBody)
     async def get_settings() -> ReviewSettingsBody:
         return ReviewSettingsBody.of(host.reviews.settings())
 
     @r.put("/settings", response_model=ReviewSettingsBody)
     async def put_settings(body: ReviewSettingsBody, idem: IdempotentCall = keyed) -> Response:
-        """Save Settings → Review; repos not listed keep their settings."""
+        """Save Settings → Review. Repos not listed keep their settings; a listed repo's
+        metrics, and either folder, keep theirs when left out. A metrics change applies from
+        the repo's next round."""
 
         async def run() -> ReviewSettingsBody:
-            repos = [repo.config() for repo in body.repos]
-            saved = host.reviews.update_settings(body.prereview, body.runner, repos)
+            repos = [repo.config(host.reviews.repo_config(repo.repo)) for repo in body.repos]
+            sent = body.model_fields_set
+            saved = host.reviews.update_settings(
+                body.prereview if "prereview" in sent else KEEP,
+                body.runner if "runner" in sent else KEEP,
+                repos,
+                standards_dir=body.standards_dir if "standards_dir" in sent else KEEP,
+                standards_user_dir=body.standards_user_dir
+                if "standards_user_dir" in sent
+                else KEEP,
+            )
             return ReviewSettingsBody.of(saved)
 
         return await idem.run(lambda: _respond(run))

@@ -635,7 +635,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - [x] **Step 3: Implement.**
 - [x] **Step 4: Run** `make ci`. Expected: PASS.
 - [x] **Step 5: Commit** `feat(review): stacks and own PRs`.
-  - [ ] **Open PR 4**, then the Codex loop and merge.
+  - [x] **Open PR 4**, then the Codex loop and merge.
 
 ## PR 5: Knowledge, metrics trend, kept pages (Tasks 14–16)
 
@@ -643,7 +643,7 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 
 **Files:**
 - Create: `apps/review/domain/knowledge.py`, `apps/review/application/knowledge.py`,
-  `migrations/0002_knowledge.sql`
+  `migrations/0009_knowledge.sql`
 - Test: `server/tests/apps/review/test_knowledge.py`
 
 **Interfaces:**
@@ -660,19 +660,22 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - **Overrides:** `known` sets the score to 1.0 and `unknown` to 0.0.
 - **Ingest:** the user's commits (from the workspace), finished rounds, quiz results, and KB
   pages with `jesinia.code`.
+  - **Note (R84):** KB pages are deferred, because their authorship is unknown (clipped
+    articles, other people's notes, agent output), so a page isn't evidence of knowledge. The
+    `kb_page` weight is kept in the table but unused, and issue #64 was closed.
 - **`summary(repo, paths) -> str`** feeds the ContextPack, and `propose_depth` uses the
   minimum unit familiarity over the touched paths.
 - **REST:** `GET /api/review/knowledge` and `PUT /api/review/knowledge/{unit}`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - a table-driven `test_familiarity`;
   - `test_overrides_win`;
   - `test_changes_since_last_reduce_familiarity`;
   - `test_depth_uses_min_familiarity`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): knowledge model`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): knowledge model`.
 
 ### Task 15: Metrics trend and Settings → Review
 
@@ -683,15 +686,15 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - Modify: `apps/review/application/` (`metrics_history(repo) -> list[Point]`)
 - Test: web and server tests
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - every setting round-trips;
   - knowledge overrides persist;
   - the trend renders points per repo;
   - per-repo metric overrides apply to the next round.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): settings and metrics trend`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): settings and metrics trend`.
 
 ### Task 16: Kept review pages and "How it works"
 
@@ -711,16 +714,16 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
     written only on accept;
   - the page is seeded from the first deep review on accept.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `test_keep_writes_review_page_with_front_matter`;
   - `test_quick_reviews_are_not_kept`;
   - `test_system_page_update_only_on_accept`;
   - `test_contradiction_becomes_design_finding` (fake runner).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make ci` and `make test-e2e`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(review): kept reviews and system pages`. **Open PR 5**, then
-  the Codex loop and merge.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `make ci` and `make test-e2e`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(review): kept reviews and system pages`.
+  - [ ] **Open PR 5**, then the Codex loop and merge.
 - [ ] **Step 6: Acceptance on the author's Mac:**
   - watch 2 repos and wait for CI-gated pre-reviews;
   - do a quick review and a deep review with the quiz;
