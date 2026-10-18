@@ -159,6 +159,9 @@ class PrSnapshot:
     bot_review_count: int
     human_review_count: int
     depth: Depth
+    # The author's latest review of the PR as GitHub lists it (``latest_review_key``): a
+    # follow-up classified against another one is out of date (R75).
+    viewer_review: str = ""
 
     @property
     def repo(self) -> str:
@@ -359,6 +362,19 @@ def auto_review_state(
     return "landed" if landed else "pending"
 
 
+def latest_review_key(reviews: Sequence[ReviewSummary], viewer: str | None) -> str:
+    """The identity of ``viewer``'s latest review that isn't pending (its state, commit,
+    time and page), or "" when there is none. Any new review, or a dismissal, changes it."""
+    if viewer is None:
+        return ""
+    mine = [r for r in reviews if _login(r.author) == _login(viewer) and r.state != "PENDING"]
+    if not mine:
+        return ""
+    last = mine[-1]
+    when = "" if last.submitted_at is None else last.submitted_at.isoformat()
+    return f"{last.state}|{last.commit_sha or ''}|{when}|{last.url or ''}"
+
+
 def snapshot_of(
     pr: PullRequest,
     *,
@@ -393,6 +409,7 @@ def snapshot_of(
         bot_review_count=sum(1 for r in others if r.author_is_bot),
         human_review_count=sum(1 for r in others if not r.author_is_bot),
         depth=propose_depth(lines, pr.changed_files, None),
+        viewer_review=latest_review_key(reviews, viewer),
     )
 
 

@@ -13,6 +13,7 @@ import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import timedelta
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -56,7 +57,7 @@ from jesinia.apps.review.domain.workspace import GitCommandError, MirrorFileTooL
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.infrastructure.workspace import GitWorkspace
 from jesinia.apps.review.module import REVIEW_DB
-from jesinia.core.db import open_db
+from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.events import EventBus
 from jesinia.services.github.application.service import GitHubRequestError
 from jesinia.services.github.domain.pr import PrFile, ReviewSummary
@@ -191,7 +192,7 @@ class Env:
         snapshot = snapshot_of(
             pr,
             ci_state=ci,  # type: ignore[arg-type]
-            reviews=[],
+            reviews=self.github.reviews_of.get((REPO, 1), []),
             automated_reviewer=None,
             viewer="me",
         )
@@ -1125,3 +1126,131 @@ async def test_a_save_with_stale_ids_keeps_untouched_drafts_pending(env: Env) ->
     env.store.save_drafts(new, "first save", stale)
     env.store.save_drafts(new, "second save, old ids", stale)
     assert [d.body for d, _, _ in env.store.carried_drafts(new)] == ["x"]
+
+
+# --- PR 4 final fix wave: R75, "still approved" against the author's CURRENT latest review ------
+
+
+async def _still_approved_rebase(env: Env) -> int:
+    """The author approved H on GitHub, opened H in Jesinia (round R1, nothing posted), and a
+    pure rebase H' was classified still approved. Returns R1."""
+    repo = env.repo
+    env.github.reviews_of[(REPO, 1)] = [
+        ReviewSummary("me", False, "APPROVED", repo.head, START, 0, "LGTM", "u-approve")
+    ]
+    env.sync(repo.head, repo.base)
+    r1 = env.store.start_round(env.ref, repo.head, repo.base, "quick", env.clock())
+    env.sync(repo.rebased, repo.rebased_base)
+    assert await env.followups.refresh() == 1
+    followup = env.followups.followup(env.ref, repo.rebased)
+    assert followup is not None and followup.kind == "still_approved"
+    return r1
+
+
+async def test_a_post_from_an_earlier_round_ends_still_approved(env: Env) -> None:
+    """R75, the reviewer's repro: Request changes posted from R1 (on H) after H' was
+    classified still approved: H' is no longer still approved."""
+    repo = env.repo
+    r1 = await _still_approved_rebase(env)
+    attempt = env.store.start_posting(r1, "REQUEST_CHANGES", "k", "d", "Fix it", [], env.clock())
+    env.store.finish_posting(attempt.id, "https://github.com/acme/web/pull/1#r9")
+    env.github.reviews_of[(REPO, 1)].append(
+        ReviewSummary(
+            "me", False, "CHANGES_REQUESTED", repo.head, START, 1,
+            MARKER_REVIEW.format(attempt.id), "u-changes",
+        )
+    )  # fmt: skip
+    assert env.followups.followup(env.ref, repo.rebased) is None  # every head of the PR
+    queue = QueueService(env.github, env.store, env.clock)
+    (row,) = (await queue.list(QueueFilter())).rows
+    assert row.kind != "rebase"
+    assert await env.followups.refresh() == 1
+    followup = env.followups.followup(env.ref, repo.rebased)
+    assert followup is not None and followup.kind == "rereview"
+
+
+async def test_a_later_review_on_github_ends_still_approved(env: Env) -> None:
+    """R75: the author requests changes on GitHub after the classification; the next sync
+    sees their latest review changed and the head is classified again."""
+    repo = env.repo
+    await _still_approved_rebase(env)
+    env.github.reviews_of[(REPO, 1)].append(
+        ReviewSummary("me", False, "CHANGES_REQUESTED", repo.head, START, 1, "No", "u-no")
+    )
+    env.sync(repo.rebased, repo.rebased_base)
+    assert env.followups.followup(env.ref, repo.rebased) is None
+    assert await env.followups.refresh() == 1
+    followup = env.followups.followup(env.ref, repo.rebased)
+    assert followup is not None and followup.kind == "rereview"
+    # Another reviewer's review, or the same list again, changes nothing.
+    env.github.reviews_of[(REPO, 1)].append(
+        ReviewSummary("alice", False, "APPROVED", repo.rebased, START, 0, "ok", "u-alice")
+    )
+    env.sync(repo.rebased, repo.rebased_base)
+    assert env.followups.followup(env.ref, repo.rebased) == followup
+    # A dismissal of the author's review is a change too.
+    env.github.reviews_of[(REPO, 1)][1] = ReviewSummary(
+        "me", False, "DISMISSED", repo.head, START, 1, "No", "u-no"
+    )
+    env.sync(repo.rebased, repo.rebased_base)
+    assert env.followups.followup(env.ref, repo.rebased) is None
+
+
+async def test_an_unsettled_posting_is_never_still_approved(env: Env) -> None:
+    """R75: while a posting of the PR may be on GitHub (GitHub's list may lag), the head is
+    unchecked, never classified; once it settles it is classified again."""
+    repo = env.repo
+    r1 = await _still_approved_rebase(env)
+    attempt = env.store.start_posting(r1, "REQUEST_CHANGES", "k", "d", "Fix it", [], env.clock())
+    assert env.followups.followup(env.ref, repo.rebased) is None  # starting one invalidates
+    env.store.settle_posting(attempt.id, "uncertain", "timeout")
+    assert await env.followups.refresh() == 0
+    unchecked = env.followups.followup(env.ref, repo.rebased)
+    assert unchecked is not None and unchecked.error is not None
+    assert "still being confirmed" in unchecked.error
+    scheduler = Scheduler(env.store, lambda: env.clock() + timedelta(hours=1))
+    await scheduler.tick()
+    stored = env.store.pr(env.ref)
+    assert stored is not None and "still approved" not in stored.state_reason
+    # Settled as not posted: classified again from GitHub's list (still the approval).
+    env.store.settle_posting(attempt.id, "not_posted", "not on GitHub")
+    assert env.followups.followup(env.ref, repo.rebased) is None
+    assert await env.followups.refresh() == 1
+    followup = env.followups.followup(env.ref, repo.rebased)
+    assert followup is not None and followup.kind == "still_approved"
+
+
+def test_rounds_superseded_before_0007_are_frozen(tmp_path: Path) -> None:
+    """Final M1: an install upgraded from 0006 freezes every round a newer one replaced, so
+    no explicit round id can post from it (R68)."""
+    old_schema = tmp_path / "migrations-0006"
+    old_schema.mkdir()
+    shipped = Path(str(files("jesinia.apps.review.migrations")))
+    for sql in sorted(shipped.glob("000[1-6]_*.sql")):
+        (old_schema / sql.name).write_text(sql.read_text())
+    data = tmp_path / "data"
+    before = open_db(data, ModuleDb("review", DbClass.HISTORY, old_schema))
+    for head, started in (("a", "2026-10-01T00:00:00+00:00"), ("b", "2026-10-02T00:00:00+00:00")):
+        before.execute(
+            "INSERT INTO rounds (repo, number, head_sha, base_sha, depth, started_at) "
+            "VALUES ('acme/web', 1, ?, ?, 'quick', ?)",
+            (head * 40, "c" * 40, started),
+        )
+    before.execute(
+        "INSERT INTO rounds (repo, number, head_sha, base_sha, depth, started_at) "
+        "VALUES ('acme/web', 2, ?, ?, 'quick', '2026-10-03T00:00:00+00:00')",
+        ("d" * 40, "c" * 40),
+    )
+    before.close()
+    after = open_db(data, REVIEW_DB)
+    try:
+        store = SqliteReviewStore(after)
+        first, second, alone = store.round(1), store.round(2), store.round(3)
+        assert first is not None and first.frozen_at is not None and first.successor_id == 2
+        assert second is not None and second.frozen_at is None
+        assert alone is not None and alone.frozen_at is None
+        with pytest.raises(RoundFrozen):
+            store.start_posting(1, "APPROVE", "k", "d", "", [], START)
+        assert after.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        after.close()

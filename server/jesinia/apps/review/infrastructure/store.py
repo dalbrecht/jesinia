@@ -69,6 +69,7 @@ _SNAPSHOT_COLUMNS = (
     "bot_review_count",
     "human_review_count",
     "depth",
+    "viewer_review",
 )
 _LOCAL_COLUMNS = (
     "kind",
@@ -110,7 +111,7 @@ ON CONFLICT (repo, number) DO UPDATE SET
 # The row shape ``_SELECT_PR`` returns.
 _PrRow = tuple[
     str, int, str, str, str, int, str, str, str, str, str, str | None, str, int, int, int,
-    str, str, int, int, int, str, str, str, str, str, int, int, str | None, str | None,
+    str, str, int, int, int, str, str, str, str, str, str, int, int, str | None, str | None,
 ]  # fmt: skip
 
 
@@ -146,14 +147,16 @@ def _snapshot_values(pr: PrSnapshot) -> tuple[object, ...]:
         pr.bot_review_count,
         pr.human_review_count,
         pr.depth,
+        pr.viewer_review,
     )
 
 
 def _stored(row: _PrRow) -> StoredPr:
     (repo, number, display_repo, title, author, author_is_bot, url, head_sha, base_sha,
      base_ref, head_ref, head_repo, created_at, size_lines, files, review_requested, ci_state,
-     auto_review_state, comments, bot_reviews, human_reviews, depth, kind, state, state_reason,
-     last_head_change_at, loaded, dismissed, fetch_error, fetch_error_at) = row  # fmt: skip
+     auto_review_state, comments, bot_reviews, human_reviews, depth, viewer_review, kind, state,
+     state_reason, last_head_change_at, loaded, dismissed, fetch_error,
+     fetch_error_at) = row  # fmt: skip
     snapshot = PrSnapshot(
         ref=PrRef(repo, number),
         display_repo=display_repo,
@@ -177,6 +180,7 @@ def _stored(row: _PrRow) -> StoredPr:
         bot_review_count=bot_reviews,
         human_review_count=human_reviews,
         depth=cast(Depth, depth),
+        viewer_review=viewer_review,
     )
     return StoredPr(
         pr=snapshot,
@@ -266,12 +270,13 @@ def _posting(row: tuple[object, ...]) -> Posting:
 
 
 _FOLLOWUP_COLUMNS = (
-    "kind, differing_paths, note, prev_head, prev_source, error, prev_merge_base, prev_round"
+    "kind, differing_paths, note, prev_head, prev_source, error, prev_merge_base, prev_round, "
+    "review_key"
 )
 
 
 def _followup(row: tuple[object, ...]) -> FollowUp:
-    kind, paths, note, prev_head, prev_source, error, prev_merge_base, prev_round = row
+    kind, paths, note, prev_head, prev_source, error, prev_merge_base, prev_round, key = row
     return FollowUp(
         kind=cast(FollowUpKind, kind),
         differing_paths=list(json.loads(cast(str, paths))),
@@ -281,6 +286,7 @@ def _followup(row: tuple[object, ...]) -> FollowUp:
         error=cast(str | None, error),
         prev_merge_base=cast(str | None, prev_merge_base),
         prev_round_id=cast(int | None, prev_round),
+        review_key=cast(str, key),
     )
 
 
@@ -476,11 +482,14 @@ class SqliteReviewStore:
             for pr, error in failed:
                 values = (*_snapshot_values(pr), _time(now), error, _time(now))
                 self._conn.execute(_UPSERT_FAILED, values)
-            # Follow-ups are per current head (M6): a moved or removed PR's old rows go.
+            # Follow-ups are per current head (M6) and per the author's latest review (R75):
+            # a moved or removed PR's old rows go, and so does one classified against a
+            # review that is no longer the author's latest (it is classified again).
             self._conn.execute(
                 "DELETE FROM followups WHERE NOT EXISTS (SELECT 1 FROM prs p "
                 "WHERE p.repo = followups.repo AND p.number = followups.number "
-                "AND p.head_sha = followups.head_sha)"
+                "AND p.head_sha = followups.head_sha "
+                "AND (followups.error IS NOT NULL OR p.viewer_review = followups.review_key))"
             )
             for ref in removed:
                 for table in ("prs", "pr_files"):
@@ -913,6 +922,16 @@ class SqliteReviewStore:
         )
         return [round_id for (round_id,) in rows]
 
+    def _forget_posting_followups(self, posting_id: int) -> None:
+        """Drop every follow-up of the posting's PR (R75): the author's latest review changed,
+        or may have, so each head is classified again against it."""
+        self._conn.execute(
+            "DELETE FROM followups WHERE EXISTS (SELECT 1 FROM rounds r JOIN postings p "
+            "ON p.round_id = r.id WHERE p.id = ? AND r.repo = followups.repo "
+            "AND r.number = followups.number)",
+            (posting_id,),
+        )
+
     def unsettled_posting_rounds(self) -> list[int]:
         """Rounds with an attempt whose outcome isn't known (``started`` or ``uncertain``)."""
         rows = self._conn.execute(
@@ -940,6 +959,12 @@ class SqliteReviewStore:
         """
         with transaction(self._conn):
             self._refuse_frozen(round_id)
+            # While this attempt's outcome isn't known, no head of the PR is classified (R75).
+            self._conn.execute(
+                "DELETE FROM followups WHERE EXISTS (SELECT 1 FROM rounds r WHERE r.id = ? "
+                "AND r.repo = followups.repo AND r.number = followups.number)",
+                (round_id,),
+            )
             return self._start_posting(round_id, event, key, digest, body, comments, started_at)
 
     def _start_posting(
@@ -979,14 +1004,9 @@ class SqliteReviewStore:
                 "WHERE id = (SELECT round_id FROM postings WHERE id = ?)",
                 (review_url, posting_id),
             )
-            # The author just reviewed this head: its follow-up (against the earlier review)
-            # is out of date and is worked out again (M5).
-            self._conn.execute(
-                "DELETE FROM followups WHERE EXISTS (SELECT 1 FROM rounds r JOIN postings p "
-                "ON p.round_id = r.id WHERE p.id = ? AND r.repo = followups.repo "
-                "AND r.number = followups.number AND r.head_sha = followups.head_sha)",
-                (posting_id,),
-            )
+            # The author's latest review is now this one: every head of the PR (not only the
+            # one this round reviewed) is classified again against it (M5, R75).
+            self._forget_posting_followups(posting_id)
 
     def settle_posting(self, posting_id: int, state: PostingState, error: str) -> None:
         """Record how an unposted attempt ended: ``failed`` (GitHub refused it),
@@ -996,6 +1016,7 @@ class SqliteReviewStore:
                 "UPDATE postings SET state = ?, error = ? WHERE id = ?",
                 (state, error, posting_id),
             )
+            self._forget_posting_followups(posting_id)  # R75: what the author posted moved
             if state in ("not_posted", "failed"):
                 rounds = self._conn.execute(
                     "SELECT round_id FROM postings WHERE id = ?", (posting_id,)
@@ -1026,12 +1047,12 @@ class SqliteReviewStore:
     def put_followup(self, ref: PrRef, head_sha: str, followup: FollowUp) -> None:
         self._conn.execute(
             f"INSERT INTO followups (repo, number, head_sha, {_FOLLOWUP_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (repo, number, head_sha) DO UPDATE SET kind = excluded.kind, "
             "differing_paths = excluded.differing_paths, note = excluded.note, "
             "prev_head = excluded.prev_head, prev_source = excluded.prev_source, "
             "error = excluded.error, prev_merge_base = excluded.prev_merge_base, "
-            "prev_round = excluded.prev_round",
+            "prev_round = excluded.prev_round, review_key = excluded.review_key",
             (
                 ref.repo,
                 ref.number,
@@ -1044,6 +1065,7 @@ class SqliteReviewStore:
                 followup.error,
                 followup.prev_merge_base,
                 followup.prev_round_id,
+                followup.review_key,
             ),
         )
 
@@ -1059,7 +1081,8 @@ class SqliteReviewStore:
         """Each queued PR's follow-up for its current head, where it is known."""
         rows = self._conn.execute(
             "SELECT f.repo, f.number, f.kind, f.differing_paths, f.note, f.prev_head, "
-            "f.prev_source, f.error, f.prev_merge_base, f.prev_round FROM followups f "
+            "f.prev_source, f.error, f.prev_merge_base, f.prev_round, f.review_key "
+            "FROM followups f "
             "JOIN prs p ON p.repo = f.repo AND p.number = f.number AND p.head_sha = f.head_sha"
         )
         return {PrRef(row[0], row[1]): _followup(row[2:]) for row in rows}

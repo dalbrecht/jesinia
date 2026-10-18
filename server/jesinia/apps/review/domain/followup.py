@@ -118,6 +118,8 @@ class FollowUp:
     prev_head: str | None = None
     prev_source: PrevSource | None = None
     error: str | None = None
+    # The author's latest review it was classified against (``latest_review_key``, R75).
+    review_key: str = ""
     prev_merge_base: str | None = None
     prev_round_id: int | None = None
 

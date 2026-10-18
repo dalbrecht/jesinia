@@ -23,6 +23,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Collection, Mapping
+from dataclasses import replace
 from typing import Final, Protocol
 
 from jesinia.apps.review.domain.followup import (
@@ -37,17 +38,23 @@ from jesinia.apps.review.domain.followup import (
     verdict_of_review_state,
 )
 from jesinia.apps.review.domain.posting import Draft, Posting, posting_marker
-from jesinia.apps.review.domain.queue import PrRef, RepoConfig, RoundRecord, StoredPr
+from jesinia.apps.review.domain.queue import (
+    PrRef,
+    PrSnapshot,
+    RepoConfig,
+    RoundRecord,
+    StoredPr,
+    latest_review_key,
+)
 from jesinia.apps.review.domain.workspace import MirrorFileTooLargeError, WorkspaceError
-from jesinia.services.github.application.prs import GitHubPayloadError
-from jesinia.services.github.application.service import GitHubError
 from jesinia.services.github.domain.pr import ReviewSide, ReviewSummary
 
 log = logging.getLogger(__name__)
 
+# Why a head isn't classified while a posting of its PR may be on GitHub (R75).
+UNSETTLED: Final = "a review you posted is still being confirmed on GitHub"
 # The largest file re-anchoring reads at either head; a larger one leaves its drafts outdated.
 REANCHOR_FILE_LIMIT: Final = 2 * 1024 * 1024
-_GITHUB_ERRORS = (GitHubError, GitHubPayloadError)
 
 After = Callable[[], Awaitable[None]]
 
@@ -98,6 +105,8 @@ class FollowUpStore(Protocol):
     def carried_drafts(self, round_id: int) -> list[tuple[Draft, str, str]]: ...
 
     def reanchor_drafts(self, round_id: int, drafts: list[Draft]) -> int: ...
+
+    def unsettled_rounds_of(self, ref: PrRef) -> list[int]: ...
 
 
 class LineMapWorkspace(Protocol):
@@ -201,10 +210,26 @@ class FollowUps:
         Raises:
             GitHubError: GitHub's reviews couldn't be read.
         """
+        return (await self._latest(stored))[0]
+
+    async def _latest(self, stored: StoredPr) -> tuple[PrevReview | None, str]:
+        """``previous_review``, with the identity of the author's latest review as GitHub
+        lists it (``latest_review_key``): what the classification is recorded against."""
         ref, pr = stored.pr.ref, stored.pr
         posted = self._store.posted_rounds(ref)
         viewer = (self._store.viewer() or await self._github.viewer()).lower()
         reviews = await self._github.reviews(ref.repo, ref.number)
+        key = latest_review_key(reviews, viewer)
+        return await self._prev_of(pr, reviews, viewer, posted), key
+
+    async def _prev_of(
+        self,
+        pr: PrSnapshot,
+        reviews: list[ReviewSummary],
+        viewer: str,
+        posted: list[tuple[RoundRecord, Posting]],
+    ) -> PrevReview | None:
+        ref = pr.ref
         marked = {posting_marker(posting.id): (rnd, posting) for rnd, posting in posted}
         for review in reversed(reviews):
             if review.author.lower() != viewer or review.commit_sha is None:
@@ -254,7 +279,13 @@ class FollowUps:
                 in the mirror: a failure here is transient, so nothing is stored).
         """
         pr = stored.pr
-        prev = await self.previous_review(stored)
+        if self._store.unsettled_rounds_of(pr.ref):
+            # GitHub's list may not show a review Jesinia posted yet (R49): classifying now
+            # could read an older approval as the author's latest (R75).
+            unsettled = FollowUp("new", error=UNSETTLED)
+            self._store.put_followup(pr.ref, pr.head_sha, unsettled)
+            return unsettled
+        prev, key = await self._latest(stored)
         old_ids = new_ids = None
         if prev is not None and prev.head_sha != pr.head_sha:
             await self._workspace.ensure_mirror(pr.ref.repo)
@@ -263,7 +294,7 @@ class FollowUps:
             new_ids = await self._patch_ids(pr.ref.repo, base, pr.head_sha)
             if prev.merge_base is not None:
                 old_ids = await self._patch_ids(pr.ref.repo, prev.merge_base, prev.head_sha)
-        followup = compare(prev, pr, old_ids, new_ids)
+        followup = replace(compare(prev, pr, old_ids, new_ids), review_key=key)
         self._store.put_followup(pr.ref, pr.head_sha, followup)
         log.info("review.followup %s@%s: %s", pr.ref, pr.head_sha[:12], followup.kind)
         return effective_followup(followup, pr.ci_state)
@@ -304,13 +335,13 @@ class FollowUps:
         if config is not None and config.suggested and not stored.loaded:
             return 0
         try:
-            await self.classify(stored)
+            found = await self.classify(stored)
         except Exception as exc:  # one PR's failure must not stop the others; cause kept
             log.warning("review.followup %s left unchecked: %s", ref, exc, exc_info=exc)
             cause = str(exc) or type(exc).__name__
             self._store.put_followup(ref, head, FollowUp("new", error=cause))
             return 0
-        return 1
+        return 0 if found.error is not None else 1
 
     def start_refresh(self) -> None:
         """Run ``refresh`` in the background (one at a time), then ``after`` if it classified

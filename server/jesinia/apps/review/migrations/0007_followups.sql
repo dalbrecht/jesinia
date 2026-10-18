@@ -3,7 +3,18 @@
 --
 -- A round a newer round replaced is frozen: read-only, its drafts moved to `successor_id`.
 ALTER TABLE rounds ADD COLUMN frozen_at TEXT;
-ALTER TABLE rounds ADD COLUMN successor_id INTEGER REFERENCES rounds (id);
+ALTER TABLE rounds ADD COLUMN successor_id INTEGER REFERENCES rounds (id) ON DELETE SET NULL;
+-- Rounds a newer round already replaced before this migration are frozen too (R68).
+UPDATE rounds
+SET frozen_at = COALESCE(finished_at, started_at),
+    successor_id = (
+        SELECT MIN(n.id) FROM rounds n
+        WHERE n.repo = rounds.repo AND n.number = rounds.number AND n.id > rounds.id
+    )
+WHERE EXISTS (
+    SELECT 1 FROM rounds n
+    WHERE n.repo = rounds.repo AND n.number = rounds.number AND n.id > rounds.id
+);
 -- A draft carried over from an earlier head keeps that head (and its base) until it is
 -- re-anchored to the new head's lines, or stays outdated: NULL once its lines are this
 -- round's.
@@ -17,6 +28,9 @@ ALTER TABLE drafts ADD COLUMN carried_base TEXT;
 -- checked (GitHub or git failed); it is checked again on the next sync. prev_merge_base and
 -- prev_round: the previous review's merge base and stored round, which a re-review builds
 -- on (spec §4.2; Task 12).
+-- The author's latest review of each PR as the last sync listed it (R75).
+ALTER TABLE prs ADD COLUMN viewer_review TEXT NOT NULL DEFAULT '';
+
 CREATE TABLE followups (
     repo TEXT NOT NULL,
     number INTEGER NOT NULL,
@@ -28,6 +42,9 @@ CREATE TABLE followups (
     prev_head TEXT,
     prev_source TEXT CHECK (prev_source IN ('round', 'github')),
     error TEXT,
+    -- The author's latest review it was classified against (R75): a sync listing another
+    -- one drops the row, so the head is classified again.
+    review_key TEXT NOT NULL DEFAULT '',
     prev_merge_base TEXT,
     prev_round INTEGER,
     PRIMARY KEY (repo, number, head_sha)
