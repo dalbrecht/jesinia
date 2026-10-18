@@ -11,7 +11,21 @@ How Jesinia works with Claude Code and Codex (ADR 0005).
 
 - Both use the CLI's own login, a minimal environment, and the prompt on stdin. A
   follow-up turn resumes the agent's session id.
-- `JESINIA_CLAUDE_MODEL` and `JESINIA_CODEX_MODEL` pick a model.
+- **Model:** each runner uses the model saved in Settings → Agents, else
+  `JESINIA_CLAUDE_MODEL` or `JESINIA_CODEX_MODEL`, else the CLI's own default.
+  - Runners ask for the model on every turn, so a change applies with no restart.
+  - The settings live in the `settings` table of `sessions.sqlite`, under the key
+    `model.<runner>`.
+  - `GET /api/agents/settings` returns each runner's saved setting, its environment value
+    and variable, the effective model and its source (`setting`, `environment` or
+    `default`).
+  - `PATCH /api/agents/settings` takes an `Idempotency-Key` header. It is a partial update:
+    a runner left out keeps its model, and `null` clears it.
+  - The name becomes one argv value (`-m` / `--model`), so it is validated at the boundary.
+    It must be 1 to 100 of `[A-Za-z0-9._:-]` and can't start with `-`. Anything else gets
+    422.
+  - An unsafe environment value or stored row is ignored, and the runner falls back to the
+    next source.
 - Availability (`/api/agents/runners`) shows in Settings and in `jesinia doctor`.
 
 ## Isolation

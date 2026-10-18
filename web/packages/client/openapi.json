@@ -1798,6 +1798,87 @@
         }
       }
     },
+    "/api/agents/settings": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Get Settings",
+        "operationId": "get_settings_api_agents_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSettingsOut"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Patch Settings",
+        "description": "Save Settings \u2192 Agents. Applies from each runner's next turn, no restart needed.",
+        "operationId": "patch_settings_api_agents_settings_patch",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSettingsPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSettingsOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agents/runners": {
       "get": {
         "tags": [
@@ -14852,6 +14933,59 @@
         "title": "AddLabelBody",
         "description": "Add a free-form label (``theme:``, ``review:``, ``campaign:``), as publishing a theme\nstages it. Like every label it must exist on GitHub by then (its setup step creates it)."
       },
+      "AgentSettingsOut": {
+        "properties": {
+          "models": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RunnerModelOut"
+            },
+            "type": "object",
+            "title": "Models"
+          }
+        },
+        "type": "object",
+        "required": [
+          "models"
+        ],
+        "title": "AgentSettingsOut",
+        "description": "Settings \u2192 Agents: each runner's model and where it comes from."
+      },
+      "AgentSettingsPatch": {
+        "properties": {
+          "codex": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:][A-Za-z0-9._:-]{0,99}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex"
+          },
+          "claude-code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:][A-Za-z0-9._:-]{0,99}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claude-Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AgentSettingsPatch",
+        "description": "A partial update: a runner left out keeps its model; ``null`` clears it (back to the\nenvironment variable, else the CLI's default)."
+      },
       "ApplyBatchOut": {
         "properties": {
           "id": {
@@ -20761,6 +20895,65 @@
           "detail"
         ],
         "title": "RssErrorOut"
+      },
+      "RunnerModelOut": {
+        "properties": {
+          "setting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setting"
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment"
+          },
+          "variable": {
+            "type": "string",
+            "title": "Variable"
+          },
+          "effective": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "setting",
+              "environment",
+              "default"
+            ],
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "setting",
+          "environment",
+          "variable",
+          "effective",
+          "source"
+        ],
+        "title": "RunnerModelOut"
       },
       "SaveIn": {
         "properties": {

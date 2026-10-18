@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Sequence
-from typing import Annotated, Protocol
+from typing import Annotated, Literal, Protocol
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
+from jesinia.core.idempotency import IdempotencyStore, IdempotentCall, idempotent
 from jesinia.core.module import CallContext, ToolDef
 from jesinia.services.agents.application.packs import ContextPack, UntrustedDoc
 from jesinia.services.agents.application.sessions import (
@@ -19,12 +20,25 @@ from jesinia.services.agents.application.sessions import (
     SessionNotFound,
     SessionService,
 )
+from jesinia.services.agents.application.settings import RUNNER_MODEL_ENV, RunnerModels
 from jesinia.services.agents.domain.session import PendingWrite, Session, StoredEvent, Subject
+from jesinia.services.agents.domain.settings import (
+    MODEL_NAME_MAX,
+    MODEL_NAME_PATTERN,
+    EffectiveModel,
+    checked_model_name,
+)
 
 
 class AgentsHost(Protocol):
     @property
     def service(self) -> SessionService: ...
+
+    @property
+    def models(self) -> RunnerModels: ...
+
+    @property
+    def idempotency(self) -> IdempotencyStore: ...
 
     async def runner_status(self) -> dict[str, dict[str, object]]: ...
 
@@ -62,6 +76,52 @@ class NoteIn(BaseModel):
     text: str = Field(min_length=1)
 
 
+# Validated at the boundary: the name becomes one argv value (``-m`` / ``--model``).
+ModelName = Annotated[
+    str,
+    Field(min_length=1, max_length=MODEL_NAME_MAX, pattern=MODEL_NAME_PATTERN),
+    AfterValidator(checked_model_name),
+]
+
+
+class RunnerModelOut(BaseModel):
+    setting: str | None
+    environment: str | None
+    variable: str  # the environment variable the runner falls back to
+    effective: str | None  # None: the CLI's own default
+    source: Literal["setting", "environment", "default"]
+
+    @classmethod
+    def of(cls, runner: str, m: EffectiveModel) -> RunnerModelOut:
+        return cls(
+            setting=m.setting,
+            environment=m.environment,
+            variable=RUNNER_MODEL_ENV[runner],
+            effective=m.model,
+            source=m.source,
+        )
+
+
+class AgentSettingsOut(BaseModel):
+    """Settings → Agents: each runner's model and where it comes from."""
+
+    models: dict[str, RunnerModelOut]
+
+    @classmethod
+    def of(cls, models: dict[str, EffectiveModel]) -> AgentSettingsOut:
+        return cls(models={runner: RunnerModelOut.of(runner, m) for runner, m in models.items()})
+
+
+class AgentSettingsPatch(BaseModel):
+    """A partial update: a runner left out keeps its model; ``null`` clears it (back to the
+    environment variable, else the CLI's default)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    codex: ModelName | None = None
+    claude_code: ModelName | None = Field(default=None, alias="claude-code")
+
+
 def session_json(s: Session) -> dict[str, object]:
     return {
         "id": s.id,
@@ -90,6 +150,27 @@ def _not_found(exc: Exception) -> HTTPException:
 
 def build_router(host: AgentsHost) -> APIRouter:
     r = APIRouter(prefix="/api/agents", tags=["agents"])
+    keyed = Depends(idempotent(lambda: host.idempotency))
+
+    @r.get("/settings", response_model=AgentSettingsOut)
+    async def get_settings() -> AgentSettingsOut:
+        return AgentSettingsOut.of(host.models.all())
+
+    @r.patch("/settings", response_model=AgentSettingsOut)
+    async def patch_settings(body: AgentSettingsPatch, idem: IdempotentCall = keyed) -> Response:
+        """Save Settings → Agents. Applies from each runner's next turn, no restart needed."""
+
+        async def run() -> Response:
+            sent = body.model_fields_set
+            changes: dict[str, str | None] = {}
+            if "codex" in sent:
+                changes["codex"] = body.codex
+            if "claude_code" in sent:
+                changes["claude-code"] = body.claude_code
+            saved = AgentSettingsOut.of(host.models.update(changes))
+            return JSONResponse(saved.model_dump())
+
+        return await idem.run(run)
 
     @r.get("/runners")
     async def runners() -> dict[str, dict[str, object]]:
