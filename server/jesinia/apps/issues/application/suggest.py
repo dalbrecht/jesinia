@@ -419,6 +419,13 @@ class SuggestService:
         content = content_hash(issue.title, issue.body, issue.labels)
         # The ask took a while: a sync may have changed (and retired drafts of) the issue.
         now_cached = self._cache.cached_issue(issue.repo, n)
+        if now_cached is not None and content != content_hash(
+            now_cached.issue.title, now_cached.issue.body, now_cached.issue.labels
+        ):
+            # The reply is about text the issue no longer has: store nothing. The edit queued
+            # its own (debounced) rerun, which asks about the issue as it is now.
+            log.info("issues: %s#%d changed during its triage ask; reply discarded", repo, n)
+            return self._store.suggestions(SuggestionFilters(issue.repo, n))
         now = self._clock()
         fresh = [
             Suggestion(

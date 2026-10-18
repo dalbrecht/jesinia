@@ -49,6 +49,7 @@ from jesinia.apps.issues.application.ports import ApplyCache, IssueWrites
 from jesinia.apps.issues.application.sync import OnTriaged
 from jesinia.apps.issues.domain.changes import (
     ALREADY_CLOSED,
+    CLOSED_SKIP,
     IN_FLIGHT,
     NOT_RUN,
     UNREPEATABLE,
@@ -66,6 +67,7 @@ from jesinia.apps.issues.domain.changes import (
     MissingLabelError,
     New,
     ReorderChild,
+    SetDimension,
     SetParent,
     Step,
     StepResult,
@@ -146,6 +148,8 @@ class _Run:
     overlay_repos: set[str]
     ensured: dict[str, str]
     closed_before: set[tuple[str, int]] = field(default_factory=set)
+    # Closes a cut-off run had on their way: GitHub may have taken them (``_close``).
+    closes_in_flight: set[tuple[str, int]] = field(default_factory=set)
     has_written: bool = False
     # Records the step at hand ``in flight``; a comment or create calls it right before its
     # write, so a cut-off during its preliminary reads is still "not run yet".
@@ -244,6 +248,11 @@ class ApplyEngine:
                 cast(Target, r.step.target).key
                 for r in kept
                 if r.step.kind == "close" and r.state == "done" and r.cause == ALREADY_CLOSED
+            )
+            run.closes_in_flight.update(
+                cast(Target, r.step.target).key
+                for r in kept
+                if r.step.kind == "close" and r.cause == IN_FLIGHT
             )
             results: list[StepResult] = []
             stopped: _BatchStoppedError | None = None
@@ -518,6 +527,9 @@ class ApplyEngine:
     async def _labels(self, run: _Run, step: Step) -> str | None:
         target = cast(Target, step.target)  # an issue step always has its issue
         issue = await self._fresh(run, target)
+        open_only = any(isinstance(c, SetDimension) and c.only_if_open for c in step.changes)
+        if open_only and issue.state == "closed":
+            raise _StepSkippedError(CLOSED_SKIP)
         repo, n = self._where(run, target)
         labels = await self._repo_labels(run, repo)
         edit = label_edit(
@@ -621,6 +633,10 @@ class ApplyEngine:
         target = cast(Target, step.target)  # an issue step always has its issue
         change = cast(Close, step.changes[-1])
         issue = await self._fresh(run, target)
+        if issue.state == "closed" and target.key in run.closes_in_flight:
+            # The cut-off run's close reached GitHub: it is this batch's, so its comment (and a
+            # duplicate's link) still follows, and ``only_if_open`` doesn't refuse it.
+            return "closed by this batch before it was cut off"
         if issue.state == "closed":
             if change.only_if_open:
                 raise ChangedOnGitHubError(
@@ -630,6 +646,7 @@ class ApplyEngine:
             run.closed_before.add(target.key)
             return ALREADY_CLOSED
         repo, n = self._where(run, target)
+        run.attempt()  # the close is next: a cut-off from here may have closed it
         closed = await self._write(
             run, lambda: self._github.close(repo, n, change.reason, change.duplicate_of_id)
         )

@@ -40,6 +40,7 @@ from jesinia.apps.issues.application.ports import (
     RepoState,
 )
 from jesinia.apps.issues.domain.changes import (
+    CLOSED_SKIP,
     BatchNotFoundError,
     BatchResult,
     BatchRunningError,
@@ -127,7 +128,11 @@ def _outcomes(result: BatchResult) -> dict[tuple[str, int], tuple[ItemState, str
     """Each issue's outcome in ``result`` (one step per issue in a priority batch)."""
     states: dict[str, ItemState] = {"done": "applied", "failed": "failed", "skipped": "skipped"}
     return {
-        step.step.target.key: (states[step.state], step.cause)
+        # An issue closed since the draft has nothing left to set: it doesn't hold it open.
+        step.step.target.key: (
+            "unchanged" if step.cause == CLOSED_SKIP else states[step.state],
+            step.cause,
+        )
         for step in result.results
         if step.step.target is not None
     }

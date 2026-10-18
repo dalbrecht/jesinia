@@ -71,6 +71,7 @@ StepState = Literal["done", "failed", "skipped"]
 BatchStatus = Literal["running", "finished", "interrupted"]
 BATCH_STATUSES: tuple[BatchStatus, ...] = get_args(BatchStatus)
 NOT_RUN = "not run yet"
+CLOSED_SKIP = "closed on GitHub since the draft, so nothing is set on it"
 # A comment or a new issue whose write was on its way when the batch was cut off: it may have
 # gone out, so Retry doesn't send it blindly again (it fails once, asking to check GitHub).
 IN_FLIGHT = "in flight: the write may have gone out when the batch was cut off"
@@ -199,12 +200,14 @@ class SetDimension:
     the dimension's other values. An approval states what it was made against, so the fresh
     read can refuse it when GitHub changed the dimension since (``ChangedOnGitHubError``):
     ``only_if_missing`` (it only promised to fill a gap) or ``only_if_value`` (the one value the
-    dimension had, e.g. ``human-needed`` for a readiness gap). The value already set is fine."""
+    dimension had, e.g. ``human-needed`` for a readiness gap). The value already set is fine.
+    ``only_if_open`` (a priority approval, about open issues) skips an issue closed since."""
 
     dimension: SingleDimension
     value: str
     only_if_missing: bool = False
     only_if_value: str | None = None
+    only_if_open: bool = False
 
     def __post_init__(self) -> None:
         if self.dimension not in SINGLE_DIMENSIONS:
@@ -836,7 +839,8 @@ def approval_batch(suggestion: Suggestion, duplicate_of_id: int | None = None) -
 
 def _priority_batch(suggestion: Suggestion) -> ChangeBatch:
     """Set each item's priority, as the draft was made against the label it had: filling a gap
-    only while it is still missing, replacing a value only while it is still that one. An item
+    only while it is still missing, replacing a value only while it is still that one, and only
+    while the issue is still open. An item
     without a value to set, already at it, or applied by an earlier approval (its outcome),
     changes nothing."""
     changes: dict[Target, list[IssueChange]] = {}
@@ -847,9 +851,9 @@ def _priority_batch(suggestion: Suggestion) -> ChangeBatch:
             continue
         target = Existing(str(item["repo"]), cast(int, item["n"]))
         guard = (
-            SetDimension("priority", str(value), only_if_missing=True)
+            SetDimension("priority", str(value), only_if_missing=True, only_if_open=True)
             if current is None
-            else SetDimension("priority", str(value), only_if_value=str(current))
+            else SetDimension("priority", str(value), only_if_value=str(current), only_if_open=True)
         )
         changes[target] = [guard]
     return ChangeBatch.of(changes)
@@ -893,6 +897,7 @@ def change_json(change: Change) -> Json:
             "value": change.value,
             "only_if_missing": change.only_if_missing,
             "only_if_value": change.only_if_value,
+            "only_if_open": change.only_if_open,
         }
     if isinstance(change, AddArea | RemoveArea):
         kind = "add_area" if isinstance(change, AddArea) else "remove_area"
@@ -1001,6 +1006,7 @@ def _parse(data: Mapping[str, object]) -> Change:
             _text(data, "value"),
             _flag(data, "only_if_missing"),
             _optional_text(data, "only_if_value"),
+            _flag(data, "only_if_open"),
         )
     if kind == "add_area":
         return AddArea(_text(data, "value"))

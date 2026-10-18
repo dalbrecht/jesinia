@@ -21,6 +21,7 @@ import pytest
 
 from jesinia.apps.issues.application.suggest import MAX_BACKLOG_REFS, SuggestService
 from jesinia.apps.issues.domain.changes import (
+    CLOSED_SKIP,
     Close,
     Existing,
     InvalidChangeError,
@@ -46,7 +47,7 @@ from jesinia.services.agents.application.packs import ContextPack
 from jesinia.services.github.application.service import GitHubUnavailable
 from tests.apps.issues.test_apply import World
 from tests.apps.issues.test_suggest import FakeAgent
-from tests.apps.issues.test_sync import OTHER, REPO, issue
+from tests.apps.issues.test_sync import OTHER, REPO, issue, wait_until
 
 
 @pytest.fixture
@@ -273,7 +274,7 @@ async def test_stopping_cancels_a_running_priority_ask(asking: Asking) -> None:
     asking.agent.gate = asyncio.Event()
     asking.agent.replies = [reply((1, "priority: high", 1))]
     await asking.suggest.start_priority([(REPO, 1)])
-    await asyncio.sleep(0)
+    await wait_until(lambda: asking.agent.in_flight == 1)
     await asking.suggest.stop()
     assert asking.world.drafts.suggestions(SuggestionFilters(kind="priority")) == []
 
@@ -469,8 +470,12 @@ def test_the_priority_approval_batch_guards_every_change() -> None:
     suggestion = Suggestion("s", None, None, "scope", "priority", payload, "why", "draft", now, now)
     batch = approval_batch(suggestion)
     assert {target.key[1]: changes for target, changes in batch.issues} == {
-        1: (SetDimension("priority", "priority: high", only_if_missing=True),),
-        2: (SetDimension("priority", "priority: high", only_if_value="priority: low"),),
+        1: (SetDimension("priority", "priority: high", only_if_missing=True, only_if_open=True),),
+        2: (
+            SetDimension(
+                "priority", "priority: high", only_if_value="priority: low", only_if_open=True
+            ),
+        ),
     }
     with pytest.raises(InvalidChangeError):
         approval_batch(replace(suggestion, kind="group"))
@@ -556,3 +561,18 @@ def test_priority_settled_records_every_items_outcome() -> None:
         settled, {(key, 4): ("applied", None), (key, 5): ("applied", None)}, now
     )
     assert done.state == "approved" and done.apply_error is None
+
+
+async def test_priority_approval_never_labels_an_issue_closed_since_the_draft(
+    asking: Asking,
+) -> None:
+    world = asking.world
+    await world.synced(issue(1, labels=("bug",)), issue(2, labels=("bug",)))
+    sid = await approved_draft(asking, reply((1, "priority: high", 1), (2, "priority: high", 2)))
+    world.github.issues[(REPO, 1)] = replace(world.github.issues[(REPO, 1)], state="closed")
+    approval = await world.service.approve(sid)
+    assert "priority: high" not in world.labels_of(1)
+    assert "priority: high" in world.labels_of(2)
+    outcome = {i["n"]: i["outcome"] for i in items_of(approval.suggestion)}
+    assert outcome[1] == {"state": "unchanged", "cause": CLOSED_SKIP}
+    assert approval.suggestion.state == "approved"  # nothing is left to do for a closed issue

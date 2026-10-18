@@ -26,6 +26,7 @@ from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
 from jesinia.apps.issues.domain.changes import (
+    IN_FLIGHT,
     AddArea,
     ChangeBatch,
     Close,
@@ -1620,3 +1621,74 @@ async def test_moving_a_child_refreshes_its_former_parent(world: World) -> None:
     assert result.complete
     after = world.store.cached_issue(REPO, 5)
     assert after is not None and not after.triage.is_epic and after.issue.sub_issue_count == 0
+
+
+# --- Codex round 2 (PR #61): close checkpoints -------------------------------------------------
+
+
+class HeldAfterClose(FakeWrites):
+    """``FakeWrites`` whose ``close`` is accepted by GitHub, then holds before answering (the
+    batch is cut off before it records the close)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.go = asyncio.Event()
+
+    async def close(
+        self, repo: str, n: int, state_reason: CloseReason, duplicate_of: int | None = None
+    ) -> Issue:
+        closed = await super().close(repo, n, state_reason, duplicate_of)
+        self.started.set()
+        await self.go.wait()
+        return closed
+
+
+def after_close_world(conn: sqlite3.Connection) -> tuple[World, HeldAfterClose]:
+    world = World(conn)
+    held = HeldAfterClose()
+    held.files, held.repo_labels = world.github.files, world.github.repo_labels
+    world.github = held
+    world.engine = ApplyEngine(held, world.store, world.clock, pause=world.pauses)
+    world.service = ApplyService(
+        world.engine, world.applied, world.drafts, world.store, world.clock
+    )
+    world.sync = SyncService(held, world.store, world.clock)
+    return world, held
+
+
+async def test_a_close_cut_off_after_github_took_it_still_posts_its_comment_once(
+    conn: sqlite3.Connection,
+) -> None:
+    world, held = after_close_world(conn)
+    await world.synced(issue(1))
+    world.pending.stage(REPO, 1, Close("not_planned", comment="won't do"), "menu")
+    started = world.service.start_pending(None, key=None)
+    await held.started.wait()
+    await world.service.stop()
+    stopped = world.applied.batch(started.id)
+    assert stopped is not None and stopped.result.results[0].cause == IN_FLIGHT
+    held.go.set()
+
+    retried = await world.service.retry(started.id)
+    assert retried.result.complete
+    assert held.comments_posted == [(1, "won't do")]
+    assert world.write_names().count("close") == 1
+
+
+async def test_a_duplicate_close_cut_off_after_github_took_it_links_the_original_once(
+    conn: sqlite3.Connection,
+) -> None:
+    world, held = after_close_world(conn)
+    await world.synced(issue(1), issue(2))
+    sid = world.draft(1, "duplicate", {"repo": REPO, "n": 2, "similarity": 0.9})
+    started = world.service.start_approval(sid, key=None)
+    await held.started.wait()
+    await world.service.stop()
+    held.go.set()
+
+    retried = await world.service.retry(started.batch.id)
+    assert retried.result.complete  # only_if_open never blocks a close Jesinia made
+    assert held.comments_posted == [(1, f"Duplicate of {REPO}#2")]
+    found = world.drafts.suggestion(sid)
+    assert found is not None and found.state == "approved"
