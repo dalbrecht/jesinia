@@ -331,7 +331,23 @@ class QueueService:
         kind: ItemKind = "epic" if self._is_epic(cached) else "issue"
         return self._epics.readiness(kind, cached.issue.repo, ref.n)
 
-    def _view(self, item: QueueItem, staged: dict[tuple[str, int], str]) -> ItemView:
+    def _live_pending(self) -> set[str]:
+        return {change.id for change in self._pending.pending()}
+
+    def release_settled(self) -> None:
+        """Done items stop naming staged changes that left the tray (applied in a batch, or
+        gone): their Done no longer waits on anything (Codex P2, PR #72)."""
+        live = self._live_pending()
+        gone = [p for p in self._store.done_pending_ids() if p not in live]
+        if gone:
+            self._store.clear_done_pending(gone)
+
+    def _view(
+        self, item: QueueItem, staged: dict[tuple[str, int], str], live: set[str]
+    ) -> ItemView:
+        if item.done_pending is not None and item.done_pending not in live:
+            # Its change left the tray: say what is so, whatever the store still holds.
+            item = replace(item, done_pending=None)
         ref = item.ref
         if ref.kind == "milestone":
             milestone = next(
@@ -360,7 +376,8 @@ class QueueService:
     def _view_of(self, queue: Queue, items: Sequence[QueueItem] | None = None) -> QueueView:
         found = self._store.items(queue.id) if items is None else list(items)
         staged = self._staged_priorities()
-        views = {i.key: self._view(i, staged) for i in found}
+        live = self._live_pending()
+        views = {i.key: self._view(i, staged, live) for i in found}
 
         def priority(item: QueueItem) -> tuple[int, str] | None:
             view = views[item.key]
@@ -862,6 +879,9 @@ class QueueService:
                 found += self._store.open_items_for(("milestone",), ended)
             for queue_id, item in found:
                 self._store.set_done(queue_id, item, now)
+            # A batch that applied a Done's staged change settles it here (the engine calls this
+            # hook with the issues a batch touched).
+            self.release_settled()
         except Exception as exc:  # error isolation: queues never break sync (spec §8)
             log.exception("issues: marking %s's closed queue items done failed: %s", repo, exc)
 

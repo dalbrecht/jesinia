@@ -671,6 +671,12 @@ class QueueStore(Protocol):
     def items_with_pending(self, pending_id: str) -> list[tuple[str, QueueItem]]:
         """Every done item (in any queue) whose Done staged ``pending_id``."""
 
+    def done_pending_ids(self) -> list[str]:
+        """Every pending change a done item still names."""
+
+    def clear_done_pending(self, pending_ids: Sequence[str]) -> None:
+        """Done items stop naming ``pending_ids`` (changes that left the tray)."""
+
     def open_items_for(
         self, kinds: Sequence[ItemKind], refs: Sequence[str]
     ) -> list[tuple[str, QueueItem]]:

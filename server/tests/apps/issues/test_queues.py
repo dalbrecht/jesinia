@@ -441,6 +441,37 @@ async def test_a_close_applied_from_the_tray_marks_other_queues_items_done(env: 
     assert [d.item.ref.n for d in env.queues.queue(b).done] == [1]
 
 
+async def test_an_applied_done_change_stops_waiting_in_the_tray(env: Queues) -> None:
+    """Codex P2 on PR #72: once the batch that carried a Done's staged change settles, the item no
+    longer names that change, closed or not (an agent-ready hand-off leaves the issue open)."""
+    await env.synced(
+        issue(1, labels=("human-needed", "priority: high", "bug", "area:web")),
+        issue(2, labels=("human-needed", "priority: high", "bug", "area:web")),
+    )
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+    env.queues.add(q, "issue", REPO, 2)
+    env.queues.done(q, "issue", REPO, 1, "close")
+    env.queues.done(q, "issue", REPO, 2, "agent_ready")
+    assert all(d.item.done_pending is not None for d in env.queues.queue(q).done)
+    await env.world.service.apply_pending(None)
+    assert env.world.pending.pending() == []
+    assert [d.item.done_pending for d in env.queues.queue(q).done] == [None, None]
+    # Cleared in the store too, not only in the view.
+    assert all(i.done_pending is None for i in env.store.items(q))
+
+
+async def test_a_done_change_the_tray_lost_never_shows_as_waiting(env: Queues) -> None:
+    await env.synced(issue(1, labels=("human-needed", "priority: high", "bug", "area:web")))
+    q = env.queues.create("Mine").queue.id
+    env.queues.add(q, "issue", REPO, 1)
+    done = env.queues.done(q, "issue", REPO, 1, "close")
+    assert done.staged is not None
+    # The row went without a batch hook (say, a stop mid-apply): the view checks the tray.
+    env.world.applied.delete_pending([done.staged.id])
+    assert env.queues.queue(q).done[0].item.done_pending is None
+
+
 async def test_auto_done_failures_never_break_sync(
     env: Queues, caplog: pytest.LogCaptureFixture
 ) -> None:
