@@ -34,18 +34,21 @@ from jesinia.apps.issues.domain.epics import (
     Member,
     Node,
     Readiness,
+    as_code,
     brief_comment,
     brief_marker,
     brief_scope,
     can_contain,
     carries_marker,
     checklist,
+    code_block,
     compose_brief,
     default_scope,
     derived_acceptance,
     epic_readiness,
     group_drafts,
     groups_scope,
+    inline_code,
     is_brief_comment,
     is_cross_repo,
     is_epic,
@@ -53,7 +56,6 @@ from jesinia.apps.issues.domain.epics import (
     issue_readiness,
     item_hash,
     lacks_epic_label,
-    neutralise_mentions,
     new_epic_plan,
     plan_conversion,
     proposal_batch,
@@ -440,8 +442,8 @@ def test_approving_a_group_creates_the_epic_and_links_its_issues() -> None:
     known = {(REPO.casefold(), n): facts(n) for n in (2, 3)}
     batch = proposal_batch(suggestion("group", payload), known, {})
     (create,) = batch.repo
-    assert isinstance(create, CreateIssue) and create.title == "Sync"
-    assert create.body.startswith("Make it reliable")
+    assert isinstance(create, CreateIssue) and create.title == "`Sync`"
+    assert create.body.startswith("`Make it reliable`")
     assert [t for t, _ in batch.issues] == [Existing(REPO, 2), Existing(REPO, 3)]
     gone = dict(known)
     gone[(REPO.casefold(), 3)] = facts(3, parent=(REPO, 50))
@@ -524,9 +526,9 @@ def test_a_brief_holds_scope_children_in_order_criteria_and_links() -> None:
         < text.index("## Acceptance criteria")
         < text.index("## Links")
     )
-    assert "1. [ ] acme/web#2 Fix login (agent-ready)" in text
-    assert "2. [x] acme/api#3 Ship API (closed)" in text
-    assert "- acme/web#2: it logs in" in text
+    assert "1. [ ] acme/web#2 `Fix login` (`agent-ready`)" in text
+    assert "2. [x] acme/api#3 `Ship API` (closed)" in text
+    assert "- `acme/web#2: it logs in`" in text
     assert CROSS_REPO_WARNING in text
     bare = compose_brief("T", REPO, 1, "u", "", [], [], cross_repo=False)
     assert "No children yet." in bare and "None drawn from the children yet." in bare
@@ -571,31 +573,87 @@ def test_a_triage_without_cache_stays_a_triage_type() -> None:
 # --- fix round 1 -------------------------------------------------------------------------------
 
 
-def test_mentions_in_untrusted_text_are_neutralised() -> None:
-    text = "hi @dana, a@b.com @org/team-x and @@x _@y"
-    assert neutralise_mentions(text) == (
-        "hi &#64;dana, a@b.com &#64;org/team-x and @&#64;x _&#64;y"
-    )
-    # Backticks and backslashes in the untrusted text can't re-arm a mention: no @ is left
-    # before a name anywhere, inside a code span or out. Addresses (a@b.com) stay as they are:
-    # GitHub doesn't mention them.
-    for tricky in ("``@x``", "x`@y`", "`` `@x` ``", "\\@x", "\\`@x\\`", "\\\\@x", "@x\\"):
-        made = neutralise_mentions(tricky)
-        assert re.search(r"(?<![A-Za-z0-9])@[A-Za-z0-9]", made) is None, made
-        assert "&#64;" in made and made.count("`") == tricky.count("`")  # no span is added
-    assert neutralise_mentions("mail a@b.com or x.y@z.org") == "mail a@b.com or x.y@z.org"
+def span(made: str) -> str:
+    """The text inside a well-formed CommonMark code span: one fence of backticks, longer than
+    any backtick run inside, so nothing inside can close it early (and one padding space each
+    side, stripped as CommonMark does, when the text starts or ends with a backtick)."""
+    match = re.fullmatch(r"(`+)(.*)\1", made, re.DOTALL)
+    assert match is not None, made
+    fence, inner = match.group(1), match.group(2)
+    assert all(len(run) < len(fence) for run in re.findall(r"`+", inner)), made
+    assert "\n" not in inner
+    if len(inner) > 1 and inner.startswith(" ") and inner.endswith(" ") and inner.strip():
+        inner = inner[1:-1]
+    return inner
+
+
+def block(made: str) -> str:
+    """The text inside a well-formed fenced code block: no line inside is a run of the fence's
+    character as long as the fence, so nothing inside can close it."""
+    lines = made.split("\n")
+    fence = lines[0]
+    assert re.fullmatch(r"`{3,}|~{3,}", fence) and lines[-1] == fence, made
+    for line in lines[1:-1]:
+        stripped = line.strip()
+        assert not (stripped and set(stripped) == {fence[0]} and len(stripped) >= len(fence))
+        assert not stripped.startswith(fence), made
+    return "\n".join(lines[1:-1])
+
+
+PAYLOADS = ("@user", "&#64;user", "&#x40;user", "&commat;user", "@org/team", "#123")
+
+
+def test_untrusted_text_is_posted_inside_code() -> None:
+    for payload in PAYLOADS:
+        assert span(inline_code(payload)) == payload
+        assert span(as_code(payload)) == payload
+    assert span(inline_code("two\nlines")) == "two lines"
+    assert inline_code("") == "" and as_code("   ") == ""
+
+
+def test_backticks_in_untrusted_text_cant_close_the_span() -> None:
+    for tricky in ("`", "``", "a ```` b", "````", "`@x`", "x`@y`", "``@x`` and ` `", "\\`@x\\`"):
+        assert span(inline_code(tricky)) == tricky, tricky
+    assert inline_code("`@x`") == "`` `@x` ``"
+    cut = inline_code("`" + "x" * 300, limit=256)
+    assert len(cut) <= 256 and span(cut).startswith("`x")
+
+
+def test_fences_in_a_multi_line_body_cant_close_the_block() -> None:
+    body = "line @one\n```\n@two\n```\n~~~~\n  ``````\nend #123"
+    made = code_block(body)
+    assert block(made) == body
+    assert block(as_code(body)) == body
+    assert block(code_block("plain\ntext")) == "plain\ntext"
+    assert code_block("  \n ") == ""
+
+
+def test_a_brief_carries_untrusted_text_only_inside_code() -> None:
     brief = compose_brief(
         "Ping @boss",
         REPO,
         1,
         "u",
-        "Scope for @dana",
-        [BriefLine(REPO, 2, "Fix @carol's bug", "u2", True, None)],
-        ["@erin approves"],
+        "Scope for @dana\nand &#64;carol",
+        [BriefLine(REPO, 2, "Fix @carol's bug #9", "u2", True, "@readiness")],
+        ["&commat;erin approves"],
         cross_repo=False,
     )
-    for name in ("boss", "dana", "carol", "erin"):
-        assert f"&#64;{name}" in brief and f"@{name}" not in brief
+    assert inline_code("Ping @boss") in brief
+    assert code_block("Scope for @dana\nand &#64;carol") in brief
+    title = inline_code("Fix @carol's bug #9")
+    assert f"{title} ({inline_code('@readiness')})" in brief
+    assert f"- {inline_code('&commat;erin approves')}" in brief
+    outside = brief
+    for piece in (
+        inline_code("Ping @boss"),
+        code_block("Scope for @dana\nand &#64;carol"),
+        inline_code("Fix @carol's bug #9"),
+        inline_code("@readiness"),
+        inline_code("&commat;erin approves"),
+    ):
+        outside = outside.replace(piece, "")
+    assert "@" not in outside and "&#" not in outside and "&commat;" not in outside
 
 
 def test_a_brief_can_name_its_subject_other_than_an_issue() -> None:
@@ -680,7 +738,8 @@ def test_an_approved_proposal_needs_its_minimum_shape_and_pings_nobody() -> None
     }  # fmt: skip
     (create,) = proposal_batch(suggestion("group", loud), known, {}).repo
     assert isinstance(create, CreateIssue)
-    assert create.title == "Ask &#64;dana" and "&#64;erin" in create.body
+    assert create.title == inline_code("Ask @dana")
+    assert create.body.startswith(inline_code("cc @erin"))
     parts: dict[str, object] = {
         "issue": {"repo": REPO, "n": 2},
         "parts": [{"title": "@a one", "body": "@b"}, {"title": "two", "body": ""}],
@@ -688,8 +747,8 @@ def test_an_approved_proposal_needs_its_minimum_shape_and_pings_nobody() -> None
     first = proposal_batch(suggestion("split", parts), known, {}).repo[0]
     assert (
         isinstance(first, CreateIssue)
-        and first.title == "&#64;a one"
-        and first.body.startswith("&#64;b")
+        and first.title == inline_code("@a one")
+        and first.body.startswith(inline_code("@b"))
     )
 
 

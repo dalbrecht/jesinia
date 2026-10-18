@@ -360,11 +360,13 @@ One engine (`ApplyEngine`) serves approvals and the tray (spec §6.2):
   a plan that changed since (an edited checklist, a linked issue moved) is refused. A group or
   split draft is re-checked against the cache when approved: an issue closed, gone or under a
   parent since makes it stale (409), and nothing is applied.
-- **No pings (IR49):** in text taken from issues or written by the agent, the @ of every mention
-  is written as the entity `&#64;`: GitHub shows "@" but mentions no one. That applies to briefs,
-  and to the epics and parts an approved group or split creates. An entity rather than a code
-  span, because backticks or backslashes in the text could close a span. An address like
-  `a@b.com` stays as it is.
+- **Untrusted text is posted as code (IR49):** every piece of text taken from issues or written
+  by the agent that Jesinia posts (a brief's titles, scope, readiness and criteria; the title and
+  body of an epic or part an approved group or split creates) goes inside a CommonMark code span
+  (one line) or fenced code block (several), whose fence is longer than any backtick run in the
+  text, so the text can't close it. GitHub makes no mention, link, issue reference or entity of
+  anything in code, however it is encoded (`@x`, `&#64;x`, `&commat;x`). Checklist items keep
+  their words as the titles of the issues a conversion creates (titles never notify anyone).
 - **Drop checks see the cached chain:** when an ancestor isn't cached (or the chain is deeper than
   8), the drop check warns "ancestors beyond … aren't cached; GitHub will check".
 - **Agent asks (IR37):** grouping, splitting and briefs ask through `SuggestService`'s one-shot

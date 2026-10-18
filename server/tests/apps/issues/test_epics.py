@@ -453,7 +453,7 @@ async def test_approving_a_brief_draft_marks_it_approved(env: Epics) -> None:
     text = await env.epics.brief(REPO, 1)
     (draft,) = env.world.drafts.suggestions(SuggestionFilters(scope=brief_scope(REPO, 1)))
     assert draft.kind == "brief" and draft.payload["text"] == text
-    assert "Login." in text and "- logs in" in text and "acme/web#2" in text
+    assert "`Login.`" in text and "- `logs in`" in text and "acme/web#2" in text
     await env.publisher.approve(REPO, 1, text, suggestion_id=draft.id)
     assert env.world.drafts.suggestion(draft.id).state == "approved"  # type: ignore[union-attr]
 

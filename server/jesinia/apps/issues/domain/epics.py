@@ -84,9 +84,7 @@ _FULL_REF = re.compile(r"(?<![\w/])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d{1,9})\b
 _SHORT_REF = re.compile(r"(?<![\w/#])#(\d{1,9})\b")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*)$")
 _BULLET = re.compile(r"^\s{0,3}[-*+]\s+(?:\[[ xX]\]\s+)?(.*\S)\s*$")
-# The @ of a GitHub mention (a user, or an org's team): not after a letter or digit (so an
-# address like a@b.com stays as it is; GitHub doesn't mention those).
-_MENTION = re.compile(r"(?<![A-Za-z0-9])@(?=[A-Za-z0-9])")
+_BACKTICKS = re.compile(r"`+")
 # How deep the readiness of nested epics is followed (GitHub nests sub-issues 8 deep).
 MAX_NESTING = 8
 _ANY_MARKER = re.compile(r"<!-- jesinia:brief(?::[A-Za-z0-9-]{1,64})? -->")
@@ -857,9 +855,9 @@ def _proposal_batch(
         return plan.changes
     if suggestion.kind == "group":
         members = [_facts(known, item) for item in cast(list[object], payload["issues"])]
-        scope = neutralise_mentions(str(payload["scope"]).strip())
+        scope = as_code(str(payload["scope"]))
         body = f"{scope}\n\nGrouped by Jesinia from an approved proposal."
-        title = neutralise_mentions(str(payload["title"]))
+        title = inline_code(str(payload["title"]), limit=TITLE_LIMIT)
         plan = new_epic_plan(str(payload["repo"]), title, body.strip(), members)
         _stale(plan)
         return plan.changes
@@ -871,8 +869,8 @@ def _proposal_batch(
         CreateIssue(
             f"part-{i}",
             whole.repo,
-            _title(neutralise_mentions(p["title"])),
-            f"{neutralise_mentions(p['body']).strip()}\n\n{footer}".strip(),
+            inline_code(p["title"], limit=TITLE_LIMIT),
+            f"{as_code(p['body'])}\n\n{footer}".strip(),
         )
         for i, p in enumerate(parts, start=1)
     ]
@@ -939,13 +937,49 @@ def derived_acceptance(bodies: Sequence[tuple[str, int, str]]) -> list[str]:
     return found[:ACCEPTANCE_MAX]
 
 
-def neutralise_mentions(text: str) -> str:
-    """``text`` with the @ of every mention written as the entity ``&#64;``, so text taken from
-    issues or an agent never pings anyone once it is posted (ruling IR49): GitHub shows "@"
-    but mentions no one. An entity, not a code span, because backticks or backslashes in the
-    untrusted text could close a span and re-arm the mention; no zero-width characters, which
-    read as hidden text."""
-    return _MENTION.sub("&#64;", text)
+def inline_code(text: str, limit: int | None = None) -> str:
+    """Untrusted single-line text as a CommonMark code span (ruling IR49), where GitHub makes no
+    mention, link, issue reference or entity of anything: the fence is one backtick longer than
+    the longest backtick run inside, so nothing inside can close it, and a space pads text that
+    starts or ends with a backtick (CommonMark strips it again). Newlines become spaces. With
+    ``limit``, the text is cut so the whole span fits (an issue title, say). Blank text gives
+    ``""``."""
+    content = " ".join(text.splitlines())
+    if not content.strip():
+        return ""
+    made = _span(content)
+    while limit is not None and len(made) > limit:
+        content = content[: len(content) - (len(made) - limit)]
+        made = _span(content)
+    return made
+
+
+def _span(content: str) -> str:
+    longest = max((len(run) for run in _BACKTICKS.findall(content)), default=0)
+    fence = "`" * (longest + 1)
+    padded = content.startswith(("`", " ")) or content.endswith(("`", " "))
+    pad = " " if padded else ""
+    return f"{fence}{pad}{content}{pad}{fence}"
+
+
+def code_block(text: str) -> str:
+    """Untrusted multi-line text as a CommonMark fenced code block (IR49): the fence is
+    backticks, longer than any backtick run inside (and at least three), so no line inside can
+    close it. Blank text gives ``""``."""
+    body = "\n".join(text.splitlines())
+    if not body.strip():
+        return ""
+    longest = max((len(run) for run in _BACKTICKS.findall(body)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{body}\n{fence}"
+
+
+def as_code(text: str) -> str:
+    """Untrusted text as code (IR49): a code span for one line, a fenced block for several.
+    Every posting path (briefs, the epics and parts approvals create) uses this, never a
+    pattern-based filter, which encodings like ``&#64;`` or ``&commat;`` would slip past."""
+    trimmed = text.strip()
+    return code_block(trimmed) if "\n" in trimmed else inline_code(trimmed)
 
 
 def compose_brief(
@@ -963,25 +997,30 @@ def compose_brief(
     """The delivery brief (spec §4: one epic, one PR): scope, the children in order,
     acceptance criteria drawn from them, and links. ``subject`` names what it is about (the
     epic's ``repo#n`` by default; a milestone is named, so it never reads as an issue). Every
-    @mention in the issues' and agent's text is neutralised (IR49). Without the marker;
+    piece of the issues' or agent's text (titles, scope, readiness, criteria) is posted as code
+    (``as_code``, IR49). Without the marker;
     ``brief_comment`` adds it when it is stored."""
     about = subject or f"{repo}#{n}"
-    title, scope = neutralise_mentions(title), neutralise_mentions(scope)
-    out = [f"# Delivery brief: {title}", "", f"{about}, delivered as one pull request.", ""]
+    out = [
+        f"# Delivery brief: {inline_code(title)}",
+        "",
+        f"{about}, delivered as one pull request.",
+        "",
+    ]
     if cross_repo:
         out += [f"Warning: its children span repos, so it {CROSS_REPO_WARNING}.", ""]
-    out += ["## Scope", "", scope.strip() or "To be written.", "", "## Children, in order", ""]
+    out += ["## Scope", "", as_code(scope) or "To be written.", "", "## Children, in order", ""]
     for index, line in enumerate(lines, start=1):
         box = "[ ]" if line.is_open else "[x]"
-        state = (line.readiness or "no readiness") if line.is_open else "closed"
-        name = neutralise_mentions(line.title)
-        out.append(f"{index}. {box} {line.repo}#{line.n} {name} ({state})")
+        if not line.is_open:
+            state = "closed"
+        else:
+            state = inline_code(line.readiness) if line.readiness else "no readiness"
+        out.append(f"{index}. {box} {line.repo}#{line.n} {inline_code(line.title)} ({state})")
     if not lines:
         out.append("No children yet.")
     out += ["", "## Acceptance criteria", ""]
-    out += [f"- {neutralise_mentions(c)}" for c in acceptance] or [
-        "None drawn from the children yet."
-    ]
+    out += [f"- {inline_code(c)}" for c in acceptance] or ["None drawn from the children yet."]
     out += ["", "## Links", "", f"- {about}: {url}"]
     out += [f"- {line.repo}#{line.n}: {line.url}" for line in lines]
     return "\n".join(out)
