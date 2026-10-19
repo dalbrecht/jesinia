@@ -27,7 +27,8 @@ address bar.
 - **One lock** guards every change and save. `require_user` runs on the threadpool, so a
   renewal could otherwise race a rotation.
 - **Only requests whose headers are still unsent renew.** Long-lived streams recheck
-  without renewing; their reconnects renew.
+  without renewing, and end after an hour so the client reconnects (resuming from
+  `Last-Event-ID`) and renews then.
 - **Best-effort persistence.** A failed save is logged and the session keeps working in
   memory until the next restart. An unreadable file is logged and ignored, so everyone
   signs in again. Neither case blocks sign-in.

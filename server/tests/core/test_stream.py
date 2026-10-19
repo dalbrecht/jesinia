@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import asyncio
 
+import pytest
+
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
 from jesinia.core.events import Event, EventBus
@@ -154,6 +156,20 @@ async def test_a_stream_ends_when_its_credentials_are_revoked(monkeypatch) -> No
         _Connected(), topics="kb.page_changed", after=99, follow=True, last_event_id=None
     )
     assert [c async for c in resp.body_iterator] == []  # idle stream: ends at keepalive
+
+
+async def test_should_end_idle_stream_so_the_reconnect_can_renew_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jesinia.core import stream
+
+    monkeypatch.setattr(stream, "KEEPALIVE_SECONDS", 0.01)
+    monkeypatch.setattr(stream, "MAX_STREAM_SECONDS", 0.05)
+    resp = await _endpoint(EventLog(EventBus()), lambda r: True)(
+        _Connected(), topics="kb.page_changed", after=0, follow=True, last_event_id=None
+    )
+    chunks = [c async for c in resp.body_iterator]  # ends on its own, never hangs
+    assert chunks and all(c == b": keepalive\n\n" for c in chunks)
 
 
 def test_is_authorized_follows_session_invalidation(cfg: Config) -> None:
