@@ -538,3 +538,20 @@ describe("Codex round 1 on PR #72", () => {
     expect(calls.filter((c) => new URL(c.url).pathname.endsWith("/done"))).toHaveLength(0);
   });
 });
+
+describe("Codex round 3 on PR #72", () => {
+  it("Undo is offered for a staged Done, never for an item closed on GitHub", async () => {
+    const q = queue("q1", [queueItem(3, { title: "Open one" })], {
+      done: [
+        queueItem(1, { title: "Waiting", done_at: "2026-10-18T12:00:00Z", done_pending: "p1" }),
+        queueItem(2, { title: "Closed", state: "closed", done_at: "2026-10-18T12:00:00Z" }),
+      ],
+    });
+    renderApp(routesFor(q).routes, "/issues/queues");
+    const done = await screen.findByRole("group", { name: "Done (2)" });
+    expect(within(done).getByRole("button", { name: "Undo Done: acme/app#1" })).toBeInTheDocument();
+    expect(within(done).queryByRole("button", { name: "Undo Done: acme/app#2" })).toBeNull();
+    const rows = within(done).getAllByRole("listitem");
+    expect(rows[1]).toHaveTextContent("reopen it on GitHub to bring it back");
+  });
+});

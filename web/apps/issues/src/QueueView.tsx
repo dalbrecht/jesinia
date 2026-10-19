@@ -581,18 +581,22 @@ export function QueueView({ id, onChanged }: { id: string; onChanged: () => void
                 {item.done_pending
                   ? "its change waits in Pending changes"
                   : item.state === "closed"
-                    ? "closed on GitHub"
+                    ? "closed on GitHub: reopen it on GitHub to bring it back"
                     : "done here"}
               </span>
               <span className={s.spacer} />
-              <Button
-                size="sm"
-                variant="ghost"
-                aria-label={`Undo Done: ${refOfItem(item)}`}
-                onClick={() => void undo(item)}
-              >
-                Undo
-              </Button>
+              {/* Closed on GitHub, an Undo would show it open here while GitHub keeps it closed
+                  (Codex round 3, PR #72); a staged close can still be taken back. */}
+              {item.done_pending || item.state !== "closed" ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`Undo Done: ${refOfItem(item)}`}
+                  onClick={() => void undo(item)}
+                >
+                  Undo
+                </Button>
+              ) : null}
             </li>
           ))}
         </ul>
