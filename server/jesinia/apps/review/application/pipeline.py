@@ -60,7 +60,6 @@ from jesinia.apps.review.domain.coverage import (
     skips_from_json,
     steps_from_json,
     verified_ranges,
-    with_clean_step_titles,
 )
 from jesinia.apps.review.domain.followup import FollowUp, restrict_diff
 from jesinia.apps.review.domain.gates import Depth, GateState, propose_depth
@@ -1286,6 +1285,4 @@ def _known_steps(diff: ParsedDiff, output: Mapping[str, object]) -> dict[str, ob
         )
         if step.hunks and all(diff.locate(ref.path, ref.hunk) is not None for ref in step.hunks)
     ]
-    # Titles are cleaned here, when stored, so the keep and re-review readers see them too;
-    # ``PrView`` cleans again on read for rounds stored before this existed.
-    return with_clean_step_titles({**output, "steps": kept})
+    return {**output, "steps": kept}

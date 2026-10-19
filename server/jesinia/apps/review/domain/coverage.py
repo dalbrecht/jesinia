@@ -860,3 +860,21 @@ def ranges_from_json(data: object, key: str = "checked") -> list[LineRange]:
         if isinstance(path, str) and start is not None and end is not None and start <= end:
             ranges.append(LineRange(path, start, end))
     return ranges
+
+
+def with_clean_titles(kind: str, data: object) -> object:
+    """A stored artifact of ``kind`` with the agent's own step numbers dropped from its step
+    titles (the walkthrough, the stack walkthrough, and a re-review's new-changes walkthrough);
+    any other artifact as it is.
+
+    Applied by the store on every read, because every reader (the UI, the keep page, the
+    re-review, the stack view) takes artifacts from there: one place no reader can miss, and
+    it also fixes rounds stored before the titles were cleaned."""
+    if not isinstance(data, Mapping):
+        return data
+    if kind in ("walkthrough", "stack_walkthrough"):
+        return with_clean_step_titles(data)
+    nested = data.get("new_changes_walkthrough")
+    if kind == "rereview" and isinstance(nested, Mapping):
+        return {**data, "new_changes_walkthrough": with_clean_step_titles(nested)}
+    return data

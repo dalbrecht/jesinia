@@ -919,6 +919,16 @@ async def test_stop_cancels_running_stack_jobs(stack: StackEnv) -> None:
     await stack.service.drain()
 
 
+async def test_stack_artifacts_read_back_without_agent_step_numbers(stack: StackEnv) -> None:
+    signature = stack_signature([(n, HEADS[n]) for n in (1, 2, 3)])
+    stack_id = stack.store.start_stack_review(REPO, signature, stack.clock())
+    walk = {"steps": [{"title": "1) Add the route", "body": "b", "hunks": []}]}
+    stack.store.put_stack_artifact(stack_id, "stack_walkthrough", walk)
+    expected = {"steps": [{"title": "Add the route", "body": "b", "hunks": []}]}
+    assert stack.store.stack_artifact(stack_id, "stack_walkthrough") == expected
+    assert stack.store.stack_artifacts(stack_id)["stack_walkthrough"] == expected
+
+
 async def test_jobs_a_crash_left_running_are_interrupted_at_start(stack: StackEnv) -> None:
     signature = stack_signature([(n, HEADS[n]) for n in (1, 2, 3)])
     stack_id = stack.store.start_stack_review(REPO, signature, stack.clock())

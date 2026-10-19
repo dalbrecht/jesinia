@@ -34,6 +34,7 @@ from jesinia.apps.review.domain.coverage import (
     strip_step_number,
     verified_ranges,
     with_clean_step_titles,
+    with_clean_titles,
 )
 from jesinia.apps.review.domain.workspace import DiffTooLargeError
 from tests.apps.review.perf import CEILING, assert_linear
@@ -621,3 +622,17 @@ def test_should_clean_every_step_title_and_keep_the_rest_of_the_walkthrough() ->
 def test_should_leave_a_walkthrough_without_a_steps_list_alone() -> None:
     assert with_clean_step_titles({"steps": "oops"}) == {"steps": "oops"}
     assert with_clean_step_titles({}) == {}
+
+
+def test_should_clean_titles_of_walkthrough_kinds_only() -> None:
+    walk = {"steps": [{"title": "1. A"}]}
+    assert with_clean_titles("walkthrough", walk) == {"steps": [{"title": "A"}]}
+    assert with_clean_titles("stack_walkthrough", walk) == {"steps": [{"title": "A"}]}
+    rereview = {"new_changes_walkthrough": walk, "requests": []}
+    assert with_clean_titles("rereview", rereview) == {
+        "new_changes_walkthrough": {"steps": [{"title": "A"}]},
+        "requests": [],
+    }
+    assert with_clean_titles("rereview", {"requests": []}) == {"requests": []}
+    assert with_clean_titles("findings", walk) is walk
+    assert with_clean_titles("walkthrough", None) is None
