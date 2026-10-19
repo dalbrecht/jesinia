@@ -6,8 +6,9 @@
 import { Badge } from "@jesinia/design";
 import { VisibleText } from "@jesinia/shell";
 
-export function Visible({ text }: { text: string }) {
-  return <VisibleText text={text} />;
+/** `multiline` is for bodies whose line breaks are real (comments, drafts); names stay single-line. */
+export function Visible({ text, multiline = false }: { text: string; multiline?: boolean }) {
+  return <VisibleText text={text} multiline={multiline} />;
 }
 
 /** The warning on a file or hunk that has any such character. */

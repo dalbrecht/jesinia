@@ -354,7 +354,7 @@ export function PostDialog(props: PostDialogProps) {
                 <span className={s.label}>Review body</span>
                 {preview.body ? (
                   <pre className={s.exact}>
-                    <Visible text={preview.body} />
+                    <Visible text={preview.body} multiline />
                   </pre>
                 ) : (
                   <span className={s.muted}>(none)</span>
@@ -366,7 +366,7 @@ export function PostDialog(props: PostDialogProps) {
                     <Visible text={`${c.path}:${lines({ start_line: c.start_line ?? c.line, end_line: c.line })}`} />
                   </span>
                   <pre className={s.exact}>
-                    <Visible text={c.body} />
+                    <Visible text={c.body} multiline />
                   </pre>
                 </div>
               ))}

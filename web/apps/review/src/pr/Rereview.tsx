@@ -63,7 +63,7 @@ function Where({ comment }: { comment: PreviousComment }) {
 function CommentText({ comment }: { comment: PreviousComment }) {
   return (
     <p className={s.previousComment}>
-      <Visible text={comment.body} />
+      <Visible text={comment.body} multiline />
       {comment.resolved ? <span className={s.muted}> (resolved on GitHub)</span> : null}
     </p>
   );

@@ -211,6 +211,18 @@ describe("a re-review", () => {
     expect(document.querySelector("img[src=x]")).toBeNull();
   });
 
+  it("shows a multi-line comment's line breaks as text, not newline tokens", async () => {
+    const view = rereviewed();
+    const previous = view.artifacts.previous_review as PreviousReview;
+    const comments = previous.comments.map((c) => (c.ref === "c1" ? { ...c, body: "First line.\r\nSecond line.\nThird." } : c)); // prettier-ignore
+    openPr(rereviewed({ previous_review: { ...previous, comments } }));
+    await ready();
+    await go(/Your requests/);
+    const list = screen.getByRole("list", { name: "Your requests" });
+    expect(within(list).getByText(/First line\./).textContent).toBe("First line.\r\nSecond line.\nThird.");
+    expect(list.textContent).not.toMatch(/⟪U\+000[AD]⟫/);
+  });
+
   it("shows the previous review aligned by file and hunk", async () => {
     openPr(rereviewed());
     await ready();
