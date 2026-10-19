@@ -723,8 +723,8 @@ spec §5 (tags) and `docs/conventions/` also apply. This plan depends on the RSS
 - [x] **Step 3: Implement.**
 - [x] **Step 4: Run** `make ci` and `make test-e2e`. Expected: PASS.
 - [x] **Step 5: Commit** `feat(review): kept reviews and system pages`.
-  - [ ] **Open PR 5**, then the Codex loop and merge.
-- [ ] **Step 6: Acceptance on the author's Mac:**
+  - [x] **Open PR 5**, then the Codex loop and merge.
+- [x] **Step 6: Acceptance on the author's Mac:**
   - watch 2 repos and wait for CI-gated pre-reviews;
   - do a quick review and a deep review with the quiz;
   - edit drafts, post with a BLOCKING warning, then a rebase showing "still approved", then a

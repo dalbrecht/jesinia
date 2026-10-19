@@ -1,6 +1,6 @@
 # Jesinia — Code Review Design
 
-- **Status:** Approved (2026-10-16)
+- **Status:** Implemented (acceptance in §13)
 - **Date:** 2026-10-16
 - **Author:** Don Albrecht (with Claude)
 - **Builds on:**
@@ -492,7 +492,7 @@ by Claude in the browser; the author confirmed or made every GitHub post. Review
 | 1. Watch repos, CI-gated pre-reviews | Watched repos (`Tukaiz/tkdata`, `c65llc/coding-standards`, `dalbrecht/dust3d-swiftui` and others) were pre-reviewed in the background once CI was green: quick for small PRs, deep for larger ones; queue cards show the CI state, automated and human reviews, and *Pre-review ready*. Agent sessions first ran with tool approval prompts and the author's config (A1/A2, fixed in #71); provider outages left opaque job errors and a Codex preamble broke JSON replies (fixed in #74). |
 | 2. Quick and deep review, quiz | A quick review of tkdata#906 and a deep review of tkdata#865: 7 walkthrough steps covering 100% of 6 files, two minor correctness findings, verdict *request changes*. The quiz scored 5 of 5, each answer explained with the file it came from. |
 | 3. Edit drafts, post with a BLOCKING warning | The finding drafts never appeared: the round's finding jobs had failed and the one-time seed was spent before Retry stored them (fixed in #76: seeding per kind; verified live on tkdata#919, where a retry added 4 drafts). The author's own draft marked BLOCKING made *Approve…* warn "You're approving, but the review says BLOCKING", next to the verdict-mismatch warning; *Request changes instead* switched the dialog with the drafts kept. The author posted it ([review](https://github.com/Tukaiz/tkdata/pull/865#pullrequestreview-5565989433)); reopening the dialog warned that posting again adds a second review. |
-| 4. Rebase showing "still approved" | Not checked yet: no PR the author approved has been rebased since. |
+| 4. Rebase showing "still approved" | Not checked: no PR the author approved was rebased during acceptance, and the author chose to record it as not yet checked rather than wait. |
 | 5. Re-review after changes | tkdata#919 (changes requested on GitHub at `013fd11`, 39 files changed since) showed as *Re-review* in the queue; the PR view's *Your requests* rated each request (*Addressed*, *Partly addressed*) with its explanation and hunks. Fixed during acceptance: newlines in quoted review text showed as `⟪U+000A⟫` (#77), and agent-numbered step titles read "1. 1." (#78). |
 | 6. Review page in the KB | `Reviews/tukaiz-tkdata/#865 fix(db) eager_defaults on server-generated timestamps.md` was kept on posting, with `kind: review/pr`, source, repo, PR, head, verdict and outcome, the overview and walkthrough in provenance blocks, the author's notes and tags. It has no findings section, as both findings were minor. |
 
