@@ -1288,13 +1288,14 @@ async def test_should_fill_linked_pr_state_for_changed_open_issues_after_the_fir
     clock.now += timedelta(minutes=5)
     github.put(issue(1, updated=clock.now), issue(3, created=clock.now, state="closed"))
     await service.sync(REPO)
-    assert [args for name, args in github.calls if name == "timeline_links"] == [(REPO, 1)]
+    # The changed open issue first, then the budget left refreshes the oldest-checked open one
+    # (#2, never checked); the closed #3 never.
+    assert [args for name, args in github.calls if name == "timeline_links"] == [
+        (REPO, 1),
+        (REPO, 2),
+    ]
     rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
     assert rows[1].linked_pr_state == "open" and rows[2].linked_pr_state is None
-
-    # Unchanged at the next sync: the stored state stays, and it isn't read again.
-    await service.sync(REPO)
-    assert github.call_names().count("timeline_links") == 1
     # An apply's fresh read (no links) keeps what sync found.
     found = store.issue(REPO, 1)
     assert found is not None
@@ -1303,6 +1304,60 @@ async def test_should_fill_linked_pr_state_for_changed_open_issues_after_the_fir
     store.refresh_issue(replace(found, linked_pr_state=None), cached.triage)
     again = store.issue(REPO, 1)
     assert again is not None and again.linked_pr_state == "open"
+
+
+async def test_should_refresh_an_unedited_issues_linked_prs_on_a_later_sync(
+    service: SyncService, github: FakeIssues, clock: FakeClock, queries: IssueQueries
+) -> None:
+    """Codex round 3 on PR #72: a PR's own transitions (opened, merged) never edit the issue, so
+    each sync also refreshes, within the budget, the open issues checked longest ago."""
+    github.put(issue(1), issue(2, state="closed"))
+    github.links[(REPO, 1)] = [LinkedPr(REPO, 50, "open", "https://github.com/acme/app/pull/50")]
+    await watched(service, clock)
+    await service.sync(REPO)  # the first sync reads no links (IR20)
+    assert "timeline_links" not in github.call_names()
+
+    clock.now += timedelta(minutes=5)
+    await service.sync(REPO)  # nothing edited
+    rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
+    assert rows[1].linked_pr_state == "open"
+    assert (REPO, 2) not in [args for name, args in github.calls if name == "timeline_links"]
+
+    github.links[(REPO, 1)] = [LinkedPr(REPO, 50, "merged", "https://github.com/acme/app/pull/50")]
+    clock.now += timedelta(minutes=5)
+    await service.sync(REPO)
+    rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
+    assert rows[1].linked_pr_state == "merged"
+
+
+async def test_should_refresh_the_issues_checked_longest_ago_first_and_never_fail_on_a_read(
+    service: SyncService, github: FakeIssues, clock: FakeClock
+) -> None:
+    count = LINKED_PRS_PER_SYNC + 5
+    github.put(*(issue(n) for n in range(1, count + 1)))
+    await watched(service, clock)
+    await service.sync(REPO)
+    failing = github.timeline_links
+
+    async def flaky(repo: str, n: int) -> list[LinkedPr]:
+        if n == 2:
+            github.calls.append(("timeline_links", (repo, n)))  # asked, then failed
+            raise GitHubRequestError(502, "bad gateway")
+        return await failing(repo, n)
+
+    github.timeline_links = flaky  # type: ignore[method-assign]
+    clock.now += timedelta(minutes=5)
+    await service.sync(REPO)
+    assert service.state(REPO).sync_error is None
+    first = [args[1] for name, args in github.calls if name == "timeline_links"]
+    assert first == list(range(1, LINKED_PRS_PER_SYNC + 1))  # never checked: by number
+    github.calls.clear()
+    clock.now += timedelta(minutes=5)
+    await service.sync(REPO)
+    second = [args[1] for name, args in github.calls if name == "timeline_links"]
+    # The five never checked come first, then the oldest checked ones (#2's read failed, so it
+    # counts as never checked too).
+    assert second[:6] == [2, *range(LINKED_PRS_PER_SYNC + 1, count + 1)]
 
 
 async def test_should_keep_the_stored_linked_pr_state_when_its_read_fails_or_is_over_the_cap(

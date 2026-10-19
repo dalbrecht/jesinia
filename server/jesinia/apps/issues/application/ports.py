@@ -165,6 +165,16 @@ class IssuesStore(Protocol):
 
     def epics_without_links(self, repo: str, limit: int) -> list[int]: ...
 
+    def linked_prs_due(self, repo: str, limit: int) -> list[int]:
+        """Up to ``limit`` open issues, those whose linked PRs were checked longest ago (never
+        first), then by number."""
+
+    def mark_linked_prs_checked(self, repo: str, numbers: Sequence[int], now: datetime) -> None:
+        """``numbers``' linked PRs were just read (and stored with their page)."""
+
+    def set_linked_prs(self, repo: str, n: int, state: str | None, now: datetime) -> None:
+        """Store a refreshed summary of ``repo#n``'s linked PRs, checked ``now``."""
+
     def set_sub_issue_links(
         self, repo: str, parent: int, children: Sequence[Issue], now: datetime
     ) -> None: ...

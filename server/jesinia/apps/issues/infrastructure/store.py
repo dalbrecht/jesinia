@@ -640,6 +640,29 @@ class SqliteIssuesStore:
         )
         return [IssueRef(child_repo, number, child_id) for child_repo, number, child_id in rows]
 
+    def linked_prs_due(self, repo: str, limit: int) -> list[int]:
+        rows = self._conn.execute(
+            "SELECT number FROM issues WHERE repo = ? AND state = 'open' "
+            "ORDER BY linked_prs_checked_at IS NOT NULL, linked_prs_checked_at, number LIMIT ?",
+            (repo, limit),
+        )
+        return [number for (number,) in rows]
+
+    def mark_linked_prs_checked(self, repo: str, numbers: Sequence[int], now: datetime) -> None:
+        self._conn.executemany(
+            "UPDATE issues SET linked_prs_checked_at = ? WHERE repo = ? AND number = ?",
+            [(_time(now), repo, n) for n in numbers],
+        )
+
+    def set_linked_prs(self, repo: str, n: int, state: str | None, now: datetime) -> None:
+        stored = self.issue(repo, n)
+        if stored is None:
+            return  # gone from the cache meanwhile: nothing to refresh
+        self._conn.execute(
+            "UPDATE issues SET json = ?, linked_prs_checked_at = ? WHERE repo = ? AND number = ?",
+            (_issue_json(replace(stored, linked_pr_state=state)), _time(now), repo, n),
+        )
+
     def epics_without_links(self, repo: str, limit: int) -> list[int]:
         rows = self._conn.execute(
             "SELECT number FROM issues WHERE repo = ? AND sub_issue_count > 0 "

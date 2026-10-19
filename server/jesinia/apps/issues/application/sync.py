@@ -327,6 +327,7 @@ class SyncService:
         self._store.replace_milestones(repo, await self._github.milestones(repo))
         is_first = state.synced_at is None
         budget = [LINKED_PRS_PER_SYNC]  # linked-PR reads this sync may still make
+        checked: builtins.list[int] = []  # issues whose linked PRs this sync read
         cursor = state.cursor
         done = False
         while not done:
@@ -346,7 +347,7 @@ class SyncService:
             ]
             links = {} if is_first else await self._children(repo, fresh)
             if not is_first:
-                fresh = [await self._with_linked_prs(repo, i, budget) for i in fresh]
+                fresh = [await self._with_linked_prs(repo, i, budget, checked) for i in fresh]
             stored, entered, edited = self._triaged(state, schema, fresh)
             cursor, done = cursor.after_page(
                 [(i.updated_at, i.id) for i in page.items], page.next_token
@@ -358,11 +359,40 @@ class SyncService:
             if edited:
                 await self._notify(self._on_inbox_edit, repo, edited)
         if not is_first:
+            await self._refresh_linked_prs(repo, budget, checked)
             for n in self._store.epics_without_links(repo, EPIC_BACKFILL_PER_SYNC):
                 children = await self._github.sub_issues(repo, n)
                 self._store.set_sub_issue_links(repo, n, children, self._clock())
 
-    async def _with_linked_prs(self, repo: str, issue: Issue, budget: list[int]) -> Issue:
+    async def _refresh_linked_prs(
+        self, repo: str, budget: builtins.list[int], checked: builtins.list[int]
+    ) -> None:
+        """Spend what is left of the linked-PR budget on the open issues checked longest ago
+        (never first): a PR opening or merging never edits its issue, so an issue nobody edits
+        still gets its state, existing ones after the first sync included (Codex round 3, PR
+        #72). Derived data, best effort: a failed read is logged and stays due, any other
+        failure is logged and the sync goes on. A rate limit still stops the sync."""
+        try:
+            self._store.mark_linked_prs_checked(repo, checked, self._clock())
+            due = self._store.linked_prs_due(repo, budget[0] + len(checked))
+            for n in [n for n in due if n not in checked][: max(0, budget[0])]:
+                budget[0] -= 1
+                try:
+                    links = await self._github.timeline_links(repo, n)
+                except GitHubRateLimitedError:
+                    raise
+                except GitHubError as exc:
+                    log.warning("issues: linked PRs of %s#%s unread, kept: %s", repo, n, exc)
+                    continue
+                self._store.set_linked_prs(repo, n, summarize_linked_prs(links), self._clock())
+        except GitHubRateLimitedError:
+            raise
+        except Exception as exc:  # error isolation: derived data never breaks a sync
+            log.exception("issues: refreshing %s's linked PRs failed: %s", repo, exc)
+
+    async def _with_linked_prs(
+        self, repo: str, issue: Issue, budget: list[int], checked: builtins.list[int]
+    ) -> Issue:
         """``issue`` with its linked PRs summed up (the board's status view, IR62). Only issues
         a later sync sees change are read, only open ones (a closed issue is Done anyway), and
         at most ``LINKED_PRS_PER_SYNC`` a sync, so a big first sync or a long gap costs few
@@ -383,6 +413,7 @@ class SyncService:
         except GitHubError as exc:
             log.warning("issues: linked PRs of %s#%s unread, kept: %s", repo, issue.number, exc)
             return kept
+        checked.append(issue.number)
         return replace(issue, linked_pr_state=summarize_linked_prs(links))
 
     async def _children(
