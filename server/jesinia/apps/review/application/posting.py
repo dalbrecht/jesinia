@@ -35,11 +35,12 @@ import sqlite3
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
-from typing import Final, Literal, Protocol
+from typing import Literal, Protocol
 
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
     DRAFTS_MAX,
+    FINDING_KINDS,
     MARKER_NOTE,
     REVIEW_EVENTS,
     SUBMITTED_STATES,
@@ -61,6 +62,7 @@ from jesinia.apps.review.domain.posting import (
     Review,
     ReviewedHeadGone,
     RoundFrozen,
+    artifact_drafts,
     check_body_length,
     check_review_text,
     commentable_lines,
@@ -70,7 +72,6 @@ from jesinia.apps.review.domain.posting import (
     posting_marker,
     review_digest,
     review_warnings,
-    seed_drafts,
 )
 from jesinia.apps.review.domain.queue import PrRef, QueueDomainError, RoundRecord
 from jesinia.apps.review.domain.workspace import WorkspaceError
@@ -96,8 +97,6 @@ Clock = Callable[[], datetime]
 PostedState = Literal["posted", "already_posted"]
 # How long after an attempt began a missing review may still appear on GitHub (R49).
 POSTING_GRACE = timedelta(minutes=3)
-# The jobs whose findings become drafts.
-_FINDING_JOBS: Final = ("correctness", "findings")
 _FILE_ERRORS = (GitHubError, GitHubPayloadError, PullRequestDomainError, QueueDomainError)
 
 
@@ -175,8 +174,13 @@ class PostingStore(Protocol):
     ) -> builtins.list[Draft]: ...
 
     def save_drafts(
-        self, round_id: int, summary: str, drafts: Sequence[Draft], *, seeds_dropped: int = 0
-    ) -> None: ...
+        self,
+        round_id: int,
+        summary: str,
+        drafts: Sequence[Draft],
+        *,
+        seeds: Mapping[str, Sequence[Draft]] | None = None,
+    ) -> builtins.list[Draft]: ...
 
     def seeds_dropped(self, round_id: int) -> int: ...
 
@@ -331,19 +335,15 @@ class PostingService:
         if len(summary) > BODY_MAX:
             raise InvalidDraftError(f"the summary is at most {BODY_MAX} characters")
         check_review_text(summary, drafts)
-        # Findings already in are seeded first, so this edit (deletions included) replaces
-        # them; findings still running are added next to it when they arrive.
-        settled, seeded = self._seed_claim(rnd)
-        # Drafts this call just seeded were never seen by the client (PR 3 final I2): the
-        # author's list replaces what they had, and the new ones are kept after it (unless
-        # the author's list already has one, same file and text), as many as fit under
-        # DRAFTS_MAX; the rest are counted so the UI can say so.
-        mine = {(draft.path, draft.body) for draft in drafts}
-        unseen = [draft for draft in seeded if (draft.path, draft.body) not in mine]
-        kept = unseen[: max(0, DRAFTS_MAX - len(drafts))]
-        dropped = len(unseen) - len(kept)
-        self._store.save_drafts(round_id, summary, [*drafts, *kept], seeds_dropped=dropped)
-        return self._draft_set(rnd, pending=not settled)
+        # Each kind of finding already in but not yet seeded is seeded with this edit, in
+        # the store's one transaction: its drafts were never seen by the client (PR 3 final
+        # I2), so they are kept after the author's list (unless it has one, same file and
+        # text), as many as fit beside that list under DRAFTS_MAX (Codex round 2 on #76:
+        # not beside the drafts it replaces); the rest are counted so the UI can say so.
+        # Findings still running are added next to the edit when they arrive.
+        stored = self._store.artifact_kinds(rnd.id)
+        self._store.save_drafts(round_id, summary, drafts, seeds=self._generated(rnd, stored))
+        return self._draft_set(rnd, pending=self._findings_pending(rnd, stored))
 
     def _draft_set(self, rnd: RoundRecord, *, pending: bool) -> DraftSet:
         """The drafts from the store, each placed against the cached file list (never
@@ -366,26 +366,28 @@ class PostingService:
     def _seed(self, rnd: RoundRecord) -> bool:
         """Seed the round's drafts from each kind of finding it has stored, once per kind
         (Codex round 2: a kind seeded before its findings are in would miss them for good).
-        Returns whether no more findings are expected."""
-        return self._seed_claim(rnd)[0]
-
-    def _seed_claim(self, rnd: RoundRecord) -> tuple[bool, tuple[Draft, ...]]:
-        """``_seed``, also returning the drafts this call added.
+        Returns whether no more findings are expected.
 
         Decided per kind from its artifact, never from the round's ``finished_at`` or
         ``error``: a failed job doesn't set the round's error, and Retry reruns the jobs in
         the finished round, so a finished round may still get its findings later."""
         stored = self._store.artifact_kinds(rnd.id)
-        added: list[Draft] = []
-        for kind in _FINDING_JOBS:
-            if kind in stored:
-                generated = seed_drafts(_unique(_findings_of(self._store.artifact(rnd.id, kind))))
-                added.extend(self._store.seed_drafts(rnd.id, kind, generated))
+        for kind, generated in self._generated(rnd, stored).items():
+            self._store.seed_drafts(rnd.id, kind, generated)
+        return not self._findings_pending(rnd, stored)
+
+    def _generated(self, rnd: RoundRecord, stored: Collection[str]) -> dict[str, list[Draft]]:
+        """The drafts each stored kind of finding seeds, in kind order (the store keeps
+        each kind's only the first time)."""
+        return {
+            kind: artifact_drafts(self._store.artifact(rnd.id, kind))
+            for kind in FINDING_KINDS
+            if kind in stored
+        }
+
+    def _findings_pending(self, rnd: RoundRecord, stored: Collection[str]) -> bool:
         states = _job_states(self._store.artifact(rnd.id, "jobs"))
-        settled = not any(
-            _finding_kind_pending(kind, stored, states, rnd) for kind in _FINDING_JOBS
-        )
-        return settled, tuple(added)
+        return any(_finding_kind_pending(kind, stored, states, rnd) for kind in FINDING_KINDS)
 
     async def _commentable(self, rnd: RoundRecord) -> tuple[CommentableLines, list[str]]:
         """Where GitHub takes comments on the round's head: its cached file list, read once
@@ -790,18 +792,3 @@ def _finding_kind_pending(
     if kind in stored or states.get(kind) in ("done", "failed"):
         return False
     return rnd.finished_at is None or rnd.interrupted or rnd.error is None
-
-
-def _findings_of(artifact: object) -> list[object]:
-    items = artifact.get("findings") if isinstance(artifact, dict) else None
-    return list(items) if isinstance(items, list) else []
-
-
-def _unique(findings: Sequence[object]) -> list[object]:
-    """A job may report one issue twice (one the other kind reported too is left out when
-    stored: same file and text)."""
-    seen: list[object] = []
-    for item in findings:
-        if item not in seen:
-            seen.append(item)
-    return seen
