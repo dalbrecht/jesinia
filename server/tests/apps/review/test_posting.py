@@ -12,6 +12,7 @@ import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -43,7 +44,7 @@ from jesinia.apps.review.domain.posting import (
 from jesinia.apps.review.domain.queue import PrHeadMovedError, PrRef, RepoConfig, snapshot_of
 from jesinia.apps.review.infrastructure.store import SqliteReviewStore
 from jesinia.apps.review.module import REVIEW_DB
-from jesinia.core.db import open_db
+from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.services.github.application.service import (
     GitHubRequestError,
     GitHubUnavailable,
@@ -1094,3 +1095,140 @@ async def test_a_preview_says_when_the_round_was_already_posted(env: Env) -> Non
     preview = await env.service.preview(env.round_id, "APPROVE")
     (note,) = [n for n in preview.notes if "already posted" in n]
     assert "COMMENT" in note and URL in note and "second review" in note
+
+
+# --- seeding per finding kind: a failed job or a stale finish never uses up seeding ------------
+
+
+def _jobs(**states: str) -> dict[str, dict[str, str | None]]:
+    return {kind: {"state": state, "error": None} for kind, state in states.items()}
+
+
+async def test_should_seed_findings_that_arrive_after_failed_jobs_on_a_finished_round(
+    env: Env,
+) -> None:
+    round_id = _running_round(env)
+    env.store.put_artifact(round_id, "jobs", _jobs(correctness="failed", findings="failed"))
+    # Job failures never set the round's error: it finishes "cleanly" with no findings.
+    env.store.finish_round(round_id, env.clock(), None, "needs_closer_look")
+    failed = await env.service.drafts(round_id)
+    assert failed.drafts == () and not failed.findings_pending
+
+    # Retry reuses the finished round (its finished_at stays) and reruns the jobs in it.
+    env.store.put_artifact(round_id, "jobs", _jobs(correctness="running", findings="running"))
+    assert (await env.service.drafts(round_id)).findings_pending
+    env.store.put_artifact(round_id, "correctness", {"findings": [finding(2, 3, "Swallowed.")]})
+    env.store.put_artifact(round_id, "findings", {"findings": [finding(2, 3, "Error lost.")]})
+    env.store.put_artifact(round_id, "jobs", _jobs(correctness="done", findings="done"))
+    retried = await env.service.drafts(round_id)
+    assert not retried.findings_pending
+    assert len(retried.drafts) == 2
+    assert all(d.origin_finding == "correctness/important" for d in retried.drafts)
+
+
+async def test_should_not_reseed_a_kind_after_the_author_deletes_its_drafts(env: Env) -> None:
+    round_id = _running_round(env)
+    env.store.put_artifact(round_id, "correctness", {"findings": [finding(2, 3, "Swallowed.")]})
+    assert len((await env.service.drafts(round_id)).drafts) == 1
+    await env.service.save_drafts(round_id, "", [])
+    assert (await env.service.drafts(round_id)).drafts == ()
+    # The other kind still seeds when it lands, without bringing the deleted one back.
+    env.store.put_artifact(round_id, "findings", {"findings": [finding(11, 11, "Off by one.")]})
+    (only,) = (await env.service.drafts(round_id)).drafts
+    assert "Off by one." in only.body
+    await env.service.save_drafts(round_id, "", [])
+    assert (await env.service.drafts(round_id)).drafts == ()
+
+
+async def test_should_seed_each_finding_kind_as_it_arrives(env: Env) -> None:
+    round_id = _running_round(env)
+    env.store.put_artifact(round_id, "correctness", {"findings": [finding(2, 3, "Swallowed.")]})
+    early = await env.service.drafts(round_id)
+    assert early.findings_pending and len(early.drafts) == 1
+    # The author keeps the seeded draft and adds one; the findings job then lands, and the
+    # save that first sees it appends its drafts after the author's list.
+    mine = Draft(path="src/app.py", body="My own note.", line=4, side="RIGHT")
+    env.store.put_artifact(round_id, "findings", {"findings": [finding(11, 11, "Off by one.")]})
+    saved = await env.service.save_drafts(round_id, "", [*early.drafts, mine])
+    assert not saved.findings_pending and saved.seeds_dropped == 0
+    bodies = [d.body for d in saved.drafts]
+    assert "Swallowed." in bodies[0] and bodies[1] == "My own note." and "Off by one." in bodies[2]
+    assert len((await env.service.drafts(round_id)).drafts) == 3
+
+
+async def test_should_not_repeat_a_seed_the_author_already_has_in_their_save(env: Env) -> None:
+    round_id = _running_round(env)
+    env.store.put_artifact(round_id, "correctness", {"findings": []})
+    env.store.put_artifact(round_id, "findings", {"findings": [finding(2, 3, "Swallowed.")]})
+    (seed,) = seed_drafts([finding(2, 3, "Swallowed.")])
+    saved = await env.service.save_drafts(round_id, "", [seed])
+    assert len(saved.drafts) == 1
+
+
+async def test_should_never_seed_a_frozen_round(env: Env) -> None:
+    env.store.put_artifact(env.round_id, "correctness", {"findings": [finding(2, 3, "Late.")]})
+    env.store.start_round(env.ref, NEW_HEAD, "b" * 40, "quick", env.clock())
+    assert (await env.service.drafts(env.round_id)).drafts == ()
+
+
+def test_should_claim_each_finding_kind_once(env: Env) -> None:
+    store, round_id = env.store, _running_round(env)
+    first = Draft("src/app.py", "first", line=2, side="RIGHT", origin_finding="correctness/minor")
+    assert store.seed_drafts(round_id, "correctness", [first]) == [first]
+    assert store.seed_drafts(round_id, "correctness", [first]) == []  # claimed already
+    again = Draft("src/app.py", "first", line=2, side="RIGHT")
+    other = Draft("src/app.py", "second", line=3, side="RIGHT")
+    # The other kind claims on its own, leaving out a draft repeating one already there.
+    assert store.seed_drafts(round_id, "findings", [again, other]) == [other]
+    assert [d.body for d in store.drafts(round_id)] == ["first", "second"]
+    assert store.seed_drafts(round_id, "findings", [other]) == []
+
+
+def test_should_cap_seeds_at_the_draft_limit(env: Env) -> None:
+    from jesinia.apps.review.domain.posting import DRAFTS_MAX
+
+    store, round_id = env.store, _running_round(env)
+    store.save_drafts(round_id, "", [_outside("a.py", f"x{i}") for i in range(DRAFTS_MAX - 1)])
+    seeds = [_outside("b.py", "one"), _outside("b.py", "two")]
+    assert store.seed_drafts(round_id, "findings", seeds) == seeds[:1]
+    assert len(store.drafts(round_id)) == DRAFTS_MAX
+
+
+def test_rounds_seeded_before_0011_keep_their_seeds_unless_nothing_was_seeded(
+    tmp_path: Path,
+) -> None:
+    """A round seeded before per-kind seeding counts as seeded for the kinds it has, unless
+    it holds no finding draft at all: then seeding claimed it before any finding arrived (a
+    failed job), and it is seeded again from what is there now."""
+    old_schema = tmp_path / "migrations-0010"
+    old_schema.mkdir()
+    shipped = Path(str(files("jesinia.apps.review.migrations")))
+    for sql in sorted(shipped.glob("00*.sql")):
+        if sql.name < "0011":
+            (old_schema / sql.name).write_text(sql.read_text())
+    data = tmp_path / "data"
+    before = open_db(data, ModuleDb("review", DbClass.HISTORY, old_schema))
+    for round_id, seeded in ((1, 1), (2, 1), (3, 0)):
+        before.execute(
+            "INSERT INTO rounds (id, repo, number, head_sha, base_sha, depth, started_at, "
+            "drafts_seeded) VALUES (?, 'acme/web', 1, ?, ?, 'deep', "
+            "'2026-10-01T00:00:00+00:00', ?)",
+            (round_id, "a" * 40, "b" * 40, seeded),
+        )
+        for kind in ("correctness", "findings", "verdict"):
+            before.execute(
+                "INSERT INTO artifacts (round_id, kind, json) VALUES (?, ?, '{}')",
+                (round_id, kind),
+            )
+    before.execute(
+        "INSERT INTO drafts (round_id, path, body, origin_finding) "
+        "VALUES (1, 'app.py', 'seeded', 'correctness/minor')"
+    )
+    before.execute("INSERT INTO drafts (round_id, path, body) VALUES (2, 'app.py', 'mine')")
+    before.close()
+    after = open_db(data, REVIEW_DB)
+    try:
+        rows = after.execute("SELECT round_id, kind FROM draft_seeds ORDER BY round_id, kind")
+        assert rows.fetchall() == [(1, "correctness"), (1, "findings")]
+    finally:
+        after.close()

@@ -839,7 +839,8 @@ async def test_no_drafts_carry_from_a_posted_or_unsettled_round(env: Env) -> Non
     assert env.store.carried_drafts(retry) == []
     # Seeded findings don't repeat a carried draft.
     seeded = Draft("app.py", "y", line=3, side="RIGHT", origin_finding="correctness/minor")
-    assert env.store.seed_drafts(retry, [seeded, Draft("app.py", "z", line=4, side="RIGHT")])
+    later = Draft("app.py", "z", line=4, side="RIGHT")
+    assert env.store.seed_drafts(retry, "findings", [seeded, later]) == [later]
     assert [d.body for d in env.store.drafts(retry)] == ["y", "z"]
 
 
@@ -851,7 +852,8 @@ async def test_frozen_round_refuses_done_and_seeding(env: Env) -> None:
     env.store.start_round(env.ref, repo.pushed, repo.base, "quick", env.clock())
     with pytest.raises(RoundFrozen):
         env.store.mark_round_done(old)
-    assert not env.store.seed_drafts(old, [Draft("app.py", "late finding", outside_diff=True)])
+    late = Draft("app.py", "late finding", outside_diff=True)
+    assert env.store.seed_drafts(old, "findings", [late]) == []
     assert env.store.drafts(old) == []
     reads = ReviewReads(env.store, lambda: SyncStatus(None, False, None))
     view = reads.pr(env.ref)

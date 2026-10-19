@@ -17,7 +17,13 @@ from typing import cast
 from jesinia.apps.review.domain.followup import FollowUp, FollowUpKind, PrevSource
 from jesinia.apps.review.domain.gates import CiState, Depth
 from jesinia.apps.review.domain.jobs import DEFAULT_RUNNER
-from jesinia.apps.review.domain.posting import Draft, Posting, PostingState, RoundFrozen
+from jesinia.apps.review.domain.posting import (
+    DRAFTS_MAX,
+    Draft,
+    Posting,
+    PostingState,
+    RoundFrozen,
+)
 from jesinia.apps.review.domain.queue import (
     DEFAULT_PREREVIEW,
     AutoReviewState,
@@ -890,25 +896,32 @@ class SqliteReviewStore:
                 updated += cursor.rowcount
         return updated
 
-    def seed_drafts(self, round_id: int, drafts: Sequence[Draft]) -> bool:
-        """Add a round's generated drafts, once, after any the author already wrote (or
-        that were carried over: a finding repeating one, same file and text, is left out).
-        False (and nothing written) if it was seeded before or the round is frozen."""
+    def seed_drafts(self, round_id: int, kind: str, drafts: Sequence[Draft]) -> list[Draft]:
+        """Add the drafts generated from one kind of a round's findings, once per kind,
+        after any already there (the author's, carried ones, another kind's: a finding
+        repeating one, same file and text, is left out), as many as fit under DRAFTS_MAX.
+        Returns the drafts added: none if that kind was seeded before or the round is
+        frozen (the claim and the inserts are one transaction, so two readers can't both
+        seed a kind)."""
         with transaction(self._conn):
             claimed = self._conn.execute(
-                "UPDATE rounds SET drafts_seeded = 1 "
-                "WHERE id = ? AND drafts_seeded = 0 AND frozen_at IS NULL",
-                (round_id,),
+                "INSERT INTO draft_seeds (round_id, kind) "
+                "SELECT id, ? FROM rounds WHERE id = ? AND frozen_at IS NULL "
+                "ON CONFLICT (round_id, kind) DO NOTHING",
+                (kind, round_id),
             )
             if not claimed.rowcount:
-                return False
-            have = set(
-                self._conn.execute(
-                    "SELECT path, body FROM drafts WHERE round_id = ?", (round_id,)
-                ).fetchall()
-            )
-            self._insert_drafts(round_id, [d for d in drafts if (d.path, d.body) not in have])
-        return True
+                return []
+            rows = self._conn.execute(
+                "SELECT path, body FROM drafts WHERE round_id = ?", (round_id,)
+            ).fetchall()
+            have = set(rows)
+            fresh = [d for d in drafts if (d.path, d.body) not in have]
+            # Each kind is capped on its own by the domain; together they must still leave
+            # the author a set they can save back.
+            added = fresh[: max(0, DRAFTS_MAX - len(rows))]
+            self._insert_drafts(round_id, added)
+        return added
 
     def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> None:
         """Replace a round's summary and drafts (the author's edit) in one transaction. It
