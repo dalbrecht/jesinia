@@ -602,6 +602,13 @@ def test_should_strip_only_a_delimited_leading_number_equal_to_the_position(
     assert strip_step_number(title, position) == expected
 
 
+def test_should_leave_a_title_with_a_huge_leading_number_unchanged() -> None:
+    # Agent output is PR-influenced: a number past int()'s digit limit must not raise on read.
+    titles = ("1" * 5000 + ". Wire it", "Step " + "9" * 5000 + ": Wire it", "#" + "7" * 5000 + " X")
+    for title in titles:
+        assert strip_step_number(title, 1) == title
+
+
 def test_should_clean_every_step_title_and_keep_the_rest_of_the_walkthrough() -> None:
     walkthrough = {
         "steps": [

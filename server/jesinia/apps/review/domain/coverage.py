@@ -804,9 +804,10 @@ def steps_from_json(data: object) -> list[Step]:
 
 
 # The delimiter is required so content that merely starts with a number ("3D preview fixes",
-# "2026 migration") is never mistaken for a step number.
+# "2026 migration") is never mistaken for a step number. The digits are capped because the
+# title is agent output (PR-influenced) and int() refuses digit strings past its limit.
 _STEP_NUMBER_PREFIX = re.compile(
-    r"^\s*(?:step\s+(\d+)\s*[:.)\-\u2013\u2014]|(\d+)\s*[.)]|#(\d+))\s+",
+    r"^\s*(?:step\s+(\d{1,4})\s*[:.)\-\u2013\u2014]|(\d{1,4})\s*[.)]|#(\d{1,4}))\s+",
     re.IGNORECASE,
 )
 
