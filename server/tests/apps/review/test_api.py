@@ -593,6 +593,17 @@ def _deep(env: Env) -> int:
     return round_id
 
 
+async def test_pr_view_drops_step_numbers_the_agent_stored_in_old_rounds(env: Env) -> None:
+    round_id = _deep(env)
+    env.store.put_artifact(
+        round_id,
+        "walkthrough",
+        {"steps": [{"title": "1. Give packout claims an index", "body": "b", "hunks": []}]},
+    )
+    artifacts = (await env.client.get(PR)).json()["artifacts"]
+    assert artifacts["walkthrough"]["steps"][0]["title"] == "Give packout claims an index"
+
+
 async def test_done_keeps_a_deep_review_and_its_page_can_be_kept_again(env: Env) -> None:
     round_id = _deep(env)
     done = await env.client.post(f"{PR}/done", headers=keyed(), json={"round_id": round_id})

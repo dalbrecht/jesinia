@@ -31,7 +31,9 @@ from jesinia.apps.review.domain.coverage import (
     ranges_from_json,
     skips_from_json,
     steps_from_json,
+    strip_step_number,
     verified_ranges,
+    with_clean_step_titles,
 )
 from jesinia.apps.review.domain.workspace import DiffTooLargeError
 from tests.apps.review.perf import CEILING, assert_linear
@@ -567,3 +569,55 @@ def test_nothing_to_walk_is_flagged_when_the_diff_changes_no_lines() -> None:
     assert not coverage(parse_unified_diff(APP), [], []).nothing_to_walk
     cut = ParsedDiff((), complete=False, incomplete_reason="too big", expected_lines=0)
     assert not coverage(cut, [], []).nothing_to_walk
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("1. Give packout claims an index", "Give packout claims an index"),
+        ("12) Add the route", "Add the route"),
+        ("Step 1: Add the route", "Add the route"),
+        ("step 2 - Add the route", "Add the route"),
+        ("Step 3. Add the route", "Add the route"),
+        ("Step 4 \u2014 Add the route", "Add the route"),
+        ("#1 Add the route", "Add the route"),
+        ("  7.   Add the route  ", "Add the route"),
+        ("3D preview fixes", "3D preview fixes"),
+        ("2026 migration", "2026 migration"),
+        ("1.5 release notes", "1.5 release notes"),
+        ("Step by step guide", "Step by step guide"),
+        ("1. ", "1. "),
+        ("Step 1:", "Step 1:"),
+        ("", ""),
+    ],
+)
+def test_should_strip_only_a_delimited_leading_step_number(title: str, expected: str) -> None:
+    assert strip_step_number(title) == expected
+
+
+def test_should_clean_every_step_title_and_keep_the_rest_of_the_walkthrough() -> None:
+    walkthrough = {
+        "steps": [
+            {"title": "1. First", "body": "b", "hunks": []},
+            {"title": "2026 migration", "body": "b", "hunks": []},
+            {"body": "no title"},
+            {"title": 5},
+            "not a step",
+        ],
+        "skipped": [],
+    }
+    cleaned = with_clean_step_titles(walkthrough)
+    assert cleaned["steps"] == [
+        {"title": "First", "body": "b", "hunks": []},
+        {"title": "2026 migration", "body": "b", "hunks": []},
+        {"body": "no title"},
+        {"title": 5},
+        "not a step",
+    ]
+    assert cleaned["skipped"] == []
+    assert walkthrough["steps"][0]["title"] == "1. First"  # type: ignore[index]
+
+
+def test_should_leave_a_walkthrough_without_a_steps_list_alone() -> None:
+    assert with_clean_step_titles({"steps": "oops"}) == {"steps": "oops"}
+    assert with_clean_step_titles({}) == {}

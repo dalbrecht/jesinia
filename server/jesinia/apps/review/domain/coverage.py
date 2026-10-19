@@ -803,6 +803,35 @@ def steps_from_json(data: object) -> list[Step]:
     return steps
 
 
+# The delimiter is required so content that merely starts with a number ("3D preview fixes",
+# "2026 migration") is never mistaken for a step number.
+_STEP_NUMBER_PREFIX = re.compile(
+    r"^\s*(?:step\s+\d+\s*[:.)\-\u2013\u2014]|\d+\s*[.)]|#\d+)\s+", re.IGNORECASE
+)
+
+
+def strip_step_number(title: str) -> str:
+    """``title`` without a leading step number the agent added ("1. ", "1) ", "Step 1: ",
+    "Step 1 - ", "#1 "); the title as given when nothing non-empty would remain."""
+    stripped = _STEP_NUMBER_PREFIX.sub("", title, count=1).strip()
+    return stripped or title
+
+
+def with_clean_step_titles(walkthrough: Mapping[str, object]) -> dict[str, object]:
+    """The walkthrough artifact with each step's title passed through ``strip_step_number``,
+    because the UI numbers steps itself. Anything malformed is left as it is."""
+    raw = walkthrough.get("steps")
+    if not isinstance(raw, list):
+        return dict(walkthrough)
+    steps = [
+        {**item, "title": strip_step_number(item["title"])}
+        if isinstance(item, Mapping) and isinstance(item.get("title"), str)
+        else item
+        for item in raw
+    ]
+    return {**walkthrough, "steps": steps}
+
+
 def skips_from_json(data: object) -> list[Skip]:
     """The well-formed entries of a ``walkthrough`` artifact's ``skipped`` list."""
     skips: list[Skip] = []

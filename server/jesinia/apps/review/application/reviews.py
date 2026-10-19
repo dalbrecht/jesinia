@@ -16,6 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
+from jesinia.apps.review.domain.coverage import with_clean_step_titles
 from jesinia.apps.review.domain.followup import FollowUp
 from jesinia.apps.review.domain.metrics import Point, point_of
 from jesinia.apps.review.domain.posting import Draft, NoReviewRound, RoundChanged
@@ -189,6 +190,11 @@ class ReviewReads:
         row = queue_row(stored, latest, self._store.viewer(), suggested, followup, stack)
         found = self._store.latest_round(ref)
         artifacts = {} if found is None else self._store.artifacts(found.id)
+        walkthrough = artifacts.get("walkthrough")
+        if isinstance(walkthrough, Mapping):
+            # Every view of a round passes through here, so rounds stored with the agent's own
+            # numbering ("1. Add ...") also read right; the UI adds its own step numbers.
+            artifacts = {**artifacts, "walkthrough": with_clean_step_titles(walkthrough)}
         files = None if found is None else self._store.pr_files(ref, found.head_sha)
         return PrView(row, found, artifacts, self._status(), files)
 

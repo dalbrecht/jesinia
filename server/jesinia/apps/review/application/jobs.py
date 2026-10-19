@@ -181,6 +181,7 @@ JOB_INSTRUCTIONS: Mapping[JobKind, str] = {
         "group of hunks. Cite each hunk by its path and index exactly as diff-index.md lists "
         "them: that is Jesinia's numbering of the diff from the merge base to the head, and "
         "a hunk it doesn't list is not counted. "
+        'Title each step without a number or "Step N" prefix: Jesinia numbers the steps. '
         "List every file or hunk you leave out with its reason; never leave one out silently."
     ),
     JobKind.QUIZ: (

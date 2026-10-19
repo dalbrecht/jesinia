@@ -102,7 +102,7 @@ CLEAN: dict[str, object] = {
 }
 WALK: dict[str, object] = {
     "steps": [
-        {"title": "t", "body": "b", "hunks": [{"path": "src/app.py", "hunk": 0}]},
+        {"title": "1. t", "body": "b", "hunks": [{"path": "src/app.py", "hunk": 0}]},
         {"title": "ghost", "body": "b", "hunks": [{"path": "src/ghost.py", "hunk": 0}]},
     ],
     "skipped": [{"path": "src/app.py", "hunk": 1, "reason": "format_only"}],
@@ -432,6 +432,8 @@ async def test_everything_setting_runs_all(env: Env) -> None:
     # The stored walkthrough keeps only the steps whose hunks exist.
     stored_walk = artifacts["walkthrough"]
     assert isinstance(stored_walk, dict) and len(stored_walk["steps"]) == 1
+    # The agent numbered its step; the UI numbers steps itself, so the title is stored clean.
+    assert stored_walk["steps"][0]["title"] == "t"
 
 
 async def test_on_open_runs_nothing_in_background(env: Env) -> None:
