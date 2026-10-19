@@ -307,3 +307,14 @@ def test_stream_recheck_should_not_renew_a_session_it_cannot_resend(
     assert not hasattr(req.state, auth._RENEW_STATE_KEY)
     monkeypatch.setattr(auth, "_now", lambda: later + timedelta(days=11))
     assert not auth.is_authorized(req)  # type: ignore[arg-type]  # never silently extended
+
+
+async def test_should_keep_login_working_when_failed_save_cannot_clean_up(
+    cfg: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg.data_dir.mkdir(parents=True)
+    (cfg.data_dir / f".{auth.SESSIONS_FILE}.tmp").mkdir()  # neither writable nor unlinkable
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        await _sign_in(c)
+        assert (await c.get("/api/ping")).status_code == 200
+    assert "could not save browser sessions" in caplog.text

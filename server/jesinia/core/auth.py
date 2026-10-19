@@ -145,7 +145,10 @@ def _save_sessions() -> None:
         os.replace(tmp, _sessions_path)
     except OSError:
         log.exception("could not save browser sessions to %s", _sessions_path)
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            log.exception("could not remove the partial sessions file %s", tmp)
 
 
 def start_cookie_session() -> str:
