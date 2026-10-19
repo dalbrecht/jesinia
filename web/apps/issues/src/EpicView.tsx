@@ -24,7 +24,6 @@ import {
   readinessText,
   refOf,
   refreshItem,
-  revealLines,
   setParentChange,
   type ConversionPlan,
   type EpicDetail,
@@ -489,10 +488,10 @@ export function EpicView({ repo, number, parentOf, onClose, onOpenIssue }: EpicV
             rows={12}
             onChange={(e) => setText(e.target.value)}
           />
-          {hasHidden(brief) ? (
+          {hasHidden(brief, { multiline: true }) ? (
             <div className={s.hiddenNote}>
               <p className={s.muted}>The brief has hidden characters, shown as tokens here:</p>
-              <pre className={s.briefPreview}>{revealLines(brief, visibleText)}</pre>
+              <pre className={s.briefPreview}>{visibleText(brief, { multiline: true })}</pre>
             </div>
           ) : null}
           {edited ? (

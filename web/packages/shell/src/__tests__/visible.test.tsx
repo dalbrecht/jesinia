@@ -38,6 +38,22 @@ describe("revealHidden", () => {
     ]);
   });
 
+  it("keeps LF and CRLF as ordinary text in multiline mode, everything else still hidden", () => {
+    const multiline = { multiline: true };
+    expect(revealHidden("a\nb\r\nc", multiline)).toEqual([{ text: "a\nb\r\nc" }]);
+    expect(hasHidden("one\ntwo\r\nthree\r\n", multiline)).toBe(false);
+    expect(revealHidden("a\rb", multiline)).toEqual([{ text: "a" }, { code: "U+000D", kind: "control" }, { text: "b" }]); // prettier-ignore
+    expect(hasHidden("a\r", multiline)).toBe(false); // the final-CR rule is unchanged
+    for (const hidden of ["\u2028", "\u2029", "\u202E", "\u200B", "\u0007", "\u0085"])
+      expect(hasHidden(`x\n${hidden}y`, multiline)).toBe(true);
+    expect(visibleText("a\nb\u202E", multiline)).toBe("a\nb⟪U+202E⟫");
+  });
+
+  it("still tokenises newlines by default, for names", () => {
+    expect(visibleText("a\nb")).toBe("a⟪U+000A⟫b");
+    expect(visibleText("a\r\nb")).toBe("a⟪U+000D⟫⟪U+000A⟫b");
+  });
+
   it("spells the tokens out for plain strings and accessible names", () => {
     expect(visibleText("ab\u202Ecd")).toBe("ab⟪U+202E⟫cd");
   });
@@ -62,5 +78,17 @@ describe("VisibleText", () => {
   it("names a control character", () => {
     render(<VisibleText text={"a\u0001"} />);
     expect(screen.getByText("⟪U+0001⟫")).toHaveAttribute("title", "U+0001: a control character");
+  });
+});
+
+describe("VisibleText multiline", () => {
+  it("shows line breaks as text, not tokens, and still tokenises a bidi control", () => {
+    const { container } = render(<VisibleText text={"one\ntwo\u202E"} multiline />);
+    expect(container.textContent).toBe("one\ntwo⟪U+202E⟫");
+  });
+
+  it("tokenises the newline when not multiline", () => {
+    const { container } = render(<VisibleText text={"one\ntwo"} />);
+    expect(container.textContent).toBe("one⟪U+000A⟫two");
   });
 });

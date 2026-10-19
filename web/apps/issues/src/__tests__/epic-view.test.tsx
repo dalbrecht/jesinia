@@ -214,6 +214,18 @@ describe("the brief", () => {
     expect(screen.queryByText(/since it was posted\. Refresh to start/)).toBeNull();
   });
 
+  it("a brief whose only odd characters are line breaks shows no hidden-characters note", async () => {
+    const { routes } = epicRoutes(
+      epicDetail(10, {
+        epic: epic(10, { title: "Onboarding" }),
+        brief: { comment_id: null, url: null, text: "Brief\r\nline two\nline three", state: "posted", posted_at: null, updated_at: "2026-10-18T12:00:00Z" }, // prettier-ignore
+      }),
+    );
+    renderApp(routes, "/issues/epics");
+    await openEpic();
+    expect(screen.queryByText(/The brief has hidden characters/)).not.toBeInTheDocument();
+  });
+
   it("a cut-off post says so; hidden characters show as tokens; a refused clipboard says so", async () => {
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: () => Promise.reject(new Error("denied")) },

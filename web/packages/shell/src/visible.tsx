@@ -8,6 +8,15 @@ import s from "./visible.module.css";
 export type HiddenKind = "bidi" | "invisible" | "control";
 export type HiddenRun = { text: string } | { code: string; kind: HiddenKind };
 
+export type RevealOptions = {
+  /**
+   * The text is a multi-line body (a review comment, a brief): LF and the CR of a CRLF are
+   * ordinary line breaks. Off by default, because in a name (a path, a folder) a newline is
+   * itself a disguise worth showing.
+   */
+  multiline?: boolean;
+};
+
 function hiddenKind(cp: number): HiddenKind | null {
   if (
     (cp >= 0x202a && cp <= 0x202e) ||
@@ -33,15 +42,18 @@ const code = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")
 /**
  * Text split into plain runs and the characters that hide or reorder what is read: bidi
  * controls, zero-width and invisible characters, and control characters (a tab, and the CR of a
- * CRLF line ending, are ordinary). Each becomes a token the UI shows visibly.
+ * CRLF line ending, are ordinary). Each becomes a token the UI shows visibly. With
+ * `multiline`, line feeds and the CR of a CRLF are ordinary too; a lone CR, U+2028 and every
+ * other control character still show.
  */
-export function revealHidden(text: string): HiddenRun[] {
+export function revealHidden(text: string, options: RevealOptions = {}): HiddenRun[] {
   const out: HiddenRun[] = [];
   let plain = "";
   const chars = [...text];
   chars.forEach((ch, i) => {
     const cp = ch.codePointAt(0) as number;
-    const kind = cp === 0x0d && i === chars.length - 1 ? null : hiddenKind(cp);
+    const isLineBreak = options.multiline === true && (cp === 0x0a || (cp === 0x0d && chars[i + 1] === "\n"));
+    const kind = isLineBreak || (cp === 0x0d && i === chars.length - 1) ? null : hiddenKind(cp);
     if (kind === null) {
       plain += ch;
       return;
@@ -55,14 +67,14 @@ export function revealHidden(text: string): HiddenRun[] {
 }
 
 /** Text with each hidden character as its token, for accessible names and plain strings. */
-export function visibleText(text: string): string {
-  return revealHidden(text)
+export function visibleText(text: string, options: RevealOptions = {}): string {
+  return revealHidden(text, options)
     .map((r) => ("code" in r ? `⟪${r.code}⟫` : r.text))
     .join("");
 }
 
-export function hasHidden(text: string): boolean {
-  return revealHidden(text).some((r) => "code" in r);
+export function hasHidden(text: string, options: RevealOptions = {}): boolean {
+  return revealHidden(text, options).some((r) => "code" in r);
 }
 
 const WHAT: Record<HiddenKind, string> = {
@@ -71,9 +83,12 @@ const WHAT: Record<HiddenKind, string> = {
   control: "a control character",
 };
 
-/** `text` rendered as text, each hidden character a visible, explained token. */
-export function VisibleText({ text }: { text: string }) {
-  const runs = revealHidden(text);
+/**
+ * `text` rendered as text, each hidden character a visible, explained token. A `multiline` body
+ * keeps its line breaks in the text, so the parent needs `white-space: pre-wrap` to show them.
+ */
+export function VisibleText({ text, multiline = false }: { text: string; multiline?: boolean }) {
+  const runs = revealHidden(text, { multiline });
   if (!runs.some((r) => "code" in r)) return <>{text}</>;
   return (
     <>

@@ -87,7 +87,7 @@ export function KeptReview({ kept, draft, onKeep, onAccept }: Props) {
               : "What this approved PR changed, added to your notes on how this repo works. Nothing is written until you accept."}
           </p>
           <pre className={s.exact} aria-label="Drafted How it works">
-            <Visible text={draft.text} />
+            <Visible text={draft.text} multiline />
           </pre>
           <div className={s.row}>
             <Button size="sm" disabled={busy} onClick={() => run(() => onAccept(draft))}>
