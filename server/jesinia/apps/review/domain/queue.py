@@ -293,6 +293,8 @@ class RoundRecord:
     # Read-only once a newer round replaced it (spec §7): ``successor_id`` has its drafts.
     frozen_at: datetime | None = None
     successor_id: int | None = None
+    # Cut short by a stop or a crash, to be resumed with its finished jobs (R51).
+    interrupted: bool = False
 
 
 @dataclass(frozen=True)

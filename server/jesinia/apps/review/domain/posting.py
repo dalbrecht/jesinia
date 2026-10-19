@@ -520,6 +520,21 @@ def seed_drafts(findings: Sequence[object]) -> list[Draft]:
     return [draft for draft in drafts if draft is not None][:DRAFTS_MAX]
 
 
+# The artifacts whose findings become drafts: the correctness pass and the findings job.
+FINDING_KINDS: Final = ("correctness", "findings")
+
+
+def artifact_drafts(artifact: object) -> list[Draft]:
+    """The drafts one finding artifact (``{"findings": [...]}``) seeds; a job may report one
+    issue twice, and it becomes one draft."""
+    items = artifact.get("findings") if isinstance(artifact, Mapping) else None
+    unique: list[object] = []
+    for item in items if isinstance(items, list) else []:
+        if item not in unique:
+            unique.append(item)
+    return seed_drafts(unique)
+
+
 # GitHub's limit on a review body, in characters.
 GITHUB_BODY_LIMIT: Final = 65_536
 # What ``marked_body`` adds at most: the separator and the marker of the largest posting id

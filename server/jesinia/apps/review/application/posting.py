@@ -35,11 +35,12 @@ import sqlite3
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
-from typing import Final, Literal, Protocol
+from typing import Literal, Protocol
 
 from jesinia.apps.review.domain.posting import (
     BODY_MAX,
     DRAFTS_MAX,
+    FINDING_KINDS,
     MARKER_NOTE,
     REVIEW_EVENTS,
     SUBMITTED_STATES,
@@ -61,6 +62,7 @@ from jesinia.apps.review.domain.posting import (
     Review,
     ReviewedHeadGone,
     RoundFrozen,
+    artifact_drafts,
     check_body_length,
     check_review_text,
     commentable_lines,
@@ -70,7 +72,6 @@ from jesinia.apps.review.domain.posting import (
     posting_marker,
     review_digest,
     review_warnings,
-    seed_drafts,
 )
 from jesinia.apps.review.domain.queue import PrRef, QueueDomainError, RoundRecord
 from jesinia.apps.review.domain.workspace import WorkspaceError
@@ -96,8 +97,6 @@ Clock = Callable[[], datetime]
 PostedState = Literal["posted", "already_posted"]
 # How long after an attempt began a missing review may still appear on GitHub (R49).
 POSTING_GRACE = timedelta(minutes=3)
-# The jobs whose findings become drafts.
-_FINDING_JOBS: Final = ("correctness", "findings")
 _FILE_ERRORS = (GitHubError, GitHubPayloadError, PullRequestDomainError, QueueDomainError)
 
 
@@ -170,9 +169,20 @@ class PostingStore(Protocol):
 
     def review_summary(self, round_id: int) -> str: ...
 
-    def seed_drafts(self, round_id: int, drafts: Sequence[Draft]) -> bool: ...
+    def seed_drafts(
+        self, round_id: int, kind: str, drafts: Sequence[Draft]
+    ) -> builtins.list[Draft]: ...
 
-    def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> None: ...
+    def save_drafts(
+        self,
+        round_id: int,
+        summary: str,
+        drafts: Sequence[Draft],
+        *,
+        seeds: Mapping[str, Sequence[Draft]] | None = None,
+    ) -> builtins.list[Draft]: ...
+
+    def seeds_dropped(self, round_id: int) -> int: ...
 
     def postings(self, round_id: int) -> builtins.list[Posting]: ...
 
@@ -201,15 +211,17 @@ class DraftSet:
     """A round's review summary and drafts, as the author edits them. ``in_body`` says, per
     draft, whether it posts in the review body (GitHub can't anchor it inline); it is
     ``None`` while GitHub's file list for the head isn't cached (``files_pending``).
-    ``findings_pending``: the correctness pass or the findings job is still running, so
-    their drafts aren't here yet; they are added when both have finished or failed."""
+    ``findings_pending``: the correctness pass or the findings job may still store its
+    findings (running, or not run yet), so their drafts aren't all here yet; each kind's are
+    added as soon as it stores them, even after a failure and a Retry."""
 
     round_id: int
     summary: str
     drafts: tuple[Draft, ...]
     in_body: tuple[bool, ...] | None = None
     findings_pending: bool = False
-    # Finding drafts a save couldn't keep under DRAFTS_MAX (the author's come first).
+    # Finding drafts the round had no room for under DRAFTS_MAX (the author's come first),
+    # left out by seeding or by a save; gone for good, so every read reports them.
     seeds_dropped: int = 0
 
     @property
@@ -300,7 +312,8 @@ class PostingService:
     # --- drafts ---------------------------------------------------------------------------
 
     async def drafts(self, round_id: int) -> DraftSet:
-        """The round's summary and drafts; seeded from its findings the first time.
+        """The round's summary and drafts; each kind of finding is seeded the first time it
+        is there.
 
         Raises:
             NoReviewRound: no such round.
@@ -322,17 +335,15 @@ class PostingService:
         if len(summary) > BODY_MAX:
             raise InvalidDraftError(f"the summary is at most {BODY_MAX} characters")
         check_review_text(summary, drafts)
-        # Findings already in are seeded first, so this edit (deletions included) replaces
-        # them; findings still running are added next to it when they arrive.
-        settled, seeded = self._seed_claim(rnd)
-        # Drafts this call just seeded were never seen by the client (PR 3 final I2): the
-        # author's list replaces what they had, and the new ones are kept after it, as many
-        # as fit under DRAFTS_MAX; the rest are counted so the UI can say so.
-        kept = seeded[: max(0, DRAFTS_MAX - len(drafts))]
-        self._store.save_drafts(round_id, summary, [*drafts, *kept])
-        return replace(
-            self._draft_set(rnd, pending=not settled), seeds_dropped=len(seeded) - len(kept)
-        )
+        # Each kind of finding already in but not yet seeded is seeded with this edit, in
+        # the store's one transaction: its drafts were never seen by the client (PR 3 final
+        # I2), so they are kept after the author's list (unless it has one, same file and
+        # text), as many as fit beside that list under DRAFTS_MAX (Codex round 2 on #76:
+        # not beside the drafts it replaces); the rest are counted so the UI can say so.
+        # Findings still running are added next to the edit when they arrive.
+        stored = self._store.artifact_kinds(rnd.id)
+        self._store.save_drafts(round_id, summary, drafts, seeds=self._generated(rnd, stored))
+        return self._draft_set(rnd, pending=self._findings_pending(rnd, stored))
 
     def _draft_set(self, rnd: RoundRecord, *, pending: bool) -> DraftSet:
         """The drafts from the store, each placed against the cached file list (never
@@ -343,42 +354,40 @@ class PostingService:
         if files is not None:
             commentable = commentable_lines(files)
             placed = tuple(not commentable.anchors(draft) for draft in drafts)
-        return DraftSet(rnd.id, self._store.review_summary(rnd.id), drafts, placed, pending)
-
-    def _findings_settled(self, rnd: RoundRecord) -> bool:
-        """Whether the round's findings are all in: it finished cleanly, or the correctness
-        pass and the findings job have each stored their output or failed."""
-        if rnd.finished_at is not None and rnd.error is None:
-            return True
-        kinds = self._store.artifact_kinds(rnd.id)
-        jobs = self._store.artifact(rnd.id, "jobs")
-        failed = {
-            kind
-            for kind, entry in (jobs.items() if isinstance(jobs, Mapping) else ())
-            if isinstance(entry, Mapping) and entry.get("state") == "failed"
-        }
-        return all(kind in kinds or kind in failed for kind in _FINDING_JOBS)
+        return DraftSet(
+            rnd.id,
+            self._store.review_summary(rnd.id),
+            drafts,
+            placed,
+            pending,
+            self._store.seeds_dropped(rnd.id),
+        )
 
     def _seed(self, rnd: RoundRecord) -> bool:
-        """Seed the round's drafts from its findings, once, as soon as they are all in
-        (Codex round 2: seeding earlier would miss them for good). Returns whether they
-        are in."""
-        return self._seed_claim(rnd)[0]
+        """Seed the round's drafts from each kind of finding it has stored, once per kind
+        (Codex round 2: a kind seeded before its findings are in would miss them for good).
+        Returns whether no more findings are expected.
 
-    def _seed_claim(self, rnd: RoundRecord) -> tuple[bool, tuple[Draft, ...]]:
-        """``_seed``, also returning the drafts this call seeded (empty unless it claimed
-        the seeding)."""
-        if not self._findings_settled(rnd):
-            return False, ()
-        found = self._store.artifact(rnd.id, "findings")
-        correctness = self._store.artifact(rnd.id, "correctness")
-        findings = [
-            *_findings_of(correctness),
-            *_findings_of(found),
-        ]
-        generated = tuple(seed_drafts(_unique(findings)))
-        claimed = self._store.seed_drafts(rnd.id, generated)
-        return True, generated if claimed else ()
+        Decided per kind from its artifact, never from the round's ``finished_at`` or
+        ``error``: a failed job doesn't set the round's error, and Retry reruns the jobs in
+        the finished round, so a finished round may still get its findings later."""
+        stored = self._store.artifact_kinds(rnd.id)
+        for kind, generated in self._generated(rnd, stored).items():
+            self._store.seed_drafts(rnd.id, kind, generated)
+        return not self._findings_pending(rnd, stored)
+
+    def _generated(self, rnd: RoundRecord, stored: Collection[str]) -> dict[str, list[Draft]]:
+        """The drafts each stored kind of finding seeds, in kind order (the store keeps
+        each kind's only the first time)."""
+        return {
+            kind: artifact_drafts(self._store.artifact(rnd.id, kind))
+            for kind in FINDING_KINDS
+            if kind in stored
+        }
+
+    def _findings_pending(self, rnd: RoundRecord, stored: Collection[str]) -> bool:
+        states = _job_states(self._store.artifact(rnd.id, "jobs"))
+        return any(_finding_kind_pending(kind, stored, states, rnd) for kind in FINDING_KINDS)
 
     async def _commentable(self, rnd: RoundRecord) -> tuple[CommentableLines, list[str]]:
         """Where GitHub takes comments on the round's head: its cached file list, read once
@@ -415,6 +424,11 @@ class PostingService:
             notes.append(
                 "the correctness pass or the findings job is still running; its drafts are "
                 "added when it finishes"
+            )
+        if dropped := self._store.seeds_dropped(round_id):
+            notes.append(
+                f"{dropped} finding draft{'s' if dropped != 1 else ''} didn't fit: a review "
+                f"takes at most {DRAFTS_MAX} drafts, and yours come first"
             )
         live = await self._github.get(rnd.ref.repo, rnd.ref.number)
         newer_head = await self._newer_head(rnd, live)
@@ -756,15 +770,25 @@ def _pr_url(rnd: RoundRecord) -> str:
     return f"https://github.com/{rnd.ref.repo}/pull/{rnd.ref.number}"
 
 
-def _findings_of(artifact: object) -> list[object]:
-    items = artifact.get("findings") if isinstance(artifact, dict) else None
-    return list(items) if isinstance(items, list) else []
+def _job_states(jobs: object) -> dict[str, object]:
+    """Each job's state in a round's ``jobs`` artifact (``running``, ``done``, ``failed``)."""
+    if not isinstance(jobs, Mapping):
+        return {}
+    return {
+        str(kind): entry.get("state") for kind, entry in jobs.items() if isinstance(entry, Mapping)
+    }
 
 
-def _unique(findings: Sequence[object]) -> list[object]:
-    """The correctness pass and the findings job often report one issue twice."""
-    seen: list[object] = []
-    for item in findings:
-        if item not in seen:
-            seen.append(item)
-    return seen
+def _finding_kind_pending(
+    kind: str, stored: Collection[str], states: Mapping[str, object], rnd: RoundRecord
+) -> bool:
+    """Whether a kind's findings may still arrive in this round: not stored, its job
+    neither done nor failed, and the round will still run it. A running round will; so will
+    an interrupted one (resuming runs every job it hasn't finished, R51) and a cleanly
+    finished one (Retry, or opening the PR, reruns its missing triage jobs in it). A round
+    that failed outright is replaced, never reused, so a job its failure left "running"
+    won't store anything in it. A failed job doesn't hold the drafts back for ever: if a
+    Retry stores its findings later, they are seeded then."""
+    if kind in stored or states.get(kind) in ("done", "failed"):
+        return False
+    return rnd.finished_at is None or rnd.interrupted or rnd.error is None

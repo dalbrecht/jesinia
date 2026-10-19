@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import asdict
 from datetime import datetime
@@ -17,7 +17,15 @@ from typing import cast
 from jesinia.apps.review.domain.followup import FollowUp, FollowUpKind, PrevSource
 from jesinia.apps.review.domain.gates import CiState, Depth
 from jesinia.apps.review.domain.jobs import DEFAULT_RUNNER
-from jesinia.apps.review.domain.posting import Draft, Posting, PostingState, RoundFrozen
+from jesinia.apps.review.domain.posting import (
+    DRAFTS_MAX,
+    FINDING_KINDS,
+    Draft,
+    Posting,
+    PostingState,
+    RoundFrozen,
+    artifact_drafts,
+)
 from jesinia.apps.review.domain.queue import (
     DEFAULT_PREREVIEW,
     AutoReviewState,
@@ -214,7 +222,7 @@ def _file(data: object) -> PrFile:
 
 _ROUND_COLUMNS = (
     "id, repo, number, head_sha, base_sha, depth, started_at, finished_at, verdict, error, "
-    "posted_review_url, done, frozen_at, successor_id"
+    "posted_review_url, done, frozen_at, successor_id, interrupted"
 )
 _DRAFT_COLUMNS = (
     "id, path, line, side, start_line, start_side, body, origin_finding, outdated, outside_diff"
@@ -224,7 +232,7 @@ _POSTING_COLUMNS = "id, round_id, event, key, digest, body, started_at, state, r
 
 def _round(row: tuple[object, ...]) -> RoundRecord:
     (round_id, repo, number, head, base, depth, started, finished, verdict, error, url, done,
-     frozen, successor) = row  # fmt: skip
+     frozen, successor, interrupted) = row  # fmt: skip
     return RoundRecord(
         id=cast(int, round_id),
         ref=PrRef(cast(str, repo), cast(int, number)),
@@ -239,6 +247,7 @@ def _round(row: tuple[object, ...]) -> RoundRecord:
         done=bool(done),
         frozen_at=_optional_time(cast(str | None, frozen)),
         successor_id=cast(int | None, successor),
+        interrupted=bool(interrupted),
     )
 
 
@@ -890,28 +899,112 @@ class SqliteReviewStore:
                 updated += cursor.rowcount
         return updated
 
-    def seed_drafts(self, round_id: int, drafts: Sequence[Draft]) -> bool:
-        """Add a round's generated drafts, once, after any the author already wrote (or
-        that were carried over: a finding repeating one, same file and text, is left out).
-        False (and nothing written) if it was seeded before or the round is frozen."""
+    def seed_drafts(self, round_id: int, kind: str, drafts: Sequence[Draft]) -> list[Draft]:
+        """Add the drafts generated from one kind of a round's findings, once per kind,
+        after any already there (the author's, carried ones, another kind's: a finding
+        repeating one, same file and text, is left out), as many as fit under DRAFTS_MAX.
+        Returns the drafts added: none if that kind was seeded before or the round is
+        frozen (the claim and the inserts are one transaction, so two readers can't both
+        seed a kind). Drafts left out for lack of room are counted (``seeds_dropped``)."""
         with transaction(self._conn):
-            claimed = self._conn.execute(
-                "UPDATE rounds SET drafts_seeded = 1 "
-                "WHERE id = ? AND drafts_seeded = 0 AND frozen_at IS NULL",
-                (round_id,),
-            )
-            if not claimed.rowcount:
-                return False
-            have = set(
-                self._conn.execute(
-                    "SELECT path, body FROM drafts WHERE round_id = ?", (round_id,)
-                ).fetchall()
-            )
-            self._insert_drafts(round_id, [d for d in drafts if (d.path, d.body) not in have])
-        return True
+            if not self._claim_seeds(round_id, kind, drafts, self._draft_keys(round_id)):
+                return []
+            return self._add_seeds(round_id, drafts)
 
-    def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> None:
-        """Replace a round's summary and drafts (the author's edit) in one transaction. It
+    def _draft_keys(self, round_id: int) -> set[tuple[str, str]]:
+        rows = self._conn.execute("SELECT path, body FROM drafts WHERE round_id = ?", (round_id,))
+        return {(cast(str, path), cast(str, body)) for path, body in rows}
+
+    def _claim_seeds(
+        self, round_id: int, kind: str, drafts: Sequence[Draft], before: set[tuple[str, str]]
+    ) -> bool:
+        """Claim seeding ``kind`` for an open round; True when its drafts are to be added
+        (claimed now, and not seeded before 0011). ``before``: the drafts the round had."""
+        claimed = self._conn.execute(
+            "INSERT INTO draft_seeds (round_id, kind) "
+            "SELECT id, ? FROM rounds WHERE id = ? AND frozen_at IS NULL "
+            "ON CONFLICT (round_id, kind) DO NOTHING",
+            (kind, round_id),
+        )
+        return bool(claimed.rowcount) and not self._seeded_before_0011(
+            round_id, kind, drafts, before
+        )
+
+    def _seeded_before_0011(
+        self, round_id: int, kind: str, drafts: Sequence[Draft], before: set[tuple[str, str]]
+    ) -> bool:
+        """Whether a round seeded once for all kinds (``drafts_seeded``, before migration
+        0011) seeded this kind: one of its drafts is one only this kind's findings make.
+
+        Decided here, against the drafts the same code generates, rather than backfilled
+        in SQL at migration: a seeded draft's text is built by ``seed_drafts`` (severity
+        title, explanation, rule, marker text withheld, truncation), and matching that in
+        SQL would copy the builder and drift from it. A finding both kinds report proves
+        nothing (either could have seeded it); a kind with no draft of its own left (never
+        seeded, or the author deleted or edited all of them) is seeded now, and the drafts
+        still there are not repeated."""
+        row = self._conn.execute(
+            "SELECT drafts_seeded FROM rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        if row is None or not row[0]:
+            return False
+        others = {
+            (d.path, d.body)
+            for other in FINDING_KINDS
+            if other != kind
+            for d in artifact_drafts(self.artifact(round_id, other))
+        }
+        own = {(d.path, d.body) for d in drafts} - others
+        return bool(own & before)
+
+    def _add_seeds(self, round_id: int, drafts: Sequence[Draft]) -> list[Draft]:
+        """Insert claimed seeds after the round's drafts, leaving out any repeating one
+        (same file and text), as many as fit under DRAFTS_MAX; count the rest."""
+        have = self._draft_keys(round_id)
+        count = cast(
+            int,
+            self._conn.execute(
+                "SELECT COUNT(*) FROM drafts WHERE round_id = ?", (round_id,)
+            ).fetchone()[0],
+        )
+        fresh: list[Draft] = []
+        for draft in drafts:
+            if (draft.path, draft.body) not in have:
+                have.add((draft.path, draft.body))
+                fresh.append(draft)
+        # Each kind is capped on its own by the domain; together they must still leave
+        # the author a set they can save back.
+        added = fresh[: max(0, DRAFTS_MAX - count)]
+        self._insert_drafts(round_id, added)
+        self._count_seeds_dropped(round_id, len(fresh) - len(added))
+        return added
+
+    def seeds_dropped(self, round_id: int) -> int:
+        """How many finding drafts the round had no room for (by seeding or by a save)."""
+        row = self._conn.execute(
+            "SELECT seeds_dropped FROM rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        return 0 if row is None else cast(int, row[0])
+
+    def _count_seeds_dropped(self, round_id: int, dropped: int) -> None:
+        if dropped > 0:
+            self._conn.execute(
+                "UPDATE rounds SET seeds_dropped = seeds_dropped + ? WHERE id = ?",
+                (dropped, round_id),
+            )
+
+    def save_drafts(
+        self,
+        round_id: int,
+        summary: str,
+        drafts: Sequence[Draft],
+        *,
+        seeds: Mapping[str, Sequence[Draft]] | None = None,
+    ) -> list[Draft]:
+        """Replace a round's summary and drafts (the author's edit) in one transaction.
+        ``seeds``: each stored kind of finding's drafts; a kind not seeded yet is claimed
+        and its drafts added after the edit (as ``seed_drafts`` does, capped against the
+        edit, not the drafts it replaces). Returns the drafts so added. The edit itself
         doesn't count as seeding: findings arriving later still add their drafts. A carried
         draft whose anchor the edit left as it was (same id, file, lines, sides and flag)
         stays pending re-anchoring; any other is the author's choice and is kept as given.
@@ -921,6 +1014,13 @@ class SqliteReviewStore:
         """
         with transaction(self._conn):
             self._refuse_frozen(round_id)
+            before = self._draft_keys(round_id)
+            claimed = [
+                draft
+                for kind, generated in (seeds or {}).items()
+                if self._claim_seeds(round_id, kind, generated, before)
+                for draft in generated
+            ]
             pending = {
                 row[0]: row[1:]
                 for row in self._conn.execute(
@@ -949,6 +1049,7 @@ class SqliteReviewStore:
                 else:
                     carried.append((None, None))
             self._insert_drafts(round_id, drafts, carried)
+            return self._add_seeds(round_id, claimed)
 
     def postings(self, round_id: int) -> list[Posting]:
         rows = self._conn.execute(
