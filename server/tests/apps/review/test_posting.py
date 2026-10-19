@@ -1082,7 +1082,9 @@ async def test_seeds_that_would_pass_the_draft_limit_are_capped_and_counted(env:
     assert [d.body for d in saved.drafts[:150]] == [f"Mine {i}." for i in range(150)]
     assert saved.seeds_dropped == 400 - (DRAFTS_MAX - 150)
     again = await env.service.save_drafts(round_id, "Notes.", list(saved.drafts))
-    assert len(again.drafts) == DRAFTS_MAX and again.seeds_dropped == 0
+    # Accepted; the findings that didn't fit stay reported (they are gone for good).
+    assert len(again.drafts) == DRAFTS_MAX and again.seeds_dropped == saved.seeds_dropped
+    assert (await env.service.drafts(round_id)).seeds_dropped == saved.seeds_dropped
 
 
 async def test_a_preview_says_when_the_round_was_already_posted(env: Env) -> None:
@@ -1192,6 +1194,9 @@ def test_should_cap_seeds_at_the_draft_limit(env: Env) -> None:
     seeds = [_outside("b.py", "one"), _outside("b.py", "two")]
     assert store.seed_drafts(round_id, "findings", seeds) == seeds[:1]
     assert len(store.drafts(round_id)) == DRAFTS_MAX
+    assert store.seeds_dropped(round_id) == 1
+    store.save_drafts(round_id, "", store.drafts(round_id), seeds_dropped=2)
+    assert store.seeds_dropped(round_id) == 3
 
 
 def test_rounds_seeded_before_0011_keep_their_seeds_unless_nothing_was_seeded(
@@ -1230,5 +1235,59 @@ def test_rounds_seeded_before_0011_keep_their_seeds_unless_nothing_was_seeded(
     try:
         rows = after.execute("SELECT round_id, kind FROM draft_seeds ORDER BY round_id, kind")
         assert rows.fetchall() == [(1, "correctness"), (1, "findings")]
+        assert SqliteReviewStore(after).seeds_dropped(1) == 0
     finally:
         after.close()
+
+
+async def test_should_report_seeds_the_store_cap_dropped_on_every_read(env: Env) -> None:
+    """Codex round 1 on PR #76: a read that seeds past DRAFTS_MAX drops the overflow for
+    good, so the count is kept and every draft set (and the preview) reports it."""
+    from jesinia.apps.review.domain.posting import DRAFTS_MAX
+
+    round_id = _running_round(env)
+    mine = [_outside("a.py", f"Mine {i}.") for i in range(DRAFTS_MAX - 50)]
+    await env.service.save_drafts(round_id, "Notes.", mine)
+    env.store.put_artifact(round_id, "correctness", {"findings": []})
+    many = [finding(2, 3, f"Finding {i}.") for i in range(80)]
+    env.store.put_artifact(round_id, "findings", {"findings": many})
+    first = await env.service.drafts(round_id)
+    assert len(first.drafts) == DRAFTS_MAX and first.seeds_dropped == 30
+    assert (await env.service.drafts(round_id)).seeds_dropped == 30
+    preview = await env.service.preview(round_id, "COMMENT")
+    assert any("30 finding drafts didn't fit" in note for note in preview.notes)
+    saved = await env.service.save_drafts(round_id, "Notes.", list(first.drafts))
+    assert saved.seeds_dropped == 30
+
+
+async def test_should_keep_an_interrupted_round_pending_for_finding_jobs_not_run(
+    env: Env,
+) -> None:
+    """Codex round 1 on PR #76: a stop between the finding jobs leaves the round finished
+    and interrupted; resuming runs the job that never started (or was cut short)."""
+    round_id = _running_round(env)
+    env.store.put_artifact(round_id, "correctness", {"findings": [finding(2, 3, "Bug.")]})
+    env.store.put_artifact(round_id, "jobs", _jobs(correctness="done"))
+    env.store.interrupt_unfinished_rounds(env.clock(), "Jesinia stopped")
+    assert (await env.service.drafts(round_id)).findings_pending
+    # A job cut short mid-run (its state left "running") is resumed too.
+    env.store.put_artifact(round_id, "jobs", _jobs(correctness="done", findings="running"))
+    assert (await env.service.drafts(round_id)).findings_pending
+
+
+async def test_should_not_keep_a_failed_round_pending_for_a_job_it_cut_short(env: Env) -> None:
+    """A round that failed outright isn't reused (Retry starts a new one), so a job its
+    failure left "running" will never store findings in it."""
+    round_id = _running_round(env)
+    env.store.put_artifact(round_id, "jobs", _jobs(correctness="failed", findings="running"))
+    env.store.finish_round(round_id, env.clock(), "the workspace couldn't be prepared")
+    assert not (await env.service.drafts(round_id)).findings_pending
+
+
+async def test_should_keep_a_clean_round_pending_for_a_finding_job_never_run(env: Env) -> None:
+    """A round that finished cleanly is reused when the PR is opened, which runs any
+    triage job it lacks, so a finding kind with no state yet is still to come."""
+    round_id = _running_round(env)
+    env.store.put_artifact(round_id, "correctness", {"findings": []})
+    env.store.finish_round(round_id, env.clock(), None, "approve")
+    assert (await env.service.drafts(round_id)).findings_pending

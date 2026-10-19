@@ -106,3 +106,16 @@ describe("seeds past the draft limit (P2)", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("seeds a read dropped past the draft limit (PR #76 round 1)", () => {
+  it("says so as soon as the drafts are read", async () => {
+    setup(() => reviewed(), {
+      [`GET ${API}/drafts`]: () => Response.json({ ...drafts(), seeds_dropped: 1 }),
+    });
+    await ready();
+    await userEvent.click(within(outline()).getByRole("link", { name: /Your comments/ }));
+    expect(
+      await screen.findByText("1 finding draft didn't fit: a review takes at most 500 drafts, and yours come first."),
+    ).toBeInTheDocument();
+  });
+});

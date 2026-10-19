@@ -220,7 +220,7 @@ def _file(data: object) -> PrFile:
 
 _ROUND_COLUMNS = (
     "id, repo, number, head_sha, base_sha, depth, started_at, finished_at, verdict, error, "
-    "posted_review_url, done, frozen_at, successor_id"
+    "posted_review_url, done, frozen_at, successor_id, interrupted"
 )
 _DRAFT_COLUMNS = (
     "id, path, line, side, start_line, start_side, body, origin_finding, outdated, outside_diff"
@@ -230,7 +230,7 @@ _POSTING_COLUMNS = "id, round_id, event, key, digest, body, started_at, state, r
 
 def _round(row: tuple[object, ...]) -> RoundRecord:
     (round_id, repo, number, head, base, depth, started, finished, verdict, error, url, done,
-     frozen, successor) = row  # fmt: skip
+     frozen, successor, interrupted) = row  # fmt: skip
     return RoundRecord(
         id=cast(int, round_id),
         ref=PrRef(cast(str, repo), cast(int, number)),
@@ -245,6 +245,7 @@ def _round(row: tuple[object, ...]) -> RoundRecord:
         done=bool(done),
         frozen_at=_optional_time(cast(str | None, frozen)),
         successor_id=cast(int | None, successor),
+        interrupted=bool(interrupted),
     )
 
 
@@ -902,7 +903,7 @@ class SqliteReviewStore:
         repeating one, same file and text, is left out), as many as fit under DRAFTS_MAX.
         Returns the drafts added: none if that kind was seeded before or the round is
         frozen (the claim and the inserts are one transaction, so two readers can't both
-        seed a kind)."""
+        seed a kind). Drafts left out for lack of room are counted (``seeds_dropped``)."""
         with transaction(self._conn):
             claimed = self._conn.execute(
                 "INSERT INTO draft_seeds (round_id, kind) "
@@ -921,10 +922,28 @@ class SqliteReviewStore:
             # the author a set they can save back.
             added = fresh[: max(0, DRAFTS_MAX - len(rows))]
             self._insert_drafts(round_id, added)
+            self._count_seeds_dropped(round_id, len(fresh) - len(added))
         return added
 
-    def save_drafts(self, round_id: int, summary: str, drafts: Sequence[Draft]) -> None:
-        """Replace a round's summary and drafts (the author's edit) in one transaction. It
+    def seeds_dropped(self, round_id: int) -> int:
+        """How many finding drafts the round had no room for (by seeding or by a save)."""
+        row = self._conn.execute(
+            "SELECT seeds_dropped FROM rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        return 0 if row is None else cast(int, row[0])
+
+    def _count_seeds_dropped(self, round_id: int, dropped: int) -> None:
+        if dropped > 0:
+            self._conn.execute(
+                "UPDATE rounds SET seeds_dropped = seeds_dropped + ? WHERE id = ?",
+                (dropped, round_id),
+            )
+
+    def save_drafts(
+        self, round_id: int, summary: str, drafts: Sequence[Draft], *, seeds_dropped: int = 0
+    ) -> None:
+        """Replace a round's summary and drafts (the author's edit) in one transaction,
+        counting ``seeds_dropped`` finding drafts it had no room for. It
         doesn't count as seeding: findings arriving later still add their drafts. A carried
         draft whose anchor the edit left as it was (same id, file, lines, sides and flag)
         stays pending re-anchoring; any other is the author's choice and is kept as given.
@@ -944,6 +963,7 @@ class SqliteReviewStore:
                 )
             }
             self._conn.execute("UPDATE rounds SET summary = ? WHERE id = ?", (summary, round_id))
+            self._count_seeds_dropped(round_id, seeds_dropped)
             self._conn.execute("DELETE FROM drafts WHERE round_id = ?", (round_id,))
             carried: list[tuple[str | None, str | None]] = []
             for d in drafts:

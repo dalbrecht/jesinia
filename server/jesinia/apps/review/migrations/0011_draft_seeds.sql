@@ -9,6 +9,10 @@ CREATE TABLE draft_seeds (
     kind TEXT NOT NULL CHECK (kind IN ('correctness', 'findings')),
     PRIMARY KEY (round_id, kind)
 );
+-- How many finding drafts were left out because the round had no room under the draft limit
+-- (500): by seeding, or by the author's save that first took them. They are gone for good,
+-- so every read of the drafts reports the count.
+ALTER TABLE rounds ADD COLUMN seeds_dropped INTEGER NOT NULL DEFAULT 0;
 
 -- A round seeded before this counts as seeded for the kinds whose artifact it has, but only
 -- if it holds a finding draft: a seeded round with none was (almost always) claimed before
