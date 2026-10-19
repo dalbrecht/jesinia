@@ -188,6 +188,6 @@ async def test_takeaway_that_times_out_is_unavailable(
     async with keep_server(cfg, kb_root, runner) as env:
         sid = await _engage(env, env.post())
         engage = EngageService(env.rss.posts, _sessions(env), takeaway_timeout=0.05)
-        with pytest.raises(TakeawayUnavailable, match="TimeoutError") as caught:
+        with pytest.raises(TakeawayUnavailable, match="timed out after 0.05s") as caught:
             await engage.takeaway(sid)
         assert isinstance(caught.value.__cause__, TimeoutError)

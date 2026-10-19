@@ -311,3 +311,57 @@ async def test_ask_without_a_final_message_falls_back_to_the_turns_text(make) ->
 def test_turn_failures_say_whether_they_are_transient() -> None:
     assert TurnFailed("Selected model is at capacity. Please try a different model.").transient
     assert not TurnFailed("the CLI is logged out").transient
+
+
+class StuckAfterReplyRunner:
+    """Sends its whole turn, then its process never exits (until it is stopped)."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.requests: list[TurnRequest] = []
+        self.terminated = 0
+
+    async def status(self) -> RunnerStatus:
+        return RunnerStatus(True, "stuck", "never exits")
+
+    async def run(self, req: TurnRequest) -> AsyncIterator[AgentEvent]:
+        self.requests.append(req)
+        yield TextDelta('{"ok": true}')
+        yield TurnDone(f"agent-{len(self.requests)}", None, '{"ok": true}')
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            self.terminated += 1
+            raise
+
+
+async def test_a_reply_stands_when_the_cli_lingers_past_the_deadline(  # type: ignore[no-untyped-def]
+    make, caplog: pytest.LogCaptureFixture
+) -> None:
+    runner = StuckAfterReplyRunner()
+    svc: SessionService = make(runner)
+    session = await svc.create(SUBJ, "fake", _pack())
+    assert await svc.ask(session.id, "go", timeout=0.1) == '{"ok": true}'
+    # The lingering process was stopped; the turn stays a success and the session is free.
+    assert runner.terminated == 1
+    assert all(task.done() for task in svc._tasks.values())
+    assert svc.get(session.id).status == "idle"
+    assert [e.kind for e in svc.store.events(session.id)][-1] == "turn_done"
+    assert any(
+        "lingered" in r.getMessage() and session.id in r.getMessage() for r in caplog.records
+    )
+    assert await svc.ask(session.id, "again", timeout=0.1) == '{"ok": true}'
+    assert runner.requests[1].resume_id == "agent-1"
+
+
+async def test_no_turn_done_before_the_deadline_fails_the_session_with_the_cause(make) -> None:  # type: ignore[no-untyped-def]
+    runner = HangingRunner()
+    svc: SessionService = make(runner)
+    session = await svc.create(SUBJ, "fake", _pack())
+    with pytest.raises(TimeoutError, match="timed out after 0.05s"):
+        await svc.ask(session.id, "hi", timeout=0.05)
+    assert svc.get(session.id).status == "failed"
+    assert all(task.done() for task in svc._tasks.values())
+    last = svc.store.events(session.id)[-1]
+    assert last.kind == "error" and last.data["message"] == "the turn timed out after 0.05s"
