@@ -11,7 +11,13 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, status
 from starlette.routing import Route
 
-from jesinia.core.auth import auth_router, require_owner
+from jesinia.core.auth import (
+    SESSIONS_FILE,
+    SessionCookieRenewal,
+    auth_router,
+    load_sessions,
+    require_owner,
+)
 from jesinia.core.config import Config
 from jesinia.core.events import EventBus
 from jesinia.core.module import AppContext, Module, ModuleHealth
@@ -72,6 +78,7 @@ def create_app(
 
     app = FastAPI(title="Jesinia", version="0.1.0", lifespan=lifespan)
     app.state.ctx = ctx
+    load_sessions(cfg.data_dir / SESSIONS_FILE)
     app.include_router(auth_router())
     app.include_router(events_router(event_log))
 
@@ -110,5 +117,6 @@ def create_app(
     app.router.routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))
     if static_root is not None:
         app.include_router(static_router(static_root))  # last: a catch-all for the PWAs
+    app.add_middleware(SessionCookieRenewal)
     app.add_middleware(LocalOriginGuard, port=cfg.port)
     return app

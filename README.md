@@ -51,7 +51,8 @@ Issues their own windows.
   rolled back if a build fails). Leave it off in a checkout you develop in.
 - `--dry-run` shows what setup would do and changes nothing.
 
-Need a new login link later? Run `jesinia status`. Something wrong? Run
+Signed out? Run `jesinia login`; browsers otherwise stay signed in for 30 days of
+use, across restarts and updates. Something wrong? Run
 `jesinia doctor`. To remove Jesinia, run `./setup --uninstall`; your KB is never touched.
 
 The [operations guide](docs/operations.md) covers everything else:

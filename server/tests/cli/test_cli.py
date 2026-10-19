@@ -150,6 +150,62 @@ def test_status_prints_health_and_login(cli: Cli) -> None:
 
 
 @respx.mock
+def test_login_should_open_a_fresh_link_in_the_browser(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+
+    def record(url: str) -> bool:
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr("webbrowser.open", record)
+    respx.post(f"{BASE}/api/auth/nonce").mock(
+        return_value=httpx.Response(200, json={"nonce": "n", "url": f"{BASE}/login?nonce=n"})
+    )
+    r = cli(["login"])
+    assert r.exit_code == 0 and opened == [f"{BASE}/login?nonce=n"]
+    assert "Opened" in r.stdout
+
+
+@respx.mock
+def test_login_should_print_the_link_when_no_browser_opens(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("webbrowser.open", lambda url: False)
+    respx.post(f"{BASE}/api/auth/nonce").mock(
+        return_value=httpx.Response(200, json={"nonce": "n", "url": f"{BASE}/login?nonce=n"})
+    )
+    r = cli(["login"])
+    assert r.exit_code == 0 and f"{BASE}/login?nonce=n" in r.stdout
+
+
+@respx.mock
+def test_login_print_flag_should_not_open_a_browser(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+
+    def record(url: str) -> bool:
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr("webbrowser.open", record)
+    respx.post(f"{BASE}/api/auth/nonce").mock(
+        return_value=httpx.Response(200, json={"nonce": "n", "url": f"{BASE}/login?nonce=n"})
+    )
+    r = cli(["login", "--print"])
+    assert r.exit_code == 0 and opened == [] and r.stdout.strip() == f"{BASE}/login?nonce=n"
+
+
+@respx.mock
+def test_login_when_server_down(cli: Cli) -> None:
+    respx.post(f"{BASE}/api/auth/nonce").mock(side_effect=httpx.ConnectError("refused"))
+    r = cli(["login"])
+    assert r.exit_code == 1 and "not running" in r.stderr
+
+
+@respx.mock
 def test_status_when_server_down(cli: Cli) -> None:
     respx.get(f"{BASE}/healthz").mock(side_effect=httpx.ConnectError("refused"))
     r = cli(["status"])

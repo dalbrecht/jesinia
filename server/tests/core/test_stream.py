@@ -161,10 +161,11 @@ def test_is_authorized_follows_session_invalidation(cfg: Config) -> None:
 
     from jesinia.core import auth
 
-    auth._cookie_sessions.add("sid")
+    sid = auth.start_cookie_session()
     req = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(ctx=SimpleNamespace(cfg=cfg))),
-        cookies={auth.COOKIE: "sid"},
+        cookies={auth.COOKIE: sid},
+        state=SimpleNamespace(),
         headers={},
     )
     assert auth.is_authorized(req)  # type: ignore[arg-type]

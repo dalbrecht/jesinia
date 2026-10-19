@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -122,3 +122,116 @@ async def test_rotation_survives_a_failing_agent_refresh(cfg: Config) -> None:
         assert "read-only" in r.json()["warning"]
         new = load_config(cfg.data_dir / "config.toml").token
         assert (await c.get("/api/ping", headers=bearer(new))).status_code == 200
+
+
+async def _sign_in(c: httpx.AsyncClient) -> str:
+    r = await c.get(f"/login?nonce={issue_login_nonce()}", follow_redirects=False)
+    return r.cookies[auth.COOKIE]
+
+
+async def test_should_set_a_thirty_day_cookie_on_login(client: httpx.AsyncClient) -> None:
+    r = await client.get(f"/login?nonce={issue_login_nonce()}", follow_redirects=False)
+    assert f"max-age={30 * 24 * 3600}" in r.headers["set-cookie"].lower()
+
+
+async def test_should_keep_browser_signed_in_across_server_restart(cfg: Config) -> None:
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        sid = await _sign_in(c)
+    auth.reset_state()  # a new server process starts with nothing in memory
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        c.cookies.set(auth.COOKIE, sid)
+        assert (await c.get("/api/ping")).status_code == 200
+
+
+async def test_should_store_only_session_hashes_with_owner_only_mode(cfg: Config) -> None:
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        sid = await _sign_in(c)
+    path = cfg.data_dir / auth.SESSIONS_FILE
+    assert sid not in path.read_text() and (path.stat().st_mode & 0o777) == 0o600
+
+
+async def test_should_stay_signed_out_after_rotation_and_restart(cfg: Config) -> None:
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        sid = await _sign_in(c)
+        auth.invalidate_sessions()
+    auth.reset_state()
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        c.cookies.set(auth.COOKIE, sid)
+        assert (await c.get("/api/ping")).status_code == 401
+
+
+async def test_should_reject_expired_session(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        await _sign_in(c)
+        monkeypatch.setattr(auth, "_now", lambda: datetime.now(UTC) + timedelta(days=31))
+        assert (await c.get("/api/ping")).status_code == 401
+        assert (await c.get("/api/ping")).status_code == 401  # forgotten, not resurrected
+
+
+async def test_should_renew_session_and_cookie_after_a_day_of_use(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        await _sign_in(c)
+        fresh = await c.get("/api/ping")
+        assert "set-cookie" not in fresh.headers  # renewed at most once a day
+        later = datetime.now(UTC) + timedelta(days=20)
+        monkeypatch.setattr(auth, "_now", lambda: later)
+        renewed = await c.get("/api/ping")
+        assert renewed.status_code == 200
+        assert f"max-age={30 * 24 * 3600}" in renewed.headers["set-cookie"].lower()
+        monkeypatch.setattr(auth, "_now", lambda: later + timedelta(days=25))
+        assert (await c.get("/api/ping")).status_code == 200  # 45 days after login
+
+
+async def test_should_start_empty_when_sessions_file_is_corrupt(
+    cfg: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg.data_dir.mkdir(parents=True)
+    (cfg.data_dir / auth.SESSIONS_FILE).write_text("{not json")
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        c.cookies.set(auth.COOKIE, "anything")
+        assert (await c.get("/api/ping")).status_code == 401
+        await _sign_in(c)
+        assert (await c.get("/api/ping")).status_code == 200
+    assert "JSONDecodeError" in caplog.text or "Expecting" in caplog.text
+
+
+async def test_should_keep_login_working_when_sessions_file_cannot_be_written(
+    cfg: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg.data_dir.mkdir(parents=True)
+    (cfg.data_dir / auth.SESSIONS_FILE).mkdir()  # a directory: every write fails
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        await _sign_in(c)
+        assert (await c.get("/api/ping")).status_code == 200
+    assert "could not save browser sessions" in caplog.text
+
+
+async def test_should_drop_expired_sessions_when_loading(cfg: Config) -> None:
+    import json
+
+    cfg.data_dir.mkdir(parents=True)
+    past = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    (cfg.data_dir / auth.SESSIONS_FILE).write_text(json.dumps({"stale": past}))
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        await _sign_in(c)
+    assert "stale" not in (cfg.data_dir / auth.SESSIONS_FILE).read_text()
+
+
+async def test_cookie_renewal_should_pass_non_http_scopes_through() -> None:
+    from starlette.types import Message, Receive, Scope, Send
+
+    seen: list[str] = []
+
+    async def inner(scope: Scope, receive: Receive, send: Send) -> None:
+        seen.append(str(scope["type"]))
+
+    async def receive() -> Message:
+        return {"type": "lifespan.startup"}
+
+    async def send(message: Message) -> None:
+        return None
+
+    await auth.SessionCookieRenewal(inner)({"type": "lifespan"}, receive, send)
+    assert seen == ["lifespan"]

@@ -8,6 +8,7 @@ import logging
 import logging.handlers
 import secrets
 import sys
+import webbrowser
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -114,6 +115,28 @@ def status() -> None:
     for name, m in health["modules"].items():
         typer.echo(f"  {'ok  ' if m['ok'] else 'FAIL'} {name}: {m['detail']}")
     typer.echo(f"login: {login['url']}")
+
+
+@app.command()
+def login(
+    print_only: Annotated[
+        bool, typer.Option("--print", help="Print the link instead of opening it.")
+    ] = False,
+) -> None:
+    """Sign this Mac's browser in: open a fresh one-time login link."""
+    cfg = _cfg()
+    try:
+        url = call(cfg, "POST", "/api/auth/nonce")["url"]
+    except ServerBusy as exc:
+        raise _fail(str(exc)) from exc
+    except ServerDown as exc:
+        raise _fail(f"{exc} (start it with ./setup or `jesinia serve`)") from exc
+    if print_only:
+        typer.echo(url)
+    elif webbrowser.open(url):
+        typer.echo("Opened a login link in your browser (valid for 5 minutes, once).")
+    else:
+        typer.echo(f"Open this link in your browser (valid for 5 minutes, once): {url}")
 
 
 @app.command()
