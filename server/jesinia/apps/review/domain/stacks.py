@@ -21,6 +21,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from jesinia.apps.review.domain.coverage import with_clean_step_titles
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.queue import PrRef
 from jesinia.services.github.domain.pr import ReviewEvent
@@ -385,6 +386,8 @@ def known_stack_walkthrough(
     """The stack walkthrough with only what Jesinia knows (as ``_known_steps`` does for one
     PR): steps whose every hunk is one of a stack PR's diff, skips of stack PRs, and cross-PR
     findings naming two or more stack PRs, a known group and severity, and known hunks."""
+    # Titles are cleaned by the agent's own step positions, before dropping renumbers them.
+    output = with_clean_step_titles(output)
     steps = [
         step
         for step in _list(output, "steps")

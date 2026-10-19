@@ -275,6 +275,25 @@ def test_the_stack_walkthrough_keeps_only_known_prs_and_hunks() -> None:
     }
 
 
+def test_should_clean_stack_step_titles_by_their_position_before_dropping_steps() -> None:
+    def locate(pr: int, path: str, hunk: int) -> bool:
+        return path == "src/app.py"
+
+    ghost = {
+        "title": "1. Ghost",
+        "body": "b",
+        "hunks": [{"pr": 1, "path": "src/ghost.py", "hunk": 0}],
+    }
+    kept_step = {
+        "title": "2. Add the route",
+        "body": "b",
+        "hunks": [{"pr": 1, "path": "src/app.py", "hunk": 0}],
+    }
+    kept = known_stack_walkthrough({"steps": [ghost, kept_step]}, {1}, locate)
+    steps = kept["steps"]
+    assert isinstance(steps, list) and [s["title"] for s in steps] == ["Add the route"]
+
+
 def test_the_stack_walkthrough_schema_takes_cross_findings() -> None:
     schema = schema_for(JobKind.STACK_WALKTHROUGH)
     valid = {**STACK_WALK, "steps": STEPS[:1], "cross_findings": [CROSS_FINDING]}

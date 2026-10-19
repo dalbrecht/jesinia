@@ -380,6 +380,22 @@ def test_rereview_maps_each_request_to_status() -> None:
         "c3",
     ]
 
+    # Titles are cleaned by the agent's own positions, before unknown steps are dropped.
+    numbered = {
+        **output,
+        "new_changes_walkthrough": {
+            "steps": [
+                {"title": "1. Ghost", "body": "b", "hunks": [{"path": "ghost.py", "hunk": 0}]},
+                {"title": "2. New", "body": "b", "hunks": [{"path": "app.py", "hunk": 1}]},
+            ],
+            "skipped": [],
+        },
+    }
+    cleaned = rereview_artifact(numbered, previous, diff, (HunkRef("app.py", 1),))
+    cleaned_walk = cleaned["new_changes_walkthrough"]
+    assert isinstance(cleaned_walk, dict)
+    assert [s["title"] for s in _list(cleaned_walk["steps"])] == ["New"]
+
 
 async def test_commented_only_prs_get_incremental_rereview(env: Env) -> None:
     repo = env.repo
