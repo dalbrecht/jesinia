@@ -213,10 +213,13 @@ async def test_should_drop_expired_sessions_when_loading(cfg: Config) -> None:
 
     cfg.data_dir.mkdir(parents=True)
     past = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    (cfg.data_dir / auth.SESSIONS_FILE).write_text(json.dumps({"stale": past}))
+    future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    saved = {"token": auth._fingerprint(cfg.token), "sessions": {"stale": past, "live": future}}
+    (cfg.data_dir / auth.SESSIONS_FILE).write_text(json.dumps(saved))
     async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
         await _sign_in(c)
-    assert "stale" not in (cfg.data_dir / auth.SESSIONS_FILE).read_text()
+    kept = (cfg.data_dir / auth.SESSIONS_FILE).read_text()
+    assert "stale" not in kept and "live" in kept
 
 
 async def test_cookie_renewal_should_pass_non_http_scopes_through() -> None:
@@ -235,3 +238,72 @@ async def test_cookie_renewal_should_pass_non_http_scopes_through() -> None:
 
     await auth.SessionCookieRenewal(inner)({"type": "lifespan"}, receive, send)
     assert seen == ["lifespan"]
+
+
+async def test_should_drop_sessions_after_offline_token_rotation(cfg: Config) -> None:
+    from dataclasses import replace
+
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        sid = await _sign_in(c)
+    auth.reset_state()  # `jesinia token rotate` while the server is down
+    rotated = replace(cfg, token="r" * 43)
+    async with lifespan_client(create_app(rotated, [], static_root=None)) as c:
+        c.cookies.set(auth.COOKIE, sid)
+        assert (await c.get("/api/ping")).status_code == 401
+
+
+async def test_should_drop_sessions_when_sign_out_save_failed_and_token_changed(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        sid = await _sign_in(c)
+
+        def refuse(*args: object) -> None:
+            raise PermissionError("read-only")
+
+        monkeypatch.setattr("os.replace", refuse)
+        auth.invalidate_sessions("r" * 43)  # the stale file stays on disk
+    monkeypatch.undo()
+    auth.reset_state()
+    async with lifespan_client(create_app(replace(cfg, token="r" * 43), [], static_root=None)) as c:
+        c.cookies.set(auth.COOKIE, sid)
+        assert (await c.get("/api/ping")).status_code == 401
+
+
+async def test_should_keep_new_sessions_after_in_server_rotation_and_restart(cfg: Config) -> None:
+    from dataclasses import replace
+
+    from jesinia.core.config import load_config, save_config
+
+    save_config(cfg, cfg.data_dir / "config.toml")
+    async with lifespan_client(create_app(cfg, [], static_root=None)) as c:
+        assert (await c.post("/api/auth/rotate", headers=bearer(cfg.token))).status_code == 200
+        sid = await _sign_in(c)
+    new = load_config(cfg.data_dir / "config.toml").token
+    auth.reset_state()
+    async with lifespan_client(create_app(replace(cfg, token=new), [], static_root=None)) as c:
+        c.cookies.set(auth.COOKIE, sid)
+        assert (await c.get("/api/ping")).status_code == 200
+
+
+def test_stream_recheck_should_not_renew_a_session_it_cannot_resend(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    auth.load_sessions(cfg.data_dir / auth.SESSIONS_FILE, cfg.token)
+    sid = auth.start_cookie_session()
+    req = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(ctx=SimpleNamespace(cfg=cfg))),
+        cookies={auth.COOKIE: sid},
+        headers={},
+        state=SimpleNamespace(),
+    )
+    later = datetime.now(UTC) + timedelta(days=20)
+    monkeypatch.setattr(auth, "_now", lambda: later)
+    assert auth.is_authorized(req)  # type: ignore[arg-type]  # a stand-in Request
+    assert not hasattr(req.state, auth._RENEW_STATE_KEY)
+    monkeypatch.setattr(auth, "_now", lambda: later + timedelta(days=11))
+    assert not auth.is_authorized(req)  # type: ignore[arg-type]  # never silently extended

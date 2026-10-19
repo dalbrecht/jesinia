@@ -78,7 +78,7 @@ def create_app(
 
     app = FastAPI(title="Jesinia", version="0.1.0", lifespan=lifespan)
     app.state.ctx = ctx
-    load_sessions(cfg.data_dir / SESSIONS_FILE)
+    load_sessions(cfg.data_dir / SESSIONS_FILE, cfg.token)
     app.include_router(auth_router())
     app.include_router(events_router(event_log))
 
