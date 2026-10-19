@@ -30,10 +30,12 @@ from jesinia.apps.review.application.pipeline import (
     TRIAGE_JOBS,
     OpenResult,
     Pipeline,
+    _known_steps,
     background_jobs,
 )
 from jesinia.apps.review.application.queue import QueueService
 from jesinia.apps.review.application.scheduler import PreReviewRequest, Scheduler
+from jesinia.apps.review.domain.coverage import parse_unified_diff
 from jesinia.apps.review.domain.gates import Depth
 from jesinia.apps.review.domain.jobs import JobKind, Round
 from jesinia.apps.review.domain.posting import Draft
@@ -102,11 +104,29 @@ CLEAN: dict[str, object] = {
 }
 WALK: dict[str, object] = {
     "steps": [
-        {"title": "t", "body": "b", "hunks": [{"path": "src/app.py", "hunk": 0}]},
+        {"title": "1. t", "body": "b", "hunks": [{"path": "src/app.py", "hunk": 0}]},
         {"title": "ghost", "body": "b", "hunks": [{"path": "src/ghost.py", "hunk": 0}]},
     ],
     "skipped": [{"path": "src/app.py", "hunk": 1, "reason": "format_only"}],
 }
+
+
+def test_should_clean_step_titles_by_their_position_before_dropping_unknown_steps() -> None:
+    numbered = {
+        "steps": [
+            {"title": "1. ghost", "body": "b", "hunks": [{"path": "src/ghost.py", "hunk": 0}]},
+            {
+                "title": "2. Add the route",
+                "body": "b",
+                "hunks": [{"path": "src/app.py", "hunk": 0}],
+            },
+        ]
+    }
+    kept = _known_steps(parse_unified_diff(DIFF), numbered)
+    steps = kept["steps"]
+    assert isinstance(steps, list) and [s["title"] for s in steps] == ["Add the route"]
+
+
 OUTPUTS: dict[JobKind, dict[str, object]] = {
     JobKind.CORRECTNESS: CLEAN,
     JobKind.FINDINGS: {"findings": []},
@@ -432,6 +452,8 @@ async def test_everything_setting_runs_all(env: Env) -> None:
     # The stored walkthrough keeps only the steps whose hunks exist.
     stored_walk = artifacts["walkthrough"]
     assert isinstance(stored_walk, dict) and len(stored_walk["steps"]) == 1
+    # The agent numbered its step; the UI numbers steps itself, so the title is stored clean.
+    assert stored_walk["steps"][0]["title"] == "t"
 
 
 async def test_on_open_runs_nothing_in_background(env: Env) -> None:

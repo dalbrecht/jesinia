@@ -803,6 +803,41 @@ def steps_from_json(data: object) -> list[Step]:
     return steps
 
 
+# The delimiter is required so content that merely starts with a number ("3D preview fixes",
+# "2026 migration") is never mistaken for a step number. The digits are capped because the
+# title is agent output (PR-influenced) and int() refuses digit strings past its limit.
+_STEP_NUMBER_PREFIX = re.compile(
+    r"^\s*(?:step\s+(\d{1,4})\s*[:.)\-\u2013\u2014]|(\d{1,4})\s*[.)]|#(\d{1,4}))\s+",
+    re.IGNORECASE,
+)
+
+
+def strip_step_number(title: str, position: int) -> str:
+    """``title`` without a leading step number the agent added ("1. ", "1) ", "Step 1: ",
+    "Step 1 - ", "#1 "), but only when it is the step's own 1-based ``position``: any other
+    number is content (an issue reference like "#123", a version). The title as given when
+    nothing non-empty would remain."""
+    found = _STEP_NUMBER_PREFIX.match(title)
+    if found is None or int(found.group(1) or found.group(2) or found.group(3)) != position:
+        return title
+    return title[found.end() :].strip() or title
+
+
+def with_clean_step_titles(walkthrough: Mapping[str, object]) -> dict[str, object]:
+    """The walkthrough artifact with each step's title passed through ``strip_step_number``,
+    because the UI numbers steps itself. Anything malformed is left as it is."""
+    raw = walkthrough.get("steps")
+    if not isinstance(raw, list):
+        return dict(walkthrough)
+    steps = [
+        {**item, "title": strip_step_number(item["title"], position)}
+        if isinstance(item, Mapping) and isinstance(item.get("title"), str)
+        else item
+        for position, item in enumerate(raw, start=1)
+    ]
+    return {**walkthrough, "steps": steps}
+
+
 def skips_from_json(data: object) -> list[Skip]:
     """The well-formed entries of a ``walkthrough`` artifact's ``skipped`` list."""
     skips: list[Skip] = []
@@ -831,3 +866,21 @@ def ranges_from_json(data: object, key: str = "checked") -> list[LineRange]:
         if isinstance(path, str) and start is not None and end is not None and start <= end:
             ranges.append(LineRange(path, start, end))
     return ranges
+
+
+def with_clean_titles(kind: str, data: object) -> object:
+    """A stored artifact of ``kind`` with the agent's own step numbers dropped from its step
+    titles (the walkthrough, the stack walkthrough, and a re-review's new-changes walkthrough);
+    any other artifact as it is.
+
+    Applied by the store on every read, because every reader (the UI, the keep page, the
+    re-review, the stack view) takes artifacts from there: one place no reader can miss, and
+    it also fixes rounds stored before the titles were cleaned."""
+    if not isinstance(data, Mapping):
+        return data
+    if kind in ("walkthrough", "stack_walkthrough"):
+        return with_clean_step_titles(data)
+    nested = data.get("new_changes_walkthrough")
+    if kind == "rereview" and isinstance(nested, Mapping):
+        return {**data, "new_changes_walkthrough": with_clean_step_titles(nested)}
+    return data

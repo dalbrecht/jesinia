@@ -1046,6 +1046,13 @@ async def test_walk_everything_asks_the_walkthrough_for_every_hunk(env: Env) -> 
     assert WALK_EVERYTHING_INSTRUCTION not in env.runner.requests[-1].system_prompt
 
 
+async def test_walkthrough_prompt_tells_the_agent_not_to_number_titles(env: Env) -> None:
+    env.capture_pack()
+    env.script(json.dumps({"steps": [], "skipped": []}))
+    await env.jobs.run(JobKind.WALKTHROUGH, a_round())
+    assert "without a number" in env.runner.requests[0].system_prompt
+
+
 # --- Task 12: the re-review job ---------------------------------------------------------------
 
 

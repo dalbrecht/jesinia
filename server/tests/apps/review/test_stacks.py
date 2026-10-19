@@ -275,6 +275,25 @@ def test_the_stack_walkthrough_keeps_only_known_prs_and_hunks() -> None:
     }
 
 
+def test_should_clean_stack_step_titles_by_their_position_before_dropping_steps() -> None:
+    def locate(pr: int, path: str, hunk: int) -> bool:
+        return path == "src/app.py"
+
+    ghost = {
+        "title": "1. Ghost",
+        "body": "b",
+        "hunks": [{"pr": 1, "path": "src/ghost.py", "hunk": 0}],
+    }
+    kept_step = {
+        "title": "2. Add the route",
+        "body": "b",
+        "hunks": [{"pr": 1, "path": "src/app.py", "hunk": 0}],
+    }
+    kept = known_stack_walkthrough({"steps": [ghost, kept_step]}, {1}, locate)
+    steps = kept["steps"]
+    assert isinstance(steps, list) and [s["title"] for s in steps] == ["Add the route"]
+
+
 def test_the_stack_walkthrough_schema_takes_cross_findings() -> None:
     schema = schema_for(JobKind.STACK_WALKTHROUGH)
     valid = {**STACK_WALK, "steps": STEPS[:1], "cross_findings": [CROSS_FINDING]}
@@ -917,6 +936,16 @@ async def test_stop_cancels_running_stack_jobs(stack: StackEnv) -> None:
     again = await stack.service.open(stack.ref(1), retry=True)
     assert again.jobs == STACK_JOBS
     await stack.service.drain()
+
+
+async def test_stack_artifacts_read_back_without_agent_step_numbers(stack: StackEnv) -> None:
+    signature = stack_signature([(n, HEADS[n]) for n in (1, 2, 3)])
+    stack_id = stack.store.start_stack_review(REPO, signature, stack.clock())
+    walk = {"steps": [{"title": "1) Add the route", "body": "b", "hunks": []}]}
+    stack.store.put_stack_artifact(stack_id, "stack_walkthrough", walk)
+    expected = {"steps": [{"title": "Add the route", "body": "b", "hunks": []}]}
+    assert stack.store.stack_artifact(stack_id, "stack_walkthrough") == expected
+    assert stack.store.stack_artifacts(stack_id)["stack_walkthrough"] == expected
 
 
 async def test_jobs_a_crash_left_running_are_interrupted_at_start(stack: StackEnv) -> None:

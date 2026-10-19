@@ -177,6 +177,20 @@ def kenv(tmp_path: Path) -> Iterator[KEnv]:
 # --- the brief's tests --------------------------------------------------------------------------
 
 
+async def test_keep_drops_step_numbers_stored_by_older_rounds(kenv: KEnv) -> None:
+    round_id = kenv.round()
+    legacy = [{"title": "1. Merge on conflict", "body": "b", "hunks": [{"path": "a", "hunk": 0}]}]
+    kenv.store.put_artifact(round_id, "walkthrough", {"steps": legacy, "skipped": []})
+    kenv.notes(round_id)
+    kenv.post(round_id)
+
+    state = await kenv.keeper.keep_finished(round_id)
+
+    assert state is not None and state.path is not None
+    text = kenv.page_text(PurePosixPath(state.path))
+    assert "1. 1." not in text and "Merge on conflict" in text
+
+
 async def test_keep_writes_review_page_with_front_matter(kenv: KEnv) -> None:
     round_id = kenv.round()
     kenv.notes(round_id)

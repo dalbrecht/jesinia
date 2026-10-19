@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
+from jesinia.apps.review.domain.coverage import with_clean_titles
 from jesinia.apps.review.domain.followup import FollowUp, FollowUpKind, PrevSource
 from jesinia.apps.review.domain.gates import CiState, Depth
 from jesinia.apps.review.domain.jobs import DEFAULT_RUNNER
@@ -1268,7 +1269,7 @@ class SqliteReviewStore:
         row = self._conn.execute(
             "SELECT json FROM artifacts WHERE round_id = ? AND kind = ?", (round_id, kind)
         ).fetchone()
-        return None if row is None else json.loads(row[0])
+        return None if row is None else with_clean_titles(kind, json.loads(row[0]))
 
     def artifact_kinds(self, round_id: int) -> set[str]:
         """The kinds of artifact a round has, without reading them."""
@@ -1280,7 +1281,7 @@ class SqliteReviewStore:
         rows = self._conn.execute(
             "SELECT kind, json FROM artifacts WHERE round_id = ?", (round_id,)
         )
-        return {kind: json.loads(data) for kind, data in rows}
+        return {kind: with_clean_titles(kind, json.loads(data)) for kind, data in rows}
 
     def put_artifact(self, round_id: int, kind: str, data: object) -> None:
         self._conn.execute(
@@ -1335,13 +1336,13 @@ class SqliteReviewStore:
         rows = self._conn.execute(
             "SELECT kind, json FROM stack_artifacts WHERE stack_id = ?", (stack_id,)
         )
-        return {kind: json.loads(data) for kind, data in rows}
+        return {kind: with_clean_titles(kind, json.loads(data)) for kind, data in rows}
 
     def stack_artifact(self, stack_id: int, kind: str) -> object:
         row = self._conn.execute(
             "SELECT json FROM stack_artifacts WHERE stack_id = ? AND kind = ?", (stack_id, kind)
         ).fetchone()
-        return None if row is None else json.loads(row[0])
+        return None if row is None else with_clean_titles(kind, json.loads(row[0]))
 
     def stack_jobs(self) -> dict[int, object]:
         """Every stack review's ``jobs`` record, by stack review."""

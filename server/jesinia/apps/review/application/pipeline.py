@@ -60,6 +60,7 @@ from jesinia.apps.review.domain.coverage import (
     skips_from_json,
     steps_from_json,
     verified_ranges,
+    with_clean_step_titles,
 )
 from jesinia.apps.review.domain.followup import FollowUp, restrict_diff
 from jesinia.apps.review.domain.gates import Depth, GateState, propose_depth
@@ -1277,6 +1278,8 @@ class Pipeline:
 
 def _known_steps(diff: ParsedDiff, output: Mapping[str, object]) -> dict[str, object]:
     """The walkthrough with only the steps whose every hunk is in ``diff``."""
+    # Titles are cleaned by the agent's own step positions, before dropping renumbers them.
+    output = with_clean_step_titles(output)
     raw = output.get("steps")
     kept = [
         item

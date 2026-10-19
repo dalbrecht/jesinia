@@ -28,6 +28,7 @@ from jesinia.apps.review.domain.coverage import (
     coverage,
     skips_from_json,
     steps_from_json,
+    with_clean_step_titles,
 )
 from jesinia.apps.review.domain.errors import ReviewError
 from jesinia.apps.review.domain.followup import LineMaps, reanchor
@@ -574,7 +575,8 @@ def rereview_artifact(
             }
         )
     walk = output.get("new_changes_walkthrough")
-    walk = walk if isinstance(walk, Mapping) else {}
+    # Titles are cleaned by the agent's own step positions, before dropping renumbers them.
+    walk = with_clean_step_titles(walk) if isinstance(walk, Mapping) else {}
     raw_steps = walk.get("steps")
     kept = [
         item

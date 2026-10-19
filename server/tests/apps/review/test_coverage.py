@@ -31,7 +31,10 @@ from jesinia.apps.review.domain.coverage import (
     ranges_from_json,
     skips_from_json,
     steps_from_json,
+    strip_step_number,
     verified_ranges,
+    with_clean_step_titles,
+    with_clean_titles,
 )
 from jesinia.apps.review.domain.workspace import DiffTooLargeError
 from tests.apps.review.perf import CEILING, assert_linear
@@ -567,3 +570,83 @@ def test_nothing_to_walk_is_flagged_when_the_diff_changes_no_lines() -> None:
     assert not coverage(parse_unified_diff(APP), [], []).nothing_to_walk
     cut = ParsedDiff((), complete=False, incomplete_reason="too big", expected_lines=0)
     assert not coverage(cut, [], []).nothing_to_walk
+
+
+@pytest.mark.parametrize(
+    ("title", "position", "expected"),
+    [
+        ("1. Give packout claims an index", 1, "Give packout claims an index"),
+        ("12) Add the route", 12, "Add the route"),
+        ("Step 1: Add the route", 1, "Add the route"),
+        ("step 2 - Add the route", 2, "Add the route"),
+        ("Step 3. Add the route", 3, "Add the route"),
+        ("Step 4 \u2014 Add the route", 4, "Add the route"),
+        ("#1 Add the route", 1, "Add the route"),
+        ("  7.   Add the route  ", 7, "Add the route"),
+        ("#123 Fix token refresh", 1, "#123 Fix token refresh"),
+        ("#2 Fix token refresh", 1, "#2 Fix token refresh"),
+        ("7. Something", 3, "7. Something"),
+        ("Step 9: Something", 2, "Step 9: Something"),
+        ("3D preview fixes", 3, "3D preview fixes"),
+        ("2026 migration", 2026, "2026 migration"),
+        ("1.5 release notes", 1, "1.5 release notes"),
+        ("Step by step guide", 1, "Step by step guide"),
+        ("1. ", 1, "1. "),
+        ("Step 1:", 1, "Step 1:"),
+        ("", 1, ""),
+    ],
+)
+def test_should_strip_only_a_delimited_leading_number_equal_to_the_position(
+    title: str, position: int, expected: str
+) -> None:
+    assert strip_step_number(title, position) == expected
+
+
+def test_should_leave_a_title_with_a_huge_leading_number_unchanged() -> None:
+    # Agent output is PR-influenced: a number past int()'s digit limit must not raise on read.
+    titles = ("1" * 5000 + ". Wire it", "Step " + "9" * 5000 + ": Wire it", "#" + "7" * 5000 + " X")
+    for title in titles:
+        assert strip_step_number(title, 1) == title
+
+
+def test_should_clean_every_step_title_and_keep_the_rest_of_the_walkthrough() -> None:
+    walkthrough = {
+        "steps": [
+            {"title": "1. First", "body": "b", "hunks": []},
+            {"title": "#123 Fix token refresh", "body": "b", "hunks": []},
+            {"body": "no title"},
+            {"title": 5},
+            "not a step",
+        ],
+        "skipped": [],
+    }
+    cleaned = with_clean_step_titles(walkthrough)
+    assert cleaned["steps"] == [
+        {"title": "First", "body": "b", "hunks": []},
+        {"title": "#123 Fix token refresh", "body": "b", "hunks": []},
+        {"body": "no title"},
+        {"title": 5},
+        "not a step",
+    ]
+    assert cleaned["skipped"] == []
+    assert walkthrough["steps"][0]["title"] == "1. First"  # type: ignore[index]
+
+
+def test_should_leave_a_walkthrough_without_a_steps_list_alone() -> None:
+    assert with_clean_step_titles({"steps": "oops"}) == {"steps": "oops"}
+    assert with_clean_step_titles({}) == {}
+
+
+def test_should_clean_titles_of_walkthrough_kinds_only() -> None:
+    walk = {"steps": [{"title": "1. A"}, {"title": "7. B"}]}
+    clean = {"steps": [{"title": "A"}, {"title": "7. B"}]}
+    assert with_clean_titles("walkthrough", walk) == clean
+    assert with_clean_titles("stack_walkthrough", walk) == clean
+    rereview = {"new_changes_walkthrough": walk, "requests": []}
+    assert with_clean_titles("rereview", rereview) == {
+        "new_changes_walkthrough": clean,
+        "requests": [],
+    }
+    assert with_clean_titles("rereview", {"requests": []}) == {"requests": []}
+    assert with_clean_titles("findings", walk) is walk
+    assert with_clean_titles("walkthrough", None) is None
