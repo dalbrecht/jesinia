@@ -73,7 +73,11 @@ class NothingToPublishError(ThemeDomainError):
 
 class ThemeEpicClosedError(ThemeDomainError):
     """The theme's latest epic is closed: reopen it, or ask for a new epic explicitly (ruling
-    IR59); a new one is never made implicitly."""
+    IR59); a new one is never made implicitly. ``epic`` is that epic, so a client can link it."""
+
+    def __init__(self, epic: tuple[str, int], message: str) -> None:
+        self.epic = epic
+        super().__init__(message)
 
 
 class ThemesUnavailableError(ThemeDomainError):

@@ -19,6 +19,7 @@ from jesinia.apps.issues.application.sync import (
     DETAIL_PAGE_CAP,
     EPIC_BACKFILL_PER_SYNC,
     LABELS_YML,
+    LINKED_PRS_PER_SYNC,
     SYNC_INTERVAL,
     SyncService,
 )
@@ -44,6 +45,7 @@ from jesinia.services.github.domain.issue import (
     IssueComment,
     IssueRef,
     Label,
+    LinkedPr,
     Milestone,
     Page,
     TimelineEvent,
@@ -122,6 +124,7 @@ class FakeIssues:
         self.children: dict[tuple[str, int], list[Issue]] = {}
         self.issue_comments: dict[tuple[str, int], list[IssueComment]] = {}
         self.events: dict[tuple[str, int], list[TimelineEvent]] = {}
+        self.links: dict[tuple[str, int], list[LinkedPr]] = {}
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         # Called before each list_issues answer: raise to fail the call, mutate to race it.
         self.before_list: Callable[[int], None] | None = None
@@ -200,6 +203,10 @@ class FakeIssues:
     ) -> Page[TimelineEvent]:
         self.calls.append(("timeline", (repo, n, page_token)))
         return Page(self.events.get((repo, n), []), None)
+
+    async def timeline_links(self, repo: str, n: int) -> list[LinkedPr]:
+        self.calls.append(("timeline_links", (repo, n)))
+        return self.links.get((repo, n), [])
 
 
 class InboxLog:
@@ -1260,3 +1267,127 @@ async def test_an_issue_opened_in_the_same_second_as_the_watch_is_in_the_inbox(
     await service.sync(REPO)
     assert await numbers(queries, "inbox") == [1]
     assert await numbers(queries, "backlog") == [2]
+
+
+async def test_should_fill_linked_pr_state_for_changed_open_issues_after_the_first_sync(
+    service: SyncService,
+    github: FakeIssues,
+    clock: FakeClock,
+    store: SqliteIssuesStore,
+    queries: IssueQueries,
+) -> None:
+    """IR62 within the IR20 budget: the board's status view needs the linked PRs, read only for
+    issues a sync sees change (never on the first sync, never for closed issues)."""
+    github.put(issue(1), issue(2))
+    pr = LinkedPr(REPO, 50, "open", "https://github.com/acme/app/pull/50")
+    github.links[(REPO, 1)] = [pr]
+    await watched(service, clock)
+    await service.sync(REPO)
+    assert "timeline_links" not in github.call_names()
+
+    clock.now += timedelta(minutes=5)
+    github.put(issue(1, updated=clock.now), issue(3, created=clock.now, state="closed"))
+    await service.sync(REPO)
+    # The changed open issue first, then the budget left refreshes the oldest-checked open one
+    # (#2, never checked); the closed #3 never.
+    assert [args for name, args in github.calls if name == "timeline_links"] == [
+        (REPO, 1),
+        (REPO, 2),
+    ]
+    rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
+    assert rows[1].linked_pr_state == "open" and rows[2].linked_pr_state is None
+    # An apply's fresh read (no links) keeps what sync found.
+    found = store.issue(REPO, 1)
+    assert found is not None
+    cached = store.cached_issue(REPO, 1)
+    assert cached is not None
+    store.refresh_issue(replace(found, linked_pr_state=None), cached.triage)
+    again = store.issue(REPO, 1)
+    assert again is not None and again.linked_pr_state == "open"
+
+
+async def test_should_refresh_an_unedited_issues_linked_prs_on_a_later_sync(
+    service: SyncService, github: FakeIssues, clock: FakeClock, queries: IssueQueries
+) -> None:
+    """Codex round 3 on PR #72: a PR's own transitions (opened, merged) never edit the issue, so
+    each sync also refreshes, within the budget, the open issues checked longest ago."""
+    github.put(issue(1), issue(2, state="closed"))
+    github.links[(REPO, 1)] = [LinkedPr(REPO, 50, "open", "https://github.com/acme/app/pull/50")]
+    await watched(service, clock)
+    await service.sync(REPO)  # the first sync reads no links (IR20)
+    assert "timeline_links" not in github.call_names()
+
+    clock.now += timedelta(minutes=5)
+    await service.sync(REPO)  # nothing edited
+    rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
+    assert rows[1].linked_pr_state == "open"
+    assert (REPO, 2) not in [args for name, args in github.calls if name == "timeline_links"]
+
+    github.links[(REPO, 1)] = [LinkedPr(REPO, 50, "merged", "https://github.com/acme/app/pull/50")]
+    clock.now += timedelta(minutes=5)
+    await service.sync(REPO)
+    rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
+    assert rows[1].linked_pr_state == "merged"
+
+
+async def test_should_refresh_the_issues_checked_longest_ago_first_and_never_fail_on_a_read(
+    service: SyncService, github: FakeIssues, clock: FakeClock
+) -> None:
+    count = LINKED_PRS_PER_SYNC + 5
+    github.put(*(issue(n) for n in range(1, count + 1)))
+    await watched(service, clock)
+    await service.sync(REPO)
+    failing = github.timeline_links
+
+    async def flaky(repo: str, n: int) -> list[LinkedPr]:
+        if n == 2:
+            github.calls.append(("timeline_links", (repo, n)))  # asked, then failed
+            raise GitHubRequestError(502, "bad gateway")
+        return await failing(repo, n)
+
+    github.timeline_links = flaky  # type: ignore[method-assign]
+    clock.now += timedelta(minutes=5)
+    await service.sync(REPO)
+    assert service.state(REPO).sync_error is None
+    first = [args[1] for name, args in github.calls if name == "timeline_links"]
+    assert first == list(range(1, LINKED_PRS_PER_SYNC + 1))  # never checked: by number
+    github.calls.clear()
+    clock.now += timedelta(minutes=5)
+    await service.sync(REPO)
+    second = [args[1] for name, args in github.calls if name == "timeline_links"]
+    # The five never checked come first, then the oldest checked ones (#2's read failed, so it
+    # counts as never checked too).
+    assert second[:6] == [2, *range(LINKED_PRS_PER_SYNC + 1, count + 1)]
+
+
+async def test_should_keep_the_stored_linked_pr_state_when_its_read_fails_or_is_over_the_cap(
+    service: SyncService,
+    github: FakeIssues,
+    clock: FakeClock,
+    queries: IssueQueries,
+) -> None:
+    """Derived data is best effort (re-review N8): a failing read never fails the sync, and a
+    sync reads at most LINKED_PRS_PER_SYNC issues' links."""
+    count = LINKED_PRS_PER_SYNC + 2
+    github.put(*(issue(n) for n in range(1, count + 1)))
+    await watched(service, clock)
+    await service.sync(REPO)
+    clock.now += timedelta(minutes=5)
+    github.put(*(issue(n, updated=clock.now) for n in range(1, count + 1)))
+    pr = LinkedPr(REPO, 50, "open", "https://github.com/acme/app/pull/50")
+    for n in range(1, count + 1):
+        github.links[(REPO, n)] = [pr]
+    failing = github.timeline_links
+
+    async def flaky(repo: str, n: int) -> list[LinkedPr]:
+        if n == 1:
+            raise GitHubRequestError(502, "bad gateway")
+        return await failing(repo, n)
+
+    github.timeline_links = flaky  # type: ignore[method-assign]
+    await service.sync(REPO)
+    assert service.state(REPO).sync_error is None
+    rows = {r.number: r for r in queries.view("backlog", IssueFilters()).rows}
+    assert rows[1].linked_pr_state is None  # its read failed: unchanged
+    filled = [n for n, r in rows.items() if r.linked_pr_state == "open"]
+    assert len(filled) == LINKED_PRS_PER_SYNC - 1

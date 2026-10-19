@@ -13,7 +13,7 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,7 +21,7 @@ import httpx
 import pytest
 from fastapi import APIRouter, FastAPI
 
-from jesinia.apps.issues.api.routes import build_router
+from jesinia.apps.issues.api.routes import _error, build_router
 from jesinia.apps.issues.api.tools import build_tools
 from jesinia.apps.issues.application.apply import ApplyEngine
 from jesinia.apps.issues.application.epics import BriefService, EpicService
@@ -29,12 +29,14 @@ from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
+from jesinia.apps.issues.application.settings import IssuesSettingsService
 from jesinia.apps.issues.application.suggest import SuggestService
 from jesinia.apps.issues.application.sync import LABELS_YML, SyncService
 from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.changes import ChangeBatch, Comment, CreateIssue, New
-from jesinia.apps.issues.domain.epics import brief_scope
+from jesinia.apps.issues.domain.epics import GroupEpicExistsError, brief_scope
 from jesinia.apps.issues.domain.suggestions import SuggestionFilters, priority_scope
+from jesinia.apps.issues.domain.themes import ThemeEpicClosedError
 from jesinia.apps.issues.domain.triage import IssueNotCachedError
 from jesinia.apps.issues.infrastructure.apply_store import SqliteApplyStore
 from jesinia.apps.issues.infrastructure.brief_store import SqliteBriefStore
@@ -56,7 +58,14 @@ from jesinia.services.github.application.service import (
     GitHubRequestError,
     GitHubUnavailable,
 )
-from jesinia.services.github.domain.issue import Issue, IssueComment, Milestone, TimelineEvent
+from jesinia.services.github.domain.issue import (
+    Issue,
+    IssueComment,
+    IssueRef,
+    LinkedPr,
+    Milestone,
+    TimelineEvent,
+)
 from jesinia.services.kb.application.service import KbService
 from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.infrastructure.fs import LocalFiles
@@ -92,6 +101,7 @@ class Host:
     briefs: BriefService
     queues: QueueService
     themes: ThemeService
+    settings: IssuesSettingsService
 
 
 class HostModule:
@@ -230,6 +240,7 @@ async def env(cfg: Config, conn: sqlite3.Connection, tags: TagService) -> AsyncI
             clock,
         ),
         ThemeService(SqliteThemeStore(conn), store, pending, lambda: tags, clock, batches=applied),
+        IssuesSettingsService(store, lambda: "claude-code"),
     )
     app = create_app(cfg, [HostModule(host)], static_root=None)
     async with running(app):
@@ -245,7 +256,9 @@ async def env(cfg: Config, conn: sqlite3.Connection, tags: TagService) -> AsyncI
 READS = [
     ("GET", f"{API}/pending", None),
     ("GET", f"{API}/pending/x", None),
+    ("GET", f"{API}/batches", None),
     ("GET", f"{API}/repos", None),
+    ("GET", f"{API}/settings", None),
     ("GET", f"{API}/inbox", None),
     ("GET", f"{API}/backlog", None),
     ("GET", ITEM, None),
@@ -264,6 +277,8 @@ READS = [
 ]
 WRITES: list[tuple[str, str, dict[str, object] | None]] = [
     ("PUT", REPO_PATH, {"watched": True, "settings_schema": None}),
+    ("PATCH", REPO_PATH, {"watched": True}),
+    ("PATCH", f"{API}/settings", {"runner": "codex"}),
     ("POST", f"{REPO_PATH}/sync", None),
     ("POST", f"{ITEM}/refresh", None),
     ("PATCH", f"{API}/suggestions/x", {"payload": {}}),
@@ -281,6 +296,7 @@ WRITES: list[tuple[str, str, dict[str, object] | None]] = [
     ("POST", f"{API}/pending/apply", {"ids": None}),
     ("POST", f"{API}/pending/x/retry", None),
     ("POST", f"{API}/pending/x/abandon", {"created": []}),
+    ("POST", f"{API}/pending/x/dismiss", None),
     ("POST", f"{EPIC}/conversion", {"digest": "0" * 64}),
     ("POST", f"{EPIC}/brief/draft", None),
     ("POST", f"{EPIC}/brief", {"text": "x"}),
@@ -441,6 +457,103 @@ async def test_repo_settings_round_trip(env: Env) -> None:
     assert off.json()["settings_schema"] is None  # an explicit null clears it
 
 
+SCHEMA = {
+    "readiness": [{"name": "agent-ready", "aliases": []}],
+    "priority": [{"name": "p1", "aliases": ["priority: high"]}],
+    "type": [{"name": "bug", "aliases": []}],
+}
+
+
+async def test_should_patch_only_the_fields_a_save_sends(env: Env) -> None:
+    await env.watch_and_sync()
+    kept = await env.client.patch(REPO_PATH, json={"settings_schema": SCHEMA}, headers=keyed())
+    assert kept.status_code == 200
+    assert kept.json()["watched"] is True  # not sent, so kept
+    assert kept.json()["settings_schema"]["priority"] == SCHEMA["priority"]
+
+    # Unwatching leaves the Settings schema alone (a PUT would need it resent).
+    off = await env.client.patch(REPO_PATH, json={"watched": False}, headers=keyed())
+    assert off.status_code == 200 and off.json()["watched"] is False
+    assert off.json()["settings_schema"]["priority"] == SCHEMA["priority"]
+
+    on = await env.client.patch(REPO_PATH, json={"watched": True}, headers=keyed())
+    assert on.json()["watched"] is True and on.json()["settings_schema"] is not None
+
+    cleared = await env.client.patch(REPO_PATH, json={"settings_schema": None}, headers=keyed())
+    assert cleared.status_code == 200 and cleared.json()["settings_schema"] is None
+    assert cleared.json()["watched"] is True
+
+
+async def test_should_add_a_repo_by_patching_it_watched(env: Env) -> None:
+    added = await env.client.patch(REPO_PATH, json={"watched": True}, headers=keyed())
+    assert added.status_code == 200 and added.json()["repo"] == REPO
+    assert added.json()["settings_schema"] is None
+
+
+async def test_should_refuse_a_patch_that_names_nothing_or_a_null_watched(env: Env) -> None:
+    await env.watch_and_sync()
+    for body in ({}, {"watched": None}):
+        refused = await env.client.patch(REPO_PATH, json=body, headers=keyed())
+        assert refused.status_code == 422, body
+    unknown = await env.client.patch(
+        f"{API}/repos/acme/nope", json={"settings_schema": None}, headers=keyed()
+    )
+    assert unknown.status_code == 404 and unknown.json()["error"] == "RepoNotWatchedError"
+    bad = await env.client.patch(
+        REPO_PATH, json={"settings_schema": {**SCHEMA, "areas": [{"name": "web"}]}}, headers=keyed()
+    )
+    assert bad.status_code == 400 and bad.json()["error"] == "InvalidSettingsSchemaError"
+
+
+async def test_should_list_each_repos_labels_its_schema_does_not_map(env: Env) -> None:
+    env.github.set_labels("design needed", "bug", "wontfix", "review:bot", "area:web")
+    await env.watch_and_sync()
+    repo = (await env.client.get(f"{API}/repos")).json()["repos"][0]
+    # "design needed" is an alias in labels.yml; review: is free-form; area:web is an area.
+    assert repo["unmapped_labels"] == ["wontfix"]
+    patched = await env.client.patch(REPO_PATH, json={"watched": True}, headers=keyed())
+    assert patched.json()["unmapped_labels"] == ["wontfix"]
+
+
+async def test_should_round_trip_the_suggestion_runner(env: Env) -> None:
+    got = await env.client.get(f"{API}/settings")
+    assert got.status_code == 200 and got.json() == {"runner": None}
+    chosen = await env.client.patch(f"{API}/settings", json={"runner": "codex"}, headers=keyed())
+    assert chosen.status_code == 200 and chosen.json() == {"runner": "codex"}
+    assert env.host.settings.runner() == "codex"
+    # Like a repo's PATCH, a save must send something.
+    empty = await env.client.patch(f"{API}/settings", json={}, headers=keyed())
+    assert empty.status_code == 422
+    assert env.host.settings.runner() == "codex"
+    cleared = await env.client.patch(f"{API}/settings", json={"runner": None}, headers=keyed())
+    assert cleared.json() == {"runner": None}
+    assert env.host.settings.runner() == "claude-code"
+    for name in ("", "Codex", "a b", "x" * 41):
+        refused = await env.client.patch(f"{API}/settings", json={"runner": name}, headers=keyed())
+        assert refused.status_code == 422, name
+
+
+async def test_a_repo_patch_replayed_with_its_key_acts_once(env: Env) -> None:
+    await env.watch_and_sync()
+    key = keyed()
+    first = await env.client.patch(REPO_PATH, json={"settings_schema": SCHEMA}, headers=key)
+    assert first.status_code == 200
+    await env.client.patch(REPO_PATH, json={"settings_schema": None}, headers=keyed())
+    again = await env.client.patch(REPO_PATH, json={"settings_schema": SCHEMA}, headers=key)
+    assert again.json() == first.json()
+    repos = (await env.client.get(f"{API}/repos")).json()["repos"]
+    assert repos[0]["settings_schema"] is None  # the replay changed nothing
+
+
+async def test_a_runner_save_replayed_with_its_key_acts_once(env: Env) -> None:
+    key = keyed()
+    first = await env.client.patch(f"{API}/settings", json={"runner": "codex"}, headers=key)
+    env.host.settings.update(runner=None)
+    again = await env.client.patch(f"{API}/settings", json={"runner": "codex"}, headers=key)
+    assert again.json() == first.json()
+    assert env.host.settings.settings().runner is None  # the replay changed nothing
+
+
 async def test_unknown_and_malformed_repos_are_structured_errors(env: Env) -> None:
     unknown = await env.client.put(
         f"{API}/repos/acme/nope", json={"watched": False, "settings_schema": None}, headers=keyed()
@@ -475,6 +588,24 @@ async def test_views_serve_rows_with_triage_and_sync_state(env: Env) -> None:
     assert bad.status_code == 400 and bad.json()["error"] == "InvalidFilterError"
     bad_repo = await env.client.get(f"{API}/backlog", params={"repo": "nope"})
     assert bad_repo.status_code == 400
+
+
+async def test_should_carry_state_and_linked_pr_state_on_view_rows(env: Env) -> None:
+    """The board's status view (spec §6.2) derives its columns from these (PWA Task 12)."""
+    await env.watch_and_sync()
+    view = (await env.client.get(f"{API}/backlog", params={"repo": REPO})).json()
+    row = next(row for row in view["rows"] if row["number"] == 1)
+    assert row["state"] == "open" and row["linked_pr_state"] is None
+    env.clock.now += timedelta(minutes=1)
+    env.github.put(replace(issue(1), state="closed", updated_at=env.clock.now))
+    env.github.links[(REPO, 2)] = [LinkedPr(REPO, 9, "merged", "https://github.com/x/pull/9")]
+    env.github.put(replace(issue(2, labels=COMPLETE), updated_at=env.clock.now))
+    await env.client.post(f"{REPO_PATH}/sync", headers=keyed())
+    view = (await env.client.get(f"{API}/backlog", params={"repo": REPO})).json()
+    rows = {row["number"]: row for row in view["rows"]}
+    assert 1 not in rows  # closed: out of the lists (its item says so)
+    assert (await env.client.get(ITEM)).json()["state"] == "closed"
+    assert rows[2]["state"] == "open" and rows[2]["linked_pr_state"] == "merged"
 
 
 async def test_an_item_is_served_from_the_cache_and_refreshed_on_demand(env: Env) -> None:
@@ -666,6 +797,7 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
         "comment",
         "create_issue",
         "add_sub_issue",
+        "timeline_links",
     ]
     for name in names:
 
@@ -689,10 +821,10 @@ async def test_no_get_route_ever_awaits_github(env: Env) -> None:
             owner="acme", repo="web", n=n, view="backlog", batch=batch, queue_id=queue, tag="sync"
         )
         gets.append(made + queries.get(made, ""))
-    # repos, suggestions, pending, a batch, a view, an item; epics, an epic, a drop check, a
-    # conversion plan; milestones, a milestone; queues, a queue, its warnings; themes, a theme,
-    # its epic plan
-    assert len(gets) == 18
+    # repos, settings, suggestions, pending, the unfinished batches, a batch, a view, an item;
+    # epics, an epic, a drop check, a conversion plan; milestones, a milestone; queues, a queue,
+    # its warnings; themes, a theme, its epic plan
+    assert len(gets) == 20
     for path in [*gets, f"{API}/inbox"]:
         response = await env.client.get(path)
         assert response.status_code == 200, path
@@ -789,6 +921,8 @@ async def test_the_module_serves_the_routes_and_tools(cfg: Config) -> None:
             assert repos.status_code == 200 and repos.json() == {"repos": []}
             backlog = await client.get(f"{API}/backlog")
             assert backlog.status_code == 200 and backlog.json()["rows"] == []
+            settings = await client.get(f"{API}/settings")
+            assert settings.status_code == 200 and settings.json() == {"runner": None}
             preview = await client.post(f"{LABELS}/preview", json={"kind": "setup"})
             assert preview.status_code == 503
 
@@ -1096,6 +1230,61 @@ async def test_applying_some_pending_changes_keeps_the_rest(env: Env) -> None:
     assert [c["n"] for c in (await env.client.get(PENDING)).json()["changes"]] == [2]
 
 
+async def test_should_list_unfinished_batches_so_a_reload_can_retry_them(env: Env) -> None:
+    await env.watch_and_sync()
+    await env.client.post(
+        PENDING, json=_staged(2, {"kind": "comment", "body": "x"}), headers=keyed()
+    )
+    done = await _polled(env, await env.client.post(f"{PENDING}/apply", json={}, headers=keyed()))
+    assert done["complete"]
+    env.github.fail["add_labels:1"] = GitHubRateLimitedError(
+        403, "secondary rate limit", env.clock.now + timedelta(seconds=30)
+    )
+    await env.client.post(PENDING, json=_staged(1, PRIORITY_HIGH), headers=keyed())
+    stopped = await _polled(
+        env, await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
+    )
+    assert not stopped["complete"]
+    listed = (await env.client.get(f"{API}/batches")).json()
+    assert [b["id"] for b in listed["batches"]] == [stopped["id"]]
+    assert listed["batches"][0]["stopped"]
+
+    # Dismissed from the tray: it never comes back on a reload (re-review N2), and a replay of
+    # the key changes nothing; a running batch or an unknown one is refused.
+    key = keyed()
+    dismissed = await env.client.post(f"{PENDING}/{stopped['id']}/dismiss", headers=key)
+    assert dismissed.status_code == 204
+    assert (
+        await env.client.post(f"{PENDING}/{stopped['id']}/dismiss", headers=key)
+    ).status_code == 204
+    assert (await env.client.get(f"{API}/batches")).json()["batches"] == []
+    unknown = await env.client.post(f"{PENDING}/nope/dismiss", headers=keyed())
+    assert unknown.status_code == 404
+    # A retry brings it back into the tray (it is the author's again), until it settles.
+    env.github.fail.clear()
+    retried = await env.client.post(f"{PENDING}/{stopped['id']}/retry", headers=keyed())
+    assert (await _polled(env, retried))["complete"]
+    assert (await env.client.get(f"{API}/batches")).json()["batches"] == []
+
+
+async def test_a_running_batch_cant_be_dismissed(env: Env) -> None:
+    await env.watch_and_sync()
+    held = asyncio.Event()
+    add = env.github.add_labels
+
+    async def gated(repo: str, n: int, names: Sequence[str]) -> tuple[str, ...]:
+        await held.wait()
+        return await add(repo, n, names)
+
+    env.github.add_labels = gated  # type: ignore[method-assign]
+    await env.client.post(PENDING, json=_staged(1, PRIORITY_HIGH), headers=keyed())
+    started = await env.client.post(f"{PENDING}/apply", json={}, headers=keyed())
+    refused = await env.client.post(f"{PENDING}/{started.json()['id']}/dismiss", headers=keyed())
+    held.set()
+    assert refused.status_code == 409 and refused.json()["error"] == "BatchRunningError"
+    await _polled(env, started)
+
+
 async def test_a_replayed_apply_answers_its_batch_and_never_applies_the_tray_again(
     env: Env,
 ) -> None:
@@ -1337,6 +1526,16 @@ async def test_epic_routes_serve_the_list_the_page_and_drop_checks(env: Env) -> 
     assert not_epic.status_code == 404 and not_epic.json()["error"] == "NotAnEpicError"
 
 
+async def test_should_name_each_listed_epics_parent_for_the_apps_drop_checks(env: Env) -> None:
+    # The Epics list refuses an epic dropped into its own child or ancestor before staging
+    # (Review Focus 3, UI side): it needs each epic's parent from the cache.
+    inner = issue(4, labels=("epic", "priority: high"), sub_issue_count=0)
+    env.github.put(replace(inner, parent=IssueRef(REPO, 3)))
+    await _with_epic(env)
+    listed = (await env.client.get(f"{API}/epics", params={"repo": REPO})).json()["epics"]
+    assert {e["number"]: e["parent"] for e in listed} == {3: None, 4: f"{REPO}#3"}
+
+
 async def test_a_conversion_is_previewed_then_applied_as_one_batch(env: Env) -> None:
     await _with_epic(env, body="- [ ] Fix #1\n- [ ] Write docs", count=0)
     plan = (await env.client.get(f"{EPIC3}/conversion")).json()
@@ -1453,6 +1652,8 @@ async def test_a_second_conversion_while_one_runs_is_a_409(env: Env) -> None:
     held.set()
     assert first.status_code == 202
     assert second.status_code == 409 and second.json()["error"] == "EarlierBatchError"
+    # The batch to retry or abandon is named, so the client can follow it (Task 12 I3).
+    assert second.json()["batch_id"] == first.headers["Location"].rsplit("/", 1)[1]
     await _polled(env, first)
     after = await env.client.post(f"{EPIC3}/conversion", json={"digest": digest}, headers=keyed())
     assert after.status_code == 409  # the plan changed: the item is converted
@@ -1741,3 +1942,13 @@ async def test_an_incomplete_batch_is_abandoned_over_the_api(env: Env) -> None:
         f"{PENDING}/nope/abandon", json={"created": []}, headers=keyed()
     )
     assert missing.status_code == 404
+
+
+def test_a_refusal_naming_an_epic_carries_it_as_a_field() -> None:
+    def now() -> datetime:
+        return datetime(2026, 10, 18, tzinfo=UTC)
+
+    exists = _error(GroupEpicExistsError("b1", ("acme/app", 4), "an epic exists"), now)
+    closed = _error(ThemeEpicClosedError(("acme/app", 40), "the epic is closed"), now)
+    assert json.loads(bytes(exists.body))["epic"] == "acme/app#4"
+    assert json.loads(bytes(closed.body))["epic"] == "acme/app#40"

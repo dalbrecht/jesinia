@@ -291,6 +291,8 @@ def _row(issue: Issue, result: Triage) -> IssueRow:
         milestone=issue.milestone,
         created_at=issue.created_at,
         updated_at=issue.updated_at,
+        state=issue.state,
+        linked_pr_state=issue.linked_pr_state,
     )
 
 
@@ -383,6 +385,16 @@ class SqliteIssuesStore:
     def set_migrated(self, repo: str) -> None:
         self._conn.execute("UPDATE repos SET migrated = 1 WHERE repo = ?", (repo,))
 
+    # Settings → Issues ------------------------------------------------------------------
+
+    def runner(self) -> str | None:
+        # The one row exists from its migration on.
+        row = self._conn.execute("SELECT runner FROM settings WHERE id = 1").fetchone()
+        return cast(str | None, row[0])
+
+    def set_runner(self, runner: str | None) -> None:
+        self._conn.execute("UPDATE settings SET runner = ? WHERE id = 1", (runner,))
+
     def record_sync(self, repo: str, synced_at: datetime | None, error: str | None) -> None:
         if synced_at is None:
             self._conn.execute("UPDATE repos SET sync_error = ? WHERE repo = ?", (error, repo))
@@ -468,7 +480,11 @@ class SqliteIssuesStore:
         row = self._conn.execute(
             "SELECT json FROM issues WHERE repo = ? AND number = ?", (repo, issue.number)
         ).fetchone()
-        return row is not None and row[0] == _issue_json(issue)
+        if row is None:
+            return False
+        # Sync fills the linked PRs itself (GitHub's list doesn't carry them): compare the rest.
+        kept = json.loads(row[0]).get("linked_pr_state")
+        return bool(row[0] == _issue_json(replace(issue, linked_pr_state=kept)))
 
     def save_page(
         self,
@@ -530,6 +546,10 @@ class SqliteIssuesStore:
             self._write_triage(issue.repo, [(issue.number, triaged)])
 
     def refresh_issue(self, issue: Issue, triaged: Triage) -> None:
+        stored = self.issue(issue.repo, issue.number)
+        if issue.linked_pr_state is None and stored is not None:
+            # A fresh read (an apply's) doesn't carry the linked PRs: keep what sync found.
+            issue = replace(issue, linked_pr_state=stored.linked_pr_state)
         with transaction(self._conn):
             updated = self._conn.execute(
                 "UPDATE issues SET json = ?, state = ?, updated_at = ?, sub_issue_count = ? "
@@ -619,6 +639,29 @@ class SqliteIssuesStore:
             (repo, parent),
         )
         return [IssueRef(child_repo, number, child_id) for child_repo, number, child_id in rows]
+
+    def linked_prs_due(self, repo: str, limit: int) -> list[int]:
+        rows = self._conn.execute(
+            "SELECT number FROM issues WHERE repo = ? AND state = 'open' "
+            "ORDER BY linked_prs_checked_at IS NOT NULL, linked_prs_checked_at, number LIMIT ?",
+            (repo, limit),
+        )
+        return [number for (number,) in rows]
+
+    def mark_linked_prs_checked(self, repo: str, numbers: Sequence[int], now: datetime) -> None:
+        self._conn.executemany(
+            "UPDATE issues SET linked_prs_checked_at = ? WHERE repo = ? AND number = ?",
+            [(_time(now), repo, n) for n in numbers],
+        )
+
+    def set_linked_prs(self, repo: str, n: int, state: str | None, now: datetime) -> None:
+        stored = self.issue(repo, n)
+        if stored is None:
+            return  # gone from the cache meanwhile: nothing to refresh
+        self._conn.execute(
+            "UPDATE issues SET json = ?, linked_prs_checked_at = ? WHERE repo = ? AND number = ?",
+            (_issue_json(replace(stored, linked_pr_state=state)), _time(now), repo, n),
+        )
 
     def epics_without_links(self, repo: str, limit: int) -> list[int]:
         rows = self._conn.execute(

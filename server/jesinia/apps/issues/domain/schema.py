@@ -177,6 +177,13 @@ def _add(values: list[str], value: str) -> None:
         values.append(value)
 
 
+def unmapped_labels(labels: Iterable[str], schema: LabelSchema) -> list[str]:
+    """The ``labels`` (a repo's, as GitHub spells them) that mean nothing to ``schema``: neither
+    a canonical value nor an alias, nor an area by its prefix, nor a free-form prefix. Each once,
+    in the order given; Settings offers them as aliases."""
+    return classify(labels, schema).unknown
+
+
 def classify(labels: Iterable[str], schema: LabelSchema) -> Classified:
     """Read an issue's ``labels`` against ``schema``.
 

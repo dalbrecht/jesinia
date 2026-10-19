@@ -195,6 +195,10 @@ def _approval_key(suggestion_id: str, key: str | None) -> str | None:
     return None if key is None else f"{suggestion_id}:{key}"
 
 
+# How many of the newest batches ``unfinished`` looks through (batches are kept 30 days).
+UNFINISHED_SCAN = 200
+
+
 def applied_batch(store: ApplyStore, batch_id: str) -> AppliedBatch:
     """Raises: BatchNotFoundError."""
     found = store.batch(batch_id)
@@ -301,6 +305,17 @@ class PendingService:
 
     def _held(self, pending_id: str) -> bool:
         return self._holders is not None and bool(self._holders.items_with_pending(pending_id))
+
+    def unfinished(self) -> list[AppliedBatch]:
+        """The recent batches that didn't finish, newest first: running, interrupted, or
+        finished with a step not applied (abandoned ones are settled)."""
+        recent = self._store.recent_batches(UNFINISHED_SCAN)
+        return [
+            b
+            for b in recent
+            if b.status in ("running", "interrupted")
+            or (b.status == "finished" and not b.result.complete)
+        ]
 
     def batch(self, batch_id: str) -> AppliedBatch:
         """An applied batch and its result (read from the cache; no GitHub).
@@ -703,6 +718,19 @@ class ApplyService:
         again = replace(stored, status="running", updated_at=self._clock())
         self._store.save_batch(again)
         return again
+
+    def dismiss(self, batch_id: str) -> None:
+        """Take a settled batch out of the tray for good: ``unfinished`` never lists it again,
+        unless a retry runs it. Its result is kept (Retry and polling still work).
+
+        Raises:
+            BatchNotFoundError: no such batch.
+            BatchRunningError: it is still running.
+        """
+        found = applied_batch(self._store, batch_id)
+        if found.status == "running" or batch_id in self._tasks:
+            raise BatchRunningError(f"batch {batch_id} is still running; poll it")
+        self._store.dismiss_batch(batch_id, self._clock())
 
     def start_retry(self, batch_id: str) -> AppliedBatch:
         """``begin_retry``, then run it in the background."""

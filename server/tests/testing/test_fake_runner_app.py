@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from jesinia.apps.issues.application.agent_output import parse_agent_json
+from jesinia.apps.issues.application.agent_output import schema_for as issues_schema_for
 from jesinia.apps.review.application.jobs import parse_job_output, schema_for
 from jesinia.apps.review.domain.jobs import JobKind
 from jesinia.apps.review.module import ReviewModule
@@ -297,3 +299,89 @@ async def test_a_review_job_turn_replies_with_json_and_never_writes(tmp_path: Pa
     text = "".join(e.text for e in events if isinstance(e, TextDelta))
     assert parse_job_output(text, schema_for(JobKind.FINDINGS))["findings"]
     assert isinstance(events[-1], TurnDone)
+
+
+async def test_a_triage_ask_gets_a_reply_valid_against_the_issues_schema(tmp_path: Path) -> None:
+    """The Issues e2e approves the fake runner's suggestion (PWA Task 12)."""
+
+    async def post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+        raise AssertionError("a triage ask never writes")
+
+    runner = McpScriptRunner(post)
+    prompt = "Triage the issue. Reply with only one JSON object, and nothing else."
+    req = TurnRequest(prompt, tmp_path, "sys", None, tmp_path / "m", [])
+    events = [e async for e in runner.run(req)]
+    text = "".join(e.text for e in events if isinstance(e, TextDelta))
+    reply = parse_agent_json(text, issues_schema_for("triage"))
+    assert reply["labels"] == [
+        {
+            "dimension": "readiness",
+            "value": "agent-ready",
+            "reason": "The steps to reproduce are clear.",
+        }
+    ]
+    assert isinstance(events[-1], TurnDone)
+
+
+ISSUE_SCHEMAS = ["triage", "priority", "grouping", "brief", "queue"]
+CONTEXT = (
+    '## candidates.json\n<untrusted-data>[\n {\n  "kind": "issue",\n  "repo": "e2e-dev/greeter",\n'
+    '  "number": 3,\n  "title": "One"\n },\n {\n  "repo": "e2e-dev/greeter",\n  "number": 4\n },\n'
+    ' {\n  "repo": "e2e-dev/greeter",\n  "number": 3\n }\n]</untrusted-data>\n'
+    '## queues.json\n<untrusted-data>[{"name": "This week", "items": []}]</untrusted-data>'
+)
+
+
+def _issues_prompt(schema: str) -> str:
+    """An Issues ask as ``SuggestService`` sends it: the request with the schema, then the
+    pack inline."""
+    from jesinia.apps.issues.application.suggest import _request
+
+    return f"{_request(issues_schema_for(schema))}\n\n{CONTEXT}"
+
+
+@pytest.mark.parametrize("schema", ISSUE_SCHEMAS)
+def test_every_issues_ask_gets_an_output_valid_against_its_real_schema(schema: str) -> None:
+    reply = fake_runner_app.issues_reply(_issues_prompt(schema), "sys")
+    assert reply is not None
+    assert parse_agent_json(reply, issues_schema_for(schema))
+
+
+def test_issues_outputs_name_the_issues_the_ask_gave() -> None:
+    def reply(schema: str, system: str = "sys") -> dict[str, Any]:
+        text = fake_runner_app.issues_reply(_issues_prompt(schema), system)
+        assert text is not None
+        return parse_agent_json(text, issues_schema_for(schema))
+
+    priority = reply("priority")["items"]
+    assert [(i["number"], i["rank"]) for i in priority] == [(3, 1), (4, 2)]
+    groups = reply("grouping")["groups"]
+    assert [i["number"] for i in groups[0]["issues"]] == [3, 4]
+    assert reply("brief")["acceptance_criteria"]
+    assert reply("queue", "Use mode `order` and only the items listed.")["mode"] == "order"
+    split = reply("queue", "Use mode `split`, only the items listed and only the queues listed.")
+    assert split["mode"] == "split" and split["items"][0]["queue"] == "This week"
+    assert reply("queue")["mode"] == "next"
+
+
+def test_an_ask_with_one_issue_proposes_no_group() -> None:
+    from jesinia.apps.issues.application.suggest import _request
+
+    prompt = f'{_request(issues_schema_for("grouping"))}\n\n"repo": "a/b",\n "number": 9'
+    text = fake_runner_app.issues_reply(prompt, "sys")
+    assert text is not None and json.loads(text)["groups"] == []
+
+
+def test_a_prompt_that_is_not_an_issues_ask_gets_no_issues_output() -> None:
+    assert fake_runner_app.issues_reply("What is this page about?", "sys") is None
+
+
+async def test_an_issues_turn_replies_with_the_schema_it_was_asked_for(tmp_path: Path) -> None:
+    async def post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+        raise AssertionError("an issues ask never writes")
+
+    runner = McpScriptRunner(post)
+    req = TurnRequest(_issues_prompt("brief"), tmp_path, "sys", None, tmp_path / "m", [])
+    events = [e async for e in runner.run(req)]
+    text = "".join(e.text for e in events if isinstance(e, TextDelta))
+    assert parse_agent_json(text, issues_schema_for("brief"))["scope"]

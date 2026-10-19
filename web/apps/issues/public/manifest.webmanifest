@@ -1,0 +1,17 @@
+{
+  "name": "Jesinia Issues",
+  "short_name": "Issues",
+  "id": "/issues/",
+  "start_url": "/issues/",
+  "scope": "/issues/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay"],
+  "theme_color": "#cddfff",
+  "background_color": "#f3f5f0",
+  "icons": [
+    { "src": "/issues/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/issues/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/issues/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/issues/icons/monochrome.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "monochrome" }
+  ]
+}

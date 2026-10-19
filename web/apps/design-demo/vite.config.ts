@@ -11,5 +11,12 @@ export default defineConfig({
     outDir: fileURLToPath(new URL("../../../server/jesinia/static/design", import.meta.url)),
     emptyOutDir: true,
     assetsInlineLimit: 0, // no data: URIs (CSP)
+    // drag.html: the drag-and-drop primitives in a real browser (the e2e suite drives it).
+    rollupOptions: {
+      input: {
+        index: fileURLToPath(new URL("index.html", import.meta.url)),
+        drag: fileURLToPath(new URL("drag.html", import.meta.url)),
+      },
+    },
   },
 });

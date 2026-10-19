@@ -100,7 +100,15 @@ Task 10 adds themes (spec §5.1, §6.2, rulings IR15, IR22, IR27):
   (`ConversionPlan`, IR27): the epic is created in one of its issues' repos and the theme's
   issues are linked under it.
 
-The web app comes in PR 4.
+PR 4 (Tasks 11–14) adds the web app, `web/apps/issues/`, served at `/issues/`. Task 12 adds its
+shell: the Inbox and Backlog (a compact list with multi-select and a bulk bar, or a board by
+readiness, priority or status), an issue in the book layout, and the Pending changes tray, which
+polls each batch it starts (an apply, a retry or an approval) to its per-issue results. Task 13
+adds the Epics, Queues and Themes views, with drag and drop onto epics, themes, queue bands and
+the Done zone. Task 14 adds Settings → Issues in the launcher (watched repos, each repo's schema
+source and aliases, the label setup and migration previews and their apply, and the runner that
+answers suggestion asks), partial saves (`PATCH`) for a repo and for the settings, and the
+end-to-end test against the fake GitHub and the fake runner.
 
 ## Layout
 
@@ -119,6 +127,7 @@ domain/           pure rules, 100% covered
 application/      orchestration over ports
   ports.py        what the app needs: IssueReads, LabelWrites, AgentAsker, the store protocols
   sync.py         SyncService: watch or unwatch, sync, Settings schemas, recompute
+  settings.py     IssuesSettingsService: the runner suggestion asks use
   reads.py        IssueQueries: views, items and search, served from the cache only
   labels.py       LabelPlanner, LabelExecutor (ordered, paced), LabelSetupService
   suggest.py      SuggestService: triage asks, background and on-demand runs, edits
@@ -155,6 +164,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `issues`: GitHub's data, stored verbatim, plus the stored triage (`complete`, `missing`,
   `inbox`, and so on).
 - `labels`, `milestones`, `comments`, `timeline` and `sub_issue_links`: the cache.
+- `settings`: one row, the runner Settings → Issues chose for suggestion asks (`NULL`: the
+  agents service's preferred one).
 - `label_plans`: previewed label batches. Each one is consumed by its apply and pruned after
   15 minutes.
 - `idempotency`: the keys of this module's write routes.
@@ -168,7 +179,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 - `apply_batches`: every batch (from the tray, an approval or a checklist conversion, its
   `origin`), stored `running` before its first
   GitHub write and updated after every step, then `finished` (or `interrupted` by a stop, or
-  `abandoned` by the author), with the Idempotency-Key that started it. Kept 30 days for Retry
+  `abandoned` by the author), with the Idempotency-Key that started it, and when the author
+  dismissed it from the tray (`dismissed_at`, cleared by a retry). Kept 30 days for Retry
   (pruned by the daily job). Pruning never forgets what a batch of an origin that creates
   issues did: that is in `batch_origins`, and a pruned unfinished one is abandoned through it.
 - `schema_overlay`: schema entries the author approved (a new area). They are merged over the
@@ -237,12 +249,32 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
 
 - **REST, under `/api/issues`.** Every route is owner-only, like all module routes, so agent
   session tokens get a 403. Every write takes an `Idempotency-Key` header.
-  - `GET /repos`: every added repo, with its schema and sync status.
+  - `GET /repos`: every added repo, with its schema and sync status, and `unmapped_labels`: its
+    cached labels the schema doesn't map, as GitHub spells them, for Settings to offer as aliases.
   - `PUT /repos/{owner}/{repo}` with `{watched, settings_schema}`: `settings_schema` is
     required; send `null` to clear it.
+  - `PATCH /repos/{owner}/{repo}` with `{watched?, settings_schema?}`: a partial save, as
+    Settings → Issues sends. Only the fields sent change (`settings_schema: null` clears it),
+    so a save never puts back what another tab changed; `watched: true` adds a new repo. An empty
+    body or `watched: null` is a 422.
+  - `GET /settings` and `PATCH /settings` with `{runner}`: the runner suggestion asks use
+    (`null`: the agents service's preferred one, `claude-code` when it is available). As with a
+    repo's PATCH, an empty body is a 422. A chosen runner is asked even while unavailable, so the
+    runs wait or fail with its cause.
   - `POST /repos/{owner}/{repo}/sync`: sync the repo now.
   - `GET /{inbox|backlog}?repo&filter`: a view, served from the cache, even without the
-    `github` service.
+    `github` service. Each row carries GitHub's `state` and `linked_pr_state` (the linked PRs
+    summed up as `merged`, `open` or `closed`), which the board's status view is derived
+    from. Never on a repo's first sync (IR20), each later sync reads the linked PRs of the open
+    issues it sees change, then spends what is left of its budget (`LINKED_PRS_PER_SYNC`) on the
+    open issues checked longest ago (`linked_prs_checked_at`; never checked first), so a PR that
+    opens or merges without an issue edit still shows. A failed read stays due; an apply's fresh
+    read keeps what sync found.
+  - `GET /batches`: the batches that didn't finish (running, interrupted, or finished with a
+    step not applied), newest first, so the tray offers Retry or Abandon after a reload. An
+    `EarlierBatchError` names its batch in `batch_id`. `POST /pending/{batch}/dismiss` (keyed,
+    204) takes a settled batch out of that list for good; a retry puts it back; a running one is
+    a 409.
   - `GET /item/{owner}/{repo}/{n}` and `POST …/refresh`: one issue, and a fetch of its
     comments and timeline.
   - `POST /labels/{owner}/{repo}/preview` with `{kind}`. It isn't keyed, on purpose: it writes
@@ -290,7 +322,8 @@ themes and drafts are written by the author and can't be rebuilt from GitHub. It
   - **Replays:** a replayed apply, approve or retry, with the same Idempotency-Key, answers the
     same batch. The batch keeps the key too, so a replay never applies the tray again, even
     across a crash (ruling IR46).
-  - `GET /epics?repo`: the open epics and initiatives with progress and readiness.
+  - `GET /epics?repo`: the open epics and initiatives with progress and readiness, and each
+    one's cached `parent`, so the app refuses a drop into an epic's own child before staging.
     `GET /epics/{owner}/{repo}/{n}`: one epic, its children in order (each with what blocks it),
     the approved brief and a brief composed from the cache (`default_brief`, for Copy brief);
     404 for an issue that isn't an epic.

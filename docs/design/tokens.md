@@ -581,6 +581,19 @@ how each component uses them.
 
 </details>
 
+<details><summary><b>Drag and drop</b> (components.md §11)</summary>
+
+| Token | Value |
+|---|---|
+| `--jx-dnd-dragging-opacity` | `var(--jx-button-disabled-opacity)` |
+| `--jx-dnd-unavailable-opacity` | `0.6` |
+| `--jx-dnd-line` | `var(--jx-accent)` |
+| `--jx-dnd-line-width` | `2px` |
+| `--jx-dnd-preview-max-width` | `320px` |
+| `--jx-dnd-empty-min-height` | `44px` (a touch target) |
+
+</details>
+
 ### App-overridable tokens
 
 Each app sets `data-app="<name>"` on its root, which defines `--jx-app` and
@@ -1111,6 +1124,12 @@ The complete token stylesheet, as `@jesinia/design` will ship it in `tokens.css`
   --jx-chat-cursor: var(--jx-accent);
   --jx-runner-glyph-size: 20px;
   --jx-runner-glyph-radius: var(--jx-radius-sm);
+  --jx-dnd-dragging-opacity: var(--jx-button-disabled-opacity);
+  --jx-dnd-unavailable-opacity: 0.6;
+  --jx-dnd-line: var(--jx-accent);
+  --jx-dnd-line-width: 2px;
+  --jx-dnd-preview-max-width: 320px;
+  --jx-dnd-empty-min-height: 44px;
   --jx-badge-marigold-bg: var(--jx-label-marigold-bg);
   --jx-badge-marigold-fg: var(--jx-label-marigold-fg);
   --jx-badge-plum-bg: var(--jx-label-plum-bg);

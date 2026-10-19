@@ -167,11 +167,12 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByText("Open Settings"), { metaKey: true });
     expect(open).toHaveBeenCalledWith("/settings/", "_blank", "noopener");
     openPalette();
-    // Seven commands now that Review is built: the group shows six and "Show all".
-    await userEvent.click(screen.getByText("Show all 7"));
+    // Eight commands now that Issues is built: the group shows six and "Show all".
+    await userEvent.click(screen.getByText("Show all 8"));
     await userEvent.click(screen.getByText("Toggle theme"));
     expect(document.documentElement.dataset.theme).toBe("light");
     openPalette();
+    await userEvent.click(screen.getByText("Show all 8")); // Sync now is past the first six
     await userEvent.click(screen.getByText("Sync now"));
     expect((await screen.findAllByText("Sync: push failed")).length).toBeGreaterThan(0);
     openPalette();
@@ -247,6 +248,7 @@ describe("AppShell edge cases", () => {
     await userEvent.click(screen.getByText("Open Notes"));
     expect(assign).toHaveBeenCalledWith("/notes/");
     fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await userEvent.click(screen.getByText(/^Show all/)); // Sync now is past the first six
     await userEvent.click(screen.getByText("Sync now"));
     fireEvent.keyDown(window, { key: "k", metaKey: true });
     await userEvent.type(screen.getByRole("combobox"), "no");

@@ -1090,7 +1090,36 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Patch Repo
+         * @description Change only the fields sent: watch or unwatch the repo, or keep, replace or clear its
+         *     Settings schema. ``watched: true`` adds a new repo (its issues land in the Backlog).
+         */
+        patch: operations["patch_repo_api_issues_repos__owner___repo__patch"];
+        trace?: never;
+    };
+    "/api/issues/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Settings
+         * @description Settings → Issues' own settings: the runner suggestions ask.
+         */
+        get: operations["get_settings_api_issues_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Settings
+         * @description Save only the fields sent (``runner: null`` follows the agents service again).
+         */
+        patch: operations["patch_settings_api_issues_settings_patch"];
         trace?: never;
     };
     "/api/issues/repos/{owner}/{repo}/sync": {
@@ -1413,6 +1442,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/issues/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Unfinished Batches
+         * @description The batches that didn't finish (running, interrupted, or finished with steps not
+         *     applied), newest first, from the cache: what the tray offers Retry or Abandon for after
+         *     a reload (no GitHub).
+         */
+        get: operations["get_unfinished_batches_api_issues_batches_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/issues/pending/{batch}": {
         parameters: {
             query?: never;
@@ -1429,6 +1480,27 @@ export interface paths {
         get: operations["get_batch_api_issues_pending__batch__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/issues/pending/{batch}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Batch
+         * @description Take a batch the author is done with out of the tray: ``GET /batches`` never lists it
+         *     again (unless a retry runs it). Nothing changes on GitHub. A running batch is a 409.
+         */
+        post: operations["dismiss_batch_api_issues_pending__batch__dismiss_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2772,6 +2844,15 @@ export interface components {
             /** Rate Limited Until */
             rate_limited_until: string | null;
         };
+        /**
+         * ApplyBatchesOut
+         * @description Batches that didn't finish: running, interrupted, or finished with something not applied
+         *     (newest first). A client shows them after a reload, so Retry and Abandon stay reachable.
+         */
+        ApplyBatchesOut: {
+            /** Batches */
+            batches: components["schemas"]["ApplyBatchOut"][];
+        };
         /** ApplyCreatedOut */
         ApplyCreatedOut: {
             /** Temp Id */
@@ -3218,7 +3299,8 @@ export interface components {
          * EpicOut
          * @description An epic (or initiative) in the Epics list: ``done`` closed children of ``total``,
          *     readiness, and ``lacks_label`` when it has children but no ``epic`` label (Jesinia suggests
-         *     adding it).
+         *     adding it). ``parent`` (``owner/name#n``) is its own epic or initiative in the cache, so the
+         *     app can refuse a drop into its own child or ancestor before staging.
          */
         EpicOut: {
             /** Repo */
@@ -3231,6 +3313,8 @@ export interface components {
             url: string;
             /** Labels */
             labels: string[];
+            /** Parent */
+            parent: string | null;
             /** Priority */
             priority: string | null;
             /** Is Initiative */
@@ -3500,7 +3584,9 @@ export interface components {
         };
         /**
          * IssueRowOut
-         * @description An Inbox or Backlog row with its triage against the repo's schema.
+         * @description An Inbox or Backlog row with its triage against the repo's schema. ``state`` is
+         *     GitHub's (``open`` or ``closed``) and ``linked_pr_state`` sums up the linked PRs
+         *     (``merged``, ``open``, ``closed`` or ``null``): the board's status view uses both.
          */
         IssueRowOut: {
             /** Repo */
@@ -3547,6 +3633,13 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "closed";
+            /** Linked Pr State */
+            linked_pr_state: ("merged" | "open" | "closed") | null;
         };
         /**
          * IssueSuggestionEditIn
@@ -3721,6 +3814,10 @@ export interface components {
             detail: string;
             /** Retry After */
             retry_after?: number | null;
+            /** Batch Id */
+            batch_id?: string | null;
+            /** Epic */
+            epic?: string | null;
         };
         /**
          * IssuesRepoIn
@@ -3738,7 +3835,8 @@ export interface components {
          * @description A repo the author added. ``label_schema`` is the effective one and ``schema_source`` where
          *     it came from: ``repo`` (its ``.jesinia/labels.yml``, which wins while it exists),
          *     ``settings`` (``settings_schema``) or ``default``. ``schema_errors`` lists what labels.yml
-         *     couldn't use.
+         *     couldn't use. ``unmapped_labels`` are the repo's cached labels that schema doesn't map (not a
+         *     value, an alias, an area or a free-form prefix), as GitHub spells them: aliases to pick.
          */
         IssuesRepoOut: {
             /** Repo */
@@ -3765,11 +3863,43 @@ export interface components {
             synced_at: string | null;
             /** Sync Error */
             sync_error: string | null;
+            /** Unmapped Labels */
+            unmapped_labels: string[];
+        };
+        /**
+         * IssuesRepoPatch
+         * @description A partial save of one repo in Settings → Issues: only the fields sent change, so a save
+         *     never puts back what another tab changed. ``watched: true`` adds a repo; ``settings_schema:
+         *     null`` clears the schema made in Settings (the default then applies when there is no
+         *     labels.yml). At least one field must be sent, and ``watched`` can't be ``null``.
+         */
+        IssuesRepoPatch: {
+            /** Watched */
+            watched?: boolean | null;
+            settings_schema?: components["schemas"]["LabelSchemaBody"] | null;
         };
         /** IssuesReposOut */
         IssuesReposOut: {
             /** Repos */
             repos: components["schemas"]["IssuesRepoOut"][];
+        };
+        /**
+         * IssuesSettingsOut
+         * @description Settings → Issues' own settings. ``runner`` answers suggestion asks; ``null`` means the
+         *     agents service's preferred runner.
+         */
+        IssuesSettingsOut: {
+            /** Runner */
+            runner: string | null;
+        };
+        /**
+         * IssuesSettingsPatch
+         * @description A partial save: a field left out keeps its value. ``runner: null`` follows the agents
+         *     service's preferred runner again. Like ``IssuesRepoPatch``, an empty body is refused.
+         */
+        IssuesSettingsPatch: {
+            /** Runner */
+            runner?: string | null;
         };
         JsonValue: unknown;
         /** KeepIn */
@@ -9379,6 +9509,236 @@ export interface operations {
             };
         };
     };
+    patch_repo_api_issues_repos__owner___repo__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssuesRepoPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesRepoOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    get_settings_api_issues_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesSettingsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    patch_settings_api_issues_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssuesSettingsPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesSettingsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
     sync_repo_api_issues_repos__owner___repo__sync_post: {
         parameters: {
             query?: never;
@@ -10646,6 +11006,71 @@ export interface operations {
             };
         };
     };
+    get_unfinished_batches_api_issues_batches_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyBatchesOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
     get_batch_api_issues_pending__batch__get: {
         parameters: {
             query?: never;
@@ -10665,6 +11090,83 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApplyBatchOut"];
                 };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuesErrorOut"];
+                };
+            };
+        };
+    };
+    dismiss_batch_api_issues_pending__batch__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                batch: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Bad Request */
             400: {

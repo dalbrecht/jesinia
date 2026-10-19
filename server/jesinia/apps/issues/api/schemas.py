@@ -4,7 +4,7 @@ titles, bodies, labels and comments are the issue authors' text: the PWA shows i
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
@@ -132,6 +132,11 @@ class IssuesErrorOut(BaseModel):
     error: str
     detail: str
     retry_after: int | None = None
+    # ``EarlierBatchError``: the batch to retry or abandon first, so a client can follow it.
+    batch_id: str | None = None
+    # ``GroupEpicExistsError`` and ``ThemeEpicClosedError``: the epic they name, as
+    # ``owner/repo#n``, so a client offers it without parsing the message.
+    epic: str | None = None
 
 
 class LabelCanonicalBody(BaseModel):
@@ -178,7 +183,8 @@ class IssuesRepoOut(BaseModel):
     """A repo the author added. ``label_schema`` is the effective one and ``schema_source`` where
     it came from: ``repo`` (its ``.jesinia/labels.yml``, which wins while it exists),
     ``settings`` (``settings_schema``) or ``default``. ``schema_errors`` lists what labels.yml
-    couldn't use."""
+    couldn't use. ``unmapped_labels`` are the repo's cached labels that schema doesn't map (not a
+    value, an alias, an area or a free-form prefix), as GitHub spells them: aliases to pick."""
 
     repo: str
     watched: bool
@@ -190,9 +196,10 @@ class IssuesRepoOut(BaseModel):
     migrated: bool
     synced_at: datetime | None
     sync_error: str | None
+    unmapped_labels: list[str]
 
     @classmethod
-    def of(cls, state: RepoState) -> IssuesRepoOut:
+    def of(cls, state: RepoState, unmapped: Sequence[str]) -> IssuesRepoOut:
         settings = state.settings_schema
         return cls(
             repo=state.repo,
@@ -205,6 +212,7 @@ class IssuesRepoOut(BaseModel):
             migrated=state.migrated,
             synced_at=state.synced_at,
             sync_error=state.sync_error,
+            unmapped_labels=list(unmapped),
         )
 
 
@@ -221,8 +229,51 @@ class IssuesRepoIn(BaseModel):
     settings_schema: LabelSchemaBody | None
 
 
+class IssuesRepoPatch(BaseModel):
+    """A partial save of one repo in Settings → Issues: only the fields sent change, so a save
+    never puts back what another tab changed. ``watched: true`` adds a repo; ``settings_schema:
+    null`` clears the schema made in Settings (the default then applies when there is no
+    labels.yml). At least one field must be sent, and ``watched`` can't be ``null``."""
+
+    watched: bool | None = None
+    settings_schema: LabelSchemaBody | None = None
+
+    @model_validator(mode="after")
+    def _something_sent(self) -> IssuesRepoPatch:
+        if not self.model_fields_set:
+            raise ValueError("send watched, settings_schema or both")
+        if "watched" in self.model_fields_set and self.watched is None:
+            raise ValueError("watched is true or false; leave it out to keep it")
+        return self
+
+
+RUNNER_NAME = r"^[a-z][a-z0-9-]{0,39}$"
+
+
+class IssuesSettingsOut(BaseModel):
+    """Settings → Issues' own settings. ``runner`` answers suggestion asks; ``null`` means the
+    agents service's preferred runner."""
+
+    runner: str | None
+
+
+class IssuesSettingsPatch(BaseModel):
+    """A partial save: a field left out keeps its value. ``runner: null`` follows the agents
+    service's preferred runner again. Like ``IssuesRepoPatch``, an empty body is refused."""
+
+    runner: str | None = Field(default=None, pattern=RUNNER_NAME)
+
+    @model_validator(mode="after")
+    def _something_sent(self) -> IssuesSettingsPatch:
+        if not self.model_fields_set:
+            raise ValueError("send runner (null for the agents service's preferred one)")
+        return self
+
+
 class IssueRowOut(BaseModel):
-    """An Inbox or Backlog row with its triage against the repo's schema."""
+    """An Inbox or Backlog row with its triage against the repo's schema. ``state`` is
+    GitHub's (``open`` or ``closed``) and ``linked_pr_state`` sums up the linked PRs
+    (``merged``, ``open``, ``closed`` or ``null``): the board's status view uses both."""
 
     repo: str
     number: int
@@ -243,6 +294,8 @@ class IssueRowOut(BaseModel):
     milestone: str | None
     created_at: datetime
     updated_at: datetime
+    state: Literal["open", "closed"]
+    linked_pr_state: Literal["merged", "open", "closed"] | None
 
     @classmethod
     def of(cls, row: IssueRow) -> IssueRowOut:
@@ -969,6 +1022,13 @@ class ApplyBatchOut(BaseModel):
         )
 
 
+class ApplyBatchesOut(BaseModel):
+    """Batches that didn't finish: running, interrupted, or finished with something not applied
+    (newest first). A client shows them after a reload, so Retry and Abandon stay reachable."""
+
+    batches: list[ApplyBatchOut]
+
+
 class SuggestionApproveOut(BaseModel):
     """The suggestion after its approval (``approved``, or still open with ``apply_error``) and
     the batch that applied it."""
@@ -1042,13 +1102,15 @@ class ContainmentOut(BaseModel):
 class EpicOut(BaseModel):
     """An epic (or initiative) in the Epics list: ``done`` closed children of ``total``,
     readiness, and ``lacks_label`` when it has children but no ``epic`` label (Jesinia suggests
-    adding it)."""
+    adding it). ``parent`` (``owner/name#n``) is its own epic or initiative in the cache, so the
+    app can refuse a drop into its own child or ancestor before staging."""
 
     repo: str
     number: int
     title: str
     url: str
     labels: list[str]
+    parent: str | None
     priority: str | None
     is_initiative: bool
     lacks_label: bool
@@ -1066,6 +1128,7 @@ class EpicOut(BaseModel):
             title=issue.title,
             url=issue.url,
             labels=list(issue.labels),
+            parent=None if issue.parent is None else f"{issue.parent.repo}#{issue.parent.number}",
             priority=summary.triage.priority,
             is_initiative=summary.is_initiative,
             lacks_label=summary.lacks_label,

@@ -21,6 +21,8 @@ build step.
 - **Themes:** light and dark follow `prefers-color-scheme`. `data-theme="light|dark"`
   overrides it.
 - **App identity:** set `data-app="<app>"` on an app's root.
+- **Drag and drop:** mount one `DndProvider` per app and build with `Draggable`, `DropTarget`
+  and `SortableList` (components.md §11). They wrap `@dnd-kit/core` and `@dnd-kit/sortable`.
 
 ## Development
 

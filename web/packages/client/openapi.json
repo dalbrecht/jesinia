@@ -4753,6 +4753,320 @@
             }
           }
         }
+      },
+      "patch": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Patch Repo",
+        "description": "Change only the fields sent: watch or unwatch the repo, or keep, replace or clear its\nSettings schema. ``watched: true`` adds a new repo (its issues land in the Backlog).",
+        "operationId": "patch_repo_api_issues_repos__owner___repo__patch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Owner"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 140,
+              "title": "Repo"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssuesRepoPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesRepoOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/settings": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Settings",
+        "description": "Settings \u2192 Issues' own settings: the runner suggestions ask.",
+        "operationId": "get_settings_api_issues_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesSettingsOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Patch Settings",
+        "description": "Save only the fields sent (``runner: null`` follows the agents service again).",
+        "operationId": "patch_settings_api_issues_settings_patch",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssuesSettingsPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesSettingsOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/issues/repos/{owner}/{repo}/sync": {
@@ -6633,6 +6947,78 @@
         }
       }
     },
+    "/api/issues/batches": {
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Get Unfinished Batches",
+        "description": "The batches that didn't finish (running, interrupted, or finished with steps not\napplied), newest first, from the cache: what the tray offers Retry or Abandon for after\na reload (no GitHub).",
+        "operationId": "get_unfinished_batches_api_issues_batches_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyBatchesOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/pending/{batch}": {
       "get": {
         "tags": [
@@ -6664,6 +7050,112 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/pending/{batch}/dismiss": {
+      "post": {
+        "tags": [
+          "issues"
+        ],
+        "summary": "Dismiss Batch",
+        "description": "Take a batch the author is done with out of the tray: ``GET /batches`` never lists it\nagain (unless a retry runs it). Nothing changes on GitHub. A running batch is a 409.",
+        "operationId": "dismiss_batch_api_issues_pending__batch__dismiss_post",
+        "parameters": [
+          {
+            "name": "batch",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Batch"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "400": {
             "content": {
@@ -15080,6 +15572,23 @@
         "title": "ApplyBatchOut",
         "description": "A batch and its result. ``status``: ``running`` (poll ``GET /pending/{id}``; steps not\nreached yet are ``skipped``, ``not run yet``), ``finished`` (the result is final) or\n``interrupted`` (a stop cut it off). ``stopped`` is set when GitHub stopped it (a rate\nlimit, with ``rate_limited_until``, or a rejected token). An interrupted or stopped batch is\nresumed only with ``POST /pending/{id}/retry`` (its changes already left the tray); steps\nalready done are never repeated."
       },
+      "ApplyBatchesOut": {
+        "properties": {
+          "batches": {
+            "items": {
+              "$ref": "#/components/schemas/ApplyBatchOut"
+            },
+            "type": "array",
+            "title": "Batches"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batches"
+        ],
+        "title": "ApplyBatchesOut",
+        "description": "Batches that didn't finish: running, interrupted, or finished with something not applied\n(newest first). A client shows them after a reload, so Retry and Abandon stay reachable."
+      },
       "ApplyCreatedOut": {
         "properties": {
           "temp_id": {
@@ -16259,6 +16768,17 @@
             "type": "array",
             "title": "Labels"
           },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
           "priority": {
             "anyOf": [
               {
@@ -16302,6 +16822,7 @@
           "title",
           "url",
           "labels",
+          "parent",
           "priority",
           "is_initiative",
           "lacks_label",
@@ -16311,7 +16832,7 @@
           "updated_at"
         ],
         "title": "EpicOut",
-        "description": "An epic (or initiative) in the Epics list: ``done`` closed children of ``total``,\nreadiness, and ``lacks_label`` when it has children but no ``epic`` label (Jesinia suggests\nadding it)."
+        "description": "An epic (or initiative) in the Epics list: ``done`` closed children of ``total``,\nreadiness, and ``lacks_label`` when it has children but no ``epic`` label (Jesinia suggests\nadding it). ``parent`` (``owner/name#n``) is its own epic or initiative in the cache, so the\napp can refuse a drop into its own child or ancestor before staging."
       },
       "EpicsOut": {
         "properties": {
@@ -17201,6 +17722,30 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed"
+            ],
+            "title": "State"
+          },
+          "linked_pr_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "merged",
+                  "open",
+                  "closed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linked Pr State"
           }
         },
         "type": "object",
@@ -17223,10 +17768,12 @@
           "parent",
           "milestone",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "state",
+          "linked_pr_state"
         ],
         "title": "IssueRowOut",
-        "description": "An Inbox or Backlog row with its triage against the repo's schema."
+        "description": "An Inbox or Backlog row with its triage against the repo's schema. ``state`` is\nGitHub's (``open`` or ``closed``) and ``linked_pr_state`` sums up the linked PRs\n(``merged``, ``open``, ``closed`` or ``null``): the board's status view uses both."
       },
       "IssueSuggestionEditIn": {
         "properties": {
@@ -17602,6 +18149,28 @@
               }
             ],
             "title": "Retry After"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "epic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epic"
           }
         },
         "type": "object",
@@ -17707,6 +18276,13 @@
               }
             ],
             "title": "Sync Error"
+          },
+          "unmapped_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unmapped Labels"
           }
         },
         "type": "object",
@@ -17720,10 +18296,39 @@
           "settings_schema",
           "migrated",
           "synced_at",
-          "sync_error"
+          "sync_error",
+          "unmapped_labels"
         ],
         "title": "IssuesRepoOut",
-        "description": "A repo the author added. ``label_schema`` is the effective one and ``schema_source`` where\nit came from: ``repo`` (its ``.jesinia/labels.yml``, which wins while it exists),\n``settings`` (``settings_schema``) or ``default``. ``schema_errors`` lists what labels.yml\ncouldn't use."
+        "description": "A repo the author added. ``label_schema`` is the effective one and ``schema_source`` where\nit came from: ``repo`` (its ``.jesinia/labels.yml``, which wins while it exists),\n``settings`` (``settings_schema``) or ``default``. ``schema_errors`` lists what labels.yml\ncouldn't use. ``unmapped_labels`` are the repo's cached labels that schema doesn't map (not a\nvalue, an alias, an area or a free-form prefix), as GitHub spells them: aliases to pick."
+      },
+      "IssuesRepoPatch": {
+        "properties": {
+          "watched": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watched"
+          },
+          "settings_schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LabelSchemaBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "IssuesRepoPatch",
+        "description": "A partial save of one repo in Settings \u2192 Issues: only the fields sent change, so a save\nnever puts back what another tab changed. ``watched: true`` adds a repo; ``settings_schema:\nnull`` clears the schema made in Settings (the default then applies when there is no\nlabels.yml). At least one field must be sent, and ``watched`` can't be ``null``."
       },
       "IssuesReposOut": {
         "properties": {
@@ -17740,6 +18345,46 @@
           "repos"
         ],
         "title": "IssuesReposOut"
+      },
+      "IssuesSettingsOut": {
+        "properties": {
+          "runner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runner"
+          }
+        },
+        "type": "object",
+        "required": [
+          "runner"
+        ],
+        "title": "IssuesSettingsOut",
+        "description": "Settings \u2192 Issues' own settings. ``runner`` answers suggestion asks; ``null`` means the\nagents service's preferred runner."
+      },
+      "IssuesSettingsPatch": {
+        "properties": {
+          "runner": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,39}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runner"
+          }
+        },
+        "type": "object",
+        "title": "IssuesSettingsPatch",
+        "description": "A partial save: a field left out keeps its value. ``runner: null`` follows the agents\nservice's preferred runner again. Like ``IssuesRepoPatch``, an empty body is refused."
       },
       "JsonValue": {},
       "KeepIn": {

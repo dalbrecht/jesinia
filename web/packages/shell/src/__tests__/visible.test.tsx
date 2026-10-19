@@ -29,6 +29,15 @@ describe("revealHidden", () => {
     expect(hasHidden("\u0085")).toBe(true);
   });
 
+  it("reveals the line and paragraph separators, which browsers break lines at", () => {
+    expect(revealHidden("a\u2028b\u2029")).toEqual([
+      { text: "a" },
+      { code: "U+2028", kind: "invisible" },
+      { text: "b" },
+      { code: "U+2029", kind: "invisible" },
+    ]);
+  });
+
   it("spells the tokens out for plain strings and accessible names", () => {
     expect(visibleText("ab\u202Ecd")).toBe("ab⟪U+202E⟫cd");
   });

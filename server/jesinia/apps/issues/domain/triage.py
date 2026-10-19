@@ -270,6 +270,10 @@ class IssueRow:
     milestone: str | None
     created_at: datetime
     updated_at: datetime
+    # GitHub's ``open`` or ``closed``, and the linked PRs' summary (``merged``, ``open``,
+    # ``closed`` or ``None``): the board's status view is derived from them (spec §6.2).
+    state: str
+    linked_pr_state: str | None
 
 
 @dataclass(frozen=True)

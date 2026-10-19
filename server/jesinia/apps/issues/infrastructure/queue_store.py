@@ -113,6 +113,21 @@ class SqliteQueueStore:
         )
         return [(str(row[0]), _item(row[1:])) for row in rows]
 
+    def done_pending_ids(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT done_pending FROM queue_items WHERE done_pending IS NOT NULL"
+        )
+        return [str(pending) for (pending,) in rows]
+
+    def clear_done_pending(self, pending_ids: Sequence[str]) -> None:
+        for start in range(0, len(pending_ids), _CHUNK):
+            chunk = pending_ids[start : start + _CHUNK]
+            self._conn.execute(
+                "UPDATE queue_items SET done_pending = NULL "
+                f"WHERE done_pending IN ({', '.join('?' for _ in chunk)})",
+                list(chunk),
+            )
+
     def _replace(self, queue_id: str, items: Sequence[QueueItem]) -> None:
         self._conn.execute("DELETE FROM queue_items WHERE queue_id = ?", (queue_id,))
         self._conn.executemany(

@@ -5,6 +5,7 @@ import { useClient, type KbPathInfo, type ServerStatus, type SyncStatus } from "
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { clock, MODE_LABEL } from "./format";
 import { AgentsSection } from "./settings/Agents";
+import { IssuesSection } from "./settings/Issues";
 import { ReviewSection } from "./settings/Review";
 import { RssSection } from "./settings/Rss";
 import { TagsSection } from "./settings/Tags";
@@ -19,6 +20,7 @@ const SECTIONS = [
   ["tags", "Tags"],
   ["review", "Review"],
   ["rss", "RSS"],
+  ["issues", "Issues"],
   ["conflicts", "Conflicts"],
   ["security", "Security"],
 ] as const;
@@ -305,6 +307,7 @@ export function Settings({ status }: { status: ServerStatus }) {
     tags: <TagsSection />,
     review: <ReviewSection />,
     rss: <RssSection />,
+    issues: <IssuesSection status={status} />,
     conflicts: <ConflictsSection status={status} />,
     security: <SecuritySection />,
   };

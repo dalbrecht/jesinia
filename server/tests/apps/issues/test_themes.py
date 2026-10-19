@@ -669,8 +669,9 @@ async def test_a_closed_theme_epic_is_done_with_and_a_new_one_is_planned(env: Th
     env.world.clock.now += timedelta(minutes=1)
     await env.world.sync.sync(REPO)
     await env.themes.add([(REPO, 2)], "sync")
-    with pytest.raises(ThemeEpicClosedError, match=f"#{epic_n} is closed"):
+    with pytest.raises(ThemeEpicClosedError, match=f"#{epic_n} is closed") as refused:
         await env.themes.to_epic("sync", REPO)
+    assert refused.value.epic == (REPO, epic_n)  # structured, so clients don't parse the prose
     assert isinstance((await env.themes.to_epic("sync", REPO, new_epic=True)).epic, CreateIssue)
 
 

@@ -38,6 +38,7 @@ from jesinia.services.github.domain.issue import (
     IssueRef,
     Label,
     LabeledItem,
+    LinkedPr,
     Milestone,
     Page,
     TimelineEvent,
@@ -70,6 +71,9 @@ class IssueReads(Protocol):
     async def file(self, repo: str, path: str) -> str | None: ...
 
     async def sub_issues(self, repo: str, n: int) -> list[Issue]: ...
+
+    async def timeline_links(self, repo: str, n: int) -> list[LinkedPr]:
+        """The pull requests that reference the issue (its whole timeline)."""
 
     async def comments(
         self, repo: str, n: int, since: datetime | None, page_token: str | None = None
@@ -161,6 +165,16 @@ class IssuesStore(Protocol):
 
     def epics_without_links(self, repo: str, limit: int) -> list[int]: ...
 
+    def linked_prs_due(self, repo: str, limit: int) -> list[int]:
+        """Up to ``limit`` open issues, those whose linked PRs were checked longest ago (never
+        first), then by number."""
+
+    def mark_linked_prs_checked(self, repo: str, numbers: Sequence[int], now: datetime) -> None:
+        """``numbers``' linked PRs were just read (and stored with their page)."""
+
+    def set_linked_prs(self, repo: str, n: int, state: str | None, now: datetime) -> None:
+        """Store a refreshed summary of ``repo#n``'s linked PRs, checked ``now``."""
+
     def set_sub_issue_links(
         self, repo: str, parent: int, children: Sequence[Issue], now: datetime
     ) -> None: ...
@@ -205,6 +219,9 @@ class IssueCache(ViewCache, Protocol):
 
     def all_repos(self) -> list[RepoState]:
         """Every repo the author added, watched or not, by name."""
+
+    def labels(self, repo: str) -> list[Label]:
+        """The repo's labels as last synced."""
 
     def cached_issue(self, repo: str, n: int) -> CachedIssue | None: ...
 
@@ -503,6 +520,13 @@ class ApplyStore(Protocol):
     def batch_by_key(self, request_key: str) -> AppliedBatch | None:
         """The batch a request with this Idempotency-Key started."""
 
+    def recent_batches(self, limit: int) -> list[AppliedBatch]:
+        """The ``limit`` most recently updated batches, newest first (abandoned and dismissed
+        ones left out)."""
+
+    def dismiss_batch(self, batch_id: str, now: datetime) -> bool:
+        """Mark the batch dismissed from the tray (kept if already); False: no such batch."""
+
     def interrupt_running(self) -> int:
         """Mark every ``running`` batch ``interrupted`` (at start nothing runs yet)."""
 
@@ -656,6 +680,12 @@ class QueueStore(Protocol):
 
     def items_with_pending(self, pending_id: str) -> list[tuple[str, QueueItem]]:
         """Every done item (in any queue) whose Done staged ``pending_id``."""
+
+    def done_pending_ids(self) -> list[str]:
+        """Every pending change a done item still names."""
+
+    def clear_done_pending(self, pending_ids: Sequence[str]) -> None:
+        """Done items stop naming ``pending_ids`` (changes that left the tray)."""
 
     def open_items_for(
         self, kinds: Sequence[ItemKind], refs: Sequence[str]

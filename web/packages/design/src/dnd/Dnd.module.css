@@ -1,0 +1,153 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Drag and drop (components.md §11). Semantic roles only, so both themes follow. */
+.draggable,
+.handle {
+  cursor: grab;
+  border-radius: var(--jx-radius-sm);
+  /* Lets a finger scroll the list; the long-press sensor lifts the item. No iOS callout or text
+     selection during the press. */
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  user-select: none;
+  transition: opacity var(--jx-duration-fast) var(--jx-ease);
+}
+.draggable:focus-visible,
+.handle:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
+}
+.draggable[aria-disabled="true"] {
+  cursor: default;
+}
+/* The rows being dragged stay in place, dimmed, while the preview travels. */
+.draggable[data-dragging],
+.handle[data-dragging],
+.rowBody[data-dragging] {
+  opacity: var(--jx-dnd-dragging-opacity);
+}
+
+.target,
+.sortable {
+  border-radius: var(--jx-radius-md);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  transition:
+    background-color var(--jx-duration-fast) var(--jx-ease),
+    outline-color var(--jx-duration-fast) var(--jx-ease);
+}
+.target[data-drop-state="available"] {
+  outline: 1px dashed var(--jx-border-strong);
+  outline-offset: -1px;
+}
+.target[data-drop-state="over"] {
+  background: var(--jx-accent-subtle);
+  outline-color: var(--jx-accent);
+}
+.target[data-drop-state="unavailable"],
+.sortable[data-drop-state="unavailable"] {
+  opacity: var(--jx-dnd-unavailable-opacity);
+}
+/* Focus lands on a target after a drop that removed the dragged item. */
+.target:focus-visible,
+.sortable:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
+}
+.target[data-drop-state="refused"],
+.sortable[data-drop-state="refused"] {
+  background: var(--jx-danger-bg);
+  outline: 2px dashed var(--jx-danger);
+  outline-offset: -2px;
+  cursor: no-drop;
+}
+.reason {
+  display: block;
+  margin: var(--jx-space-1) 0 0;
+  padding: 0 var(--jx-space-2) var(--jx-space-1);
+  color: var(--jx-danger);
+  font-size: var(--jx-text-xs);
+  line-height: var(--jx-leading-xs);
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.row,
+.end {
+  position: relative;
+}
+.end {
+  min-height: var(--jx-space-2);
+}
+/* An empty list stays a target a finger can hit. */
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--jx-dnd-empty-min-height);
+  padding: var(--jx-space-2) var(--jx-space-3);
+  border: 1px dashed var(--jx-border-strong);
+  border-radius: var(--jx-radius-md);
+  color: var(--jx-fg-muted);
+  font-size: var(--jx-text-sm);
+}
+/* The insertion line: where the dragged rows will land. */
+.row[data-insert-before]::before,
+.end[data-insert-before]::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--jx-dnd-line-width) / -2);
+  right: 0;
+  left: 0;
+  height: var(--jx-dnd-line-width);
+  background: var(--jx-dnd-line);
+  border-radius: var(--jx-radius-full);
+  pointer-events: none;
+}
+@media (forced-colors: active) {
+  .row[data-insert-before]::before,
+  .end[data-insert-before]::before {
+    background: Highlight;
+  }
+}
+
+.preview {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2);
+  max-width: var(--jx-dnd-preview-max-width);
+  padding: var(--jx-space-2) var(--jx-space-3);
+  background: var(--jx-surface-raised);
+  color: var(--jx-fg);
+  border: 1px solid var(--jx-border);
+  border-radius: var(--jx-radius-md);
+  box-shadow: var(--jx-shadow-2);
+  font-size: var(--jx-text-sm);
+  cursor: grabbing;
+}
+.preview[data-refused] {
+  border-color: var(--jx-danger);
+  cursor: no-drop;
+}
+.previewLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.previewCount {
+  padding: 0 var(--jx-badge-pad-x);
+  background: var(--jx-accent);
+  color: var(--jx-accent-fg);
+  border-radius: var(--jx-badge-radius);
+  font-size: var(--jx-badge-text);
+  font-weight: var(--jx-weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+.previewReason {
+  flex-basis: 100%;
+  color: var(--jx-danger);
+  font-size: var(--jx-text-xs);
+}

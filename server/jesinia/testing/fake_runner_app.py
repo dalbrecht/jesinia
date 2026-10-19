@@ -13,7 +13,9 @@ token, so e2e never syncs a real account (Review shows its auth-missing state), 
 to that, with a fixed test token, and ``JESINIA_FAKE_GITHUB_REPOS`` makes the review
 workspace fetch from the bare repositories beside it. A review job prompt (``Run the <job>
 job.``) is answered with a fixed JSON output for the fixture PR, valid against the job's real
-schema. It refuses to load outside a throwaway ``JESINIA_HOME``, so none of this can ever
+schema. An Issues ask (``Triage the issue.``, then the JSON Schema it must answer) gets a fixed
+output valid against that schema (triage, priority, grouping, brief or queue), naming the issues
+the ask listed. It refuses to load outside a throwaway ``JESINIA_HOME``, so none of this can ever
 activate in a real install.
 """
 
@@ -50,6 +52,23 @@ DRAFT: dict[str, object] = {
     "body": "Drafted by the fake runner.",
 }
 TAG_REPLY = '["fixture","new-fixture-tag"]'
+# Every Issues ask starts "Triage the issue." and then gives the JSON Schema to answer (its
+# "title" names it); the triage answer is one readiness suggestion for the fixture issue, valid
+# against apps/issues/schemas/triage.json.
+TRIAGE_PROMPT = "Triage the issue."
+TRIAGE_OUTPUT: dict[str, object] = {
+    "labels": [
+        {
+            "dimension": "readiness",
+            "value": "agent-ready",
+            "reason": "The steps to reproduce are clear.",
+        }
+    ],
+    "duplicates": [],
+    "parent": None,
+    "agent_ready": {"ready": True, "missing": [], "reason": "Small and well described."},
+}
+TRIAGE_REPLY = json.dumps(TRIAGE_OUTPUT)
 REPLY = (
     "I read the page. ",
     "It is about the fixture topic. ",
@@ -177,6 +196,67 @@ def review_job_reply(prompt: str) -> str | None:
     return None if output is None else json.dumps(output)
 
 
+_SCHEMA_BLOCK = re.compile(r"```json\n(.*?)\n```", re.DOTALL)
+# An issue as the asks' inline context lists it (JSON, indented): its repo, then its number.
+_LISTED_ISSUE = re.compile(r'"repo":\s*"([^"]+)",\s*"number":\s*(\d+)')
+_QUEUE_MODE = re.compile(r"Use mode `(next|order|split)`")
+_QUEUE_NAME = re.compile(r'"name":\s*"([^"]+)"')
+
+
+def _listed_issues(prompt: str) -> list[dict[str, object]]:
+    """The issues an ask's context lists, in order, each once."""
+    found = dict.fromkeys((repo, int(n)) for repo, n in _LISTED_ISSUE.findall(prompt))
+    return [{"repo": repo, "number": n} for repo, n in found]
+
+
+def _issues_output(title: str, prompt: str, system_prompt: str) -> dict[str, object]:
+    issues = _listed_issues(prompt)
+    if title == "priority":
+        return {
+            "items": [
+                {**i, "priority": "priority: high", "rank": rank, "reason": "It unblocks the rest."}
+                for rank, i in enumerate(issues, start=1)
+            ]
+        }
+    if title == "grouping":
+        group = {
+            "title": "Fixture epic",
+            "scope": "The listed issues, delivered together.",
+            "issues": issues[:2],
+            "reason": "They touch the same code.",
+        }
+        return {"groups": [group] if len(issues) >= 2 else [], "additions": [], "splits": []}
+    if title == "brief":
+        return {
+            "scope": "Deliver the epic's children in order.",
+            "acceptance_criteria": ["Every child issue is closed."],
+        }
+    if title == "queue":
+        found = _QUEUE_MODE.search(system_prompt)
+        mode = found.group(1) if found else "next"
+        queue = _QUEUE_NAME.search(prompt)
+        items: list[dict[str, object]] = []
+        for position, i in enumerate(issues, start=1):
+            item: dict[str, object] = {**i, "reason": "Ready and small."}
+            if mode == "order":
+                item["position"] = position
+            if mode == "split" and queue is not None:
+                item["queue"] = queue.group(1)
+            items.append(item)
+        return {"mode": mode, "items": items}
+    return TRIAGE_OUTPUT
+
+
+def issues_reply(prompt: str, system_prompt: str) -> str | None:
+    """The JSON an Issues ask is answered with: valid against the schema the prompt gives (by
+    its ``title``; triage without one), or ``None`` when ``prompt`` isn't an Issues ask."""
+    if not prompt.startswith(TRIAGE_PROMPT):
+        return None
+    block = _SCHEMA_BLOCK.search(prompt)
+    title = str(json.loads(block.group(1)).get("title", "")) if block else "triage"
+    return json.dumps(_issues_output(title, prompt, system_prompt))
+
+
 async def _post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
     async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
         r = await client.post(url, headers=headers, json=payload)
@@ -214,6 +294,10 @@ class McpScriptRunner:
         key = str(req.workdir)
         if (review := review_job_reply(req.prompt)) is not None:
             yield TextDelta(review)
+            yield TurnDone(f"fake-{key[-8:]}", "fake-model")
+            return
+        if (issues := issues_reply(req.prompt, req.system_prompt)) is not None:
+            yield TextDelta(issues)
             yield TurnDone(f"fake-{key[-8:]}", "fake-model")
             return
         if req.prompt.startswith("TAGS:"):

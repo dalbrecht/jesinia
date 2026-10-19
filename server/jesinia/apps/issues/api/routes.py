@@ -32,6 +32,7 @@ from jesinia.apps.issues.api.schemas import (
     REPO_MAX,
     AbandonedOut,
     AbandonIn,
+    ApplyBatchesOut,
     ApplyBatchOut,
     ContainmentOut,
     ConversionIn,
@@ -48,7 +49,10 @@ from jesinia.apps.issues.api.schemas import (
     IssuesErrorOut,
     IssuesRepoIn,
     IssuesRepoOut,
+    IssuesRepoPatch,
     IssuesReposOut,
+    IssuesSettingsOut,
+    IssuesSettingsPatch,
     IssueSuggestionEditIn,
     IssueSuggestionOut,
     IssueSuggestionRunIn,
@@ -102,8 +106,9 @@ from jesinia.apps.issues.application.labels import LabelSetupService
 from jesinia.apps.issues.application.pending import ApplyService, PendingService
 from jesinia.apps.issues.application.queues import QueueService
 from jesinia.apps.issues.application.reads import IssueQueries
+from jesinia.apps.issues.application.settings import IssuesSettingsService
 from jesinia.apps.issues.application.suggest import SuggestService
-from jesinia.apps.issues.application.sync import SYNC_INTERVAL, SyncService
+from jesinia.apps.issues.application.sync import KEEP, SYNC_INTERVAL, Keep, SyncService
 from jesinia.apps.issues.application.themes import ThemeService
 from jesinia.apps.issues.domain.changes import (
     BatchAbandonedError,
@@ -141,7 +146,11 @@ from jesinia.apps.issues.domain.queues import (
     QueueNameTakenError,
     QueueNotFoundError,
 )
-from jesinia.apps.issues.domain.schema import InvalidSettingsSchemaError, validate_settings_schema
+from jesinia.apps.issues.domain.schema import (
+    InvalidSettingsSchemaError,
+    LabelSchema,
+    validate_settings_schema,
+)
 from jesinia.apps.issues.domain.suggestions import (
     OPEN_STATES,
     DuplicateNotCachedError,
@@ -216,6 +225,9 @@ class IssuesHost(Protocol):
 
     @property
     def themes(self) -> ThemeService: ...
+
+    @property
+    def settings(self) -> IssuesSettingsService: ...
 
     @property
     def idempotency(self) -> IdempotencyStore: ...
@@ -323,7 +335,15 @@ def _status_of(exc: Exception) -> int:
 
 def _error(exc: Exception, now: Callable[[], datetime]) -> JSONResponse:
     wait = retry_after(exc.reset_at, now()) if isinstance(exc, GitHubRateLimitedError) else None
-    body = IssuesErrorOut(error=type(exc).__name__, detail=str(exc), retry_after=wait)
+    batch_id = exc.batch_id if isinstance(exc, EarlierBatchError) else None
+    named = exc.epic if isinstance(exc, GroupEpicExistsError | ThemeEpicClosedError) else None
+    body = IssuesErrorOut(
+        error=type(exc).__name__,
+        detail=str(exc),
+        retry_after=wait,
+        batch_id=batch_id,
+        epic=None if named is None else f"{named[0]}#{named[1]}",
+    )
     headers = None if wait is None else {"Retry-After": str(wait)}
     return JSONResponse(
         body.model_dump(exclude_none=True), status_code=_status_of(exc), headers=headers
@@ -376,7 +396,9 @@ def build_router(host: IssuesHost) -> APIRouter:
         """Every repo added in Settings → Issues, with its schema and sync state."""
 
         async def run() -> IssuesReposOut:
-            return IssuesReposOut(repos=[IssuesRepoOut.of(s) for s in host.queries.repos()])
+            return IssuesReposOut(
+                repos=[IssuesRepoOut.of(s, host.queries.unmapped(s)) for s in host.queries.repos()]
+            )
 
         return await _respond(run, host.clock)
 
@@ -393,7 +415,46 @@ def build_router(host: IssuesHost) -> APIRouter:
             state = await host.sync.configure(
                 _repo(owner, repo), watched=body.watched, settings_schema=schema
             )
-            return IssuesRepoOut.of(state)
+            return IssuesRepoOut.of(state, host.queries.unmapped(state))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.patch(repo_path, response_model=IssuesRepoOut)
+    async def patch_repo(
+        owner: Owner, repo: Name, body: IssuesRepoPatch, idem: IdempotentCall = keyed
+    ) -> Response:
+        """Change only the fields sent: watch or unwatch the repo, or keep, replace or clear its
+        Settings schema. ``watched: true`` adds a new repo (its issues land in the Backlog)."""
+
+        async def run() -> IssuesRepoOut:
+            sent = body.model_fields_set
+            wanted = body.settings_schema
+            schema: LabelSchema | None | Keep = KEEP
+            if "settings_schema" in sent:
+                schema = None if wanted is None else validate_settings_schema(wanted.model_dump())
+            state = await host.sync.update(
+                _repo(owner, repo), watched=body.watched, settings_schema=schema
+            )
+            return IssuesRepoOut.of(state, host.queries.unmapped(state))
+
+        return await idem.run(lambda: _respond(run, host.clock))
+
+    @r.get("/settings", response_model=IssuesSettingsOut)
+    async def get_settings() -> Response:
+        """Settings → Issues' own settings: the runner suggestions ask."""
+
+        async def run() -> IssuesSettingsOut:
+            return IssuesSettingsOut(runner=host.settings.settings().runner)
+
+        return await _respond(run, host.clock)
+
+    @r.patch("/settings", response_model=IssuesSettingsOut)
+    async def patch_settings(body: IssuesSettingsPatch, idem: IdempotentCall = keyed) -> Response:
+        """Save only the fields sent (``runner: null`` follows the agents service again)."""
+
+        async def run() -> IssuesSettingsOut:
+            # ``runner`` is the only field, and a body must send something.
+            return IssuesSettingsOut(runner=host.settings.update(runner=body.runner).runner)
 
         return await idem.run(lambda: _respond(run, host.clock))
 
@@ -404,7 +465,8 @@ def build_router(host: IssuesHost) -> APIRouter:
         async def run() -> IssuesRepoOut:
             name = _repo(owner, repo)
             await host.sync.sync(name)
-            return IssuesRepoOut.of(host.sync.state(name))
+            state = host.sync.state(name)
+            return IssuesRepoOut.of(state, host.queries.unmapped(state))
 
         return await idem.run(lambda: _respond(run, host.clock))
 
@@ -668,6 +730,18 @@ def build_router(host: IssuesHost) -> APIRouter:
 
         return await idem.run(lambda: _respond(run, host.clock))
 
+    @r.get("/batches", response_model=ApplyBatchesOut)
+    async def get_unfinished_batches() -> Response:
+        """The batches that didn't finish (running, interrupted, or finished with steps not
+        applied), newest first, from the cache: what the tray offers Retry or Abandon for after
+        a reload (no GitHub)."""
+
+        async def run() -> ApplyBatchesOut:
+            unfinished = host.pending.unfinished()
+            return ApplyBatchesOut(batches=[ApplyBatchOut.of(b) for b in unfinished])
+
+        return await _respond(run, host.clock)
+
     @r.get("/pending/{batch}", response_model=ApplyBatchOut)
     async def get_batch(batch: ItemId) -> Response:
         """A batch and its result, step by step (no GitHub): poll it while ``running``. A
@@ -678,6 +752,17 @@ def build_router(host: IssuesHost) -> APIRouter:
             return ApplyBatchOut.of(host.pending.batch(batch))
 
         return await _respond(run, host.clock)
+
+    @r.post("/pending/{batch}/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+    async def dismiss_batch(batch: ItemId, idem: IdempotentCall = keyed) -> Response:
+        """Take a batch the author is done with out of the tray: ``GET /batches`` never lists it
+        again (unless a retry runs it). Nothing changes on GitHub. A running batch is a 409."""
+
+        async def run() -> Response:
+            host.apply.dismiss(batch)
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        return await idem.run(lambda: _respond(run, host.clock))
 
     @r.post(
         "/pending/{batch}/retry",

@@ -17,7 +17,8 @@ What a sync asks GitHub (ruling IR20):
   ``parent_issue_url``.
 - **Later syncs:** an epic (it has sub-issues) that changed since the last sync has its children
   fetched. Up to ``EPIC_BACKFILL_PER_SYNC`` unchanged epics whose children were never fetched are
-  backfilled per sync, so links arrive without a first-sync spike.
+  backfilled per sync, so links arrive without a first-sync spike. Up to
+  ``LINKED_PRS_PER_SYNC`` changed open issues get their linked PRs read (best effort).
 - **Comments and timeline** are never fetched by sync: ``refresh_details`` fetches them (and an
   epic's children) on demand, when an issue is opened.
 
@@ -38,6 +39,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
+from enum import Enum
 
 from jesinia.apps.issues.application.ports import (
     IssueReads,
@@ -65,7 +67,7 @@ from jesinia.apps.issues.domain.triage import (
 )
 from jesinia.services.github.application.payload import GitHubPayloadError
 from jesinia.services.github.application.service import GitHubError, GitHubRateLimitedError
-from jesinia.services.github.domain.issue import Issue, Page
+from jesinia.services.github.domain.issue import Issue, Page, summarize_linked_prs
 from jesinia.services.github.domain.repo import validate_repo
 
 log = logging.getLogger(__name__)
@@ -73,8 +75,19 @@ log = logging.getLogger(__name__)
 SYNC_INTERVAL = timedelta(minutes=5)
 LABELS_YML = ".jesinia/labels.yml"
 EPIC_BACKFILL_PER_SYNC = 10
+# Changed open issues whose linked PRs one sync reads (the board's status view, IR62).
+LINKED_PRS_PER_SYNC = 20
 # Pages of comments (and of timeline events) ``refresh_details`` reads for one issue.
 DETAIL_PAGE_CAP = 10
+
+
+class Keep(Enum):
+    """A field a partial save leaves as it is (``KEEP``), unlike ``None``, which clears it."""
+
+    KEEP = "keep"
+
+
+KEEP = Keep.KEEP
 
 Clock = Callable[[], datetime]
 # Told which issues just entered the Inbox view, or changed while in it (Task 5 queues
@@ -171,15 +184,34 @@ class SyncService:
     async def configure(
         self, repo: str, *, watched: bool, settings_schema: LabelSchema | None
     ) -> RepoState:
-        """Settings → Issues for one repo: watch or unwatch it and keep (or clear, with
-        ``None``) its Settings schema (see ``set_settings_schema``). A repo is watched under
-        the name GitHub reports for it, whatever spelling the author typed, so every key
-        (store, views, items, MCP) is the one GitHub's payloads use. Its existing issues land
-        in the Backlog, later ones in the Inbox; watching it again keeps its ``added_at``.
+        """Settings → Issues for one repo, replacing both fields: watch or unwatch it and keep
+        (or clear, with ``None``) its Settings schema. See ``update``.
 
         Raises:
             InvalidRepoError: ``repo`` is not ``owner/name``.
             RepoNotWatchedError: unwatching a repo the author never added.
+            GitHubError: watching a new repo GitHub can't find (or can't be reached).
+        """
+        return await self.update(repo, watched=watched, settings_schema=settings_schema)
+
+    async def update(
+        self,
+        repo: str,
+        *,
+        watched: bool | None = None,
+        settings_schema: LabelSchema | None | Keep = KEEP,
+    ) -> RepoState:
+        """Change only what is given: watch (``True``) or unwatch (``False``) the repo, and
+        keep (``KEEP``), replace or clear (``None``) its Settings schema (see
+        ``set_settings_schema``). A partial save never puts back a field another tab changed.
+        A repo is watched under the name GitHub reports for it, whatever spelling the author
+        typed, so every key (store, views, items, MCP) is the one GitHub's payloads use. Its
+        existing issues land in the Backlog, later ones in the Inbox; watching it again keeps
+        its ``added_at``.
+
+        Raises:
+            InvalidRepoError: ``repo`` is not ``owner/name``.
+            RepoNotWatchedError: changing a repo the author never added without watching it.
             GitHubError: watching a new repo GitHub can't find (or can't be reached).
         """
         if watched:
@@ -193,9 +225,11 @@ class SyncService:
             )
             self._store.watch(name, self._clock())
         else:
-            name = self.state(repo).repo  # only a repo the author added can be unwatched
-            self._store.unwatch(name)
-        await self.set_settings_schema(name, settings_schema)
+            name = self.state(repo).repo  # only a repo the author added
+            if watched is False:
+                self._store.unwatch(name)
+        if not isinstance(settings_schema, Keep):
+            await self.set_settings_schema(name, settings_schema)
         return self.state(name)
 
     def state(self, repo: str) -> RepoState:
@@ -292,6 +326,8 @@ class SyncService:
         self._store.replace_labels(repo, await self._github.labels(repo))
         self._store.replace_milestones(repo, await self._github.milestones(repo))
         is_first = state.synced_at is None
+        budget = [LINKED_PRS_PER_SYNC]  # linked-PR reads this sync may still make
+        checked: builtins.list[int] = []  # issues whose linked PRs this sync read
         cursor = state.cursor
         done = False
         while not done:
@@ -310,6 +346,8 @@ class SyncService:
                 if not (cursor.covers(i.updated_at, i.id) and self._store.is_unchanged(repo, i))
             ]
             links = {} if is_first else await self._children(repo, fresh)
+            if not is_first:
+                fresh = [await self._with_linked_prs(repo, i, budget, checked) for i in fresh]
             stored, entered, edited = self._triaged(state, schema, fresh)
             cursor, done = cursor.after_page(
                 [(i.updated_at, i.id) for i in page.items], page.next_token
@@ -321,9 +359,62 @@ class SyncService:
             if edited:
                 await self._notify(self._on_inbox_edit, repo, edited)
         if not is_first:
+            await self._refresh_linked_prs(repo, budget, checked)
             for n in self._store.epics_without_links(repo, EPIC_BACKFILL_PER_SYNC):
                 children = await self._github.sub_issues(repo, n)
                 self._store.set_sub_issue_links(repo, n, children, self._clock())
+
+    async def _refresh_linked_prs(
+        self, repo: str, budget: builtins.list[int], checked: builtins.list[int]
+    ) -> None:
+        """Spend what is left of the linked-PR budget on the open issues checked longest ago
+        (never first): a PR opening or merging never edits its issue, so an issue nobody edits
+        still gets its state, existing ones after the first sync included (Codex round 3, PR
+        #72). Derived data, best effort: a failed read is logged and stays due, any other
+        failure is logged and the sync goes on. A rate limit still stops the sync."""
+        try:
+            self._store.mark_linked_prs_checked(repo, checked, self._clock())
+            due = self._store.linked_prs_due(repo, budget[0] + len(checked))
+            for n in [n for n in due if n not in checked][: max(0, budget[0])]:
+                budget[0] -= 1
+                try:
+                    links = await self._github.timeline_links(repo, n)
+                except GitHubRateLimitedError:
+                    raise
+                except GitHubError as exc:
+                    log.warning("issues: linked PRs of %s#%s unread, kept: %s", repo, n, exc)
+                    continue
+                self._store.set_linked_prs(repo, n, summarize_linked_prs(links), self._clock())
+        except GitHubRateLimitedError:
+            raise
+        except Exception as exc:  # error isolation: derived data never breaks a sync
+            log.exception("issues: refreshing %s's linked PRs failed: %s", repo, exc)
+
+    async def _with_linked_prs(
+        self, repo: str, issue: Issue, budget: list[int], checked: builtins.list[int]
+    ) -> Issue:
+        """``issue`` with its linked PRs summed up (the board's status view, IR62). Only issues
+        a later sync sees change are read, only open ones (a closed issue is Done anyway), and
+        at most ``LINKED_PRS_PER_SYNC`` a sync, so a big first sync or a long gap costs few
+        per-issue calls (IR20). It is derived data, so best effort: past the budget, or when the
+        read fails (logged with its cause), the stored value is kept and the sync goes on.
+        A rate limit still stops the sync, as every GitHub read does."""
+        if issue.state != "open":
+            return issue
+        stored = self._store.issue(repo, issue.number)
+        kept = replace(issue, linked_pr_state=None if stored is None else stored.linked_pr_state)
+        if budget[0] <= 0:
+            return kept
+        budget[0] -= 1
+        try:
+            links = await self._github.timeline_links(repo, issue.number)
+        except GitHubRateLimitedError:
+            raise
+        except GitHubError as exc:
+            log.warning("issues: linked PRs of %s#%s unread, kept: %s", repo, issue.number, exc)
+            return kept
+        checked.append(issue.number)
+        return replace(issue, linked_pr_state=summarize_linked_prs(links))
 
     async def _children(
         self, repo: str, issues: Sequence[Issue]

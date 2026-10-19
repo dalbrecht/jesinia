@@ -215,7 +215,7 @@
   font-size: var(--jx-text-sm);
 }
 
-/* Settings → Review: one fieldset per repo, and the knowledge model's units. */
+/* Settings → Review and Issues: one fieldset per repo, and Review's knowledge model units. */
 .repo {
   display: grid;
   gap: var(--jx-space-3);

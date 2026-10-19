@@ -10,6 +10,7 @@ version, see the [README](../README.md#quickstart).
 - [Where things live](#where-things-live)
 - [RSS](#rss)
 - [Review](#review)
+- [Issues](#issues)
 - [Updating](#updating)
 - [Agent registration](#agent-registration)
 - [Uninstall](#uninstall)
@@ -24,7 +25,7 @@ version, see the [README](../README.md#quickstart).
 | git | the KB and Jesinia itself are git repositories | `xcode-select --install` |
 | [uv](https://docs.astral.sh/uv/) | Python 3.12+ and the server's dependencies | `brew install uv` |
 | Node 22+ with Corepack | builds the web apps (pnpm is pinned by the repo) | `brew install node`, then `corepack enable pnpm` |
-| `gh` (needed for Review) | GitHub access for Review: Jesinia stores no credentials of its own and uses the token `gh` holds | `brew install gh && gh auth login` |
+| `gh` (needed for Review and Issues) | GitHub access for Review and Issues: Jesinia stores no credentials of its own and uses the token `gh` holds | `brew install gh && gh auth login` |
 | `claude` and/or `codex` (optional) | chat with an agent in Notes | install Claude Code or Codex and log in |
 
 `./setup` checks these and prints the exact command for anything missing.
@@ -108,7 +109,7 @@ a restart: `./setup` again, or
 | What | Where |
 |---|---|
 | Config (mode 600) | `~/Library/Application Support/jesinia/config.toml` |
-| Databases | `~/Library/Application Support/jesinia/*.sqlite`: `sessions`, `rss` (feeds, posts and read state) and `review` (rounds, drafts, posted reviews) are history (backed up); the rest are rebuildable |
+| Databases | `~/Library/Application Support/jesinia/*.sqlite`: `sessions`, `rss` (feeds, posts and read state), `review` (rounds, drafts, posted reviews) and `issues` (queues, themes, drafts, batches) are history (backed up); the rest are rebuildable |
 | Agent session folders | `~/Library/Application Support/jesinia/sessions/<id>/` |
 | Server log (JSON lines, 10 MB × 5) | `~/Library/Logs/jesinia/server.log` |
 | launchd output | `~/Library/Logs/jesinia/launchd.{out,err}.log` |
@@ -215,6 +216,72 @@ picks it up (no restart). `/healthz` reports the `github` module as "no token: r
   but have no way to post.
 - **Backup:** `review.sqlite` is history, so `jesinia backup` includes it; the mirrors and
   checkouts are not (they are fetched again).
+
+## Issues
+
+The Issues app (`/issues/`) triages the issues of the repos you watch, against a label
+convention per repo, with agent suggestions you approve. It groups issues into epics and
+builds ordered work queues by drag and drop. It uses the same `gh` token as Review (see
+[Review](#review)): without one the lists show **Signed out of GitHub** with the command to
+run, and keep showing the cache.
+
+- **Setup:** open **Settings → Issues**. **Suggestions runner** picks the agent that suggests
+  labels, priorities, epics and queue orders. *Automatic* uses Claude Code when it is
+  available, else the first available runner. Without a runner, suggestions wait and manual
+  triage keeps working. The agent never changes GitHub: each suggestion is a draft you
+  approve, and agents get only the read-only `issues_search`, `issues_get`, `queues_list` and
+  `queue_get` tools.
+- **Watching a repo:** type `owner/name` under **Add a repo** and choose **Watch**. Its open
+  issues land in the **Backlog**, not the Inbox, and no suggestions run on them, so a big repo
+  costs no agent time. Issues opened after that land in the **Inbox**, as does any issue that
+  becomes incomplete. Sync runs every 5 minutes (and at start), reads changed issues only, and
+  pauses until GitHub's reset after a rate limit. Unticking **Watched** stops the syncs and
+  keeps the cache, queues and themes. Each save sends only what it changes, so two open tabs
+  don't undo each other.
+- **The label schema:** each repo's convention comes from its `.jesinia/labels.yml` when the
+  file exists (read-only in Settings; it wins), else from the schema made in Settings, else from
+  the default (readiness, priority, type, `area:` areas, `epic`, `initiative`). **Aliases** are
+  existing labels that mean the same thing (for example `design needed` for `design-needed`).
+  An alias counts toward completeness, and Jesinia writes the label name that exists on GitHub
+  until the repo is migrated. **Labels on GitHub not in the schema** lists the repo's labels
+  that count for nothing yet; **Alias of…** adds one, by its exact name, to the value it means.
+  **Save labels** keeps the Settings schema (the previews wait until it is saved). **Use the
+  default** clears it after a confirmation, with **Undo** to put it back. Label names are shown
+  with any hidden or direction-changing character as a visible token.
+- **Label setup:** Jesinia never creates a label implicitly. **Preview setup** lists the
+  canonical labels the repo lacks; **Apply setup** creates exactly those, as your approval.
+- **Label migration, and why it is safe:** **Preview migration** lists, for each alias on
+  GitHub, the issues carrying it and the canonical label they move to. On **Apply migration**,
+  Jesinia lists each old label's issues and pull requests again, live from GitHub (never from
+  its cache, so an alias added since the last sync isn't stripped), moves each one, and deletes
+  the old label only if every move succeeded. Otherwise the old label stays and the failed
+  issues are named. Some steps are refused up front, with the reason shown in the preview:
+  - a label whose name has a comma is skipped, because GitHub can't list issues by it: check
+    it and delete it by hand;
+  - two labels on GitHub that compare as one name (by case or Unicode form) refuse the
+    preview: rename one on GitHub first.
+
+  A plan is valid for 15 minutes and is refused if the repo's labels or schema changed since
+  the preview: preview again. When GitHub stops a batch (a rate limit or a rejected token),
+  the steps done so far are shown; preview again for what is left.
+- **The Pending changes tray:** approving a suggestion applies it to GitHub at once. Every
+  other GitHub change (a drag onto an epic or a board column, a picker, a menu action, the
+  bulk bar, a queue's band move or Done) waits in the tray at the bottom of the window until **Apply**.
+  Apply sends the whole tray as one batch: one ordered series per issue, checked against a
+  fresh read. A step that GitHub changed underneath (a parent moved, a label already set) is
+  shown as a conflict and never overwritten. A failure stops that issue's series and keeps what
+  applied; **Retry** runs only the rest. Batches are kept 30 days, and an unfinished one is
+  offered again after a reload. Queue order, themes and adding to a queue are local and apply
+  at once; publishing a theme as a `theme:` label stages in the tray.
+- **Backup:** `issues.sqlite` is history (queues, notes, themes and drafts are yours), so
+  `jesinia backup` includes it; the issue cache is fetched again.
+- **Acceptance (on the author's Mac):**
+  1. watch a real repo (amicus-platform): its issues land in the Backlog, with no burst of
+     agent runs;
+  2. run its label setup, then map its labels as aliases (and migrate if wanted);
+  3. triage five Inbox issues by approving suggestions;
+  4. convert a checklist epic to sub-issues;
+  5. build an "Agents: this week" queue by dragging, then **Copy brief**.
 
 ## Updating
 

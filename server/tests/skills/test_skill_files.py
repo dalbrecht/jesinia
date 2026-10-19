@@ -13,7 +13,7 @@ from jesinia.registry import modules
 REPO = Path(__file__).resolve().parents[3]
 SKILLS = REPO / "skills"
 TEXTS = sorted(p for p in SKILLS.rglob("*.md"))
-TOOL = re.compile(r"`((?:kb|search|agents|notes|tags|rss)_[a-z_]+)`")
+TOOL = re.compile(r"`((?:kb|search|agents|notes|tags|rss|review|issues|queues|queue)_[a-z_]+)`")
 DOC = re.compile(r"`(docs/[\w./-]+\.md)`")
 
 
@@ -68,3 +68,23 @@ def test_agents_learn_the_read_only_rss_tools(path: str) -> None:
     # Keeping a post is the user's action: no skill may point an agent at a keep tool.
     assert not re.search(r"`rss_keep\w*`", text)
     assert "untrusted" in text.split("rss_search_posts", 1)[1][:600]
+
+
+ISSUES_TOOLS = ("`issues_search`", "`issues_get`", "`queues_list`", "`queue_get`")
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["claude-code/skills/jesinia-kb-conventions/SKILL.md", "codex/AGENTS.snippet.md"],
+)
+def test_agents_learn_the_read_only_issues_tools(path: str) -> None:
+    text = (SKILLS / path).read_text(encoding="utf-8")
+    assert all(tool in text for tool in ISSUES_TOOLS)
+    # Agents can't change GitHub or queues: no skill may point an agent at a write tool.
+    assert not re.search(r"`(?:issues|queues?)_(?:apply|approve|write|add|move|close)\w*`", text)
+    assert "untrusted" in text.split("issues_search", 1)[1][:600]
+
+
+def test_the_mcp_convention_lists_the_issues_tools() -> None:
+    text = (REPO / "docs/conventions/agents.md").read_text(encoding="utf-8")
+    assert all(tool in text for tool in ISSUES_TOOLS)

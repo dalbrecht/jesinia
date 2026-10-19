@@ -20,7 +20,8 @@ function hiddenKind(cp: number): HiddenKind | null {
   if (
     (cp >= 0x200b && cp <= 0x200d) ||
     (cp >= 0x2060 && cp <= 0x2064) ||
-    [0xfeff, 0x00ad, 0x180e, 0x034f, 0x115f, 0x1160, 0x3164, 0xffa0].includes(cp)
+    // U+2028 and U+2029, the line and paragraph separators, break lines unseen.
+    [0xfeff, 0x00ad, 0x180e, 0x034f, 0x115f, 0x1160, 0x3164, 0xffa0, 0x2028, 0x2029].includes(cp)
   )
     return "invisible";
   if ((cp < 0x20 && cp !== 0x09) || (cp >= 0x7f && cp <= 0x9f)) return "control";
