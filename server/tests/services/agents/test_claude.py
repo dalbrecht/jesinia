@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import json
 from dataclasses import replace
 
 import pytest
 
 from jesinia.services.agents.application.runner import TurnRequest
 from jesinia.services.agents.domain.events import RunError, TextDelta, ToolResult, ToolUse, TurnDone
-from jesinia.services.agents.infrastructure.claude import ClaudeCodeRunner, parse_claude_line
+from jesinia.services.agents.infrastructure.claude import (
+    ClaudeCodeRunner,
+    ClaudeStreamParser,
+    parse_claude_line,
+)
 from tests.services.agents.conftest import FakeProc, read_fixture, spawn_from
 
 
@@ -48,8 +53,6 @@ def test_claude_resume_flag_and_model(req: TurnRequest) -> None:
 
 
 def _events(name: str) -> list[object]:
-    from jesinia.services.agents.infrastructure.claude import ClaudeStreamParser
-
     p = ClaudeStreamParser()
     return [e for line in read_fixture(name) for e in p.feed(line)]
 
@@ -60,7 +63,44 @@ def test_parse_claude_fixture() -> None:
     assert text == "Let me search the KB.Your Funding models note covers it."
     assert ToolUse("kb_search", {"q": "maintenance"}) in evs
     assert ToolResult("kb_search", True) in evs
-    assert evs[-1] == TurnDone("11111111-1111-4111-8111-111111111111", "claude-opus-5-5")
+    # The reply is the result's final message, not the preamble run into it.
+    assert evs[-1] == TurnDone(
+        "11111111-1111-4111-8111-111111111111",
+        "claude-opus-5-5",
+        "Your Funding models note covers it.",
+    )
+
+
+def test_a_preamble_tool_calls_then_json_reply_with_the_json_alone() -> None:
+    answer = '{"verdict": "approve", "reasoning": "Small."}'
+    lines = [
+        {"type": "system", "subtype": "init", "model": "m", "session_id": "s-1"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "I'll look."}]}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "tool_use", "id": "t1", "name": "mcp__jesinia__repo_git"}]
+            },
+        },
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "result": answer},
+    ]
+    p = ClaudeStreamParser()
+    evs = [e for line in lines for e in p.feed(json.dumps(line))]
+    assert evs[-1] == TurnDone("s-1", "m", answer)
+
+
+def test_a_result_without_text_falls_back_to_the_last_assistant_message() -> None:
+    p = ClaudeStreamParser()
+    p.feed(
+        json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "a"}]}})
+    )
+    p.feed(
+        json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "b"}]}})
+    )
+    done = p.feed(json.dumps({"type": "result", "subtype": "success", "session_id": "s"}))
+    assert done == [TurnDone("s", None, "b")]
 
 
 def test_parse_auth_error_fixture() -> None:

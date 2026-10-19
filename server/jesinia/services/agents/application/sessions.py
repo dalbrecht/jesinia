@@ -269,28 +269,87 @@ class SessionService:
         self, session_id: str, prompt: str, *, timeout: float = 45.0, purpose: str | None = None
     ) -> str:
         """Run one turn in an existing session (resuming the agent's own session) and
-        return the text it replied with. Raises ``SessionNotFound``, ``SessionBusy``,
-        ``TurnFailed`` (the agent reported an error) or ``TimeoutError``; a timed-out turn
-        is stopped and marked failed so the session can be used again. ``purpose`` marks the
-        turn's ``user_message`` as the app's prompt rather than the author's words."""
+        return its reply: the turn's final message (a preamble the agent wrote before its
+        tool calls is not part of it), or the turn's text when the runner can't tell its
+        messages apart. Returns once the turn's process has ended (a CLI still lingering at
+        the deadline is stopped, and the reply stands), so the session takes the next
+        ``ask`` at once. Raises ``SessionNotFound``, ``SessionBusy``, ``TurnFailed`` (the
+        agent reported an error, or finished with no final message) or ``TimeoutError``
+        (no ``turn_done`` before the deadline: the turn is stopped and the session marked
+        failed with that cause, so it can be used again). ``purpose`` marks the turn's
+        ``user_message`` as the app's prompt rather than the author's words."""
         after = await self._start_turn(session_id, prompt, purpose)
+        deadline = asyncio.get_running_loop().time() + timeout
         try:
-            async with asyncio.timeout(timeout):
-                return await self._reply_after(session_id, after)
-        except TimeoutError:
-            await self._abandon_turn(session_id, f"the turn timed out after {timeout:g}s")
+            async with asyncio.timeout_at(deadline):
+                reply = await self._reply_after(session_id, after)
+        except TimeoutError as exc:
+            await self._stop_turn(session_id)
+            # The turn may have finished just as the deadline hit: its outcome stands.
+            settled = self._reply_from(self.store.events(session_id, after))
+            if settled is not None:
+                return settled
+            reason = f"the turn timed out after {timeout:g}s"
+            self.store.set_status(session_id, "failed")
+            await self._append(session_id, "error", {"message": reason})
+            raise TimeoutError(reason) from exc
+        except TurnFailed:
+            await self._reap(session_id, deadline)
             raise
+        await self._reap(session_id, deadline)
+        return reply
 
     async def _reply_after(self, session_id: str, after_seq: int) -> str:
-        parts: list[str] = []
+        seen: list[StoredEvent] = []
         async for event in self.stream(session_id, after_seq):
+            seen.append(event)
+            if event.kind in ("error", "turn_done"):
+                break
+        reply = self._reply_from(seen)
+        assert reply is not None  # the loop only ends on a turn's last event
+        return reply
+
+    @staticmethod
+    def _reply_from(events: list[StoredEvent]) -> str | None:
+        """The reply of a turn from its events: None if it hasn't ended yet. Raises
+        ``TurnFailed`` for a turn that ended in an error or with no final message."""
+        parts: list[str] = []
+        for event in events:
             if event.kind == "text":
                 parts.append(str(event.data.get("text", "")))
             elif event.kind == "error":
                 raise TurnFailed(str(event.data.get("message", "the agent turn failed")))
             elif event.kind == "turn_done":
-                break
-        return "".join(parts)
+                final = event.data.get("final_message")
+                reply = final if isinstance(final, str) else "".join(parts)
+                if not reply.strip():
+                    raise TurnFailed(
+                        "no final message: the agent finished its turn without a reply"
+                    )
+                return reply
+        return None
+
+    async def _reap(self, session_id: str, deadline: float) -> None:
+        """Let a turn whose last event is in finish until ``deadline`` (its CLI may still be
+        exiting, and until then the session is busy), then stop a CLI still lingering."""
+        task = self._tasks.get(session_id)
+        if task is None or task.done():
+            return
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        await asyncio.wait({task}, timeout=remaining)
+        if not task.done():
+            log.warning(
+                "agent CLI lingered past its turn's deadline in session %s; stopping it",
+                session_id,
+            )
+            await self._stop_turn(session_id)
+
+    async def _stop_turn(self, session_id: str) -> None:
+        """Cancel the session's turn task (which kills its process) and wait for it."""
+        task = self._tasks.get(session_id)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.wait({task})
 
     async def _abandon_turn(self, session_id: str, reason: str) -> None:
         task = self._tasks.get(session_id)
@@ -374,11 +433,13 @@ class SessionService:
                 elif isinstance(ev, TurnDone):
                     self.store.set_agent_session(id, ev.agent_session_id, ev.model)
                     self.store.set_status(id, "idle")
-                    await self._append(
-                        id,
-                        "turn_done",
-                        {"agent_session_id": ev.agent_session_id, "model": ev.model},
-                    )
+                    done: dict[str, object] = {
+                        "agent_session_id": ev.agent_session_id,
+                        "model": ev.model,
+                    }
+                    if ev.final_message is not None:
+                        done["final_message"] = ev.final_message
+                    await self._append(id, "turn_done", done)
                     finished = True
                 elif isinstance(ev, RunError):
                     self.store.set_status(id, "failed")

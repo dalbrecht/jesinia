@@ -24,6 +24,7 @@ from jesinia.apps.review.application.errors import InvalidAgentOutput, JobFailed
 from jesinia.apps.review.application.jobs import (
     DEFAULT_RUNNER,
     MAX_REPLY_CHARS,
+    MAX_REPLY_DEPTH,
     REPO_TOOL_NAMES,
     WALK_EVERYTHING_INSTRUCTION,
     JobRunner,
@@ -60,11 +61,23 @@ from jesinia.apps.review.domain.workspace import GitCommandError, WorkspaceError
 from jesinia.core.auth import Principal
 from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.module import CallContext, ToolDef
+from jesinia.services.agents.application.errors import (
+    SessionBusy,
+    SessionClosed,
+    SessionNotFound,
+)
 from jesinia.services.agents.application.gate import SessionWriteGate
 from jesinia.services.agents.application.packs import PACK_INLINE_LIMIT, pack_contents
 from jesinia.services.agents.application.runner import RunnerStatus, TurnRequest
 from jesinia.services.agents.application.sessions import SessionService
-from jesinia.services.agents.domain.events import AgentEvent, RunError, TextDelta, TurnDone
+from jesinia.services.agents.domain.events import (
+    AgentEvent,
+    RunError,
+    TextDelta,
+    ToolResult,
+    ToolUse,
+    TurnDone,
+)
 from jesinia.services.agents.infrastructure.store import SqliteSessionStore
 from jesinia.services.github.domain.pr import Check, CheckState, PrCommit, PullRequest
 
@@ -185,15 +198,20 @@ TOOLS: dict[str, ToolDef] = {
 }
 
 
+Reply = str | RunError | list[AgentEvent]
+
+
 class ScriptedRunner:
-    """Replies with the next scripted text each turn; ``on_turn`` runs mid-turn."""
+    """Replies with the next scripted text (or events) each turn; ``on_turn`` runs mid-turn.
+    ``linger`` keeps the turn open after its last event, as a CLI that hasn't exited yet."""
 
     name = "scripted"
 
-    def __init__(self, replies: Sequence[str | RunError]) -> None:
+    def __init__(self, replies: Sequence[Reply]) -> None:
         self.replies = list(replies)
         self.requests: list[TurnRequest] = []
         self.on_turn: Callable[[TurnRequest], Awaitable[None]] | None = None
+        self.linger = 0.0
 
     async def status(self) -> RunnerStatus:
         return RunnerStatus(True, "1", "scripted")
@@ -203,11 +221,16 @@ class ScriptedRunner:
         if self.on_turn is not None:
             await self.on_turn(req)
         reply = self.replies.pop(0)
-        if isinstance(reply, RunError):
+        if isinstance(reply, list):
+            for event in reply:
+                yield event
+        elif isinstance(reply, RunError):
             yield reply
-            return
-        yield TextDelta(reply)
-        yield TurnDone(f"agent-{len(self.requests)}", "model")
+        else:
+            yield TextDelta(reply)
+            yield TurnDone(f"agent-{len(self.requests)}", "model")
+        if self.linger:
+            await asyncio.sleep(self.linger)
 
 
 class FakeWorkspace:
@@ -298,8 +321,9 @@ class Env:
     store: FakeStore
     registry: ReviewSessionRegistry
     jobs: JobRunner
+    slept: list[float]
 
-    def script(self, *replies: str | RunError) -> None:
+    def script(self, *replies: Reply) -> None:
         self.runner.replies = list(replies)
 
     def prompts(self) -> list[str]:
@@ -335,8 +359,13 @@ def env(tmp_path: Path) -> Iterator[Env]:
     standards = FakeStandards()
     store = FakeStore(user_dir=tmp_path / "mine", overrides=[Override("x.md", ("A",), "b")])
     registry = ReviewSessionRegistry()
-    jobs = JobRunner(sessions, workspace, standards, registry=registry, store=store)
-    yield Env(runner, sessions, workspace, standards, store, registry, jobs)
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    jobs = JobRunner(sessions, workspace, standards, registry=registry, store=store, sleep=sleep)
+    yield Env(runner, sessions, workspace, standards, store, registry, jobs, slept)
     conn.close()
 
 
@@ -1154,3 +1183,127 @@ async def test_a_metrics_reply_off_the_set_twice_fails_and_stores_nothing(env: E
     with pytest.raises(JobFailed, match="metrics"):
         await env.jobs.run(JobKind.METRICS, replace(a_round(), metric_criteria=SET))
     assert (11, "metrics") not in env.store.artifacts
+
+
+# --- Agents' final replies, transient errors and preserved causes (#73) -------------------------
+
+CAPACITY = "Selected model is at capacity. Please try a different model."
+GOOD = {"verdict": "approve", "reasoning": "Small and tested."}
+
+
+def codex_turn(answer: str, n: int = 1) -> list[AgentEvent]:
+    """A real Codex job turn's shape: a preamble message, a tool call, then the answer."""
+    return [
+        TextDelta("I\u2019ll inspect the diff and trace how the settings are used."),
+        ToolUse("repo_git", {"cmd": "show"}),
+        ToolResult("repo_git", True),
+        TextDelta(answer),
+        TurnDone(f"agent-{n}", None, answer),
+    ]
+
+
+async def test_a_preamble_before_the_json_answer_is_not_part_of_the_reply(env: Env) -> None:
+    env.script(codex_turn(json.dumps(GOOD)))
+    assert await env.jobs.run(JobKind.RECOMMENDATION, a_round()) == GOOD
+    assert len(env.runner.requests) == 1  # no corrective retry was needed
+
+
+async def test_the_corrective_retry_runs_a_resumed_turn_and_uses_only_its_reply(env: Env) -> None:
+    """The CLI is still exiting when the first reply is rejected: the retry must still run
+    its own resumed turn (it failed with SessionBusy within milliseconds before)."""
+    env.runner.linger = 0.05
+    env.script(codex_turn("Sure, it looks fine."), codex_turn(json.dumps(GOOD), 2))
+    assert await env.jobs.run(JobKind.RECOMMENDATION, a_round()) == GOOD
+    first, retry = env.runner.requests
+    assert retry.resume_id == "agent-1" and "Your reply was rejected" in retry.prompt
+    assert env.registry.bound_trees() == []
+
+
+async def test_a_transient_provider_error_is_retried_with_backoff(env: Env) -> None:
+    env.script(RunError(CAPACITY), json.dumps(GOOD))
+    assert await env.jobs.run(JobKind.RECOMMENDATION, a_round()) == GOOD
+    first, again = env.prompts()
+    assert again == first  # the same request again, not a correction
+    assert len(env.slept) == 1 and env.slept[0] > 0
+
+
+async def test_transient_errors_give_up_after_two_retries_keeping_the_cause(env: Env) -> None:
+    env.script(RunError(CAPACITY), RunError(CAPACITY), RunError(CAPACITY))
+    with pytest.raises(JobFailed, match="at capacity") as raised:
+        await env.jobs.run(JobKind.RECOMMENDATION, a_round())
+    assert len(env.runner.requests) == 3
+    assert len(env.slept) == 2 and env.slept[0] < env.slept[1]  # backing off
+    assert isinstance(raised.value.__cause__, Exception)
+    assert env.registry.bound_trees() == []
+
+
+async def test_a_permanent_runner_error_is_not_retried(env: Env) -> None:
+    env.script(RunError("the CLI is logged out"))
+    with pytest.raises(JobFailed, match="logged out"):
+        await env.jobs.run(JobKind.RECOMMENDATION, a_round())
+    assert len(env.runner.requests) == 1 and env.slept == []
+
+
+async def test_a_job_failure_names_the_runners_cause_with_the_session_secondary(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    env.script(RunError("codex crashed: Bearer s3cr3t-token rejected"))
+    with pytest.raises(JobFailed) as raised:
+        await env.jobs.run(JobKind.FINDINGS, a_round())
+    message = str(raised.value)
+    (session,) = env.sessions.store.all_sessions()
+    assert "the agent reported an error: codex crashed" in message
+    assert f"session {session.id}" in message
+    assert message.index("codex crashed") < message.index(session.id)  # the id is secondary
+    assert "s3cr3t-token" not in message
+    logged = [r.getMessage() for r in caplog.records if "review.jobs" in r.getMessage()]
+    assert any("codex crashed" in line and session.id in line for line in logged)
+    assert not any("s3cr3t-token" in line for line in logged)
+
+
+async def test_a_turn_with_no_final_message_says_so(env: Env) -> None:
+    env.script([TurnDone("agent-1", None)])
+    with pytest.raises(JobFailed, match="no final message"):
+        await env.jobs.run(JobKind.FINDINGS, a_round())
+
+
+@pytest.mark.parametrize(
+    ("error", "words"),
+    [
+        (SessionBusy, "still running its previous turn"),
+        (SessionClosed, "session was closed"),
+        (SessionNotFound, "session no longer exists"),
+    ],
+)
+async def test_a_session_error_is_a_readable_cause_not_a_bare_id(
+    env: Env, monkeypatch: pytest.MonkeyPatch, error: type[Exception], words: str
+) -> None:
+    async def refuse(session_id: str, prompt: str, *, timeout: float = 45.0) -> str:
+        raise error(session_id)
+
+    monkeypatch.setattr(env.sessions, "ask", refuse)
+    with pytest.raises(JobFailed, match=words) as raised:
+        await env.jobs.run(JobKind.FINDINGS, a_round())
+    assert isinstance(raised.value.cause, error)
+
+
+def test_a_reply_with_prose_around_its_json_is_still_read() -> None:
+    schema = schema_for(JobKind.RECOMMENDATION)
+    ok = {"verdict": "approve", "reasoning": "Small {and} tested."}
+    body = json.dumps(ok)
+    assert parse_job_output(f"I checked the code.\n\n{body}", schema) == ok
+    assert parse_job_output(f'Here it is: ```json\n{body}\n``` Done, "ok"?', schema) == ok
+    # The last top-level object wins (a draft, then the answer).
+    draft = json.dumps({"verdict": "approve"})
+    assert parse_job_output(f"Draft: {draft}\nFinal: {body}", schema) == ok
+    for no_object in ("No JSON {here at all", "Look: ```json\n[1, 2]\n``` ok"):
+        with pytest.raises(InvalidAgentOutput, match="not valid JSON"):
+            parse_job_output(no_object, schema)
+    # Braces and escaped quotes inside strings, nested drafts, and broken or absurdly deep
+    # trailing spans don't confuse it.
+    tricky = {"verdict": "approve", "reasoning": 'a "}" and a \\ here'}
+    nested = json.dumps({"a": {"b": 1}})
+    text = f"Draft {nested}. Final: {json.dumps(tricky)} and {{not json}}"
+    assert parse_job_output(text, schema) == tricky
+    deep = '"' + "{" * (MAX_REPLY_DEPTH + 5) + "}" * (MAX_REPLY_DEPTH + 5)
+    assert parse_job_output(f"{body} then {deep}", schema) == ok

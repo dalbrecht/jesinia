@@ -809,6 +809,25 @@ async def test_a_failed_job_is_isolated_and_named_in_the_reasons(env: Env) -> No
     assert "job_failed" in env.states()
 
 
+async def test_a_failed_jobs_runner_cause_reaches_its_record_and_the_log(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#73: the job record (which the API serves) and the server log carry the runner's
+    own cause, not just an opaque session id."""
+    cause = "the agent reported an error: Selected model is at capacity. (session abc123)"
+    env.jobs.failing[JobKind.RECOMMENDATION] = RuntimeError(cause)
+    ref = env.add()
+    await prereview(env)
+    round_id, _ = latest(env, ref)
+    jobs = env.artifacts(round_id)["jobs"]
+    assert isinstance(jobs, dict) and jobs["recommendation"]["state"] == "failed"
+    assert "Selected model is at capacity" in jobs["recommendation"]["error"]
+    assert any(
+        "recommendation job failed" in r.getMessage() and "at capacity" in r.getMessage()
+        for r in caplog.records
+    )
+
+
 async def test_progress_events_carry_only_ids_states_and_counts(env: Env) -> None:
     env.github.pr = replace(env.github.pr, title=INJECTION, body=INJECTION)
     ref = env.add(env.github.pr)

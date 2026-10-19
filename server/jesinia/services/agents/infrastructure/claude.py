@@ -64,6 +64,7 @@ class ClaudeStreamParser:
         self.session_id: str | None = None
         self._tool_names: dict[str, str] = {}
         self.malformed: str | None = None  # the first unparseable record, if any
+        self.last_message: str | None = None  # the latest assistant message's text
 
     def feed(self, line: str) -> list[AgentEvent]:
         try:
@@ -87,7 +88,11 @@ class ClaudeStreamParser:
             return []
         if kind == "assistant":
             out: list[AgentEvent] = []
-            for block in (d.get("message") or {}).get("content") or []:
+            content = (d.get("message") or {}).get("content") or []
+            texts = [str(b.get("text", "")) for b in content if b.get("type") == "text"]
+            if texts:
+                self.last_message = "".join(texts)
+            for block in content:
                 if block.get("type") == "tool_use":
                     name = _tool_name(str(block.get("name", "")))
                     self._tool_names[str(block.get("id"))] = name
@@ -105,7 +110,11 @@ class ClaudeStreamParser:
                 return [RunError(str(d.get("result") or d.get("subtype") or "agent run failed"))]
             if self.malformed is not None:
                 return [RunError(f"claude sent a malformed record: {self.malformed!r}")]
-            return [TurnDone(str(self.session_id or ""), self.model)]
+            # The result's text is the final assistant message: the reply, without any
+            # preamble the agent wrote before its tool calls.
+            final = d.get("result")
+            final_message = str(final) if isinstance(final, str) and final else self.last_message
+            return [TurnDone(str(self.session_id or ""), self.model, final_message)]
         return []
 
 

@@ -27,6 +27,10 @@ class ToolResult:
 class TurnDone:
     agent_session_id: str  # the CLI's own session/thread id, used to resume
     model: str | None
+    # The turn's last assistant message: its reply. A turn may say several things (a
+    # preamble before its tool calls, then the answer); only this one answers the prompt.
+    # None when the runner can't tell its messages apart.
+    final_message: str | None = None
 
 
 @dataclass(frozen=True)

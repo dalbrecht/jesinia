@@ -17,12 +17,15 @@ class InvalidAgentOutput(ReviewError, ValueError):
 class JobFailed(ReviewJobError):
     """A review agent job produced no usable result. ``cause`` is the original failure
     (the agent's invalid output, a git or standards error, the runner's own error), also
-    chained as ``__cause__``, so the round can show exactly why."""
+    chained as ``__cause__``, so the round can show exactly why. ``detail``, when given,
+    says it in readable words (the runner's own message, with the session as a secondary
+    detail) where the cause's own text is terse, such as a bare session id."""
 
-    def __init__(self, job: JobKind, cause: BaseException) -> None:
-        super().__init__(f"the {job.value} job failed: {cause}")
+    def __init__(self, job: JobKind, cause: BaseException, detail: str | None = None) -> None:
+        super().__init__(f"the {job.value} job failed: {detail or cause}")
         self.job = job
         self.cause = cause
+        self.detail = detail
 
 
 class RoundPreparationError(ReviewJobError):
