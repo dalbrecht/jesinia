@@ -606,7 +606,7 @@ async def test_pr_view_drops_step_numbers_the_agent_stored_in_old_rounds(env: En
 
 async def test_store_cleans_numbered_titles_on_every_artifact_read(env: Env) -> None:
     round_id = _deep(env)
-    walk = {"steps": [{"title": "Step 2: B", "body": "b", "hunks": []}]}
+    walk = {"steps": [{"title": "Step 1: B", "body": "b", "hunks": []}]}
     env.store.put_artifact(round_id, "walkthrough", walk)
     assert env.store.artifact(round_id, "walkthrough") == {
         "steps": [{"title": "B", "body": "b", "hunks": []}]

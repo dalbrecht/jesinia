@@ -806,15 +806,20 @@ def steps_from_json(data: object) -> list[Step]:
 # The delimiter is required so content that merely starts with a number ("3D preview fixes",
 # "2026 migration") is never mistaken for a step number.
 _STEP_NUMBER_PREFIX = re.compile(
-    r"^\s*(?:step\s+\d+\s*[:.)\-\u2013\u2014]|\d+\s*[.)]|#\d+)\s+", re.IGNORECASE
+    r"^\s*(?:step\s+(\d+)\s*[:.)\-\u2013\u2014]|(\d+)\s*[.)]|#(\d+))\s+",
+    re.IGNORECASE,
 )
 
 
-def strip_step_number(title: str) -> str:
+def strip_step_number(title: str, position: int) -> str:
     """``title`` without a leading step number the agent added ("1. ", "1) ", "Step 1: ",
-    "Step 1 - ", "#1 "); the title as given when nothing non-empty would remain."""
-    stripped = _STEP_NUMBER_PREFIX.sub("", title, count=1).strip()
-    return stripped or title
+    "Step 1 - ", "#1 "), but only when it is the step's own 1-based ``position``: any other
+    number is content (an issue reference like "#123", a version). The title as given when
+    nothing non-empty would remain."""
+    found = _STEP_NUMBER_PREFIX.match(title)
+    if found is None or int(found.group(1) or found.group(2) or found.group(3)) != position:
+        return title
+    return title[found.end() :].strip() or title
 
 
 def with_clean_step_titles(walkthrough: Mapping[str, object]) -> dict[str, object]:
@@ -824,10 +829,10 @@ def with_clean_step_titles(walkthrough: Mapping[str, object]) -> dict[str, objec
     if not isinstance(raw, list):
         return dict(walkthrough)
     steps = [
-        {**item, "title": strip_step_number(item["title"])}
+        {**item, "title": strip_step_number(item["title"], position)}
         if isinstance(item, Mapping) and isinstance(item.get("title"), str)
         else item
-        for item in raw
+        for position, item in enumerate(raw, start=1)
     ]
     return {**walkthrough, "steps": steps}
 

@@ -573,34 +573,40 @@ def test_nothing_to_walk_is_flagged_when_the_diff_changes_no_lines() -> None:
 
 
 @pytest.mark.parametrize(
-    ("title", "expected"),
+    ("title", "position", "expected"),
     [
-        ("1. Give packout claims an index", "Give packout claims an index"),
-        ("12) Add the route", "Add the route"),
-        ("Step 1: Add the route", "Add the route"),
-        ("step 2 - Add the route", "Add the route"),
-        ("Step 3. Add the route", "Add the route"),
-        ("Step 4 \u2014 Add the route", "Add the route"),
-        ("#1 Add the route", "Add the route"),
-        ("  7.   Add the route  ", "Add the route"),
-        ("3D preview fixes", "3D preview fixes"),
-        ("2026 migration", "2026 migration"),
-        ("1.5 release notes", "1.5 release notes"),
-        ("Step by step guide", "Step by step guide"),
-        ("1. ", "1. "),
-        ("Step 1:", "Step 1:"),
-        ("", ""),
+        ("1. Give packout claims an index", 1, "Give packout claims an index"),
+        ("12) Add the route", 12, "Add the route"),
+        ("Step 1: Add the route", 1, "Add the route"),
+        ("step 2 - Add the route", 2, "Add the route"),
+        ("Step 3. Add the route", 3, "Add the route"),
+        ("Step 4 \u2014 Add the route", 4, "Add the route"),
+        ("#1 Add the route", 1, "Add the route"),
+        ("  7.   Add the route  ", 7, "Add the route"),
+        ("#123 Fix token refresh", 1, "#123 Fix token refresh"),
+        ("#2 Fix token refresh", 1, "#2 Fix token refresh"),
+        ("7. Something", 3, "7. Something"),
+        ("Step 9: Something", 2, "Step 9: Something"),
+        ("3D preview fixes", 3, "3D preview fixes"),
+        ("2026 migration", 2026, "2026 migration"),
+        ("1.5 release notes", 1, "1.5 release notes"),
+        ("Step by step guide", 1, "Step by step guide"),
+        ("1. ", 1, "1. "),
+        ("Step 1:", 1, "Step 1:"),
+        ("", 1, ""),
     ],
 )
-def test_should_strip_only_a_delimited_leading_step_number(title: str, expected: str) -> None:
-    assert strip_step_number(title) == expected
+def test_should_strip_only_a_delimited_leading_number_equal_to_the_position(
+    title: str, position: int, expected: str
+) -> None:
+    assert strip_step_number(title, position) == expected
 
 
 def test_should_clean_every_step_title_and_keep_the_rest_of_the_walkthrough() -> None:
     walkthrough = {
         "steps": [
             {"title": "1. First", "body": "b", "hunks": []},
-            {"title": "2026 migration", "body": "b", "hunks": []},
+            {"title": "#123 Fix token refresh", "body": "b", "hunks": []},
             {"body": "no title"},
             {"title": 5},
             "not a step",
@@ -610,7 +616,7 @@ def test_should_clean_every_step_title_and_keep_the_rest_of_the_walkthrough() ->
     cleaned = with_clean_step_titles(walkthrough)
     assert cleaned["steps"] == [
         {"title": "First", "body": "b", "hunks": []},
-        {"title": "2026 migration", "body": "b", "hunks": []},
+        {"title": "#123 Fix token refresh", "body": "b", "hunks": []},
         {"body": "no title"},
         {"title": 5},
         "not a step",
@@ -625,12 +631,13 @@ def test_should_leave_a_walkthrough_without_a_steps_list_alone() -> None:
 
 
 def test_should_clean_titles_of_walkthrough_kinds_only() -> None:
-    walk = {"steps": [{"title": "1. A"}]}
-    assert with_clean_titles("walkthrough", walk) == {"steps": [{"title": "A"}]}
-    assert with_clean_titles("stack_walkthrough", walk) == {"steps": [{"title": "A"}]}
+    walk = {"steps": [{"title": "1. A"}, {"title": "7. B"}]}
+    clean = {"steps": [{"title": "A"}, {"title": "7. B"}]}
+    assert with_clean_titles("walkthrough", walk) == clean
+    assert with_clean_titles("stack_walkthrough", walk) == clean
     rereview = {"new_changes_walkthrough": walk, "requests": []}
     assert with_clean_titles("rereview", rereview) == {
-        "new_changes_walkthrough": {"steps": [{"title": "A"}]},
+        "new_changes_walkthrough": clean,
         "requests": [],
     }
     assert with_clean_titles("rereview", {"requests": []}) == {"requests": []}
