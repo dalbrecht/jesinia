@@ -318,6 +318,28 @@ describe("the smaller fixes", () => {
     ).toHaveFocus();
   });
 
+  it("navigating just after a load's render still focuses the new page's heading (#81)", async () => {
+    // A load that renders just before a click leaves its effects pending; React runs them
+    // before the click's own render, so they must not take the new page's focus for the old.
+    let answer: (r: Response) => void = () => undefined;
+    setup(reviewed(), { [`GET ${API}/drafts`]: () => new Promise<Response>((r) => (answer = r)) });
+    await ready();
+    const nav = outline();
+    const step = within(nav).getByRole("link", { name: /2\. Posting to the ledger/ });
+    const clicked = new Promise<void>((done) => {
+      const watch = new MutationObserver(() => {
+        if (!nav.textContent?.includes("1 draft")) return;
+        watch.disconnect();
+        step.click(); // after the drafts render commits, before its effects run
+        done();
+      });
+      watch.observe(document.body, { subtree: true, childList: true, characterData: true });
+    });
+    answer(Response.json(drafts()));
+    await clicked;
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2, name: "Posting to the ledger" })).toHaveFocus());
+  });
+
   it("the outline's parts label their own lists, and Contents names what it opens (M11)", async () => {
     setup();
     await ready();
