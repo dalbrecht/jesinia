@@ -20,8 +20,14 @@ address bar.
   values, so reading the file alone cannot sign anyone in.
 - **30-day sliding expiry.** The cookie carries `Max-Age` of 30 days. A session in use
   renews at most once a day: the server extends the expiry and re-sends the cookie.
-- **Rotation still signs everyone out**, on disk too, so a restart does not bring old
+- **Rotation still signs everyone out**, on disk too. The file also stores a fingerprint
+  of the install token, and a file saved under another token is discarded on load. A
+  rotation while the server is down, or a failed save during sign-out, cannot bring old
   sessions back.
+- **One lock** guards every change and save. `require_user` runs on the threadpool, so a
+  renewal could otherwise race a rotation.
+- **Only requests whose headers are still unsent renew.** Long-lived streams recheck
+  without renewing; their reconnects renew.
 - **Best-effort persistence.** A failed save is logged and the session keeps working in
   memory until the next restart. An unreadable file is logged and ignored, so everyone
   signs in again. Neither case blocks sign-in.
