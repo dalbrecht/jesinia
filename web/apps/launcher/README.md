@@ -26,5 +26,5 @@ make build                              # build every app for the server to serv
 ```
 
 The dev server proxies to the default port; change `vite.config.ts` if your server runs
-elsewhere. Sign in with a link from `jesinia status`. End-to-end tests are in
+elsewhere. Sign in with `jesinia login`. End-to-end tests are in
 `web/tests/e2e/launcher.spec.ts` (`make test-e2e`).

@@ -148,7 +148,7 @@ function Shell({ app, children, controls, ownSearch, appSearch, commands = [] }:
       <BannerRegion onMore={() => window.location.assign("/settings/")}>
         {st.signedOut ? (
           <Banner tone="danger" cause="Signed out:">
-            open a new login link from <code>jesinia status</code> in a terminal.
+            run <code>jesinia login</code> in a terminal.
           </Banner>
         ) : null}
         {st.unreachable ? (

@@ -261,7 +261,7 @@ function SecuritySection() {
         </p>
         {done ? (
           <p role="status">
-            Token rotated. Open a new login link from <code>jesinia status</code>.{warning ? ` ${warning}` : ""}
+            Token rotated. Sign in again with <code>jesinia login</code>.{warning ? ` ${warning}` : ""}
           </p>
         ) : confirming ? (
           <div className={s.actions}>

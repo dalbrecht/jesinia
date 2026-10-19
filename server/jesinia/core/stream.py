@@ -7,7 +7,9 @@ client passes ``after`` (or ``Last-Event-ID``) and receives what it missed from 
 bounded in-memory buffer, then live events. A listener that falls a full buffer behind
 is cut off rather than queued without limit; its client reconnects with
 ``Last-Event-ID`` and replays what the buffer still holds. Streams end once their
-credentials stop being valid (token rotation signs browsers out).
+credentials stop being valid (token rotation signs browsers out), and after an hour in any
+case: the client's reconnect passes through ``require_user``, the only place a browser
+session can renew (a running stream's headers are already sent).
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ STREAMED_TOPICS = frozenset(
 )
 BUFFER = 500
 KEEPALIVE_SECONDS = 15.0
+MAX_STREAM_SECONDS = 3600.0
 
 
 def boot_id() -> int:
@@ -112,6 +115,7 @@ def events_router(
 
         async def body() -> AsyncIterator[bytes]:
             queue = log.listen()  # before replay, so nothing falls between the two
+            ends_at = time.monotonic() + MAX_STREAM_SECONDS
             try:
                 sent = start
                 for e in log.since(start, wanted):
@@ -119,6 +123,8 @@ def events_router(
                     yield e.frame()
                 while follow:
                     if log.overflowed(queue) and queue.empty():
+                        return
+                    if time.monotonic() >= ends_at:
                         return
                     try:
                         e = await asyncio.wait_for(queue.get(), KEEPALIVE_SECONDS)

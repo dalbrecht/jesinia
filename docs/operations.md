@@ -77,11 +77,15 @@ refreshes registrations without changing your token or data.
 
 Open the link that setup printed. It holds a single-use nonce that expires in a few
 minutes. The browser then keeps an `HttpOnly` session cookie; the token itself never
-appears in a URL. For a new link at any time, run:
+appears in a URL. The session survives server restarts and updates, lasts 30 days, and
+renews while you use it. To sign in again, run:
 
 ```bash
-jesinia status
+jesinia login
 ```
+
+It opens a fresh link in your default browser (`--print` prints it instead). Installed app
+windows share the browser's cookies, so they are signed in too.
 
 In Chrome or Edge, use **Install** in the address bar to give Jesinia (the launcher),
 Notes and RSS their own app windows.
@@ -91,6 +95,7 @@ Notes and RSS their own app windows.
 | Command | What it does |
 |---|---|
 | `jesinia status` | Server health per module, and a fresh login link |
+| `jesinia login [--print]` | Opens a fresh login link in your browser (or prints it) |
 | `jesinia doctor` | Checks config, KB, git remote, tools, agent logins, the LaunchAgent and the server, with a fix for each problem. Exits 1 on any `fail` |
 | `jesinia sync now` | Runs a KB git sync cycle now |
 | `jesinia reindex` | Rescans the KB and rebuilds search (with the server stopped, it deletes the derived databases instead, and the next start rebuilds them) |
@@ -433,8 +438,9 @@ The next sync (within 2 minutes) picks the token up. If the server was installed
 
 ### The login link doesn't work
 
-Links are single-use and expire after a few minutes. Run `jesinia status` for a new
-one. If every request says "Signed out", the token was rotated: open a new link.
+Links are single-use and expire after a few minutes. Run `jesinia login` for a new
+one. If every request says "Signed out", the token was rotated or the session reached 30
+days without use: run `jesinia login`.
 
 ### An update failed
 
