@@ -420,3 +420,19 @@ visible under a banner.
 - The exact saved-filter definitions.
 - PR breakdown. Likely order: github issue writes and sync, then the label schema and triage,
   then epics, then queues, then the app.
+
+## 11. Acceptance (2026-10-19)
+
+Run on the author's Mac against the auto-updating install (`~/apps/jesinia`, port 5374), driven
+by Claude in the browser; the author approved every GitHub write. Shipped in #55, #61, #65 and
+#72.
+
+| Step | Result |
+|---|---|
+| 1. Watch amicus-platform | 1648 open issues synced into the Backlog with no agent sessions started. |
+| 2. Setup and alias mapping | Following §2's example, `design needed` → `design-needed`, `apple` and `platform:ios` → `area:apple` (new area) and `wiki` → `area:wiki` (new area) were saved to Jesinia's settings and survived a reload; setup then reported "Nothing to do: every canonical label exists", so no label was created on GitHub. |
+| 3. Triage 5 Inbox issues | Not checked yet: the Inbox was empty (issues open at watch time land in the Backlog), and the 5 new issues it needs haven't been filed. |
+| 4. Convert a checklist epic | #1760's 7 checklist items were previewed, approved and linked as sub-issues in one paced batch; the epic then listed them in order, "2 of 7 done · 5 blocking", each open child with its readiness warning. |
+| 5. "Agents: this week" queue, Copy brief | The queue was made locally and filled with 3 Backlog issues, each showing what keeps it from ready; dragging #1763 to the top reordered it with Undo offered. *Copy brief* built the brief, but the browser pane refused the clipboard and the queue gives no way to read the text then (#75). |
+
+Follow-ups: #75.
