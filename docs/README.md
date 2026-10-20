@@ -20,6 +20,8 @@
   - [0007 Pigeonpile compatibility results](adr/0007-pigeonpile-compat-results.md)
   - [0008 design system and shell](adr/0008-design-system-and-shell.md)
   - [0009 install and operations](adr/0009-install-and-operations.md)
+  - [0010 browser sessions survive restarts](adr/0010-persistent-browser-sessions.md)
+  - [0011 release-please for versions and the changelog](adr/0011-release-please.md)
 - **Design sources:** [docs/design](design/README.md), covering the brief, tokens,
   components, wireframes and icons.
 - **Specs and plans:** [foundation spec](specs/2026-10-16-jesinia-foundation-design.md)

@@ -186,3 +186,8 @@ Propagate trace context headers (OpenTelemetry or equivalent).
 - **Entry point:** the Makefile only. CI never calls `uv`/`pnpm` directly, and the Python and JS
   toolchains never orchestrate each other.
 <!-- Add project-specific instructions below this line. This section is preserved across re-assembly. -->
+- **Releases:** release-please writes `CHANGELOG.md` and the version from the Conventional
+  Commits on `main` (ADR 0011); never edit the changelog in a PR. Squash-merge with the PR
+  title as the commit title (`fix(review): … (#NN)`), never wrapped as `chore(merge): …`:
+  release-please reads the wrapper as a hidden `chore` and drops the change. `chore(merge): …`
+  is only for `git merge` commits inside stacked branches, which the squash discards.
