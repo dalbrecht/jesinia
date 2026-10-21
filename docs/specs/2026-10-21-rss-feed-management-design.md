@@ -1,6 +1,8 @@
 # Jesinia — RSS Feed Management, Bankruptcy and Auto Full Article
 
-- **Status:** Draft
+- **Status:** Implemented
+- **Acceptance:** 2026-10-21, branch `feat/rss-feed-management`: all nine plan tasks shipped; unit tests, the e2e suite
+  (including the done-for-the-day path and a reload at `/rss/manage`) and `make ci` pass.
 - **Date:** 2026-10-21
 - **Author:** Don Albrecht (with Claude)
 - **Builds on:** the RSS reader spec (`2026-10-16-rss-reader-design.md`, Implemented). This

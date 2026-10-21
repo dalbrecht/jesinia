@@ -42,11 +42,17 @@ test("add the fixture feed, skim with j, keep a post with a note and a suggested
   await login(page);
   await openRss(page);
 
-  await page.getByRole("button", { name: "+ Add feed" }).click();
-  const manage = page.getByRole("dialog", { name: "Feeds" });
+  await page.getByRole("button", { name: "⚙ Manage feeds" }).click();
+  const manage = page.getByRole("region", { name: "Manage feeds" });
   await manage.getByLabel("Feed or site URL").fill(`${FEEDS}/fixture.xml`);
-  await manage.getByRole("button", { name: "Add feed" }).click();
+  await manage.getByRole("button", { name: "+ Add feed" }).click();
+  await expect(manage.getByRole("row", { name: "Fixture Feed" })).toBeVisible();
+  await page.getByRole("button", { name: "‹ Back to reading" }).click();
   await expect(manage).toBeHidden();
+  await page
+    .getByRole("navigation", { name: "Feeds" })
+    .getByRole("button", { name: /^Fixture Feed/ })
+    .click();
   await expect(page.getByRole("heading", { name: "Fixture Feed", level: 2 })).toBeVisible();
   const posts = page.getByRole("listbox", { name: "Posts" }).getByRole("option");
   await expect(posts).toHaveCount(3);
@@ -116,4 +122,47 @@ test("import an OPML file in Settings → RSS; the reader shows its folder with 
   await feeds.getByRole("button", { name: "Feeds in Reading list" }).click();
   await expect(feeds.getByRole("button", { name: "Reading list 4" })).toBeVisible();
   expect(existsSync(join(kb, "Sources", "Reading a, first post.md"))).toBe(false); // nothing kept by import
+});
+
+test("done for the day: mark a feed read, mark everything read, undo, then check the feeds in Manage", async ({
+  page,
+}) => {
+  await login(page);
+  await openRss(page);
+  const feeds = page.getByRole("navigation", { name: "Feeds" });
+  await expect(feeds.getByRole("button", { name: "Reading a 2" })).toBeVisible();
+  await expect(feeds.getByRole("button", { name: "Reading b 2" })).toBeVisible();
+
+  // One feed: hover for its Mark read; its count goes.
+  await feeds.getByRole("button", { name: "Reading a 2" }).hover();
+  await feeds.getByRole("button", { name: "Mark Reading a read" }).click();
+  await expect(feeds.getByRole("button", { name: /^Reading a/ })).toHaveText("Reading a");
+  await expect(feeds.getByRole("button", { name: "Reading b 2" })).toBeVisible();
+
+  // Everything: the unread view empties.
+  await feeds.getByRole("button", { name: /^All unread/ }).click();
+  await page.getByRole("button", { name: "✓ Mark all read" }).click();
+  await expect(feeds.getByRole("button", { name: /^All unread/ })).toHaveText("All unread");
+  await expect(page.getByRole("listbox", { name: "Posts" }).getByRole("option")).toHaveCount(0);
+
+  // Undo brings the counts back.
+  // The feed's own toast is still up: the newest is last.
+  await page.getByRole("button", { name: "Undo" }).last().click();
+  await expect(feeds.getByRole("button", { name: /^All unread \d+/ })).toBeVisible();
+  await expect(feeds.getByRole("button", { name: "Reading b 2" })).toBeVisible();
+
+  // Both folder feeds are healthy, with a newest post.
+  await page.getByRole("button", { name: "⚙ Manage feeds" }).click();
+  for (const name of ["Reading a", "Reading b"]) {
+    const row = page.getByRole("row", { name });
+    await expect(row.getByText("OK", { exact: true })).toBeVisible();
+    await expect(row.locator("td[data-label='Newest post']")).not.toHaveText("—");
+  }
+
+  // The management screen has its own address: a reload stays on it (static fallback).
+  await page.reload();
+  await expect(page).toHaveURL(/\/rss\/manage\/?$/);
+  await expect(page.getByRole("heading", { name: "Manage feeds", level: 2 })).toBeVisible();
+  await page.getByRole("button", { name: "‹ Back to reading" }).click();
+  await expect(page.getByRole("heading", { name: "Manage feeds" })).toHaveCount(0);
 });
