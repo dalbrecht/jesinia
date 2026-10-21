@@ -78,7 +78,7 @@ export function Feeds({ feeds, counts, scope, onScope, onMarkRead, onManage }: F
     <button
       type="button"
       className={s.rowMark}
-      aria-label={`Mark ${label} read`}
+      aria-label={`Mark read: ${label}`}
       onClick={(e) => {
         e.stopPropagation();
         onMarkRead(target, label);

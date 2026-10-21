@@ -208,8 +208,12 @@ function Workspace({ runners }: WorkspaceProps) {
   const shownList = useRef("");
   /** Per post, the latest read toggle: older answers arriving late are ignored. */
   const readSeq = useRef(new Map<number, number>());
+  /** The Keep popover on screen, for answers that arrive after a render. */
+  const keepingNow = useRef<Keeping | null>(null);
   const countsFailing = useRef(false);
   const [keeping, setKeeping] = useState<Keeping | null>(null);
+  /** The Keep popover's note as typed: a post with one stays open through a mark all read (R30). */
+  const keepNote = useRef("");
   const [engaged, setEngaged] = useState<Engaged | null>(null);
   const [takingAway, setTakingAway] = useState(false);
   /** The post the conversation is about: a session that starts after another post opened is let go. */
@@ -416,6 +420,7 @@ function Workspace({ runners }: WorkspaceProps) {
   };
 
   openPost.current = selectedId;
+  keepingNow.current = keeping;
   engagedSession.current = engaged?.session ?? null;
   shownPosts.current = posts;
   const index = posts.findIndex((p) => p.id === selectedId);
@@ -466,13 +471,25 @@ function Workspace({ runners }: WorkspaceProps) {
       target.feed !== null
         ? p.feed_id === target.feed
         : target.folder === null || feeds.find((f) => f.id === p.feed_id)?.folder_id === target.folder;
-    const touched = posts.filter((p) => !p.read && Date.parse(p.first_seen_at) <= cutoff && inTarget(p));
+    const marks = (p: Post) => Date.parse(p.first_seen_at) <= cutoff && inTarget(p);
+    const touched = posts.filter((p) => !p.read && marks(p));
     setReadFlags(new Map(touched.map((p) => [p.id, true])));
     const reloadList = covers(target, scope, feeds);
     markAllRead(client, target, at).then(
       (ids) => {
         loadCounts();
-        if (reloadList) setReload((n) => n + 1);
+        if (reloadList) {
+          // §2.2: the list reloads to its empty state, and the reader clears if its post was
+          // marked (opening a post reads it, so it is rarely among `ids`) - unless its Keep
+          // popover holds a typed note (R30).
+          const open = shownPosts.current.find((p) => p.id === openPost.current);
+          const typed = keepingNow.current?.postId === open?.id && keepNote.current.trim() !== "";
+          if (open && (ids.includes(open.id) || marks(open)) && !typed) {
+            setSelectedId(null);
+            setStage((st) => (st === "reader" ? "list" : st));
+          }
+          setReload((n) => n + 1);
+        }
         if (ids.length === 0) {
           toast.show({ tone: "info", message: `Nothing unread in ${label}` });
           return;
@@ -615,7 +632,8 @@ function Workspace({ runners }: WorkspaceProps) {
   };
 
   const markHere = () => {
-    if (scope.view === "kept" || search) return;
+    // Like read-above: not while a list is loading, whose as-of is not yet the one on screen.
+    if (scope.view === "kept" || search || loading) return;
     markAll({ feed: scope.feed, folder: scope.folder }, titleOf(scope, feeds, search), asOf);
   };
 
@@ -686,7 +704,7 @@ function Workspace({ runners }: WorkspaceProps) {
         </label>
         <div className={s.headActions}>
           {canMarkAll ? (
-            <Button variant="ghost" size="sm" onClick={markHere}>
+            <Button variant="ghost" size="sm" disabled={loading} onClick={markHere}>
               ✓ Mark all read
             </Button>
           ) : null}
@@ -784,6 +802,9 @@ function Workspace({ runners }: WorkspaceProps) {
                 hasAgent={hasAgent}
                 onKept={(result) => kept(result, keeping.since, keeping.openId)}
                 onCancel={() => setKeeping(null)}
+                onNoteChange={(note) => {
+                  keepNote.current = note;
+                }}
               />
             ) : null}
           </Reader>

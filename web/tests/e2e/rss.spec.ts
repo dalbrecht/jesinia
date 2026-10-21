@@ -135,7 +135,7 @@ test("done for the day: mark a feed read, mark everything read, undo, then check
 
   // One feed: hover for its Mark read; its count goes.
   await feeds.getByRole("button", { name: "Reading a 2" }).hover();
-  await feeds.getByRole("button", { name: "Mark Reading a read" }).click();
+  await feeds.getByRole("button", { name: "Mark read: Reading a" }).click();
   await expect(feeds.getByRole("button", { name: /^Reading a/ })).toHaveText("Reading a");
   await expect(feeds.getByRole("button", { name: "Reading b 2" })).toBeVisible();
 

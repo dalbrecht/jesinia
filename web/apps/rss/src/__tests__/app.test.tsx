@@ -593,9 +593,97 @@ describe("mark all read", () => {
     expect(writes(calls, "/api/rss/posts/mark-read")[0]?.headers.get("Idempotency-Key")).toBeTruthy();
     const message = await toast(/^Marked 2 in Engineering read$/);
     const shown = message?.closest("[data-toast]") as HTMLElement;
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("folder=11"));
+    const counts = gets(calls, "/api/rss/counts").length;
+    const posts = gets(calls, "/api/rss/posts").length;
     await userEvent.click(within(shown).getByRole("button", { name: "Undo" }));
     await waitFor(() => expect(writes(calls, "/api/rss/posts/read-state")).toHaveLength(1));
     expect(await writes(calls, "/api/rss/posts/read-state")[0]?.clone().json()).toEqual({ ids: [1, 2], read: false });
+    // Undo brings the counts and the list (the same folder) back.
+    await waitFor(() => expect(gets(calls, "/api/rss/counts").length).toBeGreaterThan(counts));
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").length).toBeGreaterThan(posts));
+    expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("folder=11");
+  });
+
+  /** Posts that all turn read once mark-read answers. */
+  function markable() {
+    let marked = false;
+    return {
+      "GET /api/rss/posts": () => Response.json({ items: marked ? [] : POSTS, next_before: null }),
+      "POST /api/rss/posts/mark-read": () => {
+        marked = true;
+        return Response.json({ marked: 3, ids: [2, 4, 5] });
+      },
+    };
+  }
+
+  it("with a post open, mark all read clears the reader and lands on the empty list (§2.2)", async () => {
+    setup(markable());
+    await userEvent.click(await option(/Post 1/));
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+    await userEvent.click(markAll());
+    expect(await toast(/^Marked 3 in All unread read$/)).toBeInTheDocument();
+    expect(await screen.findByText("Nothing unread here.")).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Post \d/ })).toBeNull();
+    expect(reader()).toHaveTextContent("Choose a post to read it here.");
+  });
+
+  it("on a narrow screen, mark all read with a post open goes back to the empty list", async () => {
+    stubNarrow(true);
+    setup(markable());
+    await userEvent.click(await option(/Post 1/));
+    // The reader is full-screen: back to the list, then mark it all read.
+    await userEvent.click(screen.getByRole("button", { name: "‹ All unread" }));
+    expect(screen.getByRole("option", { name: /Post 1/ })).toHaveAttribute("aria-selected", "true");
+    await userEvent.click(markAll());
+    expect(await screen.findByText("Nothing unread here.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Reader" })).toBeNull();
+  });
+
+  it("a post whose Keep note is typed stays open through mark all read (R30)", async () => {
+    setup(markable());
+    await userEvent.click(await option(/Post 1/));
+    press("n");
+    await userEvent.type(screen.getByRole("textbox", { name: "Note" }), "Worth rereading");
+    await userEvent.click(markAll());
+    expect(await toast(/^Marked 3 in All unread read$/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(screen.getByRole("listbox", { name: "Posts" })).queryAllByRole("option")).toHaveLength(1),
+    );
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+    expect(screen.getByRole("textbox", { name: "Note" })).toHaveValue("Worth rereading");
+  });
+
+  it("a post outside the marked feed stays open", async () => {
+    setup({ ...MARKED, "POST /api/rss/posts/mark-read": { marked: 1, ids: [9] } });
+    await userEvent.click(await option(/Post 1/));
+    const nav = within(screen.getByRole("navigation", { name: "Feeds" }));
+    await userEvent.click(nav.getByRole("button", { name: "Mark read: Loose feed" }));
+    expect(await toast(/^Marked 1 in Loose feed read$/)).toBeInTheDocument();
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+  });
+
+  it("mark all read waits for a new list to load", async () => {
+    let answer: (r: Response) => void = () => {};
+    const { calls } = setup({
+      ...MARKED,
+      "GET /api/rss/posts": (req: Request) =>
+        new URL(req.url).searchParams.get("feed") === "2"
+          ? new Promise<Response>((done) => (answer = done))
+          : Response.json({ items: POSTS, next_before: null }),
+    });
+    await option(/Post 1/);
+    await userEvent.click(screen.getByRole("button", { name: /^Fly\.io blog/ }));
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("feed=2"));
+    expect(markAll()).toBeDisabled();
+    (document.activeElement as HTMLElement).blur();
+    press("M", { shiftKey: true });
+    await act(async () => {});
+    expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(0);
+    answer(Response.json({ items: POSTS, next_before: null }));
+    await waitFor(() => expect(markAll()).toBeEnabled());
+    press("M", { shiftKey: true });
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
   });
 
   it("a failed Undo says why and what to do instead", async () => {
@@ -653,7 +741,7 @@ describe("mark all read", () => {
     const counts = gets(calls, "/api/rss/counts").length;
     const posts = gets(calls, "/api/rss/posts").length;
     await userEvent.hover(nav.getByRole("button", { name: /^Fly\.io blog/ }));
-    const mark = nav.getByRole("button", { name: "Mark Fly.io blog read" });
+    const mark = nav.getByRole("button", { name: "Mark read: Fly.io blog" });
     expect(mark).toHaveTextContent("Mark read");
     await userEvent.click(mark);
     await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
@@ -688,7 +776,7 @@ describe("mark all read", () => {
     await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("feed=2"));
     await option(/Post 1/);
     const before = gets(calls, "/api/rss/posts").length;
-    await userEvent.click(nav.getByRole("button", { name: "Mark Engineering read" }));
+    await userEvent.click(nav.getByRole("button", { name: "Mark read: Engineering" }));
     await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
     expect(await writes(calls, "/api/rss/posts/mark-read")[0]?.clone().json()).toMatchObject({
       feed: null,
@@ -708,7 +796,7 @@ describe("mark all read", () => {
     const row = nav.getByRole("button", { name: /^Loose feed/ });
     row.focus();
     await userEvent.tab();
-    expect(nav.getByRole("button", { name: "Mark Loose feed read" })).toHaveFocus();
+    expect(nav.getByRole("button", { name: "Mark read: Loose feed" })).toHaveFocus();
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
     expect(row).not.toHaveAttribute("aria-current");
