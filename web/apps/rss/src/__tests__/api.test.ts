@@ -13,7 +13,6 @@ import {
   markReadAbove,
   OPML_EXPORT_URL,
   putRssSettings,
-  needsFullArticle,
   readingMinutes,
   RssRequestError,
   retryArchive,
@@ -46,13 +45,6 @@ describe("helpers", () => {
     expect(safeHttpUrl("/relative")).toBeNull();
     expect(safeHttpUrl("/x", "javascript:alert(1)")).toBeNull();
     expect(safeHttpUrl("")).toBeNull();
-  });
-
-  it("offers the full article for summaries and short content", () => {
-    expect(needsFullArticle(post(1, { is_summary: true, content_html: "x".repeat(5000) }))).toBe(true);
-    expect(needsFullArticle(post(1, { content_html: null }))).toBe(true);
-    expect(needsFullArticle(post(1, { content_html: "<p>short</p>" }))).toBe(true);
-    expect(needsFullArticle(post(1, { content_html: "x".repeat(1500) }))).toBe(false);
   });
 
   it("estimates reading time at 230 words a minute, at least one", () => {

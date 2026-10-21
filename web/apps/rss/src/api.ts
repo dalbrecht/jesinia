@@ -27,8 +27,6 @@ export type KeepRequest = { note: string; tags: string[]; takeaway?: { text: str
 export type Scope = { view: View; feed: number | null; folder: number | null };
 
 export const PAGE_SIZE = 100;
-/** Feed content shorter than this is probably a teaser: offer the full article. */
-export const SHORT_CONTENT_CHARS = 1500;
 const WORDS_PER_MINUTE = 230;
 const COUNT_CAP = 999;
 
@@ -257,10 +255,6 @@ export async function askTakeaway(client: JesiniaClient, session: string): Promi
 /** Unread counts are capped in the UI (spec §2.3). */
 export function capCount(n: number): string {
   return n > COUNT_CAP ? `${COUNT_CAP}+` : String(n);
-}
-
-export function needsFullArticle(post: Post): boolean {
-  return post.is_summary || (post.content_html ?? "").length < SHORT_CONTENT_CHARS;
 }
 
 export function readingMinutes(text: string): number {

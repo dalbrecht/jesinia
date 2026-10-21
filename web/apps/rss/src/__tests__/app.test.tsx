@@ -253,39 +253,6 @@ describe("list and reader", () => {
     expect(within(await option(/Post 1/)).getByRole("img", { name: "Unread" })).toBeInTheDocument();
   });
 
-  it("Load full article shows the article, or its cause on failure", async () => {
-    let fail = true;
-    setup({
-      "GET /api/rss/posts": { items: [post(1, { is_summary: true, read: true })], next_before: null },
-      "GET /api/rss/posts/1/article": () =>
-        fail
-          ? Response.json({ error: "ArticleUnavailable", detail: "The site answered 403." }, { status: 502 })
-          : Response.json({ markdown: "## The whole thing\n\nEvery word." }),
-    });
-    await userEvent.click(await option(/Post 1/));
-    await userEvent.click(within(reader()).getByRole("button", { name: "Load full article" }));
-    expect(await within(reader()).findByRole("alert")).toHaveTextContent(
-      "Couldn't load the full article: The site answered 403. Try again, or open the original.",
-    );
-    fail = false;
-    await userEvent.click(within(reader()).getByRole("button", { name: "Load full article" }));
-    expect(await within(reader()).findByRole("heading", { name: "The whole thing" })).toBeInTheDocument();
-    expect(within(reader()).queryByRole("button", { name: "Load full article" })).toBeNull();
-    expect(within(reader()).queryByRole("alert")).toBeNull();
-  });
-
-  it("a long post with full content offers no Load full article", async () => {
-    setup({
-      "GET /api/rss/posts": {
-        items: [post(1, { read: true, content_html: `<p>${"word ".repeat(400)}</p>` })],
-        next_before: null,
-      },
-    });
-    await userEvent.click(await option(/Post 1/));
-    expect(within(reader()).queryByRole("button", { name: "Load full article" })).toBeNull();
-    expect(reader()).toHaveTextContent("2 min");
-  });
-
   it("shows the archive status: Archiving…, In KB, or Archive incomplete with Retry", async () => {
     const { calls } = setup({
       "GET /api/rss/posts": {
@@ -417,7 +384,6 @@ describe("list and reader", () => {
     await userEvent.click(await option(/Post 1/));
     expect(reader()).toHaveTextContent("Snippet 1");
     expect(reader()).toHaveTextContent("Fly.io blog · 14 Oct 2026 · 1 min");
-    expect(reader()).toHaveTextContent("The feed's text may be cut short.");
   });
 
   it("feeds that fail to load say why", async () => {
