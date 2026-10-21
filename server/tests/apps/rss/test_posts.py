@@ -747,3 +747,14 @@ async def test_module_reads_the_retention_window_through_its_seam(cfg: Config) -
     await module.prune_posts()  # stopped: nothing to prune, no error
     with pytest.raises(HTTPException, match="not started"):
         module.posts  # noqa: B018 - the property raises when stopped
+
+
+def test_newest_post_survives_pruning(world: World) -> None:
+    feed = world.feed("https://a.example/feed")
+    world.add(feed, _item("old", _day(40)), seen=_day(40))
+    assert world.feeds.feed_views()[0].newest_post_at == _day(40)
+    world.add(feed, _item("older", _day(50)), seen=_day(40))
+    assert world.feeds.feed_views()[0].newest_post_at == _day(40)  # never moves back
+    assert world.service.prune(NOW) == 2
+    assert world.guids() == set()
+    assert world.feeds.feed_views()[0].newest_post_at == _day(40)

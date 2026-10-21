@@ -16,6 +16,11 @@ const ADDED: Feed = {
   folder: "Reading",
   folder_id: 12,
   unread: 3,
+  last_ok_at: null,
+  fail_count: 0,
+  last_error: null,
+  newest_post_at: null,
+  retention: null,
   warning: null,
 };
 

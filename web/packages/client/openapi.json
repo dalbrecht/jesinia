@@ -2731,6 +2731,126 @@
         }
       }
     },
+    "/api/rss/feeds/{feed_id}/retention": {
+      "put": {
+        "tags": [
+          "rss"
+        ],
+        "summary": "Set Retention",
+        "operationId": "set_retention_api_rss_feeds__feed_id__retention_put",
+        "parameters": [
+          {
+            "name": "feed_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Feed Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response.",
+              "title": "Idempotency-Key"
+            },
+            "description": "A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetentionIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/rss/folders/{folder_id}": {
       "patch": {
         "tags": [
@@ -17185,6 +17305,53 @@
               }
             ],
             "title": "Warning"
+          },
+          "last_ok_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Ok At"
+          },
+          "fail_count": {
+            "type": "integer",
+            "title": "Fail Count"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "newest_post_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Post At"
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetentionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -17195,7 +17362,12 @@
           "folder",
           "folder_id",
           "unread",
-          "warning"
+          "warning",
+          "last_ok_at",
+          "fail_count",
+          "last_error",
+          "newest_post_at",
+          "retention"
         ],
         "title": "FeedOut"
       },
@@ -21440,6 +21612,48 @@
         ],
         "title": "ReorderChildBody",
         "description": "Within this epic, move ``child`` just after ``after`` (the top when ``null``)."
+      },
+      "RetentionIn": {
+        "properties": {
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetentionOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The feed's own retention (1-365 days, or 10-10000 posts); null for the global setting"
+          }
+        },
+        "type": "object",
+        "required": [
+          "retention"
+        ],
+        "title": "RetentionIn"
+      },
+      "RetentionOut": {
+        "properties": {
+          "unit": {
+            "type": "string",
+            "enum": [
+              "days",
+              "posts"
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "type": "integer",
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "unit",
+          "value"
+        ],
+        "title": "RetentionOut"
       },
       "ReviewErrorOut": {
         "properties": {

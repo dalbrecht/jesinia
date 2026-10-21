@@ -19,6 +19,7 @@ from jesinia.apps.rss.domain.feed import (
 )
 from jesinia.apps.rss.domain.kept import ArchiveState, archive_state
 from jesinia.apps.rss.domain.post import TOMBSTONE_TTL, Counts, Cursor, PostView, View, utc_text
+from jesinia.apps.rss.domain.settings import Retention, validate_retention
 
 _FEED_COLUMNS = (
     "id, url, title, site_url, folder_id, interval_s, next_poll_at, fail_count, last_error, "
@@ -157,6 +158,16 @@ class SqliteFeedStore:
         )
         return moved.rowcount == 1
 
+    def set_feed_retention(self, feed_id: int, retention: Retention | None) -> bool:
+        unit = retention.unit if retention is not None else None
+        value = retention.value if retention is not None else None
+        changed = self._conn.execute(
+            "UPDATE feeds SET retention_unit = ?, retention_value = ? "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (unit, value, feed_id),
+        )
+        return changed.rowcount == 1
+
     def add_posts(self, feed_id: int, items: Sequence[ParsedItem], now: datetime) -> int:
         guids = [(utc_text(now), feed_id, item.guid) for item in items]
         rows = [
@@ -196,6 +207,14 @@ class SqliteFeedStore:
                 "AND EXISTS (SELECT 1 FROM feeds WHERE id = ? AND deleted_at IS NULL) "
                 "ON CONFLICT (feed_id, guid) DO NOTHING",
                 rows,
+            )
+            # Pruning never moves it back: only the posts still stored can raise it.
+            self._conn.execute(
+                "UPDATE feeds SET newest_post_at = (SELECT MAX(COALESCE(published_at, "
+                "first_seen_at)) FROM posts WHERE feed_id = feeds.id) WHERE id = ? "
+                "AND (newest_post_at IS NULL OR newest_post_at < (SELECT MAX(COALESCE("
+                "published_at, first_seen_at)) FROM posts WHERE feed_id = feeds.id))",
+                (feed_id,),
             )
         return max(cursor.rowcount, 0)
 
@@ -239,7 +258,8 @@ class SqliteFeedStore:
         rows = self._conn.execute(
             "SELECT f.id, f.title, f.url, d.name, f.folder_id, "
             "(SELECT COUNT(*) FROM posts p WHERE p.feed_id = f.id AND p.read = 0), "
-            "f.fail_count, f.last_error "
+            "f.fail_count, f.last_error, f.last_ok_at, f.newest_post_at, "
+            "f.retention_unit, f.retention_value "
             "FROM feeds f LEFT JOIN folders d ON d.id = f.folder_id WHERE f.deleted_at IS NULL "
             "ORDER BY d.position IS NULL, d.position, f.title COLLATE NOCASE, f.id"
         ).fetchall()
@@ -252,6 +272,11 @@ class SqliteFeedStore:
                 folder_id=None if row[4] is None else int(row[4]),
                 unread=int(row[5]),
                 warning=feed_warning(int(row[6]), row[7]),
+                last_ok_at=None if row[8] is None else datetime.fromisoformat(row[8]),
+                fail_count=int(row[6]),
+                last_error=row[7],
+                newest_post_at=None if row[9] is None else datetime.fromisoformat(row[9]),
+                retention=None if row[10] is None else validate_retention(row[10], int(row[11])),
             )
             for row in rows
         ]

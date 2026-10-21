@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
 from fastapi import APIRouter, Depends, Query, status
 from fastapi.encoders import jsonable_encoder
@@ -54,7 +54,9 @@ from jesinia.apps.rss.domain.settings import (
     RETENTION_DAYS_MAX,
     RETENTION_DAYS_MIN,
     SOURCE_FOLDER_MAX,
+    Retention,
     RssSettings,
+    validate_retention,
     validate_settings,
 )
 from jesinia.core.idempotency import IdempotencyStore, IdempotentCall, idempotent
@@ -134,6 +136,26 @@ class OpmlIn(BaseModel):
     opml: str = Field(min_length=1, max_length=OPML_MAX, description="The OPML document text")
 
 
+class RetentionOut(BaseModel):
+    unit: Literal["days", "posts"]
+    value: int
+
+    @classmethod
+    def of(cls, retention: Retention) -> RetentionOut:
+        return cls(unit=retention.unit, value=retention.value)
+
+
+class RetentionIn(BaseModel):
+    retention: RetentionOut | None = Field(
+        description="The feed's own retention (1-365 days, or 10-10000 posts); null for the "
+        "global setting"
+    )
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return None if moment is None else moment.isoformat()
+
+
 class FeedOut(BaseModel):
     id: int
     title: str
@@ -142,6 +164,11 @@ class FeedOut(BaseModel):
     folder_id: int | None
     unread: int
     warning: str | None
+    last_ok_at: str | None
+    fail_count: int
+    last_error: str | None
+    newest_post_at: str | None
+    retention: RetentionOut | None
 
     @classmethod
     def of(cls, view: FeedView) -> FeedOut:
@@ -153,6 +180,11 @@ class FeedOut(BaseModel):
             folder_id=view.folder_id,
             unread=view.unread,
             warning=view.warning,
+            last_ok_at=_iso(view.last_ok_at),
+            fail_count=view.fail_count,
+            last_error=view.last_error,
+            newest_post_at=_iso(view.newest_post_at),
+            retention=None if view.retention is None else RetentionOut.of(view.retention),
         )
 
 
@@ -510,6 +542,19 @@ def build_router(host: RssHost) -> APIRouter:
         async def run() -> FeedOut:
             host.service.move(feed_id, body.folder)
             return FeedOut.of(host.service.view(feed_id))
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.put("/feeds/{feed_id}/retention", response_model=FeedOut)
+    async def set_retention(
+        feed_id: int, body: RetentionIn, idem: IdempotentCall = keyed
+    ) -> Response:
+        async def run() -> FeedOut:
+            retention = body.retention
+            checked = (
+                None if retention is None else validate_retention(retention.unit, retention.value)
+            )
+            return FeedOut.of(host.service.set_retention(feed_id, checked))
 
         return await idem.run(lambda: _respond(run))
 
