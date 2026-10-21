@@ -59,6 +59,14 @@ export function errorCause(e: unknown): string {
   return `Jesinia didn't answer (${raw}). ${UNREACHABLE}`;
 }
 
+/**
+ * The cause, then `next` (what to do). A request that got no answer already ends with its own
+ * fix (check that Jesinia is running), so `next` is added only to the server's causes.
+ */
+export function causeThen(e: unknown, next: string): string {
+  return e instanceof RssRequestError ? `${errorCause(e)} ${next}` : errorCause(e);
+}
+
 type Result<T> = { data?: T; error?: unknown; response: Response };
 
 function unwrap<T>(r: Result<T>): T {

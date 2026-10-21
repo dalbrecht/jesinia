@@ -5,7 +5,7 @@
 import { Button, Input, useToast } from "@jesinia/design";
 import { useClient } from "@jesinia/shell";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { errorCause, moveFeed, refreshFeed, renameFolder, setRetention, type Feed, type Retention } from "./api";
+import { causeThen, moveFeed, refreshFeed, renameFolder, setRetention, type Feed, type Retention } from "./api";
 import { RetentionPicker } from "./RetentionPicker";
 import s from "./rss.module.css";
 
@@ -90,6 +90,10 @@ function InlineName(props: {
   );
 }
 
+/** What to do after a failed move or folder name (the cause comes first). */
+const MOVE_NEXT = "Try again, or choose another folder.";
+const NAME_NEXT = "Try again, or choose another folder name.";
+
 /** The folder select's choices that open an inline field rather than move the feed. */
 const NEW_FOLDER = "\u0000new";
 const RENAME_FOLDER = "\u0000rename";
@@ -136,14 +140,14 @@ export function FeedRow({ feed: given, folders, syncingAll, onChanged, onRemove 
       await moveFeed(client, feed.id, folder || null);
       onChanged();
     } catch (e) {
-      toast.show({ tone: "danger", message: `Couldn't move ${title}: ${errorCause(e)}` });
+      toast.show({ tone: "danger", message: `Couldn't move ${title}: ${causeThen(e, MOVE_NEXT)}` });
     }
   };
   const intoNewFolder = async (name: string) => {
     try {
       await moveFeed(client, feed.id, name);
     } catch (e) {
-      return `Couldn't move ${title}: ${errorCause(e)}`;
+      return `Couldn't move ${title}: ${causeThen(e, NAME_NEXT)}`;
     }
     toast.show({ tone: "success", message: `Moved ${title} to ${name}.` });
     onChanged();
@@ -153,7 +157,7 @@ export function FeedRow({ feed: given, folders, syncingAll, onChanged, onRemove 
     try {
       await renameFolder(client, feed.folder_id as number, name);
     } catch (e) {
-      return `Couldn't rename the folder: ${errorCause(e)}`;
+      return `Couldn't rename the folder: ${causeThen(e, NAME_NEXT)}`;
     }
     toast.show({ tone: "success", message: `Renamed ${feed.folder} to ${name}.` });
     onChanged();
@@ -167,7 +171,7 @@ export function FeedRow({ feed: given, folders, syncingAll, onChanged, onRemove 
     } catch (e) {
       toast.show({
         tone: "danger",
-        message: `Couldn't sync ${title}: ${errorCause(e)} Try again later; Jesinia keeps retrying it on its own.`,
+        message: `Couldn't sync ${title}: ${causeThen(e, "Try again later; Jesinia keeps retrying it on its own.")}`,
       });
     } finally {
       setSyncing(false);
@@ -182,7 +186,7 @@ export function FeedRow({ feed: given, folders, syncingAll, onChanged, onRemove 
       setKeeping(null);
       toast.show({
         tone: "danger",
-        message: `Couldn't change how long ${title} keeps posts: ${errorCause(e)} Choose 1–365 days or 10–10 000 posts.`,
+        message: `Couldn't change how long ${title} keeps posts: ${causeThen(e, "Choose 1–365 days or 10–10 000 posts.")}`,
       });
     }
   };

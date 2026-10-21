@@ -102,8 +102,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   // onClose callbacks of toasts still open; deleting the entry guarantees "exactly once".
   const closers = useRef(new Map<string, NonNullable<ToastOptions["onClose"]>>());
 
+  /** The toast under the pointer, if any (set on mouseover in the region). */
+  const hovered = useRef<string | null>(null);
+
   const close = useCallback(
     (id: string, reason: ToastCloseReason) => {
+      // The toast holding focus or the pointer is going: no blur or mouseleave will follow
+      // (its button is removed with it), so the timers resume now rather than staying paused.
+      const host = region.current?.querySelector(`[data-toast="${id}"]`);
+      if (hovered.current === id || host?.contains(document.activeElement)) {
+        hovered.current = null;
+        setPaused(false);
+      }
       update(visibleRef.current.filter((t) => t.id !== id));
       setQueue((q) => q.filter((t) => t.id !== id));
       const onClose = closers.current.get(id);
@@ -202,7 +212,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         tabIndex={-1}
         className={s.region}
         onMouseEnter={() => setPaused(true)}
-        onMouseLeave={() => setPaused(false)}
+        onMouseLeave={() => {
+          hovered.current = null;
+          setPaused(false);
+        }}
+        onMouseOver={(e) => {
+          hovered.current = (e.target as HTMLElement).closest<HTMLElement>("[data-toast]")?.dataset.toast ?? null;
+        }}
         onFocus={() => setPaused(true)}
         onBlur={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setPaused(false);

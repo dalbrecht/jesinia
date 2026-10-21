@@ -5,15 +5,7 @@
 import { Button } from "@jesinia/design";
 import { SafeMarkdown, useClient } from "@jesinia/shell";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import {
-  errorCause,
-  fullArticle,
-  readingMinutes,
-  retryArchive,
-  RssRequestError,
-  safeHttpUrl,
-  type Post,
-} from "./api";
+import { errorCause, fullArticle, readingMinutes, retryArchive, RssRequestError, safeHttpUrl, type Post } from "./api";
 import { archiveStatus, ArchiveBadge } from "./PostList";
 import s from "./rss.module.css";
 import { SafeHtml } from "./SafeContent";

@@ -446,6 +446,57 @@ describe("Toast", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("closing the toast that held focus or the pointer lets the next one time out", () => {
+    vi.useFakeTimers();
+    const first = vi.fn();
+    const second = vi.fn();
+    let api: ReturnType<typeof useToast> | undefined;
+    const Grab = () => {
+      api = useToast();
+      return null;
+    };
+    render(
+      <ToastProvider>
+        <Grab />
+      </ToastProvider>,
+    );
+    const region = screen.getByRole("region", { name: "Notifications" });
+    const show = (onClose: () => void, message: string) =>
+      act(() => {
+        (api as NonNullable<typeof api>).show({
+          message,
+          action: { label: "Undo", onAction: () => {} },
+          duration: 8000,
+          onClose,
+        });
+      });
+    // Undo with the pointer and focus on it: the toast goes, taking the focused button along.
+    show(first, "Removed A");
+    const undo = screen.getByRole("button", { name: "Undo" });
+    fireEvent.mouseEnter(region);
+    fireEvent.mouseOver(undo);
+    act(() => undo.focus());
+    fireEvent.click(undo);
+    expect(first).toHaveBeenCalledWith("action");
+    show(second, "Removed B");
+    act(() => vi.advanceTimersByTime(8000));
+    expect(second).toHaveBeenCalledWith("timeout");
+
+    // The same after × on the toast under the pointer.
+    const third = vi.fn();
+    const fourth = vi.fn();
+    show(third, "Removed C");
+    const dismiss = screen.getByRole("button", { name: "Dismiss" });
+    fireEvent.mouseEnter(region);
+    fireEvent.mouseOver(dismiss);
+    fireEvent.click(dismiss);
+    expect(third).toHaveBeenCalledWith("dismiss");
+    show(fourth, "Removed D");
+    act(() => vi.advanceTimersByTime(8000));
+    expect(fourth).toHaveBeenCalledWith("timeout");
+    vi.useRealTimers();
+  });
+
   it("dismiss reports dismiss, once, for the button and for dismiss(id)", () => {
     vi.useFakeTimers();
     const onClose = vi.fn();
@@ -457,7 +508,9 @@ describe("Toast", () => {
     render(
       <ToastProvider>
         <Grab />
-        <Show opts={{ message: "Removing feed", action: { label: "Undo", onAction: () => {} }, duration: 8000, onClose }} />
+        <Show
+          opts={{ message: "Removing feed", action: { label: "Undo", onAction: () => {} }, duration: 8000, onClose }}
+        />
       </ToastProvider>,
     );
     fireEvent.click(screen.getByText("fire"));

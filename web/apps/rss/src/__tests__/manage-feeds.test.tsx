@@ -101,6 +101,34 @@ describe("The manage screen", () => {
     expect(await screen.findByRole("region", { name: "Manage feeds" })).toBeInTheDocument();
   });
 
+  it("Back to reading steps back to the reader's entry when the screen was opened here", async () => {
+    setup();
+    await screen.findByRole("heading", { name: "All unread", level: 2 });
+    const depth = window.history.length;
+    await openManage();
+    expect(window.history.length).toBe(depth + 1);
+    await userEvent.click(screen.getByRole("button", { name: "‹ Back to reading" }));
+    expect(await screen.findByRole("heading", { name: "All unread", level: 2 })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/");
+    // It went back rather than adding an entry: the browser's Forward reopens the screen, and
+    // its Back from the reader would not land on /manage again.
+    expect(window.history.length).toBe(depth + 1);
+    act(() => window.history.forward());
+    expect(await screen.findByRole("region", { name: "Manage feeds" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/manage");
+  });
+
+  it("Back to reading pushes the reader when /rss/manage was loaded directly", async () => {
+    window.history.replaceState(null, "", "/manage");
+    setup();
+    await within(await screen.findByRole("region", { name: "Manage feeds" })).findByRole("row", { name: "Old Blog" });
+    const depth = window.history.length;
+    await userEvent.click(screen.getByRole("button", { name: "‹ Back to reading" }));
+    expect(await screen.findByRole("heading", { name: "All unread", level: 2 })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/");
+    expect(window.history.length).toBe(depth + 1);
+  });
+
   it("opens straight onto the screen when the address is /rss/manage", async () => {
     window.history.replaceState(null, "", "/manage");
     setup();
@@ -210,7 +238,7 @@ describe("Adding and filing feeds", () => {
     await userEvent.keyboard("{Enter}");
     expect(
       await manage.findByText(
-        "Couldn't add the feed: no feed found at https://plain.example/: the page links to none.",
+        "Couldn't add the feed: no feed found at https://plain.example/: the page links to none. Check the address and try again.",
       ),
     ).toBeInTheDocument();
     expect(await sent(calls, "POST", "/api/rss/feeds")[0]?.json()).toEqual({
@@ -267,11 +295,17 @@ describe("Adding and filing feeds", () => {
     const manage = await openManage();
     const folder = manage.getByRole("combobox", { name: "Folder for Fly.io blog" });
     await userEvent.selectOptions(folder, "News");
-    expect(await toast("Couldn't move Fly.io blog: a folder name must be 1 to 100 characters.")).toBeDefined();
+    expect(
+      await toast(
+        "Couldn't move Fly.io blog: a folder name must be 1 to 100 characters. Try again, or choose another folder.",
+      ),
+    ).toBeDefined();
     await userEvent.selectOptions(folder, "New folder…");
     await userEvent.type(manage.getByLabelText("New folder for Fly.io blog"), "Reading{Enter}");
     expect(
-      await manage.findByText("Couldn't move Fly.io blog: a folder name must be 1 to 100 characters."),
+      await manage.findByText(
+        "Couldn't move Fly.io blog: a folder name must be 1 to 100 characters. Try again, or choose another folder name.",
+      ),
     ).toBeInTheDocument();
     expect(manage.getByLabelText("New folder for Fly.io blog")).toHaveValue("Reading");
   });
@@ -304,7 +338,9 @@ describe("Adding and filing feeds", () => {
     await userEvent.type(manage.getByLabelText("New name for Engineering"), "News");
     await userEvent.click(manage.getByRole("button", { name: "Save name" }));
     expect(
-      await manage.findByText("Couldn't rename the folder: a folder named News already exists."),
+      await manage.findByText(
+        "Couldn't rename the folder: a folder named News already exists. Try again, or choose another folder name.",
+      ),
     ).toBeInTheDocument();
   });
 });
@@ -587,6 +623,30 @@ describe("Remove", () => {
     expect(await manage.findByRole("row", { name: "Fly.io blog" })).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(9000));
     expect(calls.filter((c) => c.method === "DELETE" && c.url.endsWith("/api/rss/feeds/2"))).toHaveLength(0);
+  });
+
+  it("after an Undo, the next remove still times out and is sent", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let gone: number[] = [];
+    const { calls } = setup({
+      "GET /api/rss/feeds": () => Response.json(FAILING.filter((f) => !gone.includes(f.id))),
+      "DELETE /api/rss/feeds/4": () => {
+        gone = [4];
+        return new Response(null, { status: 204 });
+      },
+    });
+    const manage = await openManage();
+    await userEvent.click(rowOf(manage, "Loose feed").getByRole("button", { name: "Remove" }));
+    const removed = (await toast("Removed Loose feed")) as HTMLElement;
+    await userEvent.click(within(removed.closest("[data-toast]") as HTMLElement).getByRole("button", { name: "Undo" }));
+    expect(await manage.findByRole("row", { name: "Loose feed" })).toBeInTheDocument();
+    expect(sent(calls, "DELETE", "/api/rss/feeds/4")).toHaveLength(0);
+
+    await userEvent.click(rowOf(manage, "Loose feed").getByRole("button", { name: "Remove" }));
+    expect(await toast("Removed Loose feed")).toBeDefined();
+    act(() => vi.advanceTimersByTime(8500));
+    await waitFor(() => expect(sent(calls, "DELETE", "/api/rss/feeds/4")).toHaveLength(1));
+    await waitFor(() => expect(manage.queryByRole("row", { name: "Loose feed" })).toBeNull());
   });
 
   it("removing the feed in view, then going back, lands on All unread", async () => {

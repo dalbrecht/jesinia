@@ -8,6 +8,7 @@ import { useClient } from "@jesinia/shell";
 import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
   addFeed,
+  causeThen,
   errorCause,
   getRssSettings,
   importOpml,
@@ -21,6 +22,7 @@ import {
   type RssSettings,
 } from "./api";
 import { FeedRow, type FolderRef } from "./FeedRow";
+import { sentence } from "./Reader";
 import s from "./rss.module.css";
 
 /** The datalist of existing folder names the folder field offers. */
@@ -102,7 +104,7 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
     getRssSettings(client).then(setSettings, (e: unknown) =>
       toast.show({
         tone: "danger",
-        message: `Couldn't load the default retention: ${errorCause(e)} Open Manage feeds again to retry.`,
+        message: `Couldn't load the default retention: ${causeThen(e, "Open Manage feeds again to retry.")}`,
       }),
     );
   }, [client, toast]);
@@ -131,7 +133,7 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
       },
       (e: unknown) => {
         unhide(feed.id);
-        toast.show({ tone: "danger", message: `Couldn't remove ${feed.title}: ${errorCause(e)} Try Remove again.` });
+        toast.show({ tone: "danger", message: `Couldn't remove ${feed.title}: ${causeThen(e, "Try Remove again.")}` });
       },
     );
   };
@@ -163,7 +165,7 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
       setUrl("");
       onChanged();
     } catch (err) {
-      setAddError(errorCause(err));
+      setAddError(causeThen(err, "Check the address and try again."));
     } finally {
       setAdding(false);
     }
@@ -175,7 +177,7 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
       await refreshFeeds(client);
       onChanged();
     } catch (e) {
-      toast.show({ tone: "danger", message: `Couldn't sync the feeds: ${errorCause(e)} Try again in a moment.` });
+      toast.show({ tone: "danger", message: `Couldn't sync the feeds: ${causeThen(e, "Try again in a moment.")}` });
     } finally {
       setSyncingAll(false);
     }
@@ -203,7 +205,7 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
         opml = await file.text();
       } catch (err) {
         const why = err instanceof Error ? err.message : String(err);
-        fail(`Couldn't read ${file.name}: ${why}. Choose the file again.`);
+        fail(`Couldn't read ${file.name}: ${sentence(why)} Choose the file again.`);
         return;
       }
       const result = await importOpml(client, opml);
@@ -232,7 +234,7 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
       setSettings(before);
       toast.show({
         tone: "danger",
-        message: `Couldn't change how long posts are kept: ${errorCause(e)} Choose 1–365 days.`,
+        message: `Couldn't change how long posts are kept: ${causeThen(e, "Choose 1–365 days.")}`,
       });
     }
   };

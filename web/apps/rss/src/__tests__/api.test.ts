@@ -3,6 +3,7 @@ import { fakeClient } from "@jesinia/shell";
 import { describe, expect, it } from "vitest";
 import {
   capCount,
+  causeThen,
   fullArticle,
   getCounts,
   getRssSettings,
@@ -164,5 +165,14 @@ describe("feed management calls", () => {
     await expect(importOpml(client, "x")).rejects.toThrow("not OPML");
     await expect(getRssSettings(client)).rejects.toThrow("settings down");
     await expect(putRssSettings(client, {} as never)).rejects.toThrow("cannot save");
+  });
+});
+
+describe("causeThen", () => {
+  it("adds the next step to the server's cause, not to an unanswered request's own fix", () => {
+    expect(causeThen(new RssRequestError("no feed 2", 404), "Try again.")).toBe("no feed 2. Try again.");
+    expect(causeThen(new TypeError("Failed to fetch"), "Try again.")).toBe(
+      "Jesinia didn't answer (Failed to fetch). Check that Jesinia is running, then try again.",
+    );
   });
 });
