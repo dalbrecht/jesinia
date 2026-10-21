@@ -79,6 +79,7 @@ OPML_MEDIA_TYPE = "text/x-opml"
 QUERY_MAX = 200
 CURSOR_MAX = 100
 TIMESTAMP_MAX = 64
+MAX_READ_IDS = 100_000
 NOTE_MAX = 20_000
 TAKEAWAY_MAX = 2_000
 TAGS_MAX = 20
@@ -255,6 +256,26 @@ class PostPageOut(BaseModel):
 
 class MarkedOut(BaseModel):
     marked: int
+
+
+class MarkReadIn(BaseModel):
+    feed: int | None = None
+    folder: int | None = None
+    as_of: str = Field(
+        max_length=TIMESTAMP_MAX,
+        description="When the client loaded the list (ISO 8601 with offset): posts first seen "
+        "later were never on screen and stay unread",
+    )
+
+
+class MarkedIdsOut(BaseModel):
+    marked: int
+    ids: list[int]
+
+
+class ReadStateIn(BaseModel):
+    ids: list[int] = Field(max_length=MAX_READ_IDS)
+    read: bool
 
 
 class ArticleOut(BaseModel):
@@ -581,6 +602,26 @@ def build_router(host: RssHost) -> APIRouter:
                 body.post_id, body.view, body.feed, body.folder, as_of
             )
             return MarkedOut(marked=marked)
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.post("/posts/mark-read", response_model=MarkedIdsOut)
+    async def mark_read(body: MarkReadIn, idem: IdempotentCall = keyed) -> Response:
+        """Mark a feed, a folder or (both null) everything read; the ids come back for Undo."""
+
+        async def run() -> MarkedIdsOut:
+            as_of = parse_timestamp(body.as_of)
+            ids = host.posts.mark_all_read(body.feed, body.folder, as_of)
+            return MarkedIdsOut(marked=len(ids), ids=ids)
+
+        return await idem.run(lambda: _respond(run))
+
+    @r.post("/posts/read-state", response_model=MarkedOut)
+    async def read_state(body: ReadStateIn, idem: IdempotentCall = keyed) -> Response:
+        """Set the read state of many posts at once (Undo of a mark-read)."""
+
+        async def run() -> MarkedOut:
+            return MarkedOut(marked=host.posts.set_read(body.ids, body.read))
 
         return await idem.run(lambda: _respond(run))
 

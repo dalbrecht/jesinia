@@ -165,6 +165,13 @@ class PostStore(Protocol):
         """Set the read state of the posts that exist; how many there were."""
         ...
 
+    def mark_unread_read(
+        self, feed_id: int | None, folder_id: int | None, as_of: datetime
+    ) -> list[int]:
+        """Mark read every unread post within the feed and folder (if given) that was first
+        seen by ``as_of``; their ids, ascending."""
+        ...
+
     def in_scope(
         self, post_id: int, view: View, feed_id: int | None, folder_id: int | None
     ) -> bool:

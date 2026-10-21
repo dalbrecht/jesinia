@@ -273,6 +273,8 @@ _VIEW_WHERE: dict[str, str] = {
 }
 # A page's archive state, from the posts kept to it: the most advanced one wins.
 _ARCHIVE_PRECEDENCE: tuple[ArchiveState, ...] = ("done", "archiving", "failed")
+# SQLite allows 32766 bound variables since 3.32, 999 before: stay under the old limit.
+_SQL_VARS = 900
 _LIKE_ESCAPE = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 
 
@@ -361,12 +363,33 @@ class SqlitePostStore:
     def set_full_md(self, post_id: int, markdown: str) -> None:
         self._conn.execute("UPDATE posts SET full_md = ? WHERE id = ?", (markdown, post_id))
 
+    def _update_read(self, ids: Sequence[int], read: bool) -> int:
+        updated = 0
+        for start in range(0, len(ids), _SQL_VARS):
+            chunk = ids[start : start + _SQL_VARS]
+            marks = ",".join("?" * len(chunk))
+            updated += self._conn.execute(
+                f"UPDATE posts SET read = ? WHERE id IN ({marks})", (int(read), *chunk)
+            ).rowcount
+        return updated
+
     def set_read(self, ids: Sequence[int], read: bool) -> int:
-        marks = ",".join("?" * len(ids))
-        updated = self._conn.execute(
-            f"UPDATE posts SET read = ? WHERE id IN ({marks})", (int(read), *ids)
-        )
-        return updated.rowcount
+        with self._transaction():
+            return self._update_read(ids, read)
+
+    def mark_unread_read(
+        self, feed_id: int | None, folder_id: int | None, as_of: datetime
+    ) -> list[int]:
+        where, params = _scope("unread", feed_id, folder_id)
+        where.append("p.first_seen_at <= ?")
+        params.append(utc_text(as_of))
+        with self._transaction():
+            rows = self._conn.execute(
+                f"SELECT p.id {_FROM} WHERE {' AND '.join(where)} ORDER BY p.id", params
+            ).fetchall()
+            ids = [int(r[0]) for r in rows]
+            self._update_read(ids, True)
+        return ids
 
     def in_scope(
         self, post_id: int, view: View, feed_id: int | None, folder_id: int | None

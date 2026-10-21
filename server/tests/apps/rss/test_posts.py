@@ -273,6 +273,42 @@ def test_mark_read_above_leaves_posts_that_arrived_after_the_list_loaded(world: 
     assert world.guids("read = 0") == {"fresh", "backdated"}
 
 
+def test_mark_all_read_by_feed_folder_and_everything(world: World) -> None:
+    a = world.feed("https://a.example/feed", folder="Tech")
+    b = world.feed("https://b.example/feed", folder="Tech")
+    c = world.feed("https://c.example/feed")
+    world.add(a, _item("a1", _day(1)))
+    world.add(b, _item("b1", _day(1)))
+    world.add(c, _item("c1", _day(1)), _item("c2", _day(2)))
+    world.keep("c2")
+    tech = world.feeds.folder_by_name("Tech")
+    assert tech is not None
+    assert world.service.mark_all_read(a, None, NOW) == [world.id_of("a1")]
+    assert sorted(world.service.mark_all_read(None, tech.id, NOW)) == [world.id_of("b1")]
+    assert sorted(world.service.mark_all_read(None, None, NOW)) == sorted(
+        [world.id_of("c1"), world.id_of("c2")]
+    )
+    assert world.guids("read = 0") == set()
+    assert world.guids("kept_page_id IS NOT NULL") == {"c2"}  # Keep untouched
+
+
+def test_mark_all_read_leaves_posts_seen_after_as_of(world: World) -> None:
+    feed = world.feed("https://a.example/feed")
+    world.add(feed, _item("old", _day(1)))
+    world.add(feed, _item("new", None), seen=NOW + timedelta(minutes=1))
+    assert world.service.mark_all_read(None, None, NOW) == [world.id_of("old")]
+    assert world.guids("read = 0") == {"new"}
+
+
+def test_set_read_chunks_beyond_the_variable_limit(world: World) -> None:
+    feed = world.feed("https://a.example/feed")
+    world.add(feed, *(_item(f"p{i}", _day(1)) for i in range(33_000)))
+    ids = world.service.mark_all_read(None, None, NOW)
+    assert len(ids) == 33_000
+    assert world.service.set_read(ids, False) == 33_000
+    assert len(world.guids("read = 0")) == 33_000
+
+
 def test_timestamps_must_carry_an_offset() -> None:
     plus_two = datetime(2026, 10, 16, 14, 0, tzinfo=timezone(timedelta(hours=2)))
     assert parse_timestamp(plus_two.isoformat()) == NOW
@@ -576,6 +612,30 @@ async def test_read_above_route_marks_within_the_view(env: Env) -> None:
         f"{API}/posts/read-above", json={"post_id": ids["a1"], "view": "all"}
     )
     assert unbounded.status_code == 422  # as_of is required
+
+
+async def test_mark_read_routes_mark_and_undo(env: Env) -> None:
+    ids = env.seed()
+    before = (await env.client.get(f"{API}/counts")).json()["views"]["unread"]
+    marked = await env.client.post(
+        f"{API}/posts/mark-read", json={"feed": ids["feed"], "as_of": NOW.isoformat()}
+    )
+    assert marked.status_code == 200, marked.text
+    body = marked.json()
+    assert body["marked"] == len(body["ids"]) == before
+    assert (await env.client.get(f"{API}/counts")).json()["views"]["unread"] == 0
+    undone = await env.client.post(
+        f"{API}/posts/read-state", json={"ids": body["ids"], "read": False}
+    )
+    assert undone.status_code == 200 and undone.json() == {"marked": before}
+    assert (await env.client.get(f"{API}/counts")).json()["views"]["unread"] == before
+    assert (await env.client.post(f"{API}/posts/mark-read", json={})).status_code == 422
+    refused = await env.client.post(f"{API}/posts/mark-read", json={"as_of": "yesterday"})
+    assert refused.status_code == 400 and refused.json()["error"] == "InvalidTimestamp"
+    too_many = await env.client.post(
+        f"{API}/posts/read-state", json={"ids": list(range(100_001)), "read": True}
+    )
+    assert too_many.status_code == 422
 
 
 async def test_article_route_extracts_once_and_reports_failure(
