@@ -93,7 +93,8 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
   const [settings, setSettings] = useState<RssSettings | null>(null);
   /** Removed but still undoable: hidden here, sent when its toast closes without Undo. */
   const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
-  const pending = useRef(new Map<number, string>());
+  /** Per feed removed but not yet sent: its toast. */
+  const pending = useRef(new Map<number, { toastId: string; feed: Feed }>());
   // A remove can be sent after the screen has gone (leaving it sends them): use the latest props.
   const latest = useRef({ onChanged, onRemoved });
   latest.current = { onChanged, onRemoved };
@@ -109,11 +110,11 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
     );
   }, [client, toast]);
 
-  // Leaving the screen (Back, the browser's Back, or the app closing) sends any pending removes
-  // first: closing their toasts reports "dismiss", and that sends them.
+  // Leaving the screen (Back, or the browser's Back) sends any pending removes first: closing
+  // their toasts reports "dismiss", and that sends them.
   useEffect(
     () => () => {
-      for (const toastId of [...pending.current.values()]) toast.dismiss(toastId);
+      for (const { toastId } of [...pending.current.values()]) toast.dismiss(toastId);
     },
     [toast],
   );
@@ -125,8 +126,8 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
       return next;
     });
 
-  const send = (feed: Feed) => {
-    removeFeed(client, feed.id).then(
+  const send = (feed: Feed, opts: { keepalive?: boolean } = {}) => {
+    removeFeed(client, feed.id, opts).then(
       () => {
         latest.current.onRemoved(feed.id);
         latest.current.onChanged();
@@ -145,13 +146,28 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
       action: { label: "Undo", onAction: () => {} },
       duration: 8000,
       onClose: (reason) => {
-        pending.current.delete(feed.id);
+        if (!pending.current.delete(feed.id)) return; // already sent as the page went
         if (reason === "action") unhide(feed.id);
         else send(feed);
       },
     });
-    pending.current.set(feed.id, toastId);
+    pending.current.set(feed.id, { toastId, feed });
   };
+
+  // A tab closing or reloading runs no React cleanup: pending removes go out as the page hides,
+  // as requests that outlive it, and their toasts close (no Undo left to offer).
+  useEffect(() => {
+    const onHide = () => {
+      const now = [...pending.current.values()];
+      pending.current.clear();
+      for (const { toastId, feed } of now) {
+        send(feed, { keepalive: true });
+        toast.dismiss(toastId);
+      }
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  });
 
   const add = async (e: FormEvent) => {
     e.preventDefault();

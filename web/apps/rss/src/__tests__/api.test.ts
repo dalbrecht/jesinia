@@ -12,9 +12,11 @@ import {
   listPosts,
   markAllRead,
   markReadAbove,
+  MAX_READ_IDS,
   OPML_EXPORT_URL,
   putRssSettings,
   readingMinutes,
+  removeFeed,
   RssRequestError,
   retryArchive,
   safeHttpUrl,
@@ -148,6 +150,39 @@ describe("feed management calls", () => {
     expect(await writes[3]?.clone().json()).toEqual({ retention: null });
     expect(await writes[4]?.clone().json()).toEqual({ opml: "<opml/>" });
     expect(await writes[5]?.clone().json()).toEqual({ a: 2 });
+  });
+
+  it("sends a large Undo in batches the server accepts, each its own action", async () => {
+    expect(MAX_READ_IDS).toBe(100_000);
+    const { client, calls } = fakeClient({
+      "POST /api/rss/posts/read-state": async (req: Request) => {
+        const { ids } = (await req.clone().json()) as { ids: number[] };
+        return Response.json({ marked: ids.length - 1 });
+      },
+    });
+    const ids = Array.from({ length: 2 * MAX_READ_IDS + 5 }, (_, i) => i + 1);
+    expect(await setReadMany(client, ids, false)).toBe(ids.length - 3);
+    expect(calls).toHaveLength(3);
+    const bodies = (await Promise.all(calls.map((c) => c.clone().json()))) as { ids: number[]; read: boolean }[];
+    expect(bodies.map((b) => b.ids.length)).toEqual([MAX_READ_IDS, MAX_READ_IDS, 5]);
+    expect(bodies.flatMap((b) => b.ids)).toEqual(ids);
+    expect(bodies.every((b) => !b.read)).toBe(true);
+    const keys = calls.map((c) => c.headers.get("Idempotency-Key"));
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it("an empty Undo sends nothing", async () => {
+    const { client, calls } = fakeClient({});
+    expect(await setReadMany(client, [], false)).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a remove can outlive the page (keepalive), keeping its idempotency key", async () => {
+    const { client, calls } = fakeClient({ "DELETE /api/rss/feeds/3": () => new Response(null, { status: 204 }) });
+    await removeFeed(client, 3, { keepalive: true });
+    await removeFeed(client, 3);
+    expect(calls.map((c) => c.keepalive)).toEqual([true, false]);
+    for (const c of calls) expect(c.headers.get("Idempotency-Key")).toMatch(/[0-9a-f-]{36}/);
   });
 
   it("surfaces the server's cause on failure", async () => {

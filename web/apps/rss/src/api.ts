@@ -137,13 +137,23 @@ export async function markAllRead(
   return unwrap(r).ids;
 }
 
-/** Set the read state of many posts at once (bulk Undo); returns how many changed. */
+/** The most ids one read-state request may carry (the server's `MAX_READ_IDS`). */
+export const MAX_READ_IDS = 100_000;
+
+/**
+ * Set the read state of many posts at once (bulk Undo); returns how many changed. A larger set
+ * goes in batches the server accepts, each its own action (its own idempotency key).
+ */
 export async function setReadMany(client: JesiniaClient, ids: number[], read: boolean): Promise<number> {
-  const r = await client.POST("/api/rss/posts/read-state", {
-    params: { header: withIdempotency() },
-    body: { ids, read },
-  });
-  return unwrap(r).marked;
+  let marked = 0;
+  for (let at = 0; at < ids.length; at += MAX_READ_IDS) {
+    const r = await client.POST("/api/rss/posts/read-state", {
+      params: { header: withIdempotency() },
+      body: { ids: ids.slice(at, at + MAX_READ_IDS), read },
+    });
+    marked += unwrap(r).marked;
+  }
+  return marked;
 }
 
 /** Override one feed's retention, or `null` to follow the global setting. */
@@ -193,10 +203,14 @@ export async function addFeed(client: JesiniaClient, url: string, folder: string
   return unwrap(r);
 }
 
-/** Unsubscribe: unkept posts go, kept ones stay in the KB. Adding the URL again restores it. */
-export async function removeFeed(client: JesiniaClient, id: number): Promise<void> {
+/**
+ * Unsubscribe: unkept posts go, kept ones stay in the KB. Adding the URL again restores it.
+ * `keepalive` lets the request finish after the page has gone (a tab closing).
+ */
+export async function removeFeed(client: JesiniaClient, id: number, opts: { keepalive?: boolean } = {}): Promise<void> {
   const r = await client.DELETE("/api/rss/feeds/{feed_id}", {
     params: { path: { feed_id: id }, header: withIdempotency() },
+    ...(opts.keepalive ? { keepalive: true } : {}),
   });
   unwrap(r);
 }

@@ -649,6 +649,24 @@ describe("Remove", () => {
     await waitFor(() => expect(manage.queryByRole("row", { name: "Loose feed" })).toBeNull());
   });
 
+  it("closing or reloading the tab sends a pending remove that outlives the page", async () => {
+    const { calls } = setup({ "DELETE /api/rss/feeds/4": () => new Response(null, { status: 204 }) });
+    const manage = await openManage();
+    await userEvent.click(rowOf(manage, "Loose feed").getByRole("button", { name: "Remove" }));
+    expect(await toast("Removed Loose feed")).toBeDefined();
+    expect(sent(calls, "DELETE", "/api/rss/feeds/4")).toHaveLength(0);
+    act(() => void window.dispatchEvent(new Event("pagehide")));
+    await waitFor(() => expect(sent(calls, "DELETE", "/api/rss/feeds/4")).toHaveLength(1));
+    const req = sent(calls, "DELETE", "/api/rss/feeds/4")[0];
+    expect(req?.keepalive).toBe(true);
+    expect(req?.headers.get("Idempotency-Key")).toMatch(/^[0-9a-f-]{36}$/);
+    // Sent once: its toast is gone, and leaving the screen sends nothing more.
+    expect(screen.queryAllByText("Removed Loose feed").filter((el) => el.closest("[data-toast]"))).toHaveLength(0);
+    await userEvent.click(screen.getByRole("button", { name: "‹ Back to reading" }));
+    await act(async () => {});
+    expect(sent(calls, "DELETE", "/api/rss/feeds/4")).toHaveLength(1);
+  });
+
   it("removing the feed in view, then going back, lands on All unread", async () => {
     let gone: number[] = [];
     const { calls } = setup({
