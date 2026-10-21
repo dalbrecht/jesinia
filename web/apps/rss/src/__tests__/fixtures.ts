@@ -61,6 +61,7 @@ export function routes(over: Routes = {}): Routes {
     "GET /api/rss/posts": { items: POSTS, next_before: null },
     ...Object.fromEntries(POSTS.map((p) => [`PATCH /api/rss/posts/${p.id}`, echo(p.id)])),
     "POST /api/rss/posts/read-above": { marked: 2 },
+    "GET /api/rss/settings": { retention: 30, source_folder: "Sources" },
     ...over,
   });
 }

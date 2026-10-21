@@ -539,40 +539,76 @@
   border-left: 0;
 }
 
-/* A failing feed (spec §7): its cause and a Retry, under the feed. */
-.problem {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--jx-space-1) var(--jx-space-2);
-  padding: 0 var(--jx-space-3) var(--jx-space-1);
-  font-size: var(--jx-text-xs);
-  color: var(--jx-fg-muted);
-}
-.problemText {
-  flex: 1 1 120px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
 .addFeedRow {
   margin-top: auto;
   padding: var(--jx-space-2) var(--jx-space-2) 0;
 }
 
-/* Feed management (+ Add feed) */
-.manage {
+/* Feed management at /rss/manage: in place of the list and the reader. */
+.manageLayout {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  gap: var(--jx-space-3);
-  width: min(640px, calc(100vw - 32px));
-  max-height: calc(100vh - 64px);
-  padding: var(--jx-space-4);
-  border-radius: var(--jx-radius-lg);
-  background: var(--jx-surface);
-  border: 1px solid var(--jx-border);
+  grid-template-columns: 220px minmax(0, 1fr);
+  height: calc(100vh - 38px);
 }
-.manage h2 {
+@media (max-width: 1000px) {
+  .manageLayout {
+    grid-template-columns: 180px minmax(0, 1fr);
+  }
+}
+.manageScreen {
+  container: manage / inline-size;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: var(--jx-space-3);
+  min-width: 0;
+  min-height: 0;
+  padding: var(--jx-space-3) var(--jx-space-4);
+}
+.manageHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2);
+}
+.manageHeading {
   font-size: var(--jx-text-lg);
+  font-weight: var(--jx-weight-semibold);
+}
+.manageTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-2);
+  margin-left: auto;
+}
+.fileButton {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--jx-space-2);
+  border-radius: var(--jx-button-radius);
+  color: var(--jx-fg);
+  font-size: var(--jx-text-sm);
+  cursor: pointer;
+}
+.fileButton:hover {
+  background: var(--jx-surface-hover);
+}
+.fileButton:focus-within {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
+}
+.fileButton[data-busy] {
+  cursor: progress;
+  color: var(--jx-fg-muted);
+}
+.fileButton input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
 }
 .addFeed {
   display: grid;
@@ -583,7 +619,156 @@
 .addFeed > button {
   margin-top: 22px;
 }
-@media (max-width: 560px) {
+.manageBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jx-space-2);
+  font-size: var(--jx-text-sm);
+}
+.filter {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-1);
+  color: var(--jx-fg-muted);
+}
+.filter button {
+  border: 0;
+  background: none;
+  padding: 2px var(--jx-space-1);
+  border-radius: var(--jx-radius-sm);
+  color: var(--jx-fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.filter button[aria-pressed="true"] {
+  color: var(--jx-fg);
+  font-weight: var(--jx-weight-semibold);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.filter button:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: var(--jx-focus-offset);
+}
+.defaultKeep {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jx-space-1);
+}
+.select {
+  border: 1px solid var(--jx-border-strong);
+  border-radius: var(--jx-radius-sm);
+  background: var(--jx-surface);
+  color: var(--jx-fg);
+  padding: 2px var(--jx-space-1);
+  min-height: 24px;
+  max-width: 100%;
+}
+.manageTableWrap {
+  overflow-y: auto;
+  min-height: 0;
+  border-top: 1px solid var(--jx-border);
+}
+.manageTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--jx-text-sm);
+}
+.manageTable th {
+  position: sticky;
+  top: 0;
+  background: var(--jx-bg);
+  text-align: left;
+  font-size: var(--jx-text-xs);
+  font-weight: var(--jx-weight-semibold);
+  color: var(--jx-fg-muted);
+  padding: var(--jx-space-2);
+  border-bottom: 1px solid var(--jx-border);
+}
+.manageTable td {
+  padding: var(--jx-space-2);
+  border-bottom: 1px solid var(--jx-border);
+  vertical-align: top;
+}
+.cellFeed {
+  min-width: 18ch;
+}
+.manageTitle {
+  display: block;
+  font-weight: var(--jx-weight-semibold);
+}
+.manageUrl {
+  display: block;
+  font-family: var(--jx-font-mono);
+  font-size: var(--jx-text-xs);
+  color: var(--jx-fg-muted);
+  overflow-wrap: anywhere;
+}
+.cellSynced,
+.cellNewest {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ok,
+.failing,
+.syncing,
+.cause {
+  display: block;
+}
+.ok {
+  color: var(--jx-success);
+}
+.ok::before,
+.failing::before,
+.syncing::before {
+  content: "● ";
+}
+.failing {
+  color: var(--jx-danger);
+  white-space: nowrap;
+}
+.syncing {
+  color: var(--jx-fg-muted);
+}
+.cause {
+  font-size: var(--jx-text-xs);
+  color: var(--jx-fg-muted);
+  overflow-wrap: anywhere;
+}
+.cellActions {
+  text-align: right;
+  white-space: nowrap;
+}
+.retention {
+  display: grid;
+  gap: var(--jx-space-1);
+  justify-items: start;
+}
+.cellFolder > form {
+  margin-top: var(--jx-space-1);
+}
+.inlineForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--jx-space-1);
+}
+.inlineForm input[type="number"] {
+  width: 7ch;
+}
+
+@media (max-width: 767px) {
+  .manageScreen {
+    padding: var(--jx-space-2) var(--jx-space-3);
+  }
+  .manageTools {
+    margin-left: 0;
+  }
+}
+@container manage (max-width: 560px) {
   .addFeed {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -592,90 +777,65 @@
     justify-self: start;
   }
 }
-.manageBody {
-  overflow-y: auto;
-  min-height: 0;
-  display: grid;
-  align-content: start;
-  gap: var(--jx-space-3);
-  border-top: 1px solid var(--jx-border);
-  padding-top: var(--jx-space-3);
-}
-.manageFolderHead {
-  display: flex;
-  align-items: center;
-  gap: var(--jx-space-2);
-  min-height: 28px;
-}
-.manageFolderHead h3 {
-  font-size: var(--jx-text-xs);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--jx-fg-muted);
-  font-weight: var(--jx-weight-semibold);
-}
-.renameFolder {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: start;
-  gap: var(--jx-space-2);
-}
-.manageList {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: var(--jx-space-2);
-}
-.manageFeed {
-  display: grid;
-  gap: var(--jx-space-1);
-  padding: var(--jx-space-2);
-  border: 1px solid var(--jx-border);
-  border-radius: var(--jx-radius-md);
-}
-.manageFeed .problem {
-  padding: 0;
-}
-.manageFeedHead {
-  display: grid;
-  min-width: 0;
-}
-.manageTitle {
-  font-weight: var(--jx-weight-semibold);
-  font-size: var(--jx-text-sm);
-}
-.manageUrl {
-  font-family: var(--jx-font-mono);
-  font-size: var(--jx-text-xs);
-  color: var(--jx-fg-muted);
-  overflow-wrap: anywhere;
-}
-.manageActions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--jx-space-2);
-}
-.manageFoot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--jx-space-2);
-}
-.folderPick {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--jx-space-1);
-}
-.folderPick select {
-  border: 1px solid var(--jx-border-strong);
-  border-radius: var(--jx-radius-sm);
-  background: var(--jx-surface);
-  color: var(--jx-fg);
-  padding: 2px var(--jx-space-1);
-  min-height: 24px;
+/* Too narrow for seven columns: every row stacks (feed, status, its settings, then the
+   actions), with no sideways scroll. */
+@container manage (max-width: 880px) {
+  .manageTable thead {
+    display: none;
+  }
+  .manageTable,
+  .manageTable tbody {
+    display: block;
+  }
+  .manageTable tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "feed feed"
+      "status status"
+      "folder keep"
+      "synced newest"
+      "actions actions";
+    gap: var(--jx-space-1) var(--jx-space-3);
+    padding: var(--jx-space-2) 0;
+    border-bottom: 1px solid var(--jx-border);
+  }
+  .manageTable td {
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .manageTable td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: var(--jx-text-xs);
+    color: var(--jx-fg-muted);
+  }
+  .cellFeed {
+    grid-area: feed;
+  }
+  .cellStatus {
+    grid-area: status;
+  }
+  .cellStatus::before {
+    display: none !important;
+  }
+  .cellFolder {
+    grid-area: folder;
+  }
+  .cellKeep {
+    grid-area: keep;
+  }
+  .cellSynced {
+    grid-area: synced;
+  }
+  .cellNewest {
+    grid-area: newest;
+  }
+  .cellActions {
+    grid-area: actions;
+    text-align: left;
+  }
 }
 
 /* `/`: feeds whose names match, above the matching headlines. */

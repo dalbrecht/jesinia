@@ -34,6 +34,7 @@ import { KEY_HELP, useKeys } from "./keys";
 import { ManageFeeds } from "./ManageFeeds";
 import { PostList } from "./PostList";
 import { Reader } from "./Reader";
+import { useManageRoute } from "./route";
 import s from "./rss.module.css";
 
 export const NARROW_QUERY = "(max-width: 767px)";
@@ -198,7 +199,8 @@ function Workspace({ runners }: WorkspaceProps) {
   const shownPosts = useRef<Post[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showKeys, setShowKeys] = useState(false);
-  const [managing, setManaging] = useState(false);
+  const route = useManageRoute();
+  const managing = route.managing;
   const [focusSearch, setFocusSearch] = useState(0);
   const searchBox = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
@@ -595,17 +597,21 @@ function Workspace({ runners }: WorkspaceProps) {
     setStage("list");
   };
 
-  /** Feeds or folders changed (an add, move, rename, unsubscribe or Retry). */
+  /** Feeds or folders changed (an add, move, rename, remove, retention or Sync now). */
   const feedsChanged = () => {
     loadFeeds();
     loadCounts();
     setReload((n) => n + 1);
   };
-  const added = (feed: Feed) => {
-    setManaging(false);
-    loadFeeds();
-    loadCounts();
-    goTo({ view: "unread", feed: feed.id, folder: null });
+  // A remove is sent when its Undo runs out, possibly after the screen has gone: it reads the
+  // view as it is then.
+  const viewNow = useRef({ scope, feeds });
+  viewNow.current = { scope, feeds };
+  const removed = (id: number) => {
+    // R28 and M11: the feed in view, or the last feed of the folder in view, is gone.
+    const { scope: now, feeds: all } = viewNow.current;
+    const folderGone = now.folder !== null && !all.some((f) => f.id !== id && f.folder_id === now.folder);
+    if (now.feed === id || folderGone) goTo(UNREAD);
   };
 
   const markHere = () => {
@@ -613,7 +619,7 @@ function Workspace({ runners }: WorkspaceProps) {
     markAll({ feed: scope.feed, folder: scope.folder }, titleOf(scope, feeds, search), asOf);
   };
 
-  // While a dialog or the Keep popover is open, keys belong to it (Esc closes it).
+  // While a dialog, the Keep popover or the manage screen is open, keys belong to it.
   useKeys(showKeys || keeping || managing ? {} : {
     j: () => move(1),
     k: () => move(-1),
@@ -646,11 +652,12 @@ function Workspace({ runners }: WorkspaceProps) {
       : null;
   const chatOpen = chat !== null && chat.open;
   // Engaged on a wide screen, the feeds give way so the reader keeps a usable measure.
-  const showFeeds = narrow ? stage === "feeds" : !chatOpen;
+  const showFeeds = narrow ? stage === "feeds" && !managing : managing || !chatOpen;
   // Until the effect above settles, a reader stage with nothing selected is the list.
   const shown = stage === "reader" && !selected ? "list" : stage;
-  const showList = !narrow || shown === "list";
-  const showReader = !narrow || shown === "reader";
+  // The manage screen takes the list's and the reader's place (on a narrow screen, all of it).
+  const showList = !managing && (!narrow || shown === "list");
+  const showReader = !managing && (!narrow || shown === "reader");
 
   const listPane = (
     <section className={s.listPane} aria-labelledby="rss-list-title">
@@ -739,7 +746,7 @@ function Workspace({ runners }: WorkspaceProps) {
   );
 
   return (
-    <div className={narrow ? s.narrow : chatOpen ? s.engagedLayout : s.layout}>
+    <div className={narrow ? s.narrow : managing ? s.manageLayout : chatOpen ? s.engagedLayout : s.layout}>
       {showFeeds ? (
         <Feeds
           feeds={feeds}
@@ -747,7 +754,7 @@ function Workspace({ runners }: WorkspaceProps) {
           scope={scope}
           onScope={goTo}
           onMarkRead={(target, label) => markAll(target, label, countsAsOf)}
-          onManage={() => setManaging(true)}
+          onManage={route.open}
         />
       ) : null}
       {showList ? listPane : null}
@@ -786,9 +793,12 @@ function Workspace({ runners }: WorkspaceProps) {
           </section>
         )
       ) : null}
+      {managing ? (
+        <ManageFeeds feeds={feeds} onChanged={feedsChanged} onRemoved={removed} onBack={route.close} />
+      ) : null}
       {chat ? (
         <EngageChat
-          open={chat.open}
+          open={chat.open && !managing}
           narrow={narrow}
           post={chat.post}
           session={chat.session}
@@ -800,20 +810,6 @@ function Workspace({ runners }: WorkspaceProps) {
         />
       ) : null}
       {showKeys ? <KeysDialog onClose={() => setShowKeys(false)} /> : null}
-      {managing ? (
-        <ManageFeeds
-          feeds={feeds}
-          onAdded={added}
-          onChanged={feedsChanged}
-          // R28: unsubscribing the feed in view goes back to All unread.
-          onRemoved={(id) => {
-            // R28 and M11: the feed in view, or the last feed of the folder in view, is gone.
-            const folderGone = scope.folder !== null && !feeds.some((f) => f.id !== id && f.folder_id === scope.folder);
-            if (scope.feed === id || folderGone) goTo(UNREAD);
-          }}
-          onClose={() => setManaging(false)}
-        />
-      ) : null}
     </div>
   );
 }

@@ -12,4 +12,8 @@ class QuietEventSource {
 }
 vi.stubGlobal("EventSource", QuietEventSource);
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // The manage screen lives at …/manage: each test starts back at the reader.
+  window.history.replaceState(null, "", "/");
+});
