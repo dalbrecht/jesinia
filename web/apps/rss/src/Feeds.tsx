@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // The feeds pane (spec §2.1): the views, then folders (collapsible) and their feeds, each
-// with its unread count, and a warning on a feed that keeps failing (its cause and a Retry).
-// + Add feed, at the bottom, opens feed management.
+// with its unread count and, on hover or focus, Mark read. No sync errors here: ⚙ Manage
+// feeds, at the bottom, counts the failing feeds and opens feed management.
 import { Button } from "@jesinia/design";
 import { useState } from "react";
 import { capCount, type Counts, type Feed, type Scope } from "./api";
-import { FeedProblem } from "./ManageFeeds";
 import s from "./rss.module.css";
 
 /** Collapsed folder ids, per browser (a convenience: losing it costs nothing). */
@@ -55,12 +54,12 @@ export type FeedsProps = {
   counts: Counts | null;
   scope: Scope;
   onScope: (scope: Scope) => void;
-  onAddFeed: () => void;
-  /** A feed changed (a Retry): reload the feeds and counts. */
-  onFeedChanged: () => void;
+  /** Mark everything in a feed or folder read; `label` names it in the toast. */
+  onMarkRead: (target: { feed: number | null; folder: number | null }, label: string) => void;
+  onManage: () => void;
 };
 
-export function Feeds({ feeds, counts, scope, onScope, onAddFeed, onFeedChanged }: FeedsProps) {
+export function Feeds({ feeds, counts, scope, onScope, onMarkRead, onManage }: FeedsProps) {
   const [collapsed, setCollapsed] = useState<number[]>(readCollapsed);
   const { folders, loose } = group(feeds);
   const unreadOf = (list: { id: number; unread: number }[] | undefined, id: number, fallback = 0) =>
@@ -73,27 +72,35 @@ export function Feeds({ feeds, counts, scope, onScope, onAddFeed, onFeedChanged 
   const scoped = scope.feed === null && scope.folder === null;
   const current = (on: boolean) => (on ? ("true" as const) : undefined);
 
-  const feedRow = (feed: Feed) => (
-    <div key={feed.id}>
-      {feedButton(feed)}
-      <FeedProblem feed={feed} onChanged={onFeedChanged} />
-    </div>
-  );
-  const feedButton = (feed: Feed) => (
+  const failing = feeds.filter((f) => f.warning !== null).length;
+  /** Mark read, beside a row: shown on the row's hover or focus; never selects the row. */
+  const markRead = (target: { feed: number | null; folder: number | null }, label: string) => (
     <button
       type="button"
-      className={s.feed}
-      aria-current={current(scope.feed === feed.id)}
-      onClick={() => onScope({ view: scope.view === "kept" ? "unread" : scope.view, feed: feed.id, folder: null })}
+      className={s.rowMark}
+      aria-label={`Mark ${label} read`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onMarkRead(target, label);
+      }}
     >
-      <span className={s.feedName}>{feed.title}</span>
-      {feed.warning ? (
-        <span className={s.warn} role="img" aria-label={`Warning: ${feed.warning}`} title={feed.warning}>
-          !
-        </span>
-      ) : null}
-      <Count n={unreadOf(counts?.feeds, feed.id, feed.unread)} />
+      Mark read
     </button>
+  );
+
+  const feedRow = (feed: Feed) => (
+    <div key={feed.id} className={s.row}>
+      <button
+        type="button"
+        className={s.feed}
+        aria-current={current(scope.feed === feed.id)}
+        onClick={() => onScope({ view: scope.view === "kept" ? "unread" : scope.view, feed: feed.id, folder: null })}
+      >
+        <span className={s.feedName}>{feed.title}</span>
+        <Count n={unreadOf(counts?.feeds, feed.id, feed.unread)} />
+      </button>
+      {markRead({ feed: feed.id, folder: null }, feed.title)}
+    </div>
   );
 
   return (
@@ -120,7 +127,7 @@ export function Feeds({ feeds, counts, scope, onScope, onAddFeed, onFeedChanged 
         const open = !collapsed.includes(folder.id);
         return (
           <div key={folder.id} className={s.folder}>
-            <div className={s.folderHead}>
+            <div className={`${s.folderHead} ${s.row}`}>
               <button
                 type="button"
                 className={s.toggle}
@@ -142,6 +149,7 @@ export function Feeds({ feeds, counts, scope, onScope, onAddFeed, onFeedChanged 
                 {/* Open, its feeds show their own counts (spec §2.3: collapsing quiets them). */}
                 {open ? null : <Count n={unreadOf(counts?.folders, folder.id)} />}
               </button>
+              {markRead({ feed: null, folder: folder.id }, folder.name)}
             </div>
             {open ? folder.feeds.map(feedRow) : null}
           </div>
@@ -149,8 +157,8 @@ export function Feeds({ feeds, counts, scope, onScope, onAddFeed, onFeedChanged 
       })}
       {loose.length ? <div className={s.folder}>{loose.map(feedRow)}</div> : null}
       <div className={s.addFeedRow}>
-        <Button variant="ghost" size="sm" onClick={onAddFeed}>
-          + Add feed
+        <Button variant="ghost" size="sm" onClick={onManage}>
+          {failing ? `⚙ Manage feeds · ${failing}` : "⚙ Manage feeds"}
         </Button>
       </div>
     </nav>

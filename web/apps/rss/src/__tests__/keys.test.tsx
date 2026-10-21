@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { CHORD_TIMEOUT_MS, KEY_HELP, useKeys, type KeyMap } from "../keys";
 
 /** Every binding from the spec's key table (§2.2), as `useKeys` names them. */
-const ALL = ["j", "k", "Enter", "o", "n", "e", "m", "Shift+A", "g a", "g i", "/", "?"] as const;
+const ALL = ["j", "k", "Enter", "o", "n", "e", "m", "Shift+A", "Shift+M", "g a", "g i", "/", "?"] as const;
 
 function Harness({ map }: { map: KeyMap }) {
   useKeys(map);
@@ -43,6 +43,7 @@ describe("useKeys", () => {
     press("e");
     press("m");
     press("A", { shiftKey: true });
+    press("M", { shiftKey: true });
     press("g");
     press("a");
     press("g");

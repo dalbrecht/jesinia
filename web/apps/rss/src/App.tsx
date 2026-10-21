@@ -4,7 +4,7 @@
 import { subscribe, type JesiniaClient } from "@jesinia/client";
 import { Button, Input, relativeTime, useToast, VisuallyHidden } from "@jesinia/design";
 import { AppShell, ChatRail, useClient, type ChatState, type Runners } from "@jesinia/shell";
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   askTakeaway,
   capCount,
@@ -13,12 +13,14 @@ import {
   getCounts,
   listFeeds,
   listPosts,
+  markAllRead,
   markReadAbove,
   refreshFeeds,
   RssRequestError,
   safeHttpUrl,
   searchPosts,
   setRead,
+  setReadMany,
   type Counts,
   type Feed,
   type Kept,
@@ -134,11 +136,7 @@ function KeysDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** The title bar's Refresh lives outside the workspace; they talk through these. */
 type WorkspaceProps = {
-  refreshRef: MutableRefObject<(() => void) | null>;
-  onRefreshing: (busy: boolean) => void;
-  onRefreshed: (at: string) => void;
   /** null while the server's runners are still loading. */
   runners: Runners | null;
 };
@@ -162,7 +160,18 @@ type PostChanged = { id: number; archive_state: Post["archive_state"]; archive_e
  */
 type Engaged = { postId: number; session: string | null; tried: boolean; open: boolean };
 
-function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: WorkspaceProps) {
+/** What a Mark all read covers: everything (both null), one folder, or one feed. */
+type MarkTarget = { feed: number | null; folder: number | null };
+
+/** Does marking `target` read change which posts the list for `scope` holds? */
+function covers(target: MarkTarget, scope: Scope, feeds: Feed[]): boolean {
+  if (target.feed === null && target.folder === null) return true;
+  if (target.feed !== null) return target.feed === scope.feed;
+  if (target.folder === scope.folder) return true;
+  return scope.feed !== null && feeds.find((f) => f.id === scope.feed)?.folder_id === target.folder;
+}
+
+function Workspace({ runners }: WorkspaceProps) {
   const client = useClient();
   const toast = useToast();
   const narrow = useNarrow();
@@ -175,6 +184,10 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   const [posts, setPosts] = useState<Post[]>([]);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [asOf, setAsOf] = useState(() => new Date().toISOString());
+  /** When the sidebar's counts were asked for: its Mark read covers only what they counted. */
+  const [countsAsOf, setCountsAsOf] = useState(() => new Date().toISOString());
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
@@ -215,10 +228,12 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     [toast],
   );
   const loadCounts = useCallback(() => {
+    const startedAt = new Date().toISOString();
     getCounts(client).then(
       (c) => {
         countsFailing.current = false;
         setCounts(c);
+        setCountsAsOf(startedAt);
       },
       (e: unknown) => {
         // Counts reload after every read; say why once, not on each retry.
@@ -355,23 +370,20 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     );
   }, [client, scope, nextBefore, loading, fail]);
 
-  const refresh = useCallback(async () => {
-    onRefreshing(true);
+  const refresh = async () => {
+    setRefreshing(true);
     try {
       await refreshFeeds(client);
       loadFeeds();
       loadCounts();
       setReload((n) => n + 1);
-      onRefreshed(new Date().toISOString());
+      setLastUpdate(new Date().toISOString());
     } catch (e) {
       fail("refresh", e, "Try again in a moment.");
     } finally {
-      onRefreshing(false);
+      setRefreshing(false);
     }
-  }, [client, loadFeeds, loadCounts, onRefreshing, onRefreshed, fail]);
-  useEffect(() => {
-    refreshRef.current = () => void refresh();
-  }, [refresh, refreshRef]);
+  };
 
   useEffect(() => {
     if (focusSearch) searchBox.current?.focus();
@@ -440,6 +452,51 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
       setReadFlags(new Map(above.map((p) => [p.id, p.read])));
       fail("mark these read", e, "Press Shift+A to try again.");
     });
+  };
+
+  /**
+   * Mark everything in `target` first seen by `at` read: the rows on screen at once, then the
+   * counts, and the list too when the target covers it. Undo puts exactly those posts back.
+   */
+  const markAll = (target: MarkTarget, label: string, at: string) => {
+    const cutoff = Date.parse(at);
+    const inTarget = (p: Post) =>
+      target.feed !== null
+        ? p.feed_id === target.feed
+        : target.folder === null || feeds.find((f) => f.id === p.feed_id)?.folder_id === target.folder;
+    const touched = posts.filter((p) => !p.read && Date.parse(p.first_seen_at) <= cutoff && inTarget(p));
+    setReadFlags(new Map(touched.map((p) => [p.id, true])));
+    const reloadList = covers(target, scope, feeds);
+    markAllRead(client, target, at).then(
+      (ids) => {
+        loadCounts();
+        if (reloadList) setReload((n) => n + 1);
+        if (ids.length === 0) {
+          toast.show({ tone: "info", message: `Nothing unread in ${label}` });
+          return;
+        }
+        toast.show({
+          tone: "success",
+          message: `Marked ${ids.length} in ${label} read`,
+          action: {
+            label: "Undo",
+            onAction: () =>
+              void setReadMany(client, ids, false).then(
+                () => {
+                  loadCounts();
+                  setReload((n) => n + 1);
+                },
+                (e: unknown) => fail(`undo marking ${label} read`, e, "Mark the posts unread with m."),
+              ),
+          },
+          duration: 8000,
+        });
+      },
+      (e: unknown) => {
+        setReadFlags(new Map(touched.map((p) => [p.id, false])));
+        fail(`mark ${label} read`, e, "Try again.");
+      },
+    );
   };
 
   // Keep and Engage belong to the post they were opened for.
@@ -551,6 +608,11 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     goTo({ view: "unread", feed: feed.id, folder: null });
   };
 
+  const markHere = () => {
+    if (scope.view === "kept" || search) return;
+    markAll({ feed: scope.feed, folder: scope.folder }, titleOf(scope, feeds, search), asOf);
+  };
+
   // While a dialog or the Keep popover is open, keys belong to it (Esc closes it).
   useKeys(showKeys || keeping || managing ? {} : {
     j: () => move(1),
@@ -561,6 +623,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
     e: engage,
     m: () => selected && markRead(selected, !selected.read),
     "Shift+A": readAbove,
+    "Shift+M": markHere,
     "g a": () => goTo(UNREAD),
     "g i": () => goTo({ view: "kept", feed: null, folder: null }),
     "/": () => {
@@ -571,6 +634,8 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
   }); // prettier-ignore
 
   const title = titleOf(scope, feeds, search);
+  // Everything in view, as of the list's load; not In KB (kept posts) nor a search's results.
+  const canMarkAll = scope.view !== "kept" && !search;
   // `/` searches the feed list as well as headlines (spec §2.2): feeds are all loaded, so their
   // names are matched here.
   const needle = search.toLowerCase();
@@ -596,7 +661,7 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
           </Button>
         </div>
       ) : null}
-      <header className={s.paneHead}>
+      <header className={`${s.paneHead} ${s.listHead}`}>
         <h2 id="rss-list-title" className={s.listTitle}>
           {title}
         </h2>
@@ -612,6 +677,17 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
             <option value="all">All</option>
           </select>
         </label>
+        <div className={s.headActions}>
+          {canMarkAll ? (
+            <Button variant="ghost" size="sm" onClick={markHere}>
+              ✓ Mark all read
+            </Button>
+          ) : null}
+          <Button variant="ghost" size="sm" loading={refreshing} onClick={() => void refresh()}>
+            ↻ Refresh
+          </Button>
+          {lastUpdate ? <span className={s.updated}>Updated {relativeTime(lastUpdate)}</span> : null}
+        </div>
       </header>
       <div className={s.searchRow}>
         <Input
@@ -670,8 +746,8 @@ function Workspace({ refreshRef, onRefreshing, onRefreshed, runners }: Workspace
           counts={counts}
           scope={scope}
           onScope={goTo}
-          onAddFeed={() => setManaging(true)}
-          onFeedChanged={feedsChanged}
+          onMarkRead={(target, label) => markAll(target, label, countsAsOf)}
+          onManage={() => setManaging(true)}
         />
       ) : null}
       {showList ? listPane : null}
@@ -833,32 +909,13 @@ function EngageChat(props: EngageChatProps) {
 }
 
 export function App({ client }: { client?: JesiniaClient }) {
-  const refreshRef = useRef<(() => void) | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState<string | null>(null);
-  const controls = (
-    <>
-      <Button variant="ghost" size="sm" loading={refreshing} onClick={() => refreshRef.current?.()}>
-        ↻ Refresh
-      </Button>
-      {lastUpdate ? <span className={s.updated}>Updated {relativeTime(lastUpdate)}</span> : null}
-    </>
-  );
   return (
     <AppShell
       app={{ id: "rss", name: "RSS", glyph: "/rss/icons/monochrome.svg" }}
       ownSearch
-      controls={controls}
       {...(client ? { client } : {})}
     >
-      {(status) => (
-        <Workspace
-          refreshRef={refreshRef}
-          onRefreshing={setRefreshing}
-          onRefreshed={setLastUpdate}
-          runners={status.runners}
-        />
-      )}
+      {(status) => <Workspace runners={status.runners} />}
     </AppShell>
   );
 }

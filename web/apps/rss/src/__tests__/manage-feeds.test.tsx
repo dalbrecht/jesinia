@@ -47,7 +47,7 @@ async function enter(field: HTMLElement, text: string): Promise<void> {
 
 /** The dialog once the feeds have loaded: its rows exist only then (never query before). */
 async function openManage() {
-  await userEvent.click(await screen.findByRole("button", { name: "+ Add feed" }));
+  await userEvent.click(await screen.findByRole("button", { name: /^⚙ Manage feeds/ }));
   const manage = within(dialog());
   await manage.findAllByRole("listitem");
   return manage;
@@ -81,7 +81,7 @@ describe("Add feed", () => {
     expect(screen.queryByRole("dialog", { name: "Feeds" })).toBeNull();
     // The list now shows the new feed.
     expect(await screen.findByRole("heading", { name: "Example Blog", level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Example Blog/ })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: /^Example Blog/ })).toHaveAttribute("aria-current", "true");
   });
 
   it("adds without a folder, and says why a feed could not be added", async () => {
@@ -122,7 +122,7 @@ describe("Add feed", () => {
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull(); // j did not open a post
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Feeds" })).toBeNull();
-    expect(screen.getByRole("button", { name: "+ Add feed" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: /^⚙ Manage feeds/ })).toHaveFocus();
     manage = await openManage();
     await userEvent.click(manage.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog", { name: "Feeds" })).toBeNull();
@@ -243,7 +243,7 @@ describe("Managing feeds and folders", () => {
 describe("A failing feed", () => {
   const OLD_BLOG = FEEDS[2] as Feed;
 
-  it("shows its cause with Retry in the feeds pane; Retry polls it now", async () => {
+  it("is counted on Manage feeds, not shown in the feeds pane; Retry in the dialog polls it now", async () => {
     let feeds = FEEDS;
     const { calls } = setup({
       "GET /api/rss/feeds": () => Response.json(feeds),
@@ -253,14 +253,16 @@ describe("A failing feed", () => {
       },
     });
     const pane = within(await screen.findByRole("navigation", { name: "Feeds" }));
-    expect(await pane.findByText("Failing for 3 days: 404 from old.example")).toBeInTheDocument();
-    const problem = within(pane.getByRole("group", { name: "Old Blog is failing" }));
-    await userEvent.click(problem.getByRole("button", { name: "Retry" }));
+    expect(await pane.findByRole("button", { name: "⚙ Manage feeds · 1" })).toBeInTheDocument();
+    expect(pane.queryByText("Failing for 3 days: 404 from old.example")).toBeNull();
+    const manage = await openManage();
+    const row = within(manage.getByRole("listitem", { name: "Old Blog" }));
+    await userEvent.click(row.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(sent(calls, "POST", "/api/rss/feeds/3/refresh")).toHaveLength(1));
     const retry = sent(calls, "POST", "/api/rss/feeds/3/refresh")[0];
     expect(retry?.headers.get("Idempotency-Key")).toMatch(/^[0-9a-f-]{36}$/);
     expect(await toast("Old Blog is back.")).toBeDefined();
-    await waitFor(() => expect(pane.queryByText("Failing for 3 days: 404 from old.example")).toBeNull());
+    expect(await pane.findByRole("button", { name: "⚙ Manage feeds" })).toBeInTheDocument();
   });
 
   it("says when it still fails, or when Retry itself failed, and also offers Retry in the dialog", async () => {
@@ -414,7 +416,7 @@ describe("R28", () => {
       "DELETE /api/rss/feeds/4": drop(4),
     });
     const pane = within(await screen.findByRole("navigation", { name: "Feeds" }));
-    await userEvent.click(await pane.findByRole("button", { name: /Loose feed/ }));
+    await userEvent.click(await pane.findByRole("button", { name: /^Loose feed/ }));
     expect(await screen.findByRole("heading", { name: "Loose feed", level: 2 })).toBeInTheDocument();
     const manage = await openManage();
     const row = (name: string) => within(manage.getByRole("listitem", { name }));

@@ -82,10 +82,47 @@
   font-size: var(--jx-text-xs);
   font-variant-numeric: tabular-nums;
 }
-.warn {
-  color: var(--jx-warn);
-  font-weight: var(--jx-weight-semibold);
-  cursor: help;
+/* A sidebar row with its Mark read, shown while the row is hovered or holds focus. */
+.row {
+  display: flex;
+  align-items: center;
+}
+.row:hover {
+  background: var(--jx-surface-hover);
+}
+.row > .feed:hover,
+.row > .folderName:hover {
+  background: transparent; /* the row carries the hover */
+}
+.rowMark {
+  flex: none;
+  margin-right: var(--jx-space-2);
+  padding: 2px var(--jx-space-2);
+  border: 0;
+  border-radius: var(--jx-radius-sm);
+  background: transparent;
+  color: var(--jx-fg-muted);
+  font: inherit;
+  font-size: var(--jx-text-xs);
+  white-space: nowrap;
+  opacity: 0; /* still in the Tab order: focus shows it */
+}
+.row:hover .rowMark,
+.row:focus-within .rowMark {
+  opacity: 1;
+}
+.rowMark:hover {
+  color: var(--jx-fg);
+  background: var(--jx-surface);
+}
+.rowMark:focus-visible {
+  outline: var(--jx-focus-width) solid var(--jx-focus);
+  outline-offset: -2px;
+}
+@media (hover: none) {
+  .rowMark {
+    opacity: 1; /* no hover on touch: always there */
+  }
 }
 .folder {
   margin-top: var(--jx-space-2);
@@ -131,6 +168,16 @@
   border-bottom: 1px solid var(--jx-border);
   font-size: var(--jx-text-sm);
   color: var(--jx-fg-muted);
+}
+.listHead {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  padding-block: 4px;
+}
+.headActions {
+  display: flex;
+  align-items: center;
+  gap: var(--jx-space-1);
 }
 .listTitle {
   font-size: var(--jx-text-base);
