@@ -28,6 +28,7 @@ from jesinia.apps.rss.domain.post import (
     parse_cursor,
     parse_timestamp,
 )
+from jesinia.apps.rss.domain.settings import Retention
 from jesinia.apps.rss.infrastructure.store import SqliteFeedStore, SqlitePostStore
 from jesinia.apps.rss.module import POSTS_PRUNE_JOB, RSS_DB, RssModule
 from jesinia.core.app import create_app
@@ -345,6 +346,53 @@ def test_prune_uses_the_configured_window(world: World) -> None:
     assert world.guids() == {"five"}
     default = PostService(world.store, world.articles)
     assert default.prune(NOW) == 0
+
+
+def test_days_override_beats_the_default(world: World) -> None:
+    long = world.feed("https://fried.example/feed")
+    short = world.feed("https://hn.example/feed")
+    world.add(long, _item("l40", _day(40)))
+    world.add(short, _item("s5", _day(5)), _item("s1", _day(1)))
+    world.feeds.set_feed_retention(long, Retention("days", 365))
+    world.feeds.set_feed_retention(short, Retention("days", 3))
+    assert world.service.prune(NOW) == 1
+    assert world.guids() == {"l40", "s1"}
+
+
+def test_posts_cap_prunes_only_read_posts_beyond_n(world: World) -> None:
+    feed = world.feed("https://hn.example/feed")
+    world.add(feed, *(_item(f"p{i}", _day(i)) for i in range(1, 16)))  # p1 newest
+    world.feeds.set_feed_retention(feed, Retention("posts", 10))
+    for i in range(1, 16):
+        if i != 13:
+            world.read(f"p{i}")
+    world.keep("p14")
+    assert world.service.prune(NOW) == 3  # p11, p12, p15
+    assert world.guids() == {f"p{i}" for i in range(1, 11)} | {"p13", "p14"}
+
+
+def test_posts_cap_never_prunes_unread(world: World) -> None:
+    feed = world.feed("https://hn.example/feed")
+    world.add(feed, *(_item(f"p{i}", _day(i)) for i in range(1, 51)))
+    world.feeds.set_feed_retention(feed, Retention("posts", 10))
+    assert world.service.prune(NOW) == 0
+
+
+def test_posts_cap_spares_archiving_posts_ignores_age_and_leaves_a_tombstone(
+    world: World,
+) -> None:
+    feed = world.feed("https://hn.example/feed")
+    other = world.feed("https://other.example/feed")
+    world.add(feed, *(_item(f"p{i}", _day(100 + i)) for i in range(1, 13)))
+    world.add(other, _item("o1", _day(1)))
+    world.feeds.set_feed_retention(feed, Retention("posts", 10))
+    for i in range(1, 13):
+        world.read(f"p{i}")
+    world.conn.execute("UPDATE posts SET archive_state = 'archiving' WHERE guid = 'p11'")
+    assert world.service.prune(NOW) == 1  # p12; p11 is archiving; p1..p10 within the cap
+    assert world.guids() == {f"p{i}" for i in range(1, 12)} | {"o1"}
+    tombstones = world.conn.execute("SELECT guid FROM pruned_posts").fetchall()
+    assert [r[0] for r in tombstones] == ["p12"]
 
 
 def test_prune_forgets_tombstones_of_items_the_feed_no_longer_offers(world: World) -> None:

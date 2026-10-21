@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
@@ -457,9 +458,18 @@ class SqlitePostStore:
     def prune(self, cutoff: datetime, now: datetime) -> int:
         # Never a kept post, nor one being kept: Keep sets its archive state before the page
         # write it awaits, so a prune in between must leave it (and its GUID) alone.
-        old = (
-            "FROM posts WHERE kept_page_id IS NULL AND archive_state IS NULL "
-            "AND COALESCE(published_at, first_seen_at) < ?"
+        # Per feed: no override uses ``cutoff``; a "days" override its own age limit; a
+        # "posts" override caps the feed at its newest N posts (every post counts toward N)
+        # and may only delete read ones, so an unread post is never lost to a cap.
+        doomed = (
+            "WITH ranked AS (SELECT p.id, p.read, p.kept_page_id, p.archive_state, "
+            "COALESCE(p.published_at, p.first_seen_at) AS ts, f.retention_unit AS unit, "
+            "f.retention_value AS val, ROW_NUMBER() OVER (PARTITION BY p.feed_id "
+            "ORDER BY COALESCE(p.published_at, p.first_seen_at) DESC, p.id DESC) AS rank "
+            "FROM posts p JOIN feeds f ON f.id = p.feed_id) "
+            "SELECT id FROM ranked WHERE kept_page_id IS NULL AND archive_state IS NULL AND "
+            "CASE unit WHEN 'posts' THEN read = 1 AND rank > val "
+            "WHEN 'days' THEN julianday(ts) < julianday(?) - val ELSE ts < ? END"
         )
         with self._transaction():
             # Forgotten once the feed was read in full without offering it for the TTL: an
@@ -470,12 +480,18 @@ class SqlitePostStore:
                 "WHERE f.id = pruned_posts.feed_id)",
                 (TOMBSTONE_TTL / timedelta(days=1),),
             )
-            self._conn.execute(
-                f"INSERT INTO pruned_posts (feed_id, guid, seen_at) SELECT feed_id, guid, ? {old} "
-                "ON CONFLICT (feed_id, guid) DO UPDATE SET seen_at = excluded.seen_at",
-                (utc_text(now), utc_text(cutoff)),
+            ids = json.dumps(
+                [r[0] for r in self._conn.execute(doomed, (utc_text(now), utc_text(cutoff)))]
             )
-            deleted = self._conn.execute(f"DELETE {old}", (utc_text(cutoff),))
+            self._conn.execute(
+                "INSERT INTO pruned_posts (feed_id, guid, seen_at) SELECT feed_id, guid, ? "
+                "FROM posts WHERE id IN (SELECT value FROM json_each(?)) "
+                "ON CONFLICT (feed_id, guid) DO UPDATE SET seen_at = excluded.seen_at",
+                (utc_text(now), ids),
+            )
+            deleted = self._conn.execute(
+                "DELETE FROM posts WHERE id IN (SELECT value FROM json_each(?))", (ids,)
+            )
         return deleted.rowcount
 
     def counts(self) -> Counts:
