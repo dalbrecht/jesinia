@@ -146,8 +146,12 @@ test("done for the day: mark a feed read, mark everything read, undo, then check
   await expect(page.getByRole("listbox", { name: "Posts" }).getByRole("option")).toHaveCount(0);
 
   // Undo brings the counts back.
-  // The feed's own toast is still up: the newest is last.
-  await page.getByRole("button", { name: "Undo" }).last().click();
+  // The feed's own toast may still be up: undo the one for the bulk mark.
+  await page
+    .locator("[data-toast]")
+    .filter({ hasText: /Marked \d+ in All unread read/ })
+    .getByRole("button", { name: "Undo" })
+    .click();
   await expect(feeds.getByRole("button", { name: /^All unread \d+/ })).toBeVisible();
   await expect(feeds.getByRole("button", { name: "Reading b 2" })).toBeVisible();
 
