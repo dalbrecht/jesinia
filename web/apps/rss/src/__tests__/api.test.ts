@@ -5,9 +5,14 @@ import {
   capCount,
   fullArticle,
   getCounts,
+  getRssSettings,
+  importOpml,
   listFeeds,
   listPosts,
+  markAllRead,
   markReadAbove,
+  OPML_EXPORT_URL,
+  putRssSettings,
   needsFullArticle,
   readingMinutes,
   RssRequestError,
@@ -15,6 +20,8 @@ import {
   safeHttpUrl,
   searchPosts,
   setRead,
+  setReadMany,
+  setRetention,
 } from "../api";
 import { post } from "./fixtures";
 
@@ -118,5 +125,52 @@ describe("calls", () => {
       folder: 7,
       as_of: "2026-10-16T10:00:00.000Z",
     });
+  });
+});
+
+describe("feed management calls", () => {
+  it("sends the bulk, retention, OPML and settings requests", async () => {
+    const { client, calls } = fakeClient({
+      "POST /api/rss/posts/mark-read": { marked: 2, ids: [5, 6] },
+      "POST /api/rss/posts/read-state": { marked: 2 },
+      "PUT /api/rss/feeds/3/retention": { id: 3 },
+      "POST /api/rss/opml": { added: 1 },
+      "GET /api/rss/settings": { a: 1 },
+      "PUT /api/rss/settings": { a: 2 },
+    });
+    expect(await markAllRead(client, { feed: 3, folder: null }, "2026-10-21T00:00:00Z")).toEqual([5, 6]);
+    expect(await setReadMany(client, [5, 6], false)).toBe(2);
+    await setRetention(client, 3, { unit: "days", value: 30 });
+    await setRetention(client, 3, null);
+    await importOpml(client, "<opml/>");
+    await getRssSettings(client);
+    await putRssSettings(client, { a: 2 } as never);
+    expect(OPML_EXPORT_URL).toBe("/api/rss/opml");
+    const writes = calls.filter((c) => c.method !== "GET");
+    expect(writes).toHaveLength(6);
+    for (const w of writes) expect(w.headers.get("Idempotency-Key")).toMatch(/[0-9a-f-]{36}/);
+    expect(await writes[0]?.clone().json()).toEqual({ feed: 3, folder: null, as_of: "2026-10-21T00:00:00Z" });
+    expect(await writes[1]?.clone().json()).toEqual({ ids: [5, 6], read: false });
+    expect(await writes[2]?.clone().json()).toEqual({ retention: { unit: "days", value: 30 } });
+    expect(await writes[3]?.clone().json()).toEqual({ retention: null });
+    expect(await writes[4]?.clone().json()).toEqual({ opml: "<opml/>" });
+    expect(await writes[5]?.clone().json()).toEqual({ a: 2 });
+  });
+
+  it("surfaces the server's cause on failure", async () => {
+    const { client } = fakeClient({
+      "POST /api/rss/posts/mark-read": fail(400, "bad time"),
+      "POST /api/rss/posts/read-state": fail(400, "too many"),
+      "PUT /api/rss/feeds/3/retention": fail(422, "days 1-365"),
+      "POST /api/rss/opml": fail(400, "not OPML"),
+      "GET /api/rss/settings": fail(500, "settings down"),
+      "PUT /api/rss/settings": fail(500, "cannot save"),
+    });
+    await expect(markAllRead(client, { feed: null, folder: null }, "x")).rejects.toThrow("bad time");
+    await expect(setReadMany(client, [1], true)).rejects.toThrow("too many");
+    await expect(setRetention(client, 3, null)).rejects.toThrow("days 1-365");
+    await expect(importOpml(client, "x")).rejects.toThrow("not OPML");
+    await expect(getRssSettings(client)).rejects.toThrow("settings down");
+    await expect(putRssSettings(client, {} as never)).rejects.toThrow("cannot save");
   });
 });

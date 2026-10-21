@@ -11,6 +11,10 @@ export type PostPage = components["schemas"]["PostPageOut"];
 export type Kept = components["schemas"]["KeepOut"];
 export type Takeaway = components["schemas"]["TakeawayOut"];
 export type EngageSession = components["schemas"]["SessionOut"];
+export type ImportResult = components["schemas"]["ImportResultOut"];
+export type RssSettings = components["schemas"]["SettingsBody"];
+/** A feed's own retention: keep `value` days of posts, or cap at `value` posts (unread are kept). */
+export type Retention = { unit: "days" | "posts"; value: number };
 export type View = "unread" | "kept" | "all";
 
 /** The server's cap on a takeaway (`TAKEAWAY_MAX`). */
@@ -113,6 +117,54 @@ export async function markReadAbove(
   });
   return unwrap(r).marked;
 }
+
+/** Mark every post in a feed, folder or everything (both null) read; returns the ids marked, for Undo. */
+export async function markAllRead(
+  client: JesiniaClient,
+  target: { feed: number | null; folder: number | null },
+  asOf: string,
+): Promise<number[]> {
+  const r = await client.POST("/api/rss/posts/mark-read", {
+    params: { header: withIdempotency() },
+    body: { feed: target.feed, folder: target.folder, as_of: asOf },
+  });
+  return unwrap(r).ids;
+}
+
+/** Set the read state of many posts at once (bulk Undo); returns how many changed. */
+export async function setReadMany(client: JesiniaClient, ids: number[], read: boolean): Promise<number> {
+  const r = await client.POST("/api/rss/posts/read-state", {
+    params: { header: withIdempotency() },
+    body: { ids, read },
+  });
+  return unwrap(r).marked;
+}
+
+/** Override one feed's retention, or `null` to follow the global setting. */
+export async function setRetention(client: JesiniaClient, feedId: number, retention: Retention | null): Promise<Feed> {
+  const r = await client.PUT("/api/rss/feeds/{feed_id}/retention", {
+    params: { path: { feed_id: feedId }, header: withIdempotency() },
+    body: { retention },
+  });
+  return unwrap(r);
+}
+
+export async function importOpml(client: JesiniaClient, opml: string): Promise<ImportResult> {
+  const r = await client.POST("/api/rss/opml", { params: { header: withIdempotency() }, body: { opml } });
+  return unwrap(r);
+}
+
+export async function getRssSettings(client: JesiniaClient): Promise<RssSettings> {
+  return unwrap(await client.GET("/api/rss/settings"));
+}
+
+export async function putRssSettings(client: JesiniaClient, s: RssSettings): Promise<RssSettings> {
+  const r = await client.PUT("/api/rss/settings", { params: { header: withIdempotency() }, body: s });
+  return unwrap(r);
+}
+
+/** Download link for the OPML export. */
+export const OPML_EXPORT_URL = "/api/rss/opml";
 
 /** The original article as Markdown; an `RssRequestError` with the cause when it can't be had. */
 export async function fullArticle(client: JesiniaClient, id: number): Promise<string> {
