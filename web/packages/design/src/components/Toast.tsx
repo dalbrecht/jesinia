@@ -16,11 +16,14 @@ import s from "./Toast.module.css";
 import { cx } from "./util";
 
 export type ToastTone = "info" | "success" | "warn" | "danger";
+export type ToastCloseReason = "action" | "dismiss" | "timeout";
 export type ToastOptions = {
   tone?: ToastTone;
   message: string;
   action?: { label: string; onAction: () => void };
   duration?: number | "persistent";
+  /** Fires exactly once, with how the toast closed. */
+  onClose?: (reason: ToastCloseReason) => void;
 };
 type Entry = ToastOptions & { id: string };
 
@@ -34,9 +37,11 @@ export function Toast({
   message,
   action,
   onDismiss,
+  onActed,
 }: ToastOptions & {
   id: string;
   onDismiss: (id: string) => void;
+  onActed?: (id: string) => void;
 }) {
   return (
     <div className={cx(s.toast, s[tone])} data-toast={id} data-tone={tone}>
@@ -45,7 +50,14 @@ export function Toast({
       </span>
       <span className={s.message}>{message}</span>
       {action ? (
-        <Button variant="ghost" size="sm" onClick={action.onAction}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            action.onAction();
+            onActed?.(id);
+          }}
+        >
           {action.label}
         </Button>
       ) : null}
@@ -55,8 +67,9 @@ export function Toast({
 }
 
 function lifetime(t: Entry): number | null {
-  if (t.duration === "persistent" || t.action) return null;
+  if (t.duration === "persistent") return null;
   if (typeof t.duration === "number") return t.duration;
+  if (t.action) return null;
   return t.tone === "warn" || t.tone === "danger" ? null : DEFAULT_MS;
 }
 
@@ -86,17 +99,26 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setVisible(next);
   }, []);
 
-  const dismiss = useCallback(
-    (id: string) => {
+  // onClose callbacks of toasts still open; deleting the entry guarantees "exactly once".
+  const closers = useRef(new Map<string, NonNullable<ToastOptions["onClose"]>>());
+
+  const close = useCallback(
+    (id: string, reason: ToastCloseReason) => {
       update(visibleRef.current.filter((t) => t.id !== id));
       setQueue((q) => q.filter((t) => t.id !== id));
+      const onClose = closers.current.get(id);
+      closers.current.delete(id);
+      onClose?.(reason);
     },
     [update],
   );
+  const dismiss = useCallback((id: string) => close(id, "dismiss"), [close]);
+  const acted = useCallback((id: string) => close(id, "action"), [close]);
 
   const show = useCallback(
     (o: ToastOptions) => {
       const entry: Entry = { ...o, id: `toast-${++counter}` };
+      if (o.onClose) closers.current.set(entry.id, o.onClose);
       if (entry.tone === "danger") setAssertive(entry.message);
       else setPolite(entry.message);
       const v = visibleRef.current;
@@ -105,7 +127,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       } else {
         const oldest = v.findIndex((t) => lifetime(t) !== null);
         if (oldest === -1) setQueue((q) => [...q, entry]);
-        else update([...v.slice(0, oldest), ...v.slice(oldest + 1), entry]);
+        else {
+          const evicted = v[oldest] as Entry;
+          update([...v.slice(0, oldest), ...v.slice(oldest + 1), entry]);
+          const onClose = closers.current.get(evicted.id);
+          closers.current.delete(evicted.id);
+          onClose?.("dismiss");
+        }
       }
       return entry.id;
     },
@@ -128,10 +156,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     if (paused) return;
     const timers = visible.flatMap((t) => {
       const ms = lifetime(t);
-      return ms === null ? [] : [setTimeout(() => dismiss(t.id), ms)];
+      return ms === null ? [] : [setTimeout(() => close(t.id, "timeout"), ms)];
     });
     return () => timers.forEach(clearTimeout);
-  }, [visible, paused, dismiss]);
+  }, [visible, paused, close]);
 
   // F6 / ⌥⌘T: move focus into the region and back.
   useEffect(() => {
@@ -182,7 +210,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         onKeyDown={onRegionKey}
       >
         {visible.map((t) => (
-          <Toast key={t.id} {...t} onDismiss={dismiss} />
+          <Toast key={t.id} {...t} onDismiss={dismiss} onActed={acted} />
         ))}
         <div role="status" aria-live="polite">
           <VisuallyHidden>{polite}</VisuallyHidden>
