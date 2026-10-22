@@ -31,6 +31,11 @@ SNIPPET_BEGIN, SNIPPET_END = "<!-- jesinia:begin", "<!-- jesinia:end -->"
 MCP_NAME = "jesinia"
 REPO = Path(__file__).resolve().parents[3]
 HEALTH_TIMEOUT = 20.0
+# `launchctl bootout` returns before launchd has unloaded the job; a bootstrap before then
+# fails with "Bootstrap failed: 5: Input/output error" and leaves no agent loaded.
+UNLOAD_TIMEOUT = 10.0
+UNLOAD_POLL = 0.25
+BOOTSTRAP_ATTEMPTS = 3
 
 
 def render_plist(
@@ -342,12 +347,35 @@ def remove_shim(sys: System) -> None:
         sys.remove(path)
 
 
+def _is_loaded(sys: System, label: str) -> bool:
+    code, _ = sys.run(["launchctl", "print", f"{_domain()}/{label}"], check=False)
+    return code == 0
+
+
+def _reload(sys: System, label: str) -> None:
+    """Boot the agent out, wait until launchd has really unloaded it, then bootstrap it
+    again, retrying while launchd still refuses. The last failure raises with its cause."""
+    sys.run(["launchctl", "bootout", f"{_domain()}/{label}"], check=False)
+    if not sys.dry_run:
+        for _ in range(int(UNLOAD_TIMEOUT / UNLOAD_POLL)):
+            if not _is_loaded(sys, label):
+                break
+            sys.sleep(UNLOAD_POLL)
+    bootstrap = ["launchctl", "bootstrap", _domain(), str(plist_path(label))]
+    for _ in range(BOOTSTRAP_ATTEMPTS - 1):
+        code, _ = sys.run(bootstrap, check=False)
+        if code == 0:
+            return
+        sys.sleep(1.0)
+    sys.run(bootstrap)
+
+
 def _set_auto_update(
     sys: System, uv: str, cfg: Config, extra: Mapping[str, str], remote: str | None
 ) -> None:
     """``remote`` None removes the update agent; otherwise it is pinned in the agent's env."""
-    sys.run(["launchctl", "bootout", f"{_domain()}/{UPDATER}"], check=False)
     if remote is None:
+        sys.run(["launchctl", "bootout", f"{_domain()}/{UPDATER}"], check=False)
         sys.remove(plist_path(UPDATER))
         return
     # Pin the remote the user installed from: the updater refuses to pull if it changes.
@@ -358,7 +386,7 @@ def _set_auto_update(
         Path(uv), REPO, cfg.log_dir, sys.environ.get("PATH", "/usr/bin:/bin"), env
     )
     sys.write(plist_path(UPDATER), plist)
-    sys.run(["launchctl", "bootstrap", _domain(), str(plist_path(UPDATER))])
+    _reload(sys, UPDATER)
 
 
 def install(kb_path: Path, sys: System, *, auto_update: bool | None = None) -> int:
@@ -403,8 +431,7 @@ def install(kb_path: Path, sys: System, *, auto_update: bool | None = None) -> i
         sys.environ.get("SSH_AUTH_SOCK"), extra,
     )  # fmt: skip
     sys.write(plist_path(), plist)
-    sys.run(["launchctl", "bootout", f"{_domain()}/{LABEL}"], check=False)
-    sys.run(["launchctl", "bootstrap", _domain(), str(plist_path())])
+    _reload(sys, LABEL)
     if auto_update is not None:
         _set_auto_update(sys, uv, cfg, extra, remote if auto_update else None)
     if sys.dry_run:
