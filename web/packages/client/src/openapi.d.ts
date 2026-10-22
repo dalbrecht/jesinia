@@ -759,6 +759,23 @@ export interface paths {
         patch: operations["move_feed_api_rss_feeds__feed_id__patch"];
         trace?: never;
     };
+    "/api/rss/feeds/{feed_id}/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Retention */
+        put: operations["set_retention_api_rss_feeds__feed_id__retention_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rss/folders/{folder_id}": {
         parameters: {
             query?: never;
@@ -903,6 +920,46 @@ export interface paths {
         put?: never;
         /** Read Above */
         post: operations["read_above_api_rss_posts_read_above_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/posts/mark-read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Read
+         * @description Mark a feed, a folder or (both null) everything read; the ids come back for Undo.
+         */
+        post: operations["mark_read_api_rss_posts_mark_read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/posts/read-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Read State
+         * @description Set the read state of many posts at once (Undo of a mark-read).
+         */
+        post: operations["read_state_api_rss_posts_read_state_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3374,6 +3431,15 @@ export interface components {
             unread: number;
             /** Warning */
             warning: string | null;
+            /** Last Ok At */
+            last_ok_at: string | null;
+            /** Fail Count */
+            fail_count: number;
+            /** Last Error */
+            last_error: string | null;
+            /** Newest Post At */
+            newest_post_at: string | null;
+            retention: components["schemas"]["RetentionOut"] | null;
         };
         /** FeedPatchIn */
         FeedPatchIn: {
@@ -4128,6 +4194,25 @@ export interface components {
              */
             ref: string;
         };
+        /** MarkReadIn */
+        MarkReadIn: {
+            /** Feed */
+            feed?: number | null;
+            /** Folder */
+            folder?: number | null;
+            /**
+             * As Of
+             * @description When the client loaded the list (ISO 8601 with offset): posts first seen later were never on screen and stay unread
+             */
+            as_of: string;
+        };
+        /** MarkedIdsOut */
+        MarkedIdsOut: {
+            /** Marked */
+            marked: number;
+            /** Ids */
+            ids: number[];
+        };
         /** MarkedOut */
         MarkedOut: {
             /** Marked */
@@ -4839,6 +4924,13 @@ export interface components {
              */
             as_of: string;
         };
+        /** ReadStateIn */
+        ReadStateIn: {
+            /** Ids */
+            ids: number[];
+            /** Read */
+            read: boolean;
+        };
         /**
          * ReadinessOut
          * @description Whether an item is ready for an agent: ``blockers`` name each issue in the way;
@@ -4924,6 +5016,21 @@ export interface components {
             kind: "reorder_child";
             child: components["schemas"]["IssueTargetBody"];
             after?: components["schemas"]["IssueTargetBody"] | null;
+        };
+        /** RetentionIn */
+        RetentionIn: {
+            /** @description The feed's own retention (1-365 days, or 10-10000 posts); null for the global setting */
+            retention: components["schemas"]["RetentionOut"] | null;
+        };
+        /** RetentionOut */
+        RetentionOut: {
+            /**
+             * Unit
+             * @enum {string}
+             */
+            unit: "days" | "posts";
+            /** Value */
+            value: number;
         };
         /** ReviewErrorOut */
         ReviewErrorOut: {
@@ -8035,6 +8142,89 @@ export interface operations {
             };
         };
     };
+    set_retention_api_rss_feeds__feed_id__retention_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                feed_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetentionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
     rename_folder_api_rss_folders__folder_id__patch: {
         parameters: {
             query?: never;
@@ -8672,6 +8862,168 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ReadAboveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkedOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    mark_read_api_rss_posts_mark_read_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkReadIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkedIdsOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    read_state_api_rss_posts_read_state_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description A client-chosen key (1-200 characters), one per user action; a retry of the same action reuses it and gets the first response. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadStateIn"];
             };
         };
         responses: {

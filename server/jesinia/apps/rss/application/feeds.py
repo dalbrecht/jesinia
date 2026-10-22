@@ -28,6 +28,7 @@ from jesinia.apps.rss.domain.feed import (
     validate_folder_name,
 )
 from jesinia.apps.rss.domain.opml import OpmlFeed, parse_opml, render_opml
+from jesinia.apps.rss.domain.settings import Retention
 from jesinia.services.fetch.application.service import FetchError, FetchResult
 
 
@@ -165,6 +166,12 @@ class FeedService:
         folder_id = self._store.ensure_folder(name).id if name else None
         self._store.set_feed_folder(feed_id, folder_id)
         self._store.drop_empty_folders()
+
+    def set_retention(self, feed_id: int, retention: Retention | None) -> FeedView:
+        """Give the feed its own retention, or None to follow the global one."""
+        if not self._store.set_feed_retention(feed_id, retention):
+            raise FeedNotFound(f"no feed {feed_id}")
+        return self.view(feed_id)
 
     def rename_folder(self, folder_id: int, name: str) -> Folder:
         new_name = validate_folder_name(name)

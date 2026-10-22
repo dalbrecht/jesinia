@@ -6,7 +6,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from jesinia.apps.rss.domain.settings import Retention
 
 # A feed shows a warning after this many consecutive failed polls (spec §4.2).
 WARN_AFTER_FAILURES = 3
@@ -200,6 +204,13 @@ class FeedView:
     folder_id: int | None
     unread: int
     warning: str | None
+    last_ok_at: datetime | None = None
+    fail_count: int = 0
+    last_error: str | None = None
+    # The date of the newest post ever stored; survives pruning.
+    newest_post_at: datetime | None = None
+    # This feed's own retention; None follows the global setting.
+    retention: Retention | None = None
 
 
 @dataclass(frozen=True)

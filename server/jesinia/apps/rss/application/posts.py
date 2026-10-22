@@ -66,6 +66,13 @@ class PostService:
         """Set the read state of the given posts (unknown ids are skipped); how many."""
         return self._store.set_read(sorted(set(ids)), read) if ids else 0
 
+    def mark_all_read(
+        self, feed_id: int | None, folder_id: int | None, as_of: datetime
+    ) -> builtins.list[int]:
+        """Mark every unread post in the feed, folder or everywhere (both ``None``) read,
+        except those first seen after ``as_of``; the ids marked, so the client can undo."""
+        return self._store.mark_unread_read(feed_id, folder_id, as_of)
+
     def mark_read_above(
         self,
         post_id: int,

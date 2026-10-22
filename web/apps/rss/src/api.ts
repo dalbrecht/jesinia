@@ -11,6 +11,10 @@ export type PostPage = components["schemas"]["PostPageOut"];
 export type Kept = components["schemas"]["KeepOut"];
 export type Takeaway = components["schemas"]["TakeawayOut"];
 export type EngageSession = components["schemas"]["SessionOut"];
+export type ImportResult = components["schemas"]["ImportResultOut"];
+export type RssSettings = components["schemas"]["SettingsBody"];
+/** A feed's own retention: keep `value` days of posts, or cap at `value` posts (unread are kept). */
+export type Retention = { unit: "days" | "posts"; value: number };
 export type View = "unread" | "kept" | "all";
 
 /** The server's cap on a takeaway (`TAKEAWAY_MAX`). */
@@ -23,8 +27,6 @@ export type KeepRequest = { note: string; tags: string[]; takeaway?: { text: str
 export type Scope = { view: View; feed: number | null; folder: number | null };
 
 export const PAGE_SIZE = 100;
-/** Feed content shorter than this is probably a teaser: offer the full article. */
-export const SHORT_CONTENT_CHARS = 1500;
 const WORDS_PER_MINUTE = 230;
 const COUNT_CAP = 999;
 
@@ -55,6 +57,14 @@ export function errorCause(e: unknown): string {
   if (e instanceof RssRequestError) return asSentence(e.message);
   const raw = e instanceof Error ? e.message : String(e);
   return `Jesinia didn't answer (${raw}). ${UNREACHABLE}`;
+}
+
+/**
+ * The cause, then `next` (what to do). A request that got no answer already ends with its own
+ * fix (check that Jesinia is running), so `next` is added only to the server's causes.
+ */
+export function causeThen(e: unknown, next: string): string {
+  return e instanceof RssRequestError ? `${errorCause(e)} ${next}` : errorCause(e);
 }
 
 type Result<T> = { data?: T; error?: unknown; response: Response };
@@ -114,6 +124,64 @@ export async function markReadAbove(
   return unwrap(r).marked;
 }
 
+/** Mark every post in a feed, folder or everything (both null) read; returns the ids marked, for Undo. */
+export async function markAllRead(
+  client: JesiniaClient,
+  target: { feed: number | null; folder: number | null },
+  asOf: string,
+): Promise<number[]> {
+  const r = await client.POST("/api/rss/posts/mark-read", {
+    params: { header: withIdempotency() },
+    body: { feed: target.feed, folder: target.folder, as_of: asOf },
+  });
+  return unwrap(r).ids;
+}
+
+/** The most ids one read-state request may carry (the server's `MAX_READ_IDS`). */
+export const MAX_READ_IDS = 100_000;
+
+/**
+ * Set the read state of many posts at once (bulk Undo); returns how many changed. A larger set
+ * goes in batches the server accepts, each its own action (its own idempotency key).
+ */
+export async function setReadMany(client: JesiniaClient, ids: number[], read: boolean): Promise<number> {
+  let marked = 0;
+  for (let at = 0; at < ids.length; at += MAX_READ_IDS) {
+    const r = await client.POST("/api/rss/posts/read-state", {
+      params: { header: withIdempotency() },
+      body: { ids: ids.slice(at, at + MAX_READ_IDS), read },
+    });
+    marked += unwrap(r).marked;
+  }
+  return marked;
+}
+
+/** Override one feed's retention, or `null` to follow the global setting. */
+export async function setRetention(client: JesiniaClient, feedId: number, retention: Retention | null): Promise<Feed> {
+  const r = await client.PUT("/api/rss/feeds/{feed_id}/retention", {
+    params: { path: { feed_id: feedId }, header: withIdempotency() },
+    body: { retention },
+  });
+  return unwrap(r);
+}
+
+export async function importOpml(client: JesiniaClient, opml: string): Promise<ImportResult> {
+  const r = await client.POST("/api/rss/opml", { params: { header: withIdempotency() }, body: { opml } });
+  return unwrap(r);
+}
+
+export async function getRssSettings(client: JesiniaClient): Promise<RssSettings> {
+  return unwrap(await client.GET("/api/rss/settings"));
+}
+
+export async function putRssSettings(client: JesiniaClient, s: RssSettings): Promise<RssSettings> {
+  const r = await client.PUT("/api/rss/settings", { params: { header: withIdempotency() }, body: s });
+  return unwrap(r);
+}
+
+/** Download link for the OPML export. */
+export const OPML_EXPORT_URL = "/api/rss/opml";
+
 /** The original article as Markdown; an `RssRequestError` with the cause when it can't be had. */
 export async function fullArticle(client: JesiniaClient, id: number): Promise<string> {
   return unwrap(await client.GET("/api/rss/posts/{post_id}/article", { params: { path: { post_id: id } } })).markdown;
@@ -135,10 +203,14 @@ export async function addFeed(client: JesiniaClient, url: string, folder: string
   return unwrap(r);
 }
 
-/** Unsubscribe: unkept posts go, kept ones stay in the KB. Adding the URL again restores it. */
-export async function removeFeed(client: JesiniaClient, id: number): Promise<void> {
+/**
+ * Unsubscribe: unkept posts go, kept ones stay in the KB. Adding the URL again restores it.
+ * `keepalive` lets the request finish after the page has gone (a tab closing).
+ */
+export async function removeFeed(client: JesiniaClient, id: number, opts: { keepalive?: boolean } = {}): Promise<void> {
   const r = await client.DELETE("/api/rss/feeds/{feed_id}", {
     params: { path: { feed_id: id }, header: withIdempotency() },
+    ...(opts.keepalive ? { keepalive: true } : {}),
   });
   unwrap(r);
 }
@@ -205,10 +277,6 @@ export async function askTakeaway(client: JesiniaClient, session: string): Promi
 /** Unread counts are capped in the UI (spec §2.3). */
 export function capCount(n: number): string {
   return n > COUNT_CAP ? `${COUNT_CAP}+` : String(n);
-}
-
-export function needsFullArticle(post: Post): boolean {
-  return post.is_summary || (post.content_html ?? "").length < SHORT_CONTENT_CHARS;
 }
 
 export function readingMinutes(text: string): number {

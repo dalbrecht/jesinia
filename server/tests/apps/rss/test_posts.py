@@ -28,6 +28,7 @@ from jesinia.apps.rss.domain.post import (
     parse_cursor,
     parse_timestamp,
 )
+from jesinia.apps.rss.domain.settings import Retention
 from jesinia.apps.rss.infrastructure.store import SqliteFeedStore, SqlitePostStore
 from jesinia.apps.rss.module import POSTS_PRUNE_JOB, RSS_DB, RssModule
 from jesinia.core.app import create_app
@@ -273,6 +274,42 @@ def test_mark_read_above_leaves_posts_that_arrived_after_the_list_loaded(world: 
     assert world.guids("read = 0") == {"fresh", "backdated"}
 
 
+def test_mark_all_read_by_feed_folder_and_everything(world: World) -> None:
+    a = world.feed("https://a.example/feed", folder="Tech")
+    b = world.feed("https://b.example/feed", folder="Tech")
+    c = world.feed("https://c.example/feed")
+    world.add(a, _item("a1", _day(1)))
+    world.add(b, _item("b1", _day(1)))
+    world.add(c, _item("c1", _day(1)), _item("c2", _day(2)))
+    world.keep("c2")
+    tech = world.feeds.folder_by_name("Tech")
+    assert tech is not None
+    assert world.service.mark_all_read(a, None, NOW) == [world.id_of("a1")]
+    assert sorted(world.service.mark_all_read(None, tech.id, NOW)) == [world.id_of("b1")]
+    assert sorted(world.service.mark_all_read(None, None, NOW)) == sorted(
+        [world.id_of("c1"), world.id_of("c2")]
+    )
+    assert world.guids("read = 0") == set()
+    assert world.guids("kept_page_id IS NOT NULL") == {"c2"}  # Keep untouched
+
+
+def test_mark_all_read_leaves_posts_seen_after_as_of(world: World) -> None:
+    feed = world.feed("https://a.example/feed")
+    world.add(feed, _item("old", _day(1)))
+    world.add(feed, _item("new", None), seen=NOW + timedelta(minutes=1))
+    assert world.service.mark_all_read(None, None, NOW) == [world.id_of("old")]
+    assert world.guids("read = 0") == {"new"}
+
+
+def test_set_read_chunks_beyond_the_variable_limit(world: World) -> None:
+    feed = world.feed("https://a.example/feed")
+    world.add(feed, *(_item(f"p{i}", _day(1)) for i in range(33_000)))
+    ids = world.service.mark_all_read(None, None, NOW)
+    assert len(ids) == 33_000
+    assert world.service.set_read(ids, False) == 33_000
+    assert len(world.guids("read = 0")) == 33_000
+
+
 def test_timestamps_must_carry_an_offset() -> None:
     plus_two = datetime(2026, 10, 16, 14, 0, tzinfo=timezone(timedelta(hours=2)))
     assert parse_timestamp(plus_two.isoformat()) == NOW
@@ -309,6 +346,53 @@ def test_prune_uses_the_configured_window(world: World) -> None:
     assert world.guids() == {"five"}
     default = PostService(world.store, world.articles)
     assert default.prune(NOW) == 0
+
+
+def test_days_override_beats_the_default(world: World) -> None:
+    long = world.feed("https://fried.example/feed")
+    short = world.feed("https://hn.example/feed")
+    world.add(long, _item("l40", _day(40)))
+    world.add(short, _item("s5", _day(5)), _item("s1", _day(1)))
+    world.feeds.set_feed_retention(long, Retention("days", 365))
+    world.feeds.set_feed_retention(short, Retention("days", 3))
+    assert world.service.prune(NOW) == 1
+    assert world.guids() == {"l40", "s1"}
+
+
+def test_posts_cap_prunes_only_read_posts_beyond_n(world: World) -> None:
+    feed = world.feed("https://hn.example/feed")
+    world.add(feed, *(_item(f"p{i}", _day(i)) for i in range(1, 16)))  # p1 newest
+    world.feeds.set_feed_retention(feed, Retention("posts", 10))
+    for i in range(1, 16):
+        if i != 13:
+            world.read(f"p{i}")
+    world.keep("p14")
+    assert world.service.prune(NOW) == 3  # p11, p12, p15
+    assert world.guids() == {f"p{i}" for i in range(1, 11)} | {"p13", "p14"}
+
+
+def test_posts_cap_never_prunes_unread(world: World) -> None:
+    feed = world.feed("https://hn.example/feed")
+    world.add(feed, *(_item(f"p{i}", _day(i)) for i in range(1, 51)))
+    world.feeds.set_feed_retention(feed, Retention("posts", 10))
+    assert world.service.prune(NOW) == 0
+
+
+def test_posts_cap_spares_archiving_posts_ignores_age_and_leaves_a_tombstone(
+    world: World,
+) -> None:
+    feed = world.feed("https://hn.example/feed")
+    other = world.feed("https://other.example/feed")
+    world.add(feed, *(_item(f"p{i}", _day(100 + i)) for i in range(1, 13)))
+    world.add(other, _item("o1", _day(1)))
+    world.feeds.set_feed_retention(feed, Retention("posts", 10))
+    for i in range(1, 13):
+        world.read(f"p{i}")
+    world.conn.execute("UPDATE posts SET archive_state = 'archiving' WHERE guid = 'p11'")
+    assert world.service.prune(NOW) == 1  # p12; p11 is archiving; p1..p10 within the cap
+    assert world.guids() == {f"p{i}" for i in range(1, 12)} | {"o1"}
+    tombstones = world.conn.execute("SELECT guid FROM pruned_posts").fetchall()
+    assert [r[0] for r in tombstones] == ["p12"]
 
 
 def test_prune_forgets_tombstones_of_items_the_feed_no_longer_offers(world: World) -> None:
@@ -578,6 +662,30 @@ async def test_read_above_route_marks_within_the_view(env: Env) -> None:
     assert unbounded.status_code == 422  # as_of is required
 
 
+async def test_mark_read_routes_mark_and_undo(env: Env) -> None:
+    ids = env.seed()
+    before = (await env.client.get(f"{API}/counts")).json()["views"]["unread"]
+    marked = await env.client.post(
+        f"{API}/posts/mark-read", json={"feed": ids["feed"], "as_of": NOW.isoformat()}
+    )
+    assert marked.status_code == 200, marked.text
+    body = marked.json()
+    assert body["marked"] == len(body["ids"]) == before
+    assert (await env.client.get(f"{API}/counts")).json()["views"]["unread"] == 0
+    undone = await env.client.post(
+        f"{API}/posts/read-state", json={"ids": body["ids"], "read": False}
+    )
+    assert undone.status_code == 200 and undone.json() == {"marked": before}
+    assert (await env.client.get(f"{API}/counts")).json()["views"]["unread"] == before
+    assert (await env.client.post(f"{API}/posts/mark-read", json={})).status_code == 422
+    refused = await env.client.post(f"{API}/posts/mark-read", json={"as_of": "yesterday"})
+    assert refused.status_code == 400 and refused.json()["error"] == "InvalidTimestamp"
+    too_many = await env.client.post(
+        f"{API}/posts/read-state", json={"ids": list(range(100_001)), "read": True}
+    )
+    assert too_many.status_code == 422
+
+
 async def test_article_route_extracts_once_and_reports_failure(
     env: Env, mock: respx.MockRouter
 ) -> None:
@@ -687,3 +795,14 @@ async def test_module_reads_the_retention_window_through_its_seam(cfg: Config) -
     await module.prune_posts()  # stopped: nothing to prune, no error
     with pytest.raises(HTTPException, match="not started"):
         module.posts  # noqa: B018 - the property raises when stopped
+
+
+def test_newest_post_survives_pruning(world: World) -> None:
+    feed = world.feed("https://a.example/feed")
+    world.add(feed, _item("old", _day(40)), seen=_day(40))
+    assert world.feeds.feed_views()[0].newest_post_at == _day(40)
+    world.add(feed, _item("older", _day(50)), seen=_day(40))
+    assert world.feeds.feed_views()[0].newest_post_at == _day(40)  # never moves back
+    assert world.service.prune(NOW) == 2
+    assert world.guids() == set()
+    assert world.feeds.feed_views()[0].newest_post_at == _day(40)

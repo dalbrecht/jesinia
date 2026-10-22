@@ -210,6 +210,77 @@ describe("The live stream across a restart (R29)", () => {
   });
 });
 
+describe("↻ Refresh lives in the list header", () => {
+  it("the ↻ button is inside the list pane header, and nothing in the title bar says Refresh", async () => {
+    setup();
+    const pane = within(await screen.findByRole("region", { name: "All unread" }));
+    expect(pane.getByRole("button", { name: "↻ Refresh" })).toBeInTheDocument();
+    expect(pane.getByRole("button", { name: "✓ Mark all read" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "↻ Refresh" })).toHaveLength(1);
+    // The app's title bar: the one header outside the panes.
+    const titleBar = () => {
+      const bars = screen.getAllByRole("banner").filter((b) => b.closest("section") === null);
+      expect(bars).toHaveLength(1);
+      return within(bars[0] as HTMLElement);
+    };
+    expect(titleBar().queryByText(/Refresh/)).toBeNull();
+    await refresh();
+    expect(await pane.findByText(/^Updated /)).toBeInTheDocument();
+    expect(titleBar().queryByText(/Updated/)).toBeNull();
+  });
+});
+
+describe("A reload while reading on a narrow screen (R30)", () => {
+  function stubNarrow() {
+    vi.stubGlobal("matchMedia", () => ({
+      matches: true,
+      media: "(max-width: 767px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+  }
+  const reconnect = () => {
+    const source = stream();
+    if (!source) throw new Error("no rss.post_changed stream");
+    act(() => source.onopen?.());
+  };
+
+  it("when the open post drops out of the reloaded list, the narrow reader keeps it", async () => {
+    stubNarrow();
+    let first = true;
+    setup({
+      "GET /api/rss/posts": () => {
+        const items = first ? [post(1), post(2)] : [post(2)];
+        first = false;
+        return Response.json({ items, next_before: null });
+      },
+    });
+    await openFirst();
+    reconnect();
+    await waitFor(() => expect(first).toBe(false));
+    await act(async () => {});
+    // Read, it no longer matches All unread, but it stays open until the reader moves on.
+    expect(screen.getByRole("region", { name: "Reader" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Post 1", level: 1 })).toBeInTheDocument();
+  });
+
+  it("a failed reload keeps the reader and says why", async () => {
+    stubNarrow();
+    let fail = false;
+    setup({
+      "GET /api/rss/posts": () =>
+        fail
+          ? Response.json({ detail: "database locked" }, { status: 500 })
+          : Response.json({ items: [post(1)], next_before: null }),
+    });
+    await openFirst();
+    fail = true;
+    reconnect();
+    expect((await screen.findAllByText(/Couldn't reload posts: database locked\./)).length).toBeGreaterThan(0);
+    expect(screen.getByRole("region", { name: "Reader" })).toBeInTheDocument();
+  });
+});
+
 describe("Error copy (§9)", () => {
   it("a request that got no answer says Jesinia didn't answer, with the fix", async () => {
     setup({ "GET /api/rss/feeds": () => Promise.reject(new TypeError("Failed to fetch")) });

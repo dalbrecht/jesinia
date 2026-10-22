@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
@@ -19,6 +20,7 @@ from jesinia.apps.rss.domain.feed import (
 )
 from jesinia.apps.rss.domain.kept import ArchiveState, archive_state
 from jesinia.apps.rss.domain.post import TOMBSTONE_TTL, Counts, Cursor, PostView, View, utc_text
+from jesinia.apps.rss.domain.settings import Retention, validate_retention
 
 _FEED_COLUMNS = (
     "id, url, title, site_url, folder_id, interval_s, next_poll_at, fail_count, last_error, "
@@ -157,6 +159,16 @@ class SqliteFeedStore:
         )
         return moved.rowcount == 1
 
+    def set_feed_retention(self, feed_id: int, retention: Retention | None) -> bool:
+        unit = retention.unit if retention is not None else None
+        value = retention.value if retention is not None else None
+        changed = self._conn.execute(
+            "UPDATE feeds SET retention_unit = ?, retention_value = ? "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (unit, value, feed_id),
+        )
+        return changed.rowcount == 1
+
     def add_posts(self, feed_id: int, items: Sequence[ParsedItem], now: datetime) -> int:
         guids = [(utc_text(now), feed_id, item.guid) for item in items]
         rows = [
@@ -196,6 +208,14 @@ class SqliteFeedStore:
                 "AND EXISTS (SELECT 1 FROM feeds WHERE id = ? AND deleted_at IS NULL) "
                 "ON CONFLICT (feed_id, guid) DO NOTHING",
                 rows,
+            )
+            # Pruning never moves it back: only the posts still stored can raise it.
+            self._conn.execute(
+                "UPDATE feeds SET newest_post_at = (SELECT MAX(COALESCE(published_at, "
+                "first_seen_at)) FROM posts WHERE feed_id = feeds.id) WHERE id = ? "
+                "AND (newest_post_at IS NULL OR newest_post_at < (SELECT MAX(COALESCE("
+                "published_at, first_seen_at)) FROM posts WHERE feed_id = feeds.id))",
+                (feed_id,),
             )
         return max(cursor.rowcount, 0)
 
@@ -239,7 +259,8 @@ class SqliteFeedStore:
         rows = self._conn.execute(
             "SELECT f.id, f.title, f.url, d.name, f.folder_id, "
             "(SELECT COUNT(*) FROM posts p WHERE p.feed_id = f.id AND p.read = 0), "
-            "f.fail_count, f.last_error "
+            "f.fail_count, f.last_error, f.last_ok_at, f.newest_post_at, "
+            "f.retention_unit, f.retention_value "
             "FROM feeds f LEFT JOIN folders d ON d.id = f.folder_id WHERE f.deleted_at IS NULL "
             "ORDER BY d.position IS NULL, d.position, f.title COLLATE NOCASE, f.id"
         ).fetchall()
@@ -252,6 +273,11 @@ class SqliteFeedStore:
                 folder_id=None if row[4] is None else int(row[4]),
                 unread=int(row[5]),
                 warning=feed_warning(int(row[6]), row[7]),
+                last_ok_at=None if row[8] is None else datetime.fromisoformat(row[8]),
+                fail_count=int(row[6]),
+                last_error=row[7],
+                newest_post_at=None if row[9] is None else datetime.fromisoformat(row[9]),
+                retention=None if row[10] is None else validate_retention(row[10], int(row[11])),
             )
             for row in rows
         ]
@@ -273,6 +299,8 @@ _VIEW_WHERE: dict[str, str] = {
 }
 # A page's archive state, from the posts kept to it: the most advanced one wins.
 _ARCHIVE_PRECEDENCE: tuple[ArchiveState, ...] = ("done", "archiving", "failed")
+# SQLite allows 32766 bound variables since 3.32, 999 before: stay under the old limit.
+_SQL_VARS = 900
 _LIKE_ESCAPE = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 
 
@@ -361,12 +389,33 @@ class SqlitePostStore:
     def set_full_md(self, post_id: int, markdown: str) -> None:
         self._conn.execute("UPDATE posts SET full_md = ? WHERE id = ?", (markdown, post_id))
 
+    def _update_read(self, ids: Sequence[int], read: bool) -> int:
+        updated = 0
+        for start in range(0, len(ids), _SQL_VARS):
+            chunk = ids[start : start + _SQL_VARS]
+            marks = ",".join("?" * len(chunk))
+            updated += self._conn.execute(
+                f"UPDATE posts SET read = ? WHERE id IN ({marks})", (int(read), *chunk)
+            ).rowcount
+        return updated
+
     def set_read(self, ids: Sequence[int], read: bool) -> int:
-        marks = ",".join("?" * len(ids))
-        updated = self._conn.execute(
-            f"UPDATE posts SET read = ? WHERE id IN ({marks})", (int(read), *ids)
-        )
-        return updated.rowcount
+        with self._transaction():
+            return self._update_read(ids, read)
+
+    def mark_unread_read(
+        self, feed_id: int | None, folder_id: int | None, as_of: datetime
+    ) -> list[int]:
+        where, params = _scope("unread", feed_id, folder_id)
+        where.append("p.first_seen_at <= ?")
+        params.append(utc_text(as_of))
+        with self._transaction():
+            rows = self._conn.execute(
+                f"SELECT p.id {_FROM} WHERE {' AND '.join(where)} ORDER BY p.id", params
+            ).fetchall()
+            ids = [int(r[0]) for r in rows]
+            self._update_read(ids, True)
+        return ids
 
     def in_scope(
         self, post_id: int, view: View, feed_id: int | None, folder_id: int | None
@@ -409,9 +458,18 @@ class SqlitePostStore:
     def prune(self, cutoff: datetime, now: datetime) -> int:
         # Never a kept post, nor one being kept: Keep sets its archive state before the page
         # write it awaits, so a prune in between must leave it (and its GUID) alone.
-        old = (
-            "FROM posts WHERE kept_page_id IS NULL AND archive_state IS NULL "
-            "AND COALESCE(published_at, first_seen_at) < ?"
+        # Per feed: no override uses ``cutoff``; a "days" override its own age limit; a
+        # "posts" override caps the feed at its newest N posts (every post counts toward N)
+        # and may only delete read ones, so an unread post is never lost to a cap.
+        doomed = (
+            "WITH ranked AS (SELECT p.id, p.read, p.kept_page_id, p.archive_state, "
+            "COALESCE(p.published_at, p.first_seen_at) AS ts, f.retention_unit AS unit, "
+            "f.retention_value AS val, ROW_NUMBER() OVER (PARTITION BY p.feed_id "
+            "ORDER BY COALESCE(p.published_at, p.first_seen_at) DESC, p.id DESC) AS rank "
+            "FROM posts p JOIN feeds f ON f.id = p.feed_id) "
+            "SELECT id FROM ranked WHERE kept_page_id IS NULL AND archive_state IS NULL AND "
+            "CASE unit WHEN 'posts' THEN read = 1 AND rank > val "
+            "WHEN 'days' THEN julianday(ts) < julianday(?) - val ELSE ts < ? END"
         )
         with self._transaction():
             # Forgotten once the feed was read in full without offering it for the TTL: an
@@ -422,12 +480,18 @@ class SqlitePostStore:
                 "WHERE f.id = pruned_posts.feed_id)",
                 (TOMBSTONE_TTL / timedelta(days=1),),
             )
-            self._conn.execute(
-                f"INSERT INTO pruned_posts (feed_id, guid, seen_at) SELECT feed_id, guid, ? {old} "
-                "ON CONFLICT (feed_id, guid) DO UPDATE SET seen_at = excluded.seen_at",
-                (utc_text(now), utc_text(cutoff)),
+            ids = json.dumps(
+                [r[0] for r in self._conn.execute(doomed, (utc_text(now), utc_text(cutoff)))]
             )
-            deleted = self._conn.execute(f"DELETE {old}", (utc_text(cutoff),))
+            self._conn.execute(
+                "INSERT INTO pruned_posts (feed_id, guid, seen_at) SELECT feed_id, guid, ? "
+                "FROM posts WHERE id IN (SELECT value FROM json_each(?)) "
+                "ON CONFLICT (feed_id, guid) DO UPDATE SET seen_at = excluded.seen_at",
+                (utc_text(now), ids),
+            )
+            deleted = self._conn.execute(
+                "DELETE FROM posts WHERE id IN (SELECT value FROM json_each(?))", (ids,)
+            )
         return deleted.rowcount
 
     def counts(self) -> Counts:
