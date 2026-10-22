@@ -100,20 +100,23 @@ async def test_health_states(cfg_for: CfgFor, repo_with_remote: Path) -> None:
     with pytest.raises(Exception):
         _ = mod.service
     git(repo_with_remote, "branch", "--unset-upstream")
-    async with lifespan_client(create_app(cfg_for(repo_with_remote), [KbModule(), mod])) as c:
+    cfg = cfg_for(repo_with_remote)
+    async with lifespan_client(create_app(cfg, [KbModule(), mod])) as c:
+        c.headers.update(bearer(cfg.token))
         h = (await c.get("/healthz")).json()["modules"]["kbsync"]
         assert h["ok"] is True and "upstream" in h["detail"]
     git(repo_with_remote, "checkout", "-q", "--detach")
-    async with lifespan_client(
-        create_app(cfg_for(repo_with_remote), [KbModule(), KbSyncModule()])
-    ) as c:
+    async with lifespan_client(create_app(cfg, [KbModule(), KbSyncModule()])) as c:
+        c.headers.update(bearer(cfg.token))
         h = (await c.get("/healthz")).json()["modules"]["kbsync"]
         assert h["ok"] is False and "Detached HEAD" in h["detail"]
 
 
 async def test_paused_health(cfg_for: CfgFor, repo_with_remote: Path) -> None:
     mod = KbSyncModule()
-    async with lifespan_client(create_app(cfg_for(repo_with_remote), [KbModule(), mod])) as c:
+    cfg = cfg_for(repo_with_remote)
+    async with lifespan_client(create_app(cfg, [KbModule(), mod])) as c:
+        c.headers.update(bearer(cfg.token))
         mod.service._paused = True
         h = (await c.get("/healthz")).json()["modules"]["kbsync"]
         assert h == {"ok": False, "detail": "sync paused: merge conflict"}
@@ -131,7 +134,9 @@ async def test_without_kb_module_and_failed_shutdown(
     async def boom(self: SyncService, trigger: str) -> None:
         raise RuntimeError("network down")
 
-    async with lifespan_client(create_app(cfg_for(repo_with_remote), [KbSyncModule()])) as c:
+    cfg = cfg_for(repo_with_remote)
+    async with lifespan_client(create_app(cfg, [KbSyncModule()])) as c:
+        c.headers.update(bearer(cfg.token))
         assert (await c.get("/healthz")).json()["modules"]["kbsync"]["ok"] is True
         monkeypatch.setattr(SyncService, "run_cycle", boom)
     assert "final KB sync at shutdown failed" in caplog.text

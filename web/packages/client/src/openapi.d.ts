@@ -11,7 +11,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** New Nonce */
+        /**
+         * New Nonce
+         * @description A one-time login link; ``remote_url`` signs in another tailnet device.
+         */
         post: operations["new_nonce_api_auth_nonce_post"];
         delete?: never;
         options?: never;
@@ -6125,7 +6128,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        [key: string]: string;
+                        [key: string]: string | null;
                     };
                 };
             };

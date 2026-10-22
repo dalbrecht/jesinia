@@ -26,7 +26,7 @@ from jesinia.services.fetch.infrastructure.cache import SqliteFetchCache
 from jesinia.services.fetch.infrastructure.sanitize import sanitize_html
 from jesinia.services.fetch.infrastructure.transport import GuardedBackend, guarded_transport
 from jesinia.services.fetch.module import FetchModule
-from tests.conftest import lifespan_client
+from tests.conftest import bearer, lifespan_client
 
 DB = ModuleDb("fetch", DbClass.CACHE, files("jesinia.services.fetch.migrations"))
 PUBLIC = "93.184.216.34"
@@ -265,7 +265,7 @@ async def test_module_lifecycle(cfg: Config) -> None:
     mod = FetchModule()
     assert mod.health().ok is False and mod.router() is None and list(mod.mcp_tools()) == []
     async with lifespan_client(create_app(cfg, [mod])) as c:
-        assert (await c.get("/healthz")).json()["modules"]["fetch"] == {
+        assert (await c.get("/healthz", headers=bearer(cfg.token))).json()["modules"]["fetch"] == {
             "ok": True,
             "detail": "ready",
         }

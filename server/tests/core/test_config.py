@@ -247,3 +247,32 @@ def test_should_keep_new_folder_defaults_when_an_older_file_sets_only_some(
     p.write_text('[server]\ntoken = "abc"\n\n[folders]\nnote = "My Notes"\nsource = "Sources"\n')
     cfg = load_config(p)
     assert dict(cfg.folders) == {"note": "My Notes", "review": "Reviews", "source": "Sources"}
+
+
+def test_should_round_trip_remote_host_and_default_to_off(tmp_path: Path) -> None:
+    p = tmp_path / "config.toml"
+    assert load_config(p).remote_host is None
+    cfg = set_value(p, "server.remote_host", "Mac.Tail1234.ts.net.")
+    assert cfg.remote_host == "mac.tail1234.ts.net"
+    assert load_config(p).remote_host == "mac.tail1234.ts.net"
+    assert set_value(p, "server.remote_host", "").remote_host is None
+    assert load_config(p).remote_host is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "mac",
+        "https://mac.ts.net",
+        "mac.ts.net:443",
+        "mac.ts.net/x",
+        "-mac.ts.net",
+        "mac..ts.net",
+        "a b",
+    ],
+)
+def test_should_reject_a_remote_host_that_is_not_a_bare_dns_name(tmp_path: Path, raw: str) -> None:
+    p = tmp_path / "config.toml"
+    load_config(p)
+    with pytest.raises(ConfigError, match="server.remote_host"):
+        set_value(p, "server.remote_host", raw)

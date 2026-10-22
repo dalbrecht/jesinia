@@ -8,6 +8,7 @@
     "/api/auth/nonce": {
       "post": {
         "summary": "New Nonce",
+        "description": "A one-time login link; ``remote_url`` signs in another tailnet device.",
         "operationId": "new_nonce_api_auth_nonce_post",
         "responses": {
           "200": {
@@ -16,7 +17,14 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": {
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "type": "object",
                   "title": "Response New Nonce Api Auth Nonce Post"

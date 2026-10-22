@@ -318,3 +318,46 @@ async def test_should_keep_login_working_when_failed_save_cannot_clean_up(
         await _sign_in(c)
         assert (await c.get("/api/ping")).status_code == 200
     assert "could not save browser sessions" in caplog.text
+
+
+REMOTE = "mac.tail1234.ts.net"
+
+
+async def test_should_mark_the_cookie_secure_when_signing_in_over_the_remote_host(
+    cfg: Config,
+) -> None:
+    from dataclasses import replace
+
+    async with lifespan_client(create_app(replace(cfg, remote_host=REMOTE), [])) as c:
+        remote = await c.get(
+            f"/login?nonce={issue_login_nonce()}", headers={"Host": REMOTE}, follow_redirects=False
+        )
+        assert "; secure" in remote.headers["set-cookie"].lower()
+        local = await c.get(f"/login?nonce={issue_login_nonce()}", follow_redirects=False)
+        assert "secure" not in local.headers["set-cookie"].lower()
+
+
+async def test_should_keep_the_cookie_secure_when_renewing_over_the_remote_host(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    async with lifespan_client(create_app(replace(cfg, remote_host=REMOTE), [])) as c:
+        await _sign_in(c)  # the client's jar sends the cookie on every request
+        later = datetime.now(UTC) + timedelta(days=2)
+        monkeypatch.setattr(auth, "_now", lambda: later)
+        r = await c.get("/api/ping", headers={"Host": REMOTE})
+        assert r.status_code == 200 and "; secure" in r.headers["set-cookie"].lower()
+
+
+async def test_nonce_should_offer_a_remote_link_only_when_remote_access_is_on(
+    client: httpx.AsyncClient, cfg: Config
+) -> None:
+    from dataclasses import replace
+
+    off = (await client.post("/api/auth/nonce", headers=bearer(cfg.token))).json()
+    assert off["remote_url"] is None
+    async with lifespan_client(create_app(replace(cfg, remote_host=REMOTE), [])) as c:
+        on = (await c.post("/api/auth/nonce", headers=bearer(cfg.token))).json()
+        assert on["remote_url"] == f"https://{REMOTE}/login?nonce={on['nonce']}"
+        assert on["url"] == f"{BASE_URL}/login?nonce={on['nonce']}"
