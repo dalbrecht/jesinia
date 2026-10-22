@@ -86,3 +86,11 @@ def test_should_leave_links_that_do_not_resolve_to_the_root_assets_folder() -> N
         f"![web](https://x.test/_assets/{ID}/a.png) `../_assets/{ID}/a.png` in prose"
     )
     assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == body
+
+
+def test_should_leave_asset_link_examples_inside_code_alone() -> None:
+    link = f"![x](../_assets/{ID}/a.png)"
+    body = f"`{link}`\n\n```\n{link}\n```\n\n    {link}\n\n# {link}\n"
+    assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == (
+        f"`{link}`\n\n```\n{link}\n```\n\n    {link}\n\n# ![x](../../_assets/{ID}/a.png)\n"
+    )

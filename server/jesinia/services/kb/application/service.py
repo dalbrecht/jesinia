@@ -330,7 +330,9 @@ class KbService:
             current = page_from(parse_document(data.decode("utf-8")), row.path)
             moved = draft.title != current.title or folder != row.path.parent
             path = self._target(folder, draft.title, id) if moved else row.path
-            page = Page(id, draft.title, path, draft.body, dict(draft.jesinia), current.foreign)
+            # Links still written for the old folder would miss its images from the new one.
+            body = rebase_asset_links(draft.body, row.path.parent, folder)
+            page = Page(id, draft.title, path, body, dict(draft.jesinia), current.foreign)
             result = self._store(
                 page, disk, serialize_page(page).encode(), expected_rev=base_rev,
                 old_path=row.path,
@@ -411,9 +413,8 @@ class KbService:
         """Move and/or rename. A rename updates inbound ``[[id|Title]]`` link text."""
         current = await self.read(id)
         new_title = title if title is not None else current.page.title
-        body = rebase_asset_links(current.page.body, current.page.path.parent, nfc(folder))
         moved = await self.write(
-            PageDraft(id, new_title, folder, body, current.page.jesinia),
+            PageDraft(id, new_title, folder, current.page.body, current.page.jesinia),
             expected_rev=current.rev,
         )
         relinked: list[PageId] = []

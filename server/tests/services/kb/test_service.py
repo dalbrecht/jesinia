@@ -155,6 +155,18 @@ async def test_should_keep_asset_images_working_when_a_page_moves_deeper(kb: KbS
     assert (await kb.read(current.page.id)).page.body == r.page.page.body
 
 
+async def test_should_rebase_asset_links_when_a_write_moves_a_page(kb: KbService) -> None:
+    made = await kb.write(PageDraft(None, "Kept", PurePosixPath("Sources"), "x"))
+    old = f"![a](../_assets/{made.page.id}/ab12.png)"
+    new = f"![b](../../_assets/{made.page.id}/cd34.png)"
+    moved = await kb.write(
+        PageDraft(made.page.id, "Kept", PurePosixPath("30 Resources/Making"), f"{old} {new}"),
+        expected_rev=made.rev,
+    )
+    # Links written for the old folder are rebased; ones already right for the new one stay.
+    assert moved.page.body == f"![a](../../_assets/{made.page.id}/ab12.png) {new}"
+
+
 async def test_relink_skips_stale_linker(kb: KbService) -> None:
     a = await kb.write(PageDraft(None, "T", N, "t"))
     b = await kb.write(PageDraft(None, "L", N, f"[[{a.page.id}|T]]"))

@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
+from jesinia.services.kb.domain.tags import mask_code
+
 # A page id as Jesinia writes it: a lowercase, dashed UUID. Also keeps it one path segment.
 _PAGE_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # One plain file name: no folders, no leading dot, no spaces or shell-special characters.
@@ -49,15 +51,20 @@ def rebase_asset_links(body: str, from_folder: PurePosixPath, to_folder: PurePos
     """``body`` with each relative link to the KB-root ``_assets/`` folder rewritten for a
     page moved from ``from_folder`` to ``to_folder``, so its images survive the move.
 
-    A link that does not reach the root asset folder from ``from_folder`` (it climbs too
-    few or too many levels) is not one Jesinia wrote, and is left as it is.
+    A link inside code is an example, not a link, and one that does not reach the root asset
+    folder from ``from_folder`` (it climbs too few or too many levels) is not one Jesinia
+    wrote: both are left as they are.
     """
     old_up = "../" * len(from_folder.parts)
     new_up = "../" * len(to_folder.parts)
 
-    def rebase(match: re.Match[str]) -> str:
-        if match["up"] != old_up:
-            return match[0]
-        return match["lead"] + new_up + match["rest"]
-
-    return _ASSET_LINK.sub(rebase, body)
+    pieces: list[str] = []
+    cursor = 0
+    # Matched on a copy with code blanked out, so examples inside code stay as written.
+    for match in _ASSET_LINK.finditer(mask_code(body)):
+        if match["up"] == old_up:
+            pieces.append(body[cursor : match.start("up")])
+            pieces.append(new_up)
+            cursor = match.end("up")
+    pieces.append(body[cursor:])
+    return "".join(pieces)
