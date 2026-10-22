@@ -57,7 +57,7 @@ async def test_failing_module_does_not_block_others(cfg: Config) -> None:
     a, b = Exploding("a"), Healthy("b")
     app = create_app(cfg, [a, b])
     async with lifespan_client(app) as c:
-        body = (await c.get("/healthz")).json()
+        body = (await c.get("/healthz", headers=bearer(cfg.token))).json()
     assert body["ok"] is False
     assert body["modules"]["a"] == {"ok": False, "detail": "start failed: cannot start"}
     assert body["modules"]["b"] == {"ok": True, "detail": "ready"}

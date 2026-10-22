@@ -29,7 +29,7 @@ from jesinia.services.github.application.service import (
 from jesinia.services.github.infrastructure.auth import github_token
 from jesinia.services.github.infrastructure.cache import SqliteGitHubCache
 from jesinia.services.github.module import GitHubModule
-from tests.conftest import lifespan_client
+from tests.conftest import bearer, lifespan_client
 
 DB = ModuleDb("github", DbClass.CACHE, files("jesinia.services.github.migrations"))
 
@@ -162,7 +162,7 @@ async def test_module_lifecycle(cfg: Config) -> None:
     mod = GitHubModule(token=tok)
     assert mod.health().ok is False and mod.router() is None and list(mod.mcp_tools()) == []
     async with lifespan_client(create_app(cfg, [mod])) as c:
-        h = (await c.get("/healthz")).json()["modules"]["github"]
+        h = (await c.get("/healthz", headers=bearer(cfg.token))).json()["modules"]["github"]
         assert h["ok"] is True and "gh auth login" in h["detail"]
     await mod.stop()
 
@@ -171,7 +171,9 @@ async def test_module_lifecycle(cfg: Config) -> None:
 
     mod2 = GitHubModule(token=yes)
     async with lifespan_client(create_app(cfg, [mod2])) as c:
-        assert (await c.get("/healthz")).json()["modules"]["github"]["detail"] == "token available"
+        assert (await c.get("/healthz", headers=bearer(cfg.token))).json()["modules"]["github"][
+            "detail"
+        ] == "token available"
 
 
 @respx.mock

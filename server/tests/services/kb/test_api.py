@@ -241,7 +241,7 @@ async def test_change_root(
 
 async def test_health_reports_problem_without_kb(cfg: Config) -> None:
     async with lifespan_client(create_app(cfg, [KbModule()])) as c:
-        body = (await c.get("/healthz")).json()
+        body = (await c.get("/healthz", headers=bearer(cfg.token))).json()
         assert body["modules"]["kb"] == {"ok": False, "detail": "no KB path configured"}
         r = await c.get("/api/kb/tree", headers=bearer(cfg.token))
         assert r.status_code == 503

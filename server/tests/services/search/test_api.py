@@ -72,7 +72,9 @@ async def test_startup_reindex_does_not_block_healthz(
         # Startup is inside the timeout too: a regression that awaited the held reindex
         # during startup would otherwise hang instead of failing.
         async with lifespan_client(create_app(kb_cfg, [KbModule(), SearchModule()])) as c:
-            return (await c.get("/healthz")).json()["modules"]["search"]
+            return (await c.get("/healthz", headers=bearer(kb_cfg.token))).json()["modules"][
+                "search"
+            ]
 
     health = await asyncio.wait_for(search_health_at_startup(), timeout=10)
     assert health == {"ok": True, "detail": "indexing"}
@@ -82,7 +84,9 @@ async def test_startup_reindex_does_not_block_healthz(
 
 async def test_requires_kb_first(cfg: Config) -> None:
     async with lifespan_client(create_app(cfg, [SearchModule()])) as c:
-        detail = (await c.get("/healthz")).json()["modules"]["search"]["detail"]
+        detail = (await c.get("/healthz", headers=bearer(cfg.token))).json()["modules"]["search"][
+            "detail"
+        ]
         assert "requires the kb service" in detail
 
 
@@ -115,7 +119,7 @@ async def test_failed_startup_reindex_is_reported(
     mod = SearchModule()
     async with lifespan_client(create_app(replace(cfg, kb_path=root), [KbModule(), mod])) as c:
         for _ in range(50):
-            h = (await c.get("/healthz")).json()["modules"]["search"]
+            h = (await c.get("/healthz", headers=bearer(cfg.token))).json()["modules"]["search"]
             if not h["ok"]:
                 break
             await asyncio.sleep(0.01)

@@ -274,3 +274,16 @@ def test_status_should_print_the_remote_login_link(home: Path) -> None:
     )
     r = _invoke(["status"])
     assert f"login from another device: https://{NAME}/login?nonce=n" in r.stdout
+
+
+def test_enable_should_roll_back_when_the_server_cannot_restart(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plist = tmp_path / "agent.plist"
+    plist.write_text("x")
+    monkeypatch.setattr(remote, "plist_path", lambda: plist)
+    sys = FakeTailscale(failing="kickstart")
+    with pytest.raises(remote.RemoteError, match="rolled back"):
+        remote.enable(config, sys)
+    assert load_config(config).remote_host is None
+    assert ["/usr/local/bin/tailscale", "serve", "--https=443", "off"] in sys.calls

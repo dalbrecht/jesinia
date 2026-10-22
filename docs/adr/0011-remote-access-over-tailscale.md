@@ -20,8 +20,9 @@ Tailscale network, and later from a dedicated machine.
   accepts it (and its `:443` form) and its `https://` origin; everything else still gets
   421. DNS-rebinding defense is unchanged, because the allowed name is the owner's own.
 - **Remote responses add HSTS; remote cookies add `Secure`.**
-- **Unauthenticated `/healthz` over the tailnet says only ok / not ok**; module details
-  need a credential there.
+- **Unauthenticated `/healthz` says only ok / not ok**; module details need a credential
+  (the CLI sends the install token). This never depends on `Host`, which a tailnet
+  client chooses itself.
 - **`jesinia remote enable` refuses while Tailscale Funnel is on** for the name, which
   would make it public. `disable` forgets the host even if Tailscale cannot be told to
   stop (the server then refuses that host) and says so.

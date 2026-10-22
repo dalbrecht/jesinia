@@ -23,7 +23,7 @@ from jesinia.core.config import Config
 from jesinia.core.events import EventBus
 from jesinia.core.module import AppContext, Module, ModuleHealth
 from jesinia.core.scheduler import Scheduler
-from jesinia.core.security import LocalOriginGuard, is_remote_host
+from jesinia.core.security import LocalOriginGuard
 from jesinia.core.static import STATIC, static_router
 from jesinia.core.stream import EventLog, events_router
 
@@ -114,11 +114,9 @@ def create_app(
                 health = module.health()
             report[module.name] = {"ok": health.ok, "detail": health.detail}
         ok = all(m["ok"] for m in report.values())
-        # Over the tailnet only a signed-in caller learns which modules fail and why.
-        host = request.headers.get("host", "")
-        if is_remote_host(host, ctx.cfg.remote_host) and not is_authorized(request):
-            return {"ok": ok, "modules": {}}
-        return {"ok": ok, "modules": report}
+        # Liveness is public; which modules fail and why needs a credential. Never decided
+        # by Host: through ``tailscale serve`` a client chooses its own (ADR 0011).
+        return {"ok": ok, "modules": report if is_authorized(request) else {}}
 
     app.router.routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))
     if static_root is not None:

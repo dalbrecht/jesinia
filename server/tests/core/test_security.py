@@ -180,7 +180,7 @@ async def test_should_send_hsts_on_remote_responses_only(
     assert "strict-transport-security" not in refused.headers
 
 
-async def test_health_over_the_tailnet_should_hide_module_details_until_signed_in(
+async def test_health_should_hide_module_details_until_signed_in(
     cfg: Config,
 ) -> None:
     from dataclasses import replace
@@ -193,5 +193,6 @@ async def test_health_over_the_tailnet_should_hide_module_details_until_signed_i
         assert anonymous.json() == {"ok": False, "modules": {}}
         signed_in = await c.get("/healthz", headers={"Host": REMOTE, **bearer(cfg.token)})
         assert "start failed" in signed_in.json()["modules"]["kb"]["detail"]
-        local = await c.get("/healthz")
-        assert "kb" in local.json()["modules"]
+        # Host decides nothing: a tailnet client can claim to be local.
+        spoofed = await c.get("/healthz", headers={"Host": "127.0.0.1:5374"})
+        assert spoofed.json() == {"ok": False, "modules": {}}

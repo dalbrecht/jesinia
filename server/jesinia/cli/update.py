@@ -36,7 +36,12 @@ def _healthy(
     deadline = time.monotonic() + HEALTH_TIMEOUT
     while time.monotonic() < deadline:
         try:
-            r = httpx.get(f"http://127.0.0.1:{cfg.port}/healthz", timeout=2, trust_env=False)
+            r = httpx.get(
+                f"http://127.0.0.1:{cfg.port}/healthz",
+                headers={"Authorization": f"Bearer {cfg.token}"},
+                timeout=2,
+                trust_env=False,
+            )
             # A 200 with a failing required module is a broken update, same as for install.
             if r.status_code == 200 and not unhealthy_modules(r.json(), required):
                 return True

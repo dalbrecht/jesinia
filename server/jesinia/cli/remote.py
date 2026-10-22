@@ -83,7 +83,16 @@ def enable(path: Path, sys: System) -> Config:
         cfg = set_value(path, "server.remote_host", name)
     except (RuntimeError, ConfigError) as exc:
         raise RemoteError(f"could not enable remote access: {exc}") from exc
-    _restart(sys)
+    try:
+        _restart(sys)
+    except RuntimeError as exc:
+        # Left armed, the next restart (a reboot, an update) would turn remote access on
+        # after a command that reported failure: undo both halves instead.
+        sys.run([cli, "serve", "--https=443", "off"], check=False)
+        save_config(replace(cfg, remote_host=None), path)
+        raise RemoteError(
+            f"the server did not restart ({exc}); remote access was rolled back"
+        ) from exc
     sys.echo(f"remote access on: https://{name}/ (sign a device in with `jesinia login --remote`)")
     return cfg
 
