@@ -174,11 +174,17 @@ makes the module report *degraded*, with the path in the message.
   pass. (Polling, like DOPO's own leader, avoids depending on FS events that cloud-synced
   folders deliver unreliably.)
 - **KB edits (Phase 2).** `kb.page_changed` for a mapped page, with an origin other than this
-  module, runs the completion check (§8) for that page.
+  module, adds the page id to an in-memory *dirty pages* set and starts
+  `scheduler.run_now("tasksmirror")` as a background task (`run_now` awaits the whole job, and
+  the KB write path must never wait on the mirror). The handler does no other work. The job drains the
+  set and runs the completion check (§8) for those pages before its pass.
 - **Midnight.** A pass at local midnight re-renders Today even if `tasks.md` hasn't changed.
 - **Manual.** Settings → **Sync now**.
 
-Passes are serialized (the scheduler lock), so a poll never overlaps a KB-triggered check.
+All work runs inside the one scheduled job, so the scheduler lock serializes it: a poll never
+overlaps a KB-triggered check. `EventBus.publish` awaits handlers directly, outside that lock,
+which is why the handler only marks pages dirty and never touches the ledger, the file or
+pages itself.
 
 ### 5.4 One pass
 
@@ -207,13 +213,17 @@ The mirror owns exactly the lines between two markers placed directly under
 ```markdown
 ## Next Actions
 <!-- jesinia:mirror source=dopo-tasks project="Jesinia" -->
-- [ ] Draft the tasks mirror spec · @computer · due 2026-10-24 <!-- dopo:01a1… -->
-- [ ] Ask Sam about the review cadence · waiting: "Sam" <!-- dopo:01a2… -->
+- [ ] Draft the tasks mirror spec · @computer · due 2026-10-24 <!-- dopo:01a1…@9f2c… -->
+- [ ] Ask Sam about the review cadence · waiting: "Sam" <!-- dopo:01a2…@41be… -->
 <!-- /jesinia:mirror -->
 ```
 
 - **Line shape.** `- [ ] <title>` then ` · @<context>`, ` · due <date>`, ` · waiting: "<reason>"`
-  when present, then a `<!-- dopo:<itemId> -->` trailer that carries the id for Phase 2.
+  when present, then a `<!-- dopo:<itemId>@<rev> -->` trailer. It carries the id and the
+  `tasks.md` rev the line was rendered from, both for Phase 2. The rev changes only when the
+  item's content changes in DOPO, so it adds no churn beyond what the content already
+  causes. (A change to a field the region doesn't show, such as energy, rewrites the
+  trailer. That is rare and accepted.)
   `in-progress` items get a leading `▸ `, and `blocked` gets ` · blocked`.
 - **Order.** Dated items first by due date, then the rest in `tasks.md` order (DOPO's
   creation order).
@@ -272,13 +282,13 @@ pass, after the page's intro paragraph; the only heading the mirror ever creates
 ## From DOPO Tasks
 <!-- jesinia:mirror source=dopo-tasks view=today -->
 **Overdue**
-- [ ] Renew passport · due 2026-10-20 · [[01a1639a-0a3e-…|Paris Trip]] <!-- dopo:… -->
+- [ ] Renew passport · due 2026-10-20 · [[01a1639a-0a3e-…|Paris Trip]] <!-- dopo:…@… -->
 
 **Today**
-- [ ] Order seed catalog · [[01a1639a-0a9a-…|2027 Garden Planning]] <!-- dopo:… -->
+- [ ] Order seed catalog · [[01a1639a-0a9a-…|2027 Garden Planning]] <!-- dopo:…@… -->
 
 **Tomorrow**
-- [ ] Book Rhine cabin · due 2026-10-23 · [[01a1639a-0a5d-…|Rhine Trip]] <!-- dopo:… -->
+- [ ] Book Rhine cabin · due 2026-10-23 · [[01a1639a-0a5d-…|Rhine Trip]] <!-- dopo:…@… -->
 <!-- /jesinia:mirror -->
 ```
 
@@ -305,8 +315,12 @@ next actions (§4.3), and ticks still waiting for DOPO. `/healthz` reports the m
 ### 8.1 Detecting a tick
 
 On a `kb.page_changed` for a mapped page (or Today) from another origin, the service reads
-the page and parses its region. A rendered line `- [x] … <!-- dopo:<id> -->` whose item is
-open in `tasks.md` is a **completion request**. Unticking is ignored (re-opening happens in
+the page and parses its region. A rendered line `- [x] … <!-- dopo:<id>@<rev> -->` whose
+item is open in `tasks.md` is a **completion request**, and its **base rev is the rendered
+rev from the KB trailer**, not whatever `tasks.md` holds now. If the item's current `tasks.md`
+rev differs, the user ticked a version that DOPO has since changed. The request is recorded
+as *superseded* straight away and nothing is written. The next render shows the current
+version, which the user can tick again. Unticking is ignored (re-opening happens in
 DOPO). On the next render the ticked line drops out of the region once the edit is applied.
 
 ### 8.2 Writing the completion
@@ -330,9 +344,19 @@ trailer id, changes it, and replaces the file atomically. The checks:
   - **Same:** done. The displaced copy is deleted.
   - **Different** (DOPO wrote in between): DOPO's newer text is in hand, not lost. Jesinia
     re-applies its one-line edit to it (or makes no edit if that line is now done, gone, or
-    has a new `rev`) and swaps again, up to 3 rounds. After that it installs DOPO's newer
-    text unedited and leaves the request pending for the next pass. So every DOPO write
-    survives, with at most Jesinia's single-line change added.
+    has a new `rev`) and swaps again. It never installs a snapshot it hasn't just been
+    handed by a swap, and there is no final unguarded "restore" step.
+  - **Bounded, with recovery.** After 5 rounds that each found a newer file, Jesinia stops
+    swapping. The file in place is then its edit of DOPO's *previous* render, and the latest
+    displaced copy is saved verbatim to
+    `<data_dir>/tasksmirror/displaced/<UTC timestamp>.md`. Settings shows "DOPO Tasks
+    rewrote tasks.md during a write; its last version was saved to …", and the request stays
+    pending. Nothing is silently lost. For DOPO's own writes this also heals on its own: each
+    DOPO write renders its database, and the older lines Jesinia left in place still carry
+    their older revs, so DOPO's next pass (triggered by the mtime bump) classifies them as a
+    stale file (`ff-disk`) and re-renders from the database. The saved copy matters only for
+    a third writer, such as an agent editing `tasks.md`. DOPO debounces its writes by 800 ms,
+    and a swap round takes milliseconds, so reaching 5 rounds means something is wrong.
   - **Swap unsupported** (not APFS, or the call fails): Phase 2 writes are disabled and
     Settings says why (cause plus "Move the DOPO sync folder to an APFS volume"). It never
     falls back to a plain rename.
@@ -350,8 +374,11 @@ so the decision survives a restart and never depends on an earlier parse.
 
 - Each pass, a pending request whose line is still open in `tasks.md` and whose trailer
   `rev` still equals its base rev is re-applied.
-- A tick on an item that already has a pending request records nothing new (the request is
-  keyed by item id).
+- A tick on an item that already has a pending or written request records nothing new (the
+  request is keyed by item id).
+- A tick on an item whose row is terminal (*applied* or *superseded*), for example one
+  re-opened in DOPO and ticked again, **replaces** the row: the new base rev, state
+  *pending*, attempts 0. *Stale* rows count as pending.
 - **Written** (still pending) when the line shows done but its trailer `rev` still equals
   the base rev. That is Jesinia's own edit, which DOPO hasn't ingested. DOPO may still
   overwrite it with the open version it read earlier, so Jesinia keeps checking. If the line
