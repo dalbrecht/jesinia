@@ -653,6 +653,34 @@ async def test_archive_failure_is_visible_and_retryable(
     assert "](../_assets/" in text
 
 
+async def test_archive_retry_of_a_page_moved_into_an_agent_only_folder_writes_nothing(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    route = mock.get("https://fly.io/blog/sqlite-wal").mock(return_value=httpx.Response(503))
+    post_id = keep_env.post()
+    kept = await keep_env.keep(post_id, "Keep it anyway.")
+    await keep_env.rss.keeper.drain()
+    page_id = PageId(kept.json()["page_id"])
+    lock = {"kind": "folder", "access": "agents"}
+    await keep_env.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "x", lock))
+    await keep_env.kb.move(page_id, PurePosixPath("91 Memory"))
+    route.mock(
+        return_value=httpx.Response(
+            200, content=ARTICLE_FIXTURE.read_bytes(), headers={"content-type": "text/html"}
+        )
+    )
+    images = mock.get(url__regex=r"https://(news|cdn)\.example(\.org)?/.*\.png").mock(
+        return_value=httpx.Response(200, content=PNG_MAGIC + b"img", headers={"content-type": PNG})
+    )
+
+    await keep_env.client.post(f"{KEEP_API}/posts/{post_id}/archive")
+    await keep_env.rss.keeper.drain()
+
+    _, state, error = keep_env.state(post_id)
+    assert state == "failed" and error is not None and "agent-only" in error
+    assert not images.called and not (keep_env.root / "_assets" / page_id).exists()
+
+
 def _post_changes(env: KeepEnv) -> list[dict[str, object]]:
     """Collects ``rss.post_changed`` payloads from the app's event bus."""
     seen: list[dict[str, object]] = []

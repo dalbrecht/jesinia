@@ -296,6 +296,9 @@ class KeepService:
         await self._announce(page_id)
 
     async def _archive(self, page_id: PageId, post_id: int) -> None:
+        # Before any download or asset write: the page may have moved into an agent-only
+        # folder since it was kept (ADR 0011).
+        self._kb.require_user_access(page_id)
         post = self._posts.get(post_id)
         markdown = await self._posts.full_article(post_id)
         saved = await self._save_images(page_id, markdown)

@@ -320,6 +320,28 @@ async def test_system_page_update_only_on_accept(kenv: KEnv) -> None:
     assert "My own edit." in text and "What #1 Merge conflicting edits changed" in text
 
 
+async def test_an_agent_only_system_page_gets_no_user_facing_draft(kenv: KEnv) -> None:
+    first = kenv.round()
+    kenv.store.mark_round_done(first)
+    await kenv.keeper.keep_finished(first)
+    written = await kenv.keeper.accept_system_update(kenv.ref, first, None)
+    page = written.page
+    meta = {**page.jesinia, "access": "agents"}
+    await kenv.kb.write(
+        PageDraft(page.id, page.title, page.path.parent, page.body, meta),
+        expected_rev=written.rev,
+    )
+
+    kenv.clock.advance(60)
+    second = kenv.round(head="c" * 40)
+    kenv.post(second, "APPROVE")
+    await kenv.keeper.keep_finished(second)
+
+    # Nothing of the locked page reaches the Review app; agents still get it as context.
+    assert kenv.store.artifact(second, SYSTEM_DRAFT) is None
+    assert "Sync pulls, then pushes." in await kenv.keeper.system_notes("acme/web")
+
+
 async def test_contradiction_becomes_design_finding(env: Env) -> None:  # noqa: F811
     """The notes reach a deep findings job only fenced as untrusted, with Jesinia's own
     instruction to report a contradiction as a design finding, validated like any finding."""

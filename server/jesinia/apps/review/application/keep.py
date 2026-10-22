@@ -416,7 +416,8 @@ class KeepService:
             author = self._author(rnd, JobKind.BACKGROUND, JobKind.OVERVIEW)
             text = system_seed(kept, background, author)
             draft = SystemDraft("seed", text, None, None, "proposed")
-        elif kept.outcome == "approve":
+        # An agent-only page (ADR 0011) stays agents' context: no draft shows it to the user.
+        elif kept.outcome == "approve" and not self._kb.is_agent_only(current.page.id):
             author = self._author(rnd, JobKind.OVERVIEW, JobKind.WALKTHROUGH)
             text = system_update(current.page.body, kept, author)
             draft = SystemDraft("update", text, current.rev, current.page.id, "proposed")
