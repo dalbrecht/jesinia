@@ -190,7 +190,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   const [stackMode, setStackMode] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
-  const focusPage = useRef(false);
+  const focusPage = useRef<string | null>(null);
   const outlineId = useId();
 
   const reread = () => setReads((n) => n + 1);
@@ -302,9 +302,11 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   useEffect(() => setRead(loadRead(readKey)), [readKey]);
 
   // Navigating moves focus to the new page's heading (M11), unless something else asked for it.
+  // Only once that page is shown (#81): a load's render may still have effects pending when the
+  // click lands, and React runs them first, which would focus the old page's heading instead.
   useEffect(() => {
-    if (!focusPage.current) return;
-    focusPage.current = false;
+    if (focusPage.current === null || focusPage.current !== entryId) return;
+    focusPage.current = null;
     const heading = scroll.current?.querySelector<HTMLElement>("h2");
     heading?.setAttribute("tabindex", "-1");
     heading?.focus({ preventScroll: true });
@@ -372,7 +374,7 @@ export function PrView({ repo, number, refresh, active = true }: PrViewProps) {
   const walkLine = coverageLine(artifacts.walk, artifacts.nothingToWalk);
 
   const goTo = (id: string, focus = true) => {
-    focusPage.current = focus;
+    focusPage.current = focus ? id : null;
     setEntryId(id);
     setOutlineOpen(false);
     scroll.current?.scrollTo?.({ top: 0 });
