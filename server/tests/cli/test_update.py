@@ -25,7 +25,9 @@ class Git(System):
         self.echo = self.out.append
         self.sleep = lambda s: None
 
-    def run(self, argv: list[str], *, check: bool = True) -> tuple[int, str]:
+    def run(
+        self, argv: list[str], *, check: bool = True, timeout: float | None = None
+    ) -> tuple[int, str]:
         cmd = " ".join(argv)
         self.calls.append(cmd)
         if argv[0] == "make" and self.makes:

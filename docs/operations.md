@@ -104,6 +104,12 @@ server, allows that host, and restarts the server. To sign a device in, run
 `jesinia login --remote` on the Mac and open the printed link on the device within five
 minutes (AirDrop or Universal Clipboard work well). `jesinia remote disable` turns it off.
 
+Tailscale's own messages show while `remote enable` runs. If HTTPS (or Serve) is not yet
+enabled for your tailnet, it prints a `login.tailscale.com` link: open it and approve, and
+the command carries on (it gives up after a minute; run it again once approved). If the
+Tailscale app's built-in CLI cannot start, install the command-line tool from the
+Tailscale menu: **Settings → CLI integration**.
+
 ## Everyday commands
 
 | Command | What it does |

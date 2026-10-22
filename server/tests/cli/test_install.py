@@ -54,7 +54,9 @@ class Spy(System):
         self.which = lambda n: f"/bin/{n}"
         self.environ = {"PATH": "/usr/bin", "SSH_AUTH_SOCK": "/tmp/ssh", "CODEX_HOME": ""}
 
-    def run(self, argv: list[str], *, check: bool = True) -> tuple[int, str]:
+    def run(
+        self, argv: list[str], *, check: bool = True, timeout: float | None = None
+    ) -> tuple[int, str]:
         if self.dry_run:
             return super().run(argv, check=check)
         self.calls.append(argv)
@@ -490,3 +492,28 @@ def test_the_updater_should_also_wait_for_its_unload(
     assert inst.install(kb, spy, auto_update=True) == 0
     updater = [c[1] for c in spy.calls if c[0] == "launchctl" and "com.jesinia.updater" in c[-1]]
     assert updater == ["bootout", "print", "bootstrap"]
+
+
+def test_system_run_should_stop_a_command_that_outlives_its_timeout() -> None:
+    import sys as python
+
+    with pytest.raises(inst.CommandTimedOut, match="did not finish in 0s.*half"):
+        System().run(
+            [python.executable, "-c", "print('half', flush=True); import time; time.sleep(30)"],
+            timeout=0.5,
+        )
+
+
+def test_system_run_live_should_pass_output_through_and_stop_at_the_timeout(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    import sys as python
+
+    assert System().run_live([python.executable, "-c", "print('link')"], timeout=10) == 0
+    assert "link" in capfd.readouterr().out
+    assert System().run_live([python.executable, "-c", "raise SystemExit(3)"], timeout=10) == 3
+    with pytest.raises(inst.CommandTimedOut, match="did not finish"):
+        System().run_live([python.executable, "-c", "import time; time.sleep(30)"], timeout=0.5)
+    dry = Spy(dry_run=True)
+    assert System.run_live(dry, ["tailscale", "serve"], timeout=1) == 0
+    assert dry.out == ["would run: tailscale serve"]

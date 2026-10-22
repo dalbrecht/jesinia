@@ -103,6 +103,16 @@ def _redact(argv: list[str]) -> str:
     )
 
 
+class CommandTimedOut(RuntimeError):  # noqa: N818 - reads as what happened
+    """A command ran past its timeout and was stopped."""
+
+
+def _text(output: str | bytes | None) -> str:
+    if isinstance(output, bytes):
+        return output.decode("utf-8", "replace")
+    return output or ""
+
+
 @dataclass
 class System:
     """Side effects, injectable for tests; ``dry_run`` prints instead of acting."""
@@ -115,14 +125,38 @@ class System:
     sleep: Callable[[float], None] = time.sleep
     environ: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
 
-    def run(self, argv: list[str], *, check: bool = True) -> tuple[int, str]:
+    def run(
+        self, argv: list[str], *, check: bool = True, timeout: float | None = None
+    ) -> tuple[int, str]:
+        """``(exit code, stdout)``. Past ``timeout`` the command is stopped and
+        ``CommandTimedOut`` says what it had printed by then."""
         if self.dry_run:
             self.echo(f"would run: {_redact(argv)}")
             return 0, ""
-        p = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        try:
+            p = subprocess.run(
+                argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=timeout
+            )
+        except subprocess.TimeoutExpired as exc:
+            printed = (_text(exc.stdout) + _text(exc.stderr)).strip() or "nothing"
+            raise CommandTimedOut(
+                f"{_redact(argv)} did not finish in {timeout:.0f}s; it printed: {printed}"
+            ) from exc
         if check and p.returncode != 0:
             raise RuntimeError(f"{_redact(argv)} failed: {(p.stderr or p.stdout).strip()}")
         return p.returncode, (p.stdout or "").strip()
+
+    def run_live(self, argv: list[str], *, timeout: float) -> int:
+        """Run with the command's output going straight to the terminal, so a prompt or a
+        link it prints is seen while it waits; its exit code. ``CommandTimedOut`` once it
+        outlives ``timeout`` (it is stopped)."""
+        if self.dry_run:
+            self.echo(f"would run: {_redact(argv)}")
+            return 0
+        try:
+            return subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=timeout).returncode
+        except subprocess.TimeoutExpired as exc:
+            raise CommandTimedOut(f"{_redact(argv)} did not finish in {timeout:.0f}s") from exc
 
     def write(self, path: Path, text: str, mode: int = 0o644) -> None:
         if self.dry_run:

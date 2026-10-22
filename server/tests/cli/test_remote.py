@@ -9,7 +9,7 @@ import respx
 from typer.testing import CliRunner
 
 from jesinia.cli import main, remote
-from jesinia.cli.install import System
+from jesinia.cli.install import CommandTimedOut, System
 from jesinia.core.config import load_config, set_value
 
 NAME = "mac.tail1234.ts.net"
@@ -27,13 +27,20 @@ class FakeTailscale(System):
     failing: str = ""
     serve_status: str = ""
     off_code: int = 0
+    # `tailscale serve --bg` waiting on a prompt nobody answers (approve HTTPS, a GUI that
+    # never starts) until the timeout.
+    serve_hangs: bool = False
+    live: list[tuple[list[str], float]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.echo = self.out.append
         self.which = lambda n: f"/usr/local/bin/{n}" if self.on_path else None
 
-    def run(self, argv: list[str], *, check: bool = True) -> tuple[int, str]:
+    def run(
+        self, argv: list[str], *, check: bool = True, timeout: float | None = None
+    ) -> tuple[int, str]:
         self.calls.append(argv)
+        assert timeout is not None or argv[0] == "launchctl", f"no timeout on {argv}"
         if self.failing and self.failing in argv and check:
             raise RuntimeError(f"{' '.join(argv)} failed: nope")
         if argv[1:] == ["status", "--json"]:
@@ -43,6 +50,13 @@ class FakeTailscale(System):
         if argv[-1] == "off":
             return self.off_code, ""
         return 0, ""
+
+    def run_live(self, argv: list[str], *, timeout: float) -> int:
+        self.calls.append(argv)
+        self.live.append((argv, timeout))
+        if self.serve_hangs:
+            raise CommandTimedOut(f"{' '.join(argv)} did not finish in {timeout:.0f}s")
+        return 1 if self.failing and self.failing in argv else 0
 
 
 @pytest.fixture
@@ -287,3 +301,85 @@ def test_enable_should_roll_back_when_the_server_cannot_restart(
         remote.enable(config, sys)
     assert load_config(config).remote_host is None
     assert ["/usr/local/bin/tailscale", "serve", "--https=443", "off"] in sys.calls
+
+
+def test_enable_should_show_tailscale_serve_output_and_bound_its_wait(config: Path) -> None:
+    sys = FakeTailscale()
+    remote.enable(config, sys)
+    [(argv, timeout)] = sys.live
+    assert argv[1:3] == ["serve", "--bg"] and timeout == remote.SERVE_TIMEOUT
+
+
+def test_enable_should_explain_a_serve_that_never_finishes(config: Path) -> None:
+    # Regression: `tailscale serve` waited for an approval nobody could see, and `remote
+    # enable` hung with no output.
+    with pytest.raises(remote.RemoteError) as raised:
+        remote.enable(config, FakeTailscale(serve_hangs=True))
+    message = str(raised.value)
+    assert "did not finish" in message and "approve" in message
+    assert "CLI integration" in message
+    assert load_config(config).remote_host is None
+
+
+def test_enable_should_report_a_failed_serve_with_what_tailscale_printed(config: Path) -> None:
+    with pytest.raises(remote.RemoteError, match="exited with 1; see Tailscale's output above"):
+        remote.enable(config, FakeTailscale(failing="--bg"))
+
+
+def test_enable_should_point_to_the_cli_when_using_the_app_binary(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_cli = tmp_path / "Tailscale"
+    app_cli.write_text("")
+    monkeypatch.setattr(remote, "MAC_APP_CLI", app_cli)
+    sys = FakeTailscale(on_path=False)
+    remote.enable(config, sys)
+    assert any("CLI integration" in line for line in sys.out)
+
+
+def test_status_calls_should_time_out_with_the_reason(config: Path) -> None:
+    class Stuck(FakeTailscale):
+        def run(
+            self, argv: list[str], *, check: bool = True, timeout: float | None = None
+        ) -> tuple[int, str]:
+            raise CommandTimedOut(f"{argv[0]} did not finish in {timeout:.0f}s")
+
+    with pytest.raises(remote.RemoteError, match="did not finish"):
+        remote.enable(config, Stuck())
+
+
+def test_disable_should_clear_the_host_when_tailscale_does_not_answer(config: Path) -> None:
+    class Stuck(FakeTailscale):
+        def run(
+            self, argv: list[str], *, check: bool = True, timeout: float | None = None
+        ) -> tuple[int, str]:
+            if argv[-1] == "off":
+                raise CommandTimedOut("tailscale serve did not finish in 15s")
+            return super().run(argv, check=check, timeout=timeout)
+
+    set_value(config, "server.remote_host", NAME)
+    sys = Stuck()
+    remote.disable(config, sys)
+    assert load_config(config).remote_host is None
+    assert any("did not finish" in line for line in sys.out)
+
+
+def test_enable_rollback_should_clear_the_host_even_when_tailscale_does_not_answer(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Stuck(FakeTailscale):
+        def run(
+            self, argv: list[str], *, check: bool = True, timeout: float | None = None
+        ) -> tuple[int, str]:
+            if argv[-1] == "off":
+                raise CommandTimedOut("tailscale serve did not finish in 15s")
+            return super().run(argv, check=check, timeout=timeout)
+
+    plist = tmp_path / "agent.plist"
+    plist.write_text("x")
+    monkeypatch.setattr(remote, "plist_path", lambda: plist)
+    sys = Stuck(failing="kickstart")
+    with pytest.raises(remote.RemoteError, match="rolled back"):
+        remote.enable(config, sys)
+    assert load_config(config).remote_host is None
+    assert any("did not finish" in line for line in sys.out)
