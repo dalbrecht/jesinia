@@ -6,6 +6,7 @@ import pytest
 
 from jesinia.core.events import Event
 from jesinia.services.kb.application.errors import (
+    AgentOnlyPage,
     InvalidAssetName,
     KbUnavailable,
     PageNotFound,
@@ -327,3 +328,56 @@ async def test_read_asset_is_pinned_to_the_page_folder_in_the_url(kb: KbService)
     (root / "_assets" / page_a).symlink_to(root / "_assets" / page_b)
     with pytest.raises(PathOutsideKb, match="not in"):
         await kb.read_asset(page_a, "x.png")
+
+
+# --- agent-only pages and folders (ADR 0011) -----------------------------------------------
+
+FOLDER_LOCK = {"kind": "folder", "access": "agents"}
+MEMORY = PurePosixPath("91 Memory")
+
+
+async def test_should_lock_every_page_under_an_agent_only_folder_page(kb: KbService) -> None:
+    await kb.write(PageDraft(None, "Memory", MEMORY, "Agents' memory.", FOLDER_LOCK))
+    deep = await kb.write(PageDraft(None, "Prefs", MEMORY / "claude", "x"))
+    open_page = await kb.write(PageDraft(None, "Open", N, "x"))
+
+    assert kb.is_agent_only(deep.page.id)
+    assert not kb.is_agent_only(open_page.page.id)
+    assert not kb.is_agent_only(PageId("0192f7a8-0000-7000-8000-0000000000ff"))
+    assert kb.agent_only().covers_folder(MEMORY / "new")
+    with pytest.raises(AgentOnlyPage):
+        kb.require_user_access(deep.page.id)
+    with pytest.raises(AgentOnlyPage):
+        kb.require_user_folder(MEMORY)
+    kb.require_user_access(open_page.page.id)
+    kb.require_user_folder(N)
+    # Agents (and the service itself) still read and write locked pages.
+    updated = await kb.update_body(deep.page.id, "y", expected_rev=deep.rev)
+    assert (await kb.read(deep.page.id)).page.body == "y" and updated.page.body == "y"
+
+
+async def test_should_lock_a_single_page_without_its_folder(kb: KbService) -> None:
+    locked = await kb.write(PageDraft(None, "Secret", N, "x", {"access": "agents"}))
+    sibling = await kb.write(PageDraft(None, "Open", N, "x"))
+    assert kb.is_agent_only(locked.page.id) and not kb.is_agent_only(sibling.page.id)
+
+
+async def test_should_unlock_when_the_marker_is_removed(kb: KbService) -> None:
+    page = await kb.write(PageDraft(None, "Memory", MEMORY, "x", FOLDER_LOCK))
+    await kb.write(PageDraft(page.page.id, "Memory", MEMORY, "x", {}), expected_rev=page.rev)
+    assert not kb.agent_only()
+
+
+async def test_tree_should_hide_agent_only_pages_and_emptied_folders_on_request(
+    kb: KbService,
+) -> None:
+    await kb.write(PageDraft(None, "Memory", MEMORY, "x", FOLDER_LOCK))
+    await kb.write(PageDraft(None, "Prefs", MEMORY / "claude", "x"))
+    await kb.write(PageDraft(None, "Secret", N, "x", {"access": "agents"}))
+    await kb.write(PageDraft(None, "Open", N, "x"))
+
+    full = await kb.tree()
+    assert [n.path.name for n in full] == ["91 Memory", "Notes"] and full[1].pages == 2
+    visible = await kb.tree(hide_agent_only=True)
+    assert [n.path.name for n in visible] == ["Notes"]
+    assert [c.title for c in visible[0].children] == ["Open"] and visible[0].pages == 1

@@ -232,6 +232,19 @@ async def test_keep_writes_review_page_with_front_matter(kenv: KEnv) -> None:
     assert KeptState.from_json(kenv.store.artifact(round_id, KEPT)) == state
 
 
+async def test_keep_writes_under_the_configured_review_folder(kenv: KEnv) -> None:
+    keeper = KeepService(
+        kb=kenv.kb, tags=kenv.tags, store=kenv.store, clock=kenv.clock, folder=lambda: "00 Inbox"
+    )
+    round_id = kenv.round()
+    kenv.post(round_id)
+
+    state = await keeper.keep_finished(round_id)
+
+    assert state is not None and state.state == "kept"
+    assert state.path == "00 Inbox/acme-web/#1 Merge conflicting edits.md"
+
+
 async def test_quick_reviews_are_not_kept(kenv: KEnv) -> None:
     quick = kenv.round("quick")
     kenv.post(quick)
@@ -667,6 +680,10 @@ def test_titles_folders_and_section_merges() -> None:
     assert len(review_title(7, "x" * 1000)) < 220
     assert repo_folder("Acme/Web") == PurePosixPath("Reviews/acme-web")
     assert system_page_path("acme/web") == PurePosixPath("Reviews/acme-web/How it works.md")
+    assert repo_folder("acme/web", "00 Inbox") == PurePosixPath("00 Inbox/acme-web")
+    assert system_page_path("acme/web", "00 Inbox") == PurePosixPath(
+        "00 Inbox/acme-web/How it works.md"
+    )
     section = "<!-- jesinia:review-round 3 -->\nNew\n<!-- /jesinia:review-round 3 -->"
     assert merge_round_section("", 3, section) == f"{section}\n"
     assert merge_round_section("Mine.\n", 3, section) == f"Mine.\n\n{section}\n"

@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 
 from jesinia.core.db import transaction
 from jesinia.services.kb.application.ports import Conflict, IndexRow
+from jesinia.services.kb.domain.access import LockScope
 from jesinia.services.kb.domain.page import PageId
 
 _COLS = "id, path, disk, rev, title, mtime"
@@ -43,6 +44,7 @@ class SqliteIndex:
         links: Iterable[PageId] | None = None,
         tags: Iterable[str] | None = None,
         source: str | None = None,
+        access: LockScope | None = None,
     ) -> None:
         with transaction(self.conn):
             self.conn.execute("DELETE FROM pages WHERE path = ? AND id != ?", (str(path), id))
@@ -55,9 +57,11 @@ class SqliteIndex:
             if links is not None:
                 self._replace_links(id, links)
             if tags is not None:
-                # `source` is only meaningful alongside `tags`: both come from the page content.
+                # `source` and `access` are only meaningful alongside `tags`: all come from
+                # the page content.
                 self._replace_tags(id, tags)
                 self._replace_source(id, source)
+                self._replace_access(id, access)
 
     def delete(self, id: PageId) -> None:
         with transaction(self.conn):
@@ -65,10 +69,18 @@ class SqliteIndex:
             self.conn.execute("DELETE FROM links WHERE src = ?", (id,))
             self.conn.execute("DELETE FROM page_tags WHERE page_id = ?", (id,))
             self.conn.execute("DELETE FROM page_sources WHERE page_id = ?", (id,))
+            self.conn.execute("DELETE FROM page_access WHERE page_id = ?", (id,))
 
     def reset(self) -> None:
         with transaction(self.conn):
-            for table in ("pages", "links", "conflicts", "page_tags", "page_sources"):
+            for table in (
+                "pages",
+                "links",
+                "conflicts",
+                "page_tags",
+                "page_sources",
+                "page_access",
+            ):
                 self.conn.execute(f"DELETE FROM {table}")
 
     def all(self) -> list[IndexRow]:
@@ -102,6 +114,20 @@ class SqliteIndex:
         self.conn.execute("DELETE FROM page_sources WHERE page_id = ?", (id,))
         if url is not None:
             self.conn.execute("INSERT INTO page_sources (page_id, url) VALUES (?, ?)", (id, url))
+
+    def _replace_access(self, id: PageId, scope: LockScope | None) -> None:
+        self.conn.execute("DELETE FROM page_access WHERE page_id = ?", (id,))
+        if scope is not None:
+            self.conn.execute("INSERT INTO page_access (page_id, scope) VALUES (?, ?)", (id, scope))
+
+    def locks(self) -> list[tuple[PurePosixPath, LockScope]]:
+        rows = self.conn.execute(
+            "SELECT p.path, a.scope FROM page_access a JOIN pages p ON p.id = a.page_id "
+            "ORDER BY p.path"
+        )
+        return [
+            (PurePosixPath(path), "folder" if scope == "folder" else "page") for path, scope in rows
+        ]
 
     def tag_counts(self) -> dict[str, int]:
         rows = self.conn.execute("SELECT tag, COUNT(*) FROM page_tags GROUP BY tag ORDER BY tag")

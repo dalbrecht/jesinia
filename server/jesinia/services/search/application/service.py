@@ -8,6 +8,7 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Protocol
 
 from jesinia.core.events import Event, EventBus
@@ -97,12 +98,31 @@ class SearchService:
         bus.subscribe("kb.root_changed", self._on_root_changed)
 
     async def query(
-        self, q: str, *, limit: int = 20, sources: set[str] | None = None
+        self,
+        q: str,
+        *,
+        limit: int = 20,
+        sources: set[str] | None = None,
+        hide_agent_only: bool = False,
     ) -> list[SearchHit]:
+        """Ranked hits; ``hide_agent_only`` leaves out agent-only KB pages (the user's view,
+        ADR 0011) and still returns up to ``limit`` hits."""
         fts = to_fts_query(q)
         if fts is None:
             return []
-        return self._index.match(fts, max(1, min(limit, 200)), sorted(sources) if sources else None)
+        wanted = max(1, min(limit, 200))
+        chosen = sorted(sources) if sources else None
+        locked = self._kb.agent_only() if hide_agent_only else None
+        if not locked:
+            return self._index.match(fts, wanted, chosen)
+        # At most every locked page can match: ask for that many more, then drop them.
+        spare = sum(1 for row in self._kb.index.all() if locked.covers(row.path))
+        hits = self._index.match(fts, wanted + spare, chosen)
+        return [
+            h
+            for h in hits
+            if h.source != KB_SOURCE or h.path is None or not locked.covers(PurePosixPath(h.path))
+        ][:wanted]
 
     async def register(self, rec: ExternalRecord) -> None:
         if rec.source == KB_SOURCE:

@@ -26,7 +26,9 @@ from jesinia.core.paths import default_log_dir
 DEFAULT_PORT = 5374
 DEFAULT_INTERVAL = timedelta(hours=4)
 DEFAULT_QUIET = timedelta(seconds=30)
-DEFAULT_FOLDERS: Mapping[str, str] = MappingProxyType({"note": "Notes", "source": "Sources"})
+DEFAULT_FOLDERS: Mapping[str, str] = MappingProxyType(
+    {"note": "Notes", "review": "Reviews", "source": "Sources"}
+)
 # Unkept RSS posts are pruned this long after publication (rss spec §4.4).
 DEFAULT_RSS_RETENTION = timedelta(days=30)
 RSS_RETENTION_DAYS_MAX = 365

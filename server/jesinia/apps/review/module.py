@@ -37,6 +37,7 @@ from jesinia.apps.review.application.scheduler import (
 )
 from jesinia.apps.review.application.sessions import ReviewSessionRegistry
 from jesinia.apps.review.application.stacks import StackReviews
+from jesinia.apps.review.domain.kept import REVIEW_FOLDER_KIND, REVIEWS_FOLDER
 from jesinia.apps.review.domain.queue import SyncStatus
 from jesinia.apps.review.infrastructure.knowledge_store import SqliteKnowledgeStore
 from jesinia.apps.review.infrastructure.merges import GitHubMerges
@@ -388,7 +389,13 @@ class ReviewModule:
         github = ctx.services.get("github")
         kb, tags = ctx.services.get("kb"), ctx.services.get("tags")
         if isinstance(kb, KbService) and isinstance(tags, TagService):
-            self._keeper = KeepService(kb=kb, tags=tags, store=store, clock=_utc_now)
+            self._keeper = KeepService(
+                kb=kb,
+                tags=tags,
+                store=store,
+                clock=_utc_now,
+                folder=lambda: ctx.cfg.folders.get(REVIEW_FOLDER_KIND, REVIEWS_FOLDER),
+            )
 
         def knowledge_repos() -> list[str]:
             return [*store.watched_repos(), *(stored.pr.ref.repo for stored in store.prs())]

@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""HTTP routes (``/api/kb/…``) and MCP tool definitions over one ``KbService``."""
+"""HTTP routes (``/api/kb/…``) and MCP tool definitions over one ``KbService``.
+
+The routes are the user's view: they neither list nor open agent-only pages (ADR 0011).
+The MCP tools are the agents' view and reach every page.
+"""
 
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ from jesinia.services.kb.api.schemas import (
     WriteToolIn,
 )
 from jesinia.services.kb.application.errors import (
+    AgentOnlyPage,
     AssetNotFound,
     KbError,
     KbUnavailable,
@@ -56,6 +61,7 @@ class KbHost(Protocol):
 
 
 _STATUS: dict[type[KbError], int] = {
+    AgentOnlyPage: status.HTTP_403_FORBIDDEN,
     KbUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     PageNotFound: status.HTTP_404_NOT_FOUND,
     StaleWrite: status.HTTP_409_CONFLICT,
@@ -84,9 +90,26 @@ async def _guard[T](fn: Callable[[], Awaitable[T]]) -> T:
 def build_router(host: KbHost) -> APIRouter:
     r = APIRouter(prefix="/api/kb", tags=["kb"])
 
+    def readable(id: str) -> PageId:
+        """``id`` once it is known not to be agent-only (else 403)."""
+        try:
+            host.service.require_user_access(PageId(id))
+        except KbError as exc:
+            raise _http(exc) from exc
+        return PageId(id)
+
+    def writable_folder(folder: str) -> PurePosixPath:
+        """``folder`` once it is known not to be agent-only (else 403)."""
+        try:
+            host.service.require_user_folder(PurePosixPath(folder))
+        except KbError as exc:
+            raise _http(exc) from exc
+        return PurePosixPath(folder)
+
     @r.get("/pages/{id}")
     async def get_page(id: str) -> PageOut:
-        return PageOut.of(await _guard(lambda: host.service.read(PageId(id))))
+        page_id = readable(id)
+        return PageOut.of(await _guard(lambda: host.service.read(page_id)))
 
     @r.get(
         "/assets/{page_id}/{file}",
@@ -96,6 +119,7 @@ def build_router(host: KbHost) -> APIRouter:
     async def get_asset(page_id: str, file: str) -> Response:
         """A page's local image (``_assets/<page_id>/<file>``), typed by its bytes: raster
         images only (415 for anything else, SVG included), never through a symlink."""
+        readable(page_id)
         asset = await _guard(lambda: host.service.read_asset(page_id, file))
         return Response(
             asset.data,
@@ -106,9 +130,9 @@ def build_router(host: KbHost) -> APIRouter:
     @r.put("/pages")
     async def put_page(body: PageIn) -> PageOut:
         draft = PageDraft(
-            PageId(body.id) if body.id else None,
+            readable(body.id) if body.id else None,
             body.title,
-            PurePosixPath(body.folder),
+            writable_folder(body.folder),
             body.body,
             body.jesinia,
         )
@@ -118,6 +142,7 @@ def build_router(host: KbHost) -> APIRouter:
 
     @r.patch("/pages/{id}/body", response_model=None)
     async def patch_body(id: str, body: BodyIn) -> PageOut | JSONResponse:
+        readable(id)
         try:
             return PageOut.of(
                 await host.service.update_body(
@@ -135,14 +160,14 @@ def build_router(host: KbHost) -> APIRouter:
 
     @r.post("/pages/{id}/move")
     async def move_page(id: str, body: MoveIn) -> MoveOut:
-        result = await _guard(
-            lambda: host.service.move(PageId(id), PurePosixPath(body.folder), body.title)
-        )
+        page_id, folder = readable(id), writable_folder(body.folder)
+        result = await _guard(lambda: host.service.move(page_id, folder, body.title))
         return MoveOut.of(result)
 
     @r.get("/tree")
     async def get_tree() -> list[TreeOut]:
-        return [TreeOut.of(n) for n in await _guard(host.service.tree)]
+        nodes = await _guard(lambda: host.service.tree(hide_agent_only=True))
+        return [TreeOut.of(n) for n in nodes]
 
     @r.get("/conflicts")
     async def get_conflicts() -> list[ConflictOut]:

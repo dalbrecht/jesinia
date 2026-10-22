@@ -28,6 +28,7 @@ from jesinia.apps.review.domain.kept import (
     REBASE_KINDS,
     REVIEW_KIND,
     REVIEW_TAG,
+    REVIEWS_FOLDER,
     SYSTEM_DRAFT,
     SYSTEM_KIND,
     SYSTEM_PAGE_TITLE,
@@ -119,10 +120,21 @@ class KeepService:
         tags: the shared tag catalog (``TagService.ensure``).
         store: ``review.sqlite``.
         clock: the current UTC time.
+        folder: the KB folder new pages go under (``folders.review``), read per write so a
+            config change applies without a restart.
     """
 
-    def __init__(self, *, kb: KbService, tags: TagService, store: KeepStore, clock: Clock) -> None:
+    def __init__(
+        self,
+        *,
+        kb: KbService,
+        tags: TagService,
+        store: KeepStore,
+        clock: Clock,
+        folder: Callable[[], str] = lambda: REVIEWS_FOLDER,
+    ) -> None:
         self._kb = kb
+        self._folder = folder
         self._tags = tags
         self._store = store
         self._clock = clock
@@ -187,7 +199,7 @@ class KeepService:
                 draft = PageDraft(
                     None,
                     review_title(kept.number, kept.title),
-                    repo_folder(kept.repo),
+                    repo_folder(kept.repo, self._folder()),
                     merge_round_section("", kept.round_id, section),
                     review_front_matter(kept),
                 )
@@ -362,7 +374,7 @@ class KeepService:
             if meta.get("kind") == SYSTEM_KIND and isinstance(owner, str):
                 if owner.lower() == canonical:
                     return found
-        row = self._kb.index.by_path(system_page_path(repo))
+        row = self._kb.index.by_path(system_page_path(repo, self._folder()))
         if row is None:
             return None
         page = await self._kb.read(row.id)
@@ -489,7 +501,7 @@ class KeepService:
                 PageDraft(
                     None,
                     SYSTEM_PAGE_TITLE,
-                    repo_folder(repo),
+                    repo_folder(repo, self._folder()),
                     draft.text,
                     # The source finds the page again wherever it lands (N3).
                     {"kind": SYSTEM_KIND, "repo": repo, "source": system_source(repo)},

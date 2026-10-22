@@ -56,3 +56,8 @@ class NearDuplicate(KbError):
 
 class TagNotFound(KbError):
     """The tag is not in the catalog."""
+
+
+class AgentOnlyPage(KbError):
+    """The page or folder is agent-only (ADR 0011): agents use it through MCP, the user's
+    apps neither list nor open it."""

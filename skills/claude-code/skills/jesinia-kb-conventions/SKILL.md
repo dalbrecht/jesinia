@@ -33,6 +33,10 @@ repository; this skill is the working summary.
 - Put pages in an existing topic folder when one fits (`kb_tree` shows them). Notes go
   in `Notes/` (configurable).
 - Never write in `Journal/`, `Drafts/`, hidden folders, or any `_assets` folder.
+- A page with `jesinia: {access: agents}` is agent-only; with `kind: folder` too, so is its
+  whole folder. They are yours to read and write through MCP, but the user's apps hide
+  them, so keep the marker as `kb_read` gives it and don't link to them from the user's
+  pages.
 
 ## Links and tags
 

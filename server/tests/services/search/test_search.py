@@ -155,3 +155,20 @@ async def test_successful_rebuild_clears_an_earlier_failure(env: Env, monkeypatc
     assert env.search.error == "reindex failed: disk I/O error"
     monkeypatch.setattr(SearchService, "_index_page", real)
     assert await env.search.reindex() == 1 and env.search.error is None
+
+
+async def test_should_leave_out_agent_only_pages_only_when_asked(env: Env) -> None:
+    lock = {"kind": "folder", "access": "agents"}
+    await env.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "common", lock))
+    for i in range(3):
+        await env.kb.write(PageDraft(None, f"Mem {i}", PurePosixPath("91 Memory"), "common"))
+    for i in range(3):
+        await env.kb.write(PageDraft(None, f"Open {i}", N, "common"))
+    await env.search.register(ExternalRecord("rss", "1", "Post", "common", None))
+
+    everything = await env.search.query("common", limit=20)
+    assert len(everything) == 8
+    visible = await env.search.query("common", limit=4, hide_agent_only=True)
+    # The locked hits are dropped before the limit applies, so the user still gets four.
+    assert sorted(h.title for h in visible) == ["Open 0", "Open 1", "Open 2", "Post"]
+    assert await env.search.query("Mem", hide_agent_only=True) == []
