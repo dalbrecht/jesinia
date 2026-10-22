@@ -82,11 +82,13 @@
 
 **Files:**
 - Create: `server/jesinia/services/tasksmirror/application/{__init__,ports,service}.py`
-- Test: `server/tests/services/tasksmirror/application/test_service.py`
+- Modify: `server/jesinia/services/kb/application/service.py` (`update_body(..., origin: str = "jesinia")`, passed through `_emit` to `emit`)
+- Test: `server/tests/services/tasksmirror/application/test_service.py`, `server/tests/services/kb/application/test_service.py`
 
+- [ ] **Step 0:** Failing KB tests `test_should_emit_given_origin_on_update_body` and `test_should_default_update_body_origin_to_jesinia`. Then add the `origin` keyword to `KbService.update_body`. Every existing caller keeps the default.
 - [ ] **Step 1:** Ports: `TasksFile` (`stat() -> FileStamp | None`, `read() -> str`), `Pages` (list project pages and Today with id/title/front matter/body/rev; `update_body`), `Clock` (local now).
 - [ ] **Step 2:** Failing tests over fakes: writes only changed pages; `test_should_not_write_when_regions_are_unchanged`; `StaleWrite` re-read and one retry; an unreadable file touches no page and records the cause; a page with no section is reported; `status()` shape per spec §7.
-- [ ] **Step 3:** Implement `MirrorService.run_pass()` and `status()`. Writes use origin `tasksmirror`.
+- [ ] **Step 3:** Implement `MirrorService.run_pass()` and `status()`. Every write passes `origin="tasksmirror"` (the `Pages` adapter forwards it to `update_body`). Test `test_should_write_with_tasksmirror_origin`.
 - [ ] **Step 4:** Commit `feat(tasksmirror): run a mirror pass over KB pages`.
 
 ### Task 6: Infrastructure, module, API
@@ -99,7 +101,7 @@
 
 - [ ] **Step 1:** `FsTasksFile` (stat by mtime_ns + size, read UTF-8). `KbPages` adapter over `KbService`: folder notes `<X>/<X>.md` under `10 Projects/`, `10 Projects/_Paused/` and `10 Projects/_Someday/`, each tagged with its KB status (`active`/`paused`/`someday`); nothing from `40 Archive/` or `20 Areas/`; Today at `01 Today/Today.md`. Tests include a paused page being mirrored and a folder that moved to `20 Areas/` no longer being written.
 - [ ] **Step 2:** Module: idle and healthy when `tasks_md_path` is unset, degraded when the path is missing. Scheduler `every("tasksmirror", 15s, poll, at_start=True)`, where poll runs a pass when the stamp changes or the local date rolled over.
-- [ ] **Step 3:** Routes `GET /api/tasksmirror/status`, `POST /api/tasksmirror/sync` (owner only, idempotency key like other POSTs). Agent tokens get 403.
+- [ ] **Step 3:** Routes `GET /api/tasksmirror/status`, `POST /api/tasksmirror/sync` (owner only, idempotency key like other POSTs), and `GET`/`PUT /api/tasksmirror/path`, modeled on `PUT /api/kb/path`. The `PUT` validates the path (absolute, or empty to disconnect), persists it with `set_value`, sets `ctx.cfg = replace(ctx.cfg, tasks_md_path=…)`, and calls `module.rebind(path)`, which resets the poll stamp and runs a pass at once. Agent tokens get 403. Tests: `test_should_connect_without_restart` (PUT, then status shows connected and pages written), `test_should_disconnect_on_empty_path`, `test_should_reject_relative_path`.
 - [ ] **Step 4:** `make gen-client`. Commit with the generated client: `feat(tasksmirror): add the module, poller and status API`.
 
 ### Task 7: Settings card, and Phase 1 acceptance
@@ -107,7 +109,7 @@
 **Files:**
 - Modify: `web/apps/launcher/src/…` (Settings page; add a `DopoTasksCard` component and test)
 
-- [ ] **Step 1:** Failing vitest tests: Not connected state with a path field (saves via the existing config route); connected state showing last synced, **Sync now**, and lists of unmatched, collisions, no-section pages and paused-with-next-actions pages; error shows cause then what to do.
+- [ ] **Step 1:** Failing vitest tests: Not connected state with a path field (saves via `PUT /api/tasksmirror/path` and shows the new status without a reload); connected state showing last synced, **Sync now**, and lists of unmatched, collisions, no-section pages and paused-with-next-actions pages; error shows cause then what to do.
 - [ ] **Step 2:** Implement with `@jesinia/design` components only.
 - [ ] **Step 3:** `make ci` green. Manual: set `tasks_md_path` to the real DOPO file; check all nine project pages and Today, then change an action in DOPO and see it within ~20 s. Note results in the PR.
 - [ ] **Step 4:** Commit `feat(launcher): show DOPO Tasks mirror status in Settings`. Open the Phase 1 PR.
@@ -130,12 +132,12 @@
 ### Task 9: Ledger and write-back loop
 
 **Files:**
-- Create: `server/jesinia/services/tasksmirror/migrations/0001_ledger.sql`, `server/jesinia/services/tasksmirror/infrastructure/ledger.py`
+- Create: `server/jesinia/services/tasksmirror/migrations/0001_ledger.sql` (`completions`: `item_id` primary key, `base_rev` not null, `page_id`, `requested_at`, `attempts`, `state`), `server/jesinia/services/tasksmirror/infrastructure/ledger.py`
 - Modify: `application/ports.py`, `application/service.py`, `infrastructure/tasks_file.py` (`replace_if_unchanged(stamp, text)`: atomic temp + fsync + rename, re-stat before rename, up to 3 tries), `module.py` (`TASKSMIRROR_DB`, class history), `registry.py` (`DATABASES`)
 - Test: `server/tests/services/tasksmirror/{application,infrastructure}/…`
 
-- [ ] **Step 1:** Failing tests for the ledger transitions in spec §8.3: pending → applied (line done or gone); pending → superseded (rev changed, still open); pending → stale after 7 days (kept, flagged); re-apply after an overwrite with the same rev.
-- [ ] **Step 2:** Subscribe to `kb.page_changed` (ignore origin `tasksmirror`), record requests for mapped pages and Today, then run the write-back and a pass.
+- [ ] **Step 1:** Failing tests for the ledger transitions in spec §8.3, each comparing the line's trailer rev with the stored `base_rev`: pending → applied (line done or gone); pending → superseded (rev ≠ base, still open); pending → stale after 7 days (kept, flagged); re-apply after an overwrite (rev = base); `test_should_decide_from_stored_base_rev_after_restart` (a fresh service over the same DB); a second tick on a pending item records nothing.
+- [ ] **Step 2:** Subscribe to `kb.page_changed`, ignoring origin `tasksmirror`. Test `test_should_ignore_its_own_pending_render`: a mirror write containing `- [x] … · pending DOPO` records nothing. Record requests (with the line's current trailer rev as `base_rev`) for mapped pages and Today, then run the write-back and a pass.
 - [ ] **Step 3:** `status().pending_completions`; Settings lists them with "Open DOPO Tasks to apply" when stale.
 - [ ] **Step 4:** Commit `feat(tasksmirror): write ticks back to DOPO Tasks`.
 

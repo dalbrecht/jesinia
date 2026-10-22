@@ -161,7 +161,10 @@ view). It depends on the `kb` service through `ctx.services` only.
 ### 5.2 Config
 
 A new `tasks_md_path` key (the full path to DOPO's `tasks.md`, unset by default) is set in
-Settings or with `jesinia config set tasks_md_path …`. While it is unset the module is
+Settings or with `jesinia config set tasks_md_path …`. Settings saves it through
+`PUT /api/tasksmirror/path`, which validates the path, persists it, updates the running
+config, and rebinds the module at once, the way `PUT /api/kb/path` rebinds the KB. No
+restart is needed. While it is unset the module is
 healthy and idle, and Settings shows "Not connected". A configured path that doesn't exist
 makes the module report *degraded*, with the path in the message.
 
@@ -185,7 +188,11 @@ Passes are serialized (the scheduler lock), so a poll never overlaps a KB-trigge
    `defer:` date after today.
 3. Group by mapped page (§4) and render each page's region (§5.5) and the Today region (§6).
 4. For each page whose rendered region differs from what is on disk, call
-   `KbService.update_body(id, body, expected_rev=rev)`. On `StaleWrite`, re-read and retry
+   `KbService.update_body(id, body, expected_rev=rev, origin="tasksmirror")`. `update_body`
+   currently always emits `kb.page_changed` with origin `jesinia`, so it gains an `origin`
+   keyword (default unchanged). The Phase 2 tick detector skips events with this origin,
+   so the mirror's own writes (including a rendered `- [x] … · pending DOPO` line) are never
+   read as user ticks. On `StaleWrite`, re-read and retry
    once, then leave it for the next pass.
 5. Record a per-page outcome for Settings.
 
@@ -321,13 +328,18 @@ trailer id, changes it, and replaces the file atomically. The checks:
 
 DOPO rewrites the whole file from its database, so a DOPO pass that read the file just
 before Jesinia's edit can overwrite it. Each request is therefore kept in a small SQLite
-ledger (`tasksmirror.db`, class *history*): item id, page, requested at, attempts, state.
+ledger (`tasksmirror.db`, class *history*): item id, **base rev** (the trailer `rev` of the
+item's `tasks.md` line when the tick was recorded), page, requested at, attempts, state.
+Every transition below compares the line's current trailer `rev` with the stored base rev,
+so the decision survives a restart and never depends on an earlier parse.
 
 - Each pass, a pending request whose line is still open in `tasks.md` and whose trailer
-  `rev` hasn't changed is re-applied.
+  `rev` still equals its base rev is re-applied.
+- A tick on an item that already has a pending request records nothing new (the request is
+  keyed by item id).
 - **Applied** when the item's line shows done, or has disappeared. Done items stay in the
   file as `[x]` lines. DOPO drops a line only when the item is trashed or deleted.
-- **Superseded** when the line's `rev` changed but the item is still open. DOPO accepted
+- **Superseded** when the line's `rev` differs from the base rev but the item is still open. DOPO accepted
   some other version (for example, the user re-opened it), so Jesinia stops and lets DOPO
   win.
 - **Stale** after 7 days pending (DOPO probably hasn't been opened). Shown in Settings with
