@@ -26,7 +26,12 @@ from jesinia.services.kb.application.errors import (
     UnsupportedAssetType,
 )
 from jesinia.services.kb.application.ports import Conflict, PageFiles, PageIndex
-from jesinia.services.kb.domain.assets import image_media_type, is_asset_file_name, is_page_id
+from jesinia.services.kb.domain.assets import (
+    image_media_type,
+    is_asset_file_name,
+    is_page_id,
+    rebase_asset_links,
+)
 from jesinia.services.kb.domain.frontmatter import (
     page_from,
     parse_document,
@@ -406,8 +411,9 @@ class KbService:
         """Move and/or rename. A rename updates inbound ``[[id|Title]]`` link text."""
         current = await self.read(id)
         new_title = title if title is not None else current.page.title
+        body = rebase_asset_links(current.page.body, current.page.path.parent, nfc(folder))
         moved = await self.write(
-            PageDraft(id, new_title, folder, current.page.body, current.page.jesinia),
+            PageDraft(id, new_title, folder, body, current.page.jesinia),
             expected_rev=current.rev,
         )
         relinked: list[PageId] = []

@@ -146,6 +146,15 @@ async def test_move_to_folder_needs_no_relink(kb: KbService) -> None:
     assert r.relinked == [] and r.page.page.path == PurePosixPath("Archive/T.md")
 
 
+async def test_should_keep_asset_images_working_when_a_page_moves_deeper(kb: KbService) -> None:
+    made = await kb.write(PageDraft(None, "Kept", PurePosixPath("Sources"), "x"))
+    image = f"![a](../_assets/{made.page.id}/ab12.png)"
+    current = await kb.update_body(made.page.id, image, expected_rev=made.rev)
+    r = await kb.move(made.page.id, PurePosixPath("30 Resources/Making"))
+    assert r.page.page.body == f"![a](../../_assets/{made.page.id}/ab12.png)"
+    assert (await kb.read(current.page.id)).page.body == r.page.page.body
+
+
 async def test_relink_skips_stale_linker(kb: KbService) -> None:
     a = await kb.write(PageDraft(None, "T", N, "t"))
     b = await kb.write(PageDraft(None, "L", N, f"[[{a.page.id}|T]]"))
