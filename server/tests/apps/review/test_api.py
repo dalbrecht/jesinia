@@ -15,7 +15,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import httpx
 import pytest
@@ -45,7 +45,7 @@ from jesinia.core.module import AppContext, CallContext, ModuleHealth, ToolDef
 from jesinia.registry import modules
 from jesinia.services.github.application.service import GitHubRequestError, GitHubUnavailable
 from jesinia.services.github.domain.pr import PrFile
-from jesinia.services.kb.application.service import KbService
+from jesinia.services.kb.application.service import KbService, PageDraft
 from jesinia.services.kb.application.tags import TagService
 from jesinia.services.kb.infrastructure.fs import LocalFiles
 from jesinia.services.kb.infrastructure.index import SqliteIndex
@@ -683,6 +683,18 @@ async def test_a_conflicting_or_unwritable_how_it_works_is_typed(env: Env) -> No
         f"{PR}/system/accept", headers=keyed(), json={"round_id": round_id, "base_rev": None}
     )
     assert gone.status_code == 503 and gone.json()["error"] == "KbUnavailable"
+
+
+async def test_how_it_works_in_an_agent_only_folder_is_refused_with_403(env: Env) -> None:
+    round_id = _deep(env)
+    await env.client.post(f"{PR}/done", headers=keyed())
+    lock = {"kind": "folder", "access": "agents"}
+    kb = env.host.keeper._kb
+    await kb.write(PageDraft(None, "Reviews", PurePosixPath("Reviews"), "x", lock))
+    refused = await env.client.post(
+        f"{PR}/system/accept", headers=keyed(), json={"round_id": round_id, "base_rev": None}
+    )
+    assert refused.status_code == 403 and refused.json()["error"] == "AgentOnlyPage"
 
 
 async def test_settings_round_trip(env: Env) -> None:

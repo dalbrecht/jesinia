@@ -113,7 +113,7 @@ from jesinia.services.github.application.service import (
     GitHubUnavailable,
 )
 from jesinia.services.github.domain.pr import PullRequestDomainError
-from jesinia.services.kb.application.errors import KbError, KbUnavailable
+from jesinia.services.kb.application.errors import AgentOnlyPage, KbError, KbUnavailable
 
 
 class ReviewHost(Protocol):
@@ -158,6 +158,8 @@ _STATUS: dict[type[Exception], int] = {
     KeptPageError: status.HTTP_400_BAD_REQUEST,
     # The KB, not this request, failed: the cause is in ``detail``.
     KbUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
+    # The review folder (or the page) is agent-only (ADR 0011): refused, not failed.
+    AgentOnlyPage: status.HTTP_403_FORBIDDEN,
     KbError: status.HTTP_500_INTERNAL_SERVER_ERROR,
     InvalidPostAllError: status.HTTP_400_BAD_REQUEST,
     RoundNotOfPr: status.HTTP_409_CONFLICT,
