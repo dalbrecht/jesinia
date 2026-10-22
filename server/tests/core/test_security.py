@@ -178,3 +178,20 @@ async def test_should_send_hsts_on_remote_responses_only(
     assert "strict-transport-security" not in local.headers
     refused = await remote_client.get("/healthz", headers={"Host": "evil.example"})
     assert "strict-transport-security" not in refused.headers
+
+
+async def test_health_over_the_tailnet_should_hide_module_details_until_signed_in(
+    cfg: Config,
+) -> None:
+    from dataclasses import replace
+
+    from tests.core.test_app import Exploding
+
+    app = create_app(replace(cfg, remote_host=REMOTE), [Exploding("kb")])
+    async with lifespan_client(app) as c:
+        anonymous = await c.get("/healthz", headers={"Host": REMOTE})
+        assert anonymous.json() == {"ok": False, "modules": {}}
+        signed_in = await c.get("/healthz", headers={"Host": REMOTE, **bearer(cfg.token)})
+        assert "start failed" in signed_in.json()["modules"]["kb"]["detail"]
+        local = await c.get("/healthz")
+        assert "kb" in local.json()["modules"]

@@ -25,6 +25,8 @@ class FakeTailscale(System):
     status: object = field(default_factory=lambda: {"Self": {"DNSName": f"{NAME}."}})
     on_path: bool = True
     failing: str = ""
+    serve_status: str = ""
+    off_code: int = 0
 
     def __post_init__(self) -> None:
         self.echo = self.out.append
@@ -36,6 +38,10 @@ class FakeTailscale(System):
             raise RuntimeError(f"{' '.join(argv)} failed: nope")
         if argv[1:] == ["status", "--json"]:
             return 0, self.status if isinstance(self.status, str) else json.dumps(self.status)
+        if argv[1:] == ["serve", "status", "--json"]:
+            return 0, self.serve_status
+        if argv[-1] == "off":
+            return self.off_code, ""
         return 0, ""
 
 
@@ -114,7 +120,42 @@ def test_disable_should_stop_serving_and_clear_the_host(config: Path) -> None:
     assert remote.disable(config, sys).remote_host is None
     assert load_config(config).remote_host is None
     assert ["/usr/local/bin/tailscale", "serve", "--https=443", "off"] in sys.calls
-    assert "remote access off" in sys.out
+    assert "remote access off once the server restarts" in sys.out
+    assert not any("warning" in line for line in sys.out)
+
+
+def test_disable_should_warn_when_tailscale_keeps_serving(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plist = tmp_path / "agent.plist"
+    plist.write_text("x")
+    monkeypatch.setattr(remote, "plist_path", lambda: plist)
+    set_value(config, "server.remote_host", NAME)
+    sys = FakeTailscale(off_code=1)
+    remote.disable(config, sys)
+    assert load_config(config).remote_host is None
+    assert any("could not stop `tailscale serve`" in line for line in sys.out)
+    assert "remote access off: Jesinia refuses the tailnet host" in sys.out
+
+
+def test_enable_should_refuse_when_funnel_is_on(config: Path) -> None:
+    status = json.dumps({"AllowFunnel": {f"{NAME}:443": True}})
+    sys = FakeTailscale(serve_status=status)
+    with pytest.raises(remote.RemoteError, match="Funnel is on"):
+        remote.enable(config, sys)
+    assert load_config(config).remote_host is None
+    assert not any("--bg" in argv for argv in sys.calls)
+
+
+def test_enable_should_proceed_when_funnel_is_off_elsewhere(config: Path) -> None:
+    status = json.dumps({"AllowFunnel": {"other.ts.net:443": True}, "TCP": {}})
+    assert remote.enable(config, FakeTailscale(serve_status=status)).remote_host == NAME
+    assert remote.enable(config, FakeTailscale(serve_status="{}")).remote_host == NAME
+
+
+def test_enable_should_explain_an_unreadable_serve_status(config: Path) -> None:
+    with pytest.raises(remote.RemoteError, match="serve status"):
+        remote.enable(config, FakeTailscale(serve_status="[1]"))
 
 
 def test_disable_should_clear_the_host_even_without_tailscale(

@@ -8,13 +8,14 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.routing import Route
 
 from jesinia.core.auth import (
     SESSIONS_FILE,
     SessionCookieRenewal,
     auth_router,
+    is_authorized,
     load_sessions,
     require_owner,
 )
@@ -22,7 +23,7 @@ from jesinia.core.config import Config
 from jesinia.core.events import EventBus
 from jesinia.core.module import AppContext, Module, ModuleHealth
 from jesinia.core.scheduler import Scheduler
-from jesinia.core.security import LocalOriginGuard
+from jesinia.core.security import LocalOriginGuard, is_remote_host
 from jesinia.core.static import STATIC, static_router
 from jesinia.core.stream import EventLog, events_router
 
@@ -104,7 +105,7 @@ def create_app(
             )
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, object]:
+    async def healthz(request: Request) -> dict[str, object]:
         report: dict[str, dict[str, object]] = {}
         for module in modules:
             if module.name in failed:
@@ -112,7 +113,12 @@ def create_app(
             else:
                 health = module.health()
             report[module.name] = {"ok": health.ok, "detail": health.detail}
-        return {"ok": all(m["ok"] for m in report.values()), "modules": report}
+        ok = all(m["ok"] for m in report.values())
+        # Over the tailnet only a signed-in caller learns which modules fail and why.
+        host = request.headers.get("host", "")
+        if is_remote_host(host, ctx.cfg.remote_host) and not is_authorized(request):
+            return {"ok": ok, "modules": {}}
+        return {"ok": ok, "modules": report}
 
     app.router.routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))
     if static_root is not None:

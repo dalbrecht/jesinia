@@ -45,19 +45,38 @@ def tailnet_name(sys: System, cli: str) -> str:
     return name
 
 
-def _restart(sys: System) -> None:
-    """Restart the LaunchAgent so the server adopts the new allowed host."""
+def _funnel_is_on(sys: System, cli: str, name: str) -> bool:
+    """Whether Tailscale Funnel exposes ``name:443`` to the public internet."""
+    code, out = sys.run([cli, "serve", "status", "--json"], check=False)
+    if code != 0 or not out.strip():
+        return False  # nothing served yet
+    try:
+        allowed = json.loads(out).get("AllowFunnel") or {}
+    except (ValueError, AttributeError) as exc:
+        raise RemoteError(f"could not read `tailscale serve status` ({exc})") from exc
+    return bool(allowed.get(f"{name}:443"))
+
+
+def _restart(sys: System) -> bool:
+    """Restart the LaunchAgent so the server adopts the new allowed host; False when there
+    is no LaunchAgent (a ``jesinia serve`` run by hand must be restarted by hand)."""
     if plist_path().exists():
         sys.run(["launchctl", "kickstart", "-k", f"{_domain()}/{LABEL}"])
         sys.echo("server restarted")
-    else:
-        sys.echo("restart `jesinia serve` to apply")
+        return True
+    sys.echo("restart `jesinia serve` to apply")
+    return False
 
 
 def enable(path: Path, sys: System) -> Config:
     """Serve Jesinia on this machine's tailnet name over HTTPS and allow that host."""
     cli = tailscale_cli(sys)
     name = tailnet_name(sys, cli)
+    if _funnel_is_on(sys, cli, name):
+        raise RemoteError(
+            f"Tailscale Funnel is on for {name}:443, which would put Jesinia on the public "
+            "internet; turn it off (`tailscale funnel --https=443 off`) and try again"
+        )
     cfg = load_config(path)
     try:
         sys.run([cli, "serve", "--bg", "--https=443", f"http://127.0.0.1:{cfg.port}"])
@@ -70,17 +89,28 @@ def enable(path: Path, sys: System) -> Config:
 
 
 def disable(path: Path, sys: System) -> Config:
-    """Stop serving on the tailnet and forget the remote host."""
+    """Stop serving on the tailnet and forget the remote host. The host is forgotten even
+    when Tailscale cannot be told to stop: once the server restarts it refuses that host,
+    so a proxy left running only reaches 421s."""
     cfg = load_config(path)
+    is_proxy_stopped = False
     try:
         cli = tailscale_cli(sys)
-        sys.run([cli, "serve", "--https=443", "off"], check=False)
+        code, _ = sys.run([cli, "serve", "--https=443", "off"], check=False)
+        is_proxy_stopped = code == 0
     except RemoteError as exc:
         sys.echo(f"{exc}; only clearing the config")
+    if not is_proxy_stopped:
+        sys.echo(
+            "warning: could not stop `tailscale serve`; check `tailscale serve status` and run "
+            "`tailscale serve --https=443 off`"
+        )
     cfg = replace(cfg, remote_host=None)
     save_config(cfg, path)
-    _restart(sys)
-    sys.echo("remote access off")
+    if _restart(sys):
+        sys.echo("remote access off: Jesinia refuses the tailnet host")
+    else:
+        sys.echo("remote access off once the server restarts")
     return cfg
 
 
