@@ -16,7 +16,7 @@ ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9]+)?")
 # definition or an HTML ``src``/``href`` value: only these are links (an ``_assets`` path in
 # prose or code, or after an escaped ``\[``, is left alone).
 _ASSET_LINK = re.compile(
-    r"(?P<lead>(?<!\\)\[[^\]\n]*\]\(<?|^ {0,3}\[[^\]\n]+\]:[ \t]*<?|\b(?:src|href)=[\"']?)"
+    r"(?P<lead>(?<!\\)\[[^\[\]\n]*\]\(<?|^ {0,3}\[[^\]\n]+\]:[ \t]*<?|\b(?:src|href)=[\"']?)"
     r"(?P<up>(?:\.\./)*)(?P<rest>_assets/" + _PAGE_ID.pattern + r"/)",
     re.MULTILINE,
 )

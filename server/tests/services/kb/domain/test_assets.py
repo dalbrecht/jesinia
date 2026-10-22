@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import time
 from pathlib import PurePosixPath
 
 import pytest
@@ -109,3 +110,11 @@ def test_should_leave_escaped_markdown_links_alone() -> None:
     assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == (
         f"\\[example](../_assets/{ID}/a.png) and \\[x [y](../../_assets/{ID}/b.png)"
     )
+
+
+def test_should_scan_an_unclosed_bracket_run_in_linear_time() -> None:
+    body = "[" * 200_000 + f"](../_assets/{ID}/a.png)"
+    started = time.perf_counter()
+    rebased = rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B"))
+    assert time.perf_counter() - started < 1
+    assert rebased.endswith(f"[](../../_assets/{ID}/a.png)")
