@@ -321,8 +321,23 @@ trailer id, changes it, and replaces the file atomically. The checks:
   ingests the edit as `ff-db`. If the item also changed in DOPO, its resolver shows both
   sides. Jesinia never computes revs.
 - Every other byte of the file is unchanged.
-- If the file changed between read and replace (mtime/size check just before the rename),
-  start over, up to 3 tries.
+- **Installing the edit never discards a DOPO write.** A stat check before a plain rename
+  isn't a compare-and-swap: DOPO could install a newer file between the check and the
+  rename, and the rename would throw it away. Jesinia uses an atomic **swap** instead:
+  `renamex_np(tmp, tasks.md, RENAME_SWAP)` on APFS. After the swap, `tmp` holds exactly the
+  file that was in place at the moment of the swap. Jesinia compares it with the text it
+  edited:
+  - **Same:** done. The displaced copy is deleted.
+  - **Different** (DOPO wrote in between): DOPO's newer text is in hand, not lost. Jesinia
+    re-applies its one-line edit to it (or makes no edit if that line is now done, gone, or
+    has a new `rev`) and swaps again, up to 3 rounds. After that it installs DOPO's newer
+    text unedited and leaves the request pending for the next pass. So every DOPO write
+    survives, with at most Jesinia's single-line change added.
+  - **Swap unsupported** (not APFS, or the call fails): Phase 2 writes are disabled and
+    Settings says why (cause plus "Move the DOPO sync folder to an APFS volume"). It never
+    falls back to a plain rename.
+  DOPO's own writes go through File System Access, which writes a swap file and renames it
+  into place, so every DOPO write is a whole-file replacement that the swap handles.
 
 ### 8.3 The ledger
 
@@ -337,9 +352,15 @@ so the decision survives a restart and never depends on an earlier parse.
   `rev` still equals its base rev is re-applied.
 - A tick on an item that already has a pending request records nothing new (the request is
   keyed by item id).
-- **Applied** when the item's line shows done, or has disappeared. Done items stay in the
-  file as `[x]` lines. DOPO drops a line only when the item is trashed or deleted.
-- **Superseded** when the line's `rev` differs from the base rev but the item is still open. DOPO accepted
+- **Written** (still pending) when the line shows done but its trailer `rev` still equals
+  the base rev. That is Jesinia's own edit, which DOPO hasn't ingested. DOPO may still
+  overwrite it with the open version it read earlier, so Jesinia keeps checking. If the line
+  goes back to open with the same rev, Jesinia re-applies the edit.
+- **Applied** only once DOPO acknowledges the edit: the line shows done with a `rev`
+  different from the base rev (DOPO re-renders each line it ingests with a fresh rev), or
+  the line has disappeared (DOPO drops a line only when the item is trashed or deleted;
+  done items stay as `[x]` lines).
+- **Superseded** when the line's `rev` differs from the base rev and the item is still open. DOPO accepted
   some other version (for example, the user re-opened it), so Jesinia stops and lets DOPO
   win.
 - **Stale** after 7 days pending (DOPO probably hasn't been opened). Shown in Settings with

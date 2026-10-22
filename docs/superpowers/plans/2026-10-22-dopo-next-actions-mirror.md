@@ -28,6 +28,7 @@
 3. **The completion edit is minimal:** only the box and `@status:` change, the trailer and every other byte stay the same. Test in Task 8 (`test_should_change_only_box_and_status_of_target_line`).
 4. **Racing DOPO's rewrite:** a completion that DOPO overwrote is re-applied, and one DOPO superseded (rev changed, still open) is dropped. Test in Task 9.
 5. **Local midnight:** Today regroups across midnight without a `tasks.md` change. Test in Task 4 (`test_should_regroup_today_across_local_midnight`).
+6. **No DOPO write is ever discarded:** a file DOPO installs during Jesinia's edit survives, with at most Jesinia's one line added. Test in Task 9 (`test_should_keep_dopo_write_that_lands_before_swap`). A done line still at the base rev is not yet *applied* (`test_should_keep_written_request_pending_until_rev_changes`).
 
 ---
 
@@ -96,11 +97,12 @@
 **Files:**
 - Create: `server/jesinia/services/tasksmirror/infrastructure/tasks_file.py`, `server/jesinia/services/tasksmirror/infrastructure/kb_pages.py`
 - Create: `server/jesinia/services/tasksmirror/{module.py,api/__init__.py,api/routes.py}`
-- Modify: `server/jesinia/registry.py` (after `KbSyncModule`), import-linter contracts in `pyproject.toml`
+- Create: `server/jesinia/services/tasksmirror/migrations/0001_init.sql` (the `idempotency` table from `core/idempotency.py`)
+- Modify: `server/jesinia/registry.py` (after `KbSyncModule`; add `TASKSMIRROR_DB`, class history, to `DATABASES`), import-linter contracts in `pyproject.toml`
 - Test: `server/tests/services/tasksmirror/{infrastructure,api}/…`, `server/tests/services/tasksmirror/test_module.py`
 
 - [ ] **Step 1:** `FsTasksFile` (stat by mtime_ns + size, read UTF-8). `KbPages` adapter over `KbService`: folder notes `<X>/<X>.md` under `10 Projects/`, `10 Projects/_Paused/` and `10 Projects/_Someday/`, each tagged with its KB status (`active`/`paused`/`someday`); nothing from `40 Archive/` or `20 Areas/`; Today at `01 Today/Today.md`. Tests include a paused page being mirrored and a folder that moved to `20 Areas/` no longer being written.
-- [ ] **Step 2:** Module: idle and healthy when `tasks_md_path` is unset, degraded when the path is missing. Scheduler `every("tasksmirror", 15s, poll, at_start=True)`, where poll runs a pass when the stamp changes or the local date rolled over.
+- [ ] **Step 2:** Module: idle and healthy when `tasks_md_path` is unset, degraded when the path is missing. Scheduler `every("tasksmirror", 15s, poll, at_start=True)`, where poll runs a pass when the stamp changes or the local date rolled over. Open `tasksmirror.db`, wire `SqliteIdempotencyStore` over it, call `clear_pending` at start, and schedule a daily `tasksmirror.idempotency-prune` job, all following `apps/rss/module.py`. Test `test_should_replay_sync_for_repeated_idempotency_key`.
 - [ ] **Step 3:** Routes `GET /api/tasksmirror/status`, `POST /api/tasksmirror/sync` (owner only, idempotency key like other POSTs), and `GET`/`PUT /api/tasksmirror/path`, modeled on `PUT /api/kb/path`. The `PUT` validates the path (absolute, or empty to disconnect), persists it with `set_value`, sets `ctx.cfg = replace(ctx.cfg, tasks_md_path=…)`, and calls `module.rebind(path)`, which resets the poll stamp and runs a pass at once. Agent tokens get 403. Tests: `test_should_connect_without_restart` (PUT, then status shows connected and pages written), `test_should_disconnect_on_empty_path`, `test_should_reject_relative_path`.
 - [ ] **Step 4:** `make gen-client`. Commit with the generated client: `feat(tasksmirror): add the module, poller and status API`.
 
@@ -132,11 +134,12 @@
 ### Task 9: Ledger and write-back loop
 
 **Files:**
-- Create: `server/jesinia/services/tasksmirror/migrations/0001_ledger.sql` (`completions`: `item_id` primary key, `base_rev` not null, `page_id`, `requested_at`, `attempts`, `state`), `server/jesinia/services/tasksmirror/infrastructure/ledger.py`
-- Modify: `application/ports.py`, `application/service.py`, `infrastructure/tasks_file.py` (`replace_if_unchanged(stamp, text)`: atomic temp + fsync + rename, re-stat before rename, up to 3 tries), `module.py` (`TASKSMIRROR_DB`, class history), `registry.py` (`DATABASES`)
+- Create: `server/jesinia/services/tasksmirror/migrations/0002_ledger.sql` (`completions`: `item_id` primary key, `base_rev` not null, `page_id`, `requested_at`, `attempts`, `state`), `server/jesinia/services/tasksmirror/infrastructure/ledger.py`
+- Modify: `application/ports.py`, `application/service.py`, `infrastructure/tasks_file.py` (`swap_in(edit: Callable[[str], str | None]) -> SwapOutcome`: write the edited text to a temp file and fsync it, `renamex_np(..., RENAME_SWAP)` via ctypes, compare the displaced copy, then re-edit and re-swap on mismatch, up to 3 rounds, per spec §8.2; `SwapUnsupported` disables Phase 2 writes), `module.py`
 - Test: `server/tests/services/tasksmirror/{application,infrastructure}/…`
 
-- [ ] **Step 1:** Failing tests for the ledger transitions in spec §8.3, each comparing the line's trailer rev with the stored `base_rev`: pending → applied (line done or gone); pending → superseded (rev ≠ base, still open); pending → stale after 7 days (kept, flagged); re-apply after an overwrite (rev = base); `test_should_decide_from_stored_base_rev_after_restart` (a fresh service over the same DB); a second tick on a pending item records nothing.
+- [ ] **Step 1:** Failing tests for the ledger transitions in spec §8.3, each comparing the line's trailer rev with the stored `base_rev`: pending → written (done, rev = base: still pending); written → re-applied when the line reverts to open with rev = base; pending → applied (done with rev ≠ base, or gone); pending → superseded (rev ≠ base, still open); pending → stale after 7 days (kept, flagged); re-apply after an overwrite (rev = base); `test_should_decide_from_stored_base_rev_after_restart` (a fresh service over the same DB); a second tick on a pending item records nothing.
+- [ ] **Step 1b (swap):** Infrastructure tests on a real APFS temp dir: `test_should_keep_dopo_write_that_lands_before_swap` (a fake "DOPO" replaces the file between the edit and the swap through an injected hook; the result is DOPO's text plus Jesinia's one line), `test_should_install_dopo_text_unedited_after_three_lost_rounds`, `test_should_disable_writes_when_swap_unsupported` (inject an `ENOTSUP`). Flag as manual: the real FSA-writer interleaving with DOPO open.
 - [ ] **Step 2:** Subscribe to `kb.page_changed`, ignoring origin `tasksmirror`. Test `test_should_ignore_its_own_pending_render`: a mirror write containing `- [x] … · pending DOPO` records nothing. Record requests (with the line's current trailer rev as `base_rev`) for mapped pages and Today, then run the write-back and a pass.
 - [ ] **Step 3:** `status().pending_completions`; Settings lists them with "Open DOPO Tasks to apply" when stale.
 - [ ] **Step 4:** Commit `feat(tasksmirror): write ticks back to DOPO Tasks`.
