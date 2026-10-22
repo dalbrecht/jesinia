@@ -71,7 +71,7 @@ class FeedService:
 
     def _refuse_existing(self, url: str) -> None:
         if self._subscribed(url):
-            raise FeedExists(f"already subscribed to {url}")
+            raise FeedExists(f"already subscribed to {url}", url)
 
     async def _fetch(self, url: str) -> FetchResult:
         try:

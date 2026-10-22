@@ -9,6 +9,19 @@ UPDATE posts SET article_attempted_at = first_seen_at WHERE full_md IS NOT NULL;
 CREATE INDEX posts_prefetch ON posts (first_seen_at)
     WHERE full_md IS NULL AND article_attempted_at IS NULL;
 
+-- Reader API item ids are post ids, so an id is never handed out twice: without
+-- AUTOINCREMENT SQLite would reuse the highest id once that post is pruned, and a client
+-- would see another article under an id it already synced. New posts take ids above the
+-- highest ever used.
+CREATE TABLE post_id_floor (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    high INTEGER NOT NULL
+);
+INSERT INTO post_id_floor (id, high) SELECT 1, COALESCE(MAX(id), 0) FROM posts;
+CREATE TRIGGER posts_raise_id_floor AFTER INSERT ON posts BEGIN
+    UPDATE post_id_floor SET high = MAX(high, NEW.id) WHERE id = 1;
+END;
+
 -- Every star and unstar, append-only, so a star can always be traced to its KB page. No
 -- foreign key: a row outlives the pruning of the post it names.
 CREATE TABLE star_ledger (

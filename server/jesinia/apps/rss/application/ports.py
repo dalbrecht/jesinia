@@ -287,8 +287,9 @@ class ReaderStore(StarLedger, Protocol):
 
     def has_reader_token(self, sha256: str) -> bool: ...
 
-    def item_ids(self, query: ItemQuery, now: datetime) -> list[int]:
-        """Visible post ids in the query's stream, newest first (``now`` ends the hold)."""
+    def item_ids(self, query: ItemQuery, now: datetime) -> list[tuple[int, Cursor]]:
+        """Visible post ids in the query's stream, newest first, each with its place in that
+        order (``now`` ends the hold)."""
         ...
 
     def items(self, post_ids: Sequence[int]) -> list[ReaderItem]:

@@ -60,7 +60,11 @@ class FolderNotFound(RssError):  # noqa: N818 - the error code clients see
 
 
 class FeedExists(RssError):  # noqa: N818 - the error code clients see
-    """The feed URL is already subscribed."""
+    """The feed URL is already subscribed; ``url`` is that feed's URL (after discovery)."""
+
+    def __init__(self, message: str, url: str | None = None) -> None:
+        super().__init__(message)
+        self.url = url
 
 
 class FolderExists(RssError):  # noqa: N818 - the error code clients see

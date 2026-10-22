@@ -225,9 +225,11 @@ class SqliteFeedStore:
                 "UPDATE pruned_posts SET seen_at = ? WHERE feed_id = ? AND guid = ?", guids
             )
             cursor = self._conn.executemany(
-                "INSERT INTO posts (feed_id, guid, url, title, author, published_at, snippet, "
-                "content_html, discussion_url, is_summary, first_seen_at) "
-                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS "
+                # The id comes from the floor, so an id is never reused (migration 0006).
+                "INSERT INTO posts (id, feed_id, guid, url, title, author, published_at, "
+                "snippet, content_html, discussion_url, is_summary, first_seen_at) "
+                "SELECT (SELECT MAX(high, COALESCE((SELECT MAX(id) FROM posts), 0)) + 1 "
+                "FROM post_id_floor), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS "
                 "(SELECT 1 FROM pruned_posts WHERE feed_id = ? AND guid = ?) "
                 # A poll that was running when the feed was deleted adds nothing to it.
                 "AND EXISTS (SELECT 1 FROM feeds WHERE id = ? AND deleted_at IS NULL) "
@@ -674,9 +676,9 @@ class SqliteReaderStore:
         return [(row[0], row[1], row[2]) for row in rows]
 
     # -- item lists ---------------------------------------------------------------------
-    def item_ids(self, query: ItemQuery, now: datetime) -> list[int]:
-        """Up to ``query.limit`` visible post ids in the stream, newest first, of feeds still
-        subscribed."""
+    def item_ids(self, query: ItemQuery, now: datetime) -> list[tuple[int, Cursor]]:
+        """Up to ``query.limit`` visible post ids in the stream, newest first (as the reader
+        lists them), of feeds still subscribed; each with its place for a continuation."""
         where = ["f.deleted_at IS NULL", f"{_VISIBLE_AT} <= julianday(?)"]
         params: list[object] = [_HOLD_DAYS, utc_text(now)]
         stream = query.stream
@@ -695,13 +697,14 @@ class SqliteReaderStore:
             where.append(f"{_VISIBLE_AT} >= ? / 86400.0 + 2440587.5")
             params += [_HOLD_DAYS, query.oldest]
         if query.after is not None:
-            where.append("p.id < ?")
-            params.append(query.after)
+            where.append(f"({_AT} < ? OR ({_AT} = ? AND p.id < ?))")
+            params += [query.after[0], query.after[0], query.after[1]]
         rows = self._conn.execute(
-            f"SELECT p.id {_FROM} WHERE {' AND '.join(where)} ORDER BY p.id DESC LIMIT ?",
+            f"SELECT p.id, {_AT} {_FROM} WHERE {' AND '.join(where)} "
+            f"ORDER BY {_AT} DESC, p.id DESC LIMIT ?",
             (*params, query.limit),
         ).fetchall()
-        return [int(row[0]) for row in rows]
+        return [(int(row[0]), (str(row[1]), int(row[0]))) for row in rows]
 
     def items(self, post_ids: Sequence[int]) -> list[ReaderItem]:
         """The posts that exist among ``post_ids``, newest first."""

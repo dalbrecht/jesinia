@@ -28,7 +28,7 @@ from jesinia.apps.rss.domain.feed import (
     InvalidFeedUrl,
     RssError,
 )
-from jesinia.apps.rss.domain.post import PostNotFound
+from jesinia.apps.rss.domain.post import PostNotFound, format_cursor, parse_cursor
 from jesinia.apps.rss.domain.reader import (
     ITEM_IDS_MAX,
     READING_LIST,
@@ -255,14 +255,15 @@ def build_reader_router(host: ReaderHost) -> APIRouter:
                 exclude.state if exclude is not None else None,
                 float(oldest) if oldest else None,
                 limit,
-                int(after) if after else None,
+                parse_cursor(after) if after else None,
             )
         except ValueError as exc:
-            raise InvalidStream(f"n, ot and c must be numbers ({exc})") from exc
+            raise InvalidStream(f"n and ot must be numbers ({exc})") from exc
         ids, more = host.reader.item_ids(query)
         body: dict[str, object] = {"itemRefs": [{"id": str(i)} for i in ids]}
         if more is not None:
-            body["continuation"] = str(more)
+            # "Z", not "+00:00": a client may send it back unencoded, and "+" reads as a space.
+            body["continuation"] = format_cursor(more).replace("+00:00", "Z")
         return JSONResponse(body)
 
     async def item_contents(request: Request) -> Response:

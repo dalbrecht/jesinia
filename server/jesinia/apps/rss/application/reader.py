@@ -21,7 +21,7 @@ from jesinia.apps.rss.application.keep import KeepService
 from jesinia.apps.rss.application.ports import ArticleRenderer, ReaderStore
 from jesinia.apps.rss.application.posts import PostService
 from jesinia.apps.rss.domain.feed import FeedExists, FeedView, FolderNotFound, validate_feed_url
-from jesinia.apps.rss.domain.post import PostNotFound
+from jesinia.apps.rss.domain.post import Cursor, PostNotFound
 from jesinia.apps.rss.domain.reader import (
     FEED_PREFIX,
     READ,
@@ -100,14 +100,15 @@ class ReaderService:
         """Folder names in sidebar order (folders exist only while a feed is in them)."""
         return list(dict.fromkeys(v.folder for v in self._feeds.list() if v.folder is not None))
 
-    def item_ids(self, query: ItemQuery) -> tuple[builtins.list[int], int | None]:
+    def item_ids(self, query: ItemQuery) -> tuple[builtins.list[int], Cursor | None]:
         """A page of the stream's ids, and the continuation for the next page (if any)."""
         page = self._store.item_ids(
             ItemQuery(query.stream, query.exclude, query.oldest, query.limit + 1, query.after),
             self._now(),
         )
-        ids = page[: query.limit]
-        return ids, (ids[-1] if len(page) > query.limit else None)
+        kept = page[: query.limit]
+        more = kept[-1][1] if len(page) > query.limit else None
+        return [post_id for post_id, _ in kept], more
 
     def items(self, post_ids: Sequence[int]) -> builtins.list[ReaderItem]:
         return self._store.items(post_ids)
@@ -178,8 +179,9 @@ class ReaderService:
         """Subscribe (as the reader's Add does), or find the feed already subscribed."""
         try:
             feed = await self._feeds.add(url, None)
-        except FeedExists:
-            wanted = validate_feed_url(url)
+        except FeedExists as exc:
+            # The URL given, or the feed a site advertises (found while adding).
+            wanted = exc.url or validate_feed_url(url)
             for view in self._feeds.list():
                 if view.url == wanted:
                     return view

@@ -460,3 +460,51 @@ async def test_star_should_report_a_missing_kb(cfg: Config, mock: respx.MockRout
         r = await reader.post("/edit-tag", f"i={post_id}&a={STARRED}")
         assert r.status_code == 503
         assert _ledger(env, post_id) == []
+
+
+async def test_item_ids_should_list_newest_first_by_post_time(reader: Reader) -> None:
+    env = reader.env
+    older = env.post(url="https://fly.io/older")
+    newer = env.post(url="https://fly.io/newer")
+    # Inserted in feed order, newest first: the newer post can have the lower id.
+    env.conn.execute(
+        "UPDATE posts SET published_at = ? WHERE id = ?", ("2026-10-01T00:00:00+00:00", newer)
+    )
+    env.conn.execute(
+        "UPDATE posts SET published_at = ? WHERE id = ?", ("2026-10-20T00:00:00+00:00", older)
+    )
+    first = (await reader.get("/stream/items/ids", n=1)).json()
+    assert [int(r["id"]) for r in first["itemRefs"]] == [older]
+    assert "+" not in first["continuation"]
+    second = (await reader.get("/stream/items/ids", n=1, c=first["continuation"])).json()
+    assert [int(r["id"]) for r in second["itemRefs"]] == [newer]
+
+
+async def test_post_ids_should_never_be_reused_after_pruning(reader: Reader) -> None:
+    env = reader.env
+    gone = env.post(url="https://fly.io/gone")
+    env.conn.execute("DELETE FROM posts WHERE id = ?", (gone,))
+    assert env.post(url="https://fly.io/next") > gone
+
+
+async def test_quick_add_should_find_a_subscribed_feed_by_its_site(
+    reader: Reader, mock: respx.MockRouter
+) -> None:
+    site = "https://example.com/"
+    link = f'<link rel="alternate" type="application/rss+xml" href="{FEED_URL}">'
+    page = f"<html><head>{link}</head></html>"
+    mock.get(site).mock(
+        return_value=httpx.Response(
+            200, content=page.encode(), headers={"content-type": "text/html"}
+        )
+    )
+    mock.get(FEED_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=(FIXTURES / "rss2.xml").read_bytes(),
+            headers={"content-type": "application/rss+xml"},
+        )
+    )
+    first = (await reader.post("/subscription/quickadd", f"quickadd={FEED_URL}")).json()
+    by_site = (await reader.post("/subscription/quickadd", f"quickadd={site}")).json()
+    assert by_site["numResults"] == 1 and by_site["streamId"] == first["streamId"]

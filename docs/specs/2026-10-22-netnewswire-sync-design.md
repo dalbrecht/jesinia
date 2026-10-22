@@ -134,3 +134,7 @@ Batch sizes, exact error bodies, log wording.
   list, since NetNewsWire could not place them.
 - Unauthenticated callers and the install token both get 401 from the Reader API.
 - The ClientLogin username is ignored; the password alone identifies the owner.
+- Post ids are never reused (a high-water mark in `rss.sqlite`), since they are the
+  Reader item ids a client keeps.
+- Item-id lists are newest first by post time, as the reader lists them; the
+  continuation is that list's cursor.

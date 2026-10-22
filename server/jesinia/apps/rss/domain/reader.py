@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from jesinia.apps.rss.domain.feed import RssError
-from jesinia.apps.rss.domain.post import PostView
+from jesinia.apps.rss.domain.post import Cursor, PostView
 
 ITEM_PREFIX = "tag:google.com,2005:reader/item/"
 STATE_PREFIX = "user/-/state/com.google/"
@@ -97,7 +97,7 @@ class ItemQuery:
     exclude: State | None
     oldest: float | None  # Unix seconds
     limit: int
-    after: int | None  # continuation: ids below this one
+    after: Cursor | None  # continuation: posts below this place in newest-first order
 
 
 def item_long_id(post_id: int) -> str:
