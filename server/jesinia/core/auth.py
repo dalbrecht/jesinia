@@ -35,6 +35,7 @@ from fastapi.responses import RedirectResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from jesinia.core.config import Config, load_config, save_config
+from jesinia.core.security import is_remote_host
 
 COOKIE = "jesinia_session"
 DEFAULT_NONCE_TTL = timedelta(minutes=5)
@@ -183,29 +184,36 @@ def _cookie_session_is_valid(request: Request, session_id: str, *, can_renew: bo
     return True
 
 
-def _cookie_header(session_id: str) -> str:
+def _cookie_header(session_id: str, *, is_secure: bool) -> str:
+    """``Secure`` only over the tailnet host: Safari drops ``Secure`` cookies on plain-http
+    localhost, and the remote host is HTTPS-only (ADR 0011)."""
     max_age = int(SESSION_TTL.total_seconds())
-    return f"{COOKIE}={session_id}; HttpOnly; Max-Age={max_age}; Path=/; SameSite=strict"
+    secure = "; Secure" if is_secure else ""
+    return f"{COOKIE}={session_id}; HttpOnly; Max-Age={max_age}; Path=/; SameSite=strict{secure}"
 
 
 class SessionCookieRenewal:
     """Re-sends the session cookie with a fresh ``Max-Age`` when ``require_user`` renewed
     the session during this request (a dependency cannot reach the final response)."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, remote_host: str | None = None) -> None:
         self.app = app
+        self.remote_host = remote_host
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        host = next((v.decode("latin-1") for k, v in scope["headers"] if k == b"host"), "")
+        is_secure = is_remote_host(host, self.remote_host)
 
         async def send_with_cookie(message: Message) -> None:
             if message["type"] == "http.response.start":
                 renewed = scope.get("state", {}).get(_RENEW_STATE_KEY)
                 if renewed is not None:
                     headers = list(message.get("headers", []))
-                    headers.append((b"set-cookie", _cookie_header(renewed).encode("latin-1")))
+                    cookie = _cookie_header(renewed, is_secure=is_secure)
+                    headers.append((b"set-cookie", cookie.encode("latin-1")))
                     message["headers"] = headers
             await send(message)
 
@@ -283,20 +291,31 @@ def auth_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/login", include_in_schema=False)
-    async def login(nonce: Annotated[str, Query(min_length=1)]) -> RedirectResponse:
+    async def login(
+        request: Request, nonce: Annotated[str, Query(min_length=1)]
+    ) -> RedirectResponse:
         if not _consume_nonce(nonce):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "login link expired or used")
+        cfg: Config = request.app.state.ctx.cfg
+        is_secure = is_remote_host(request.headers.get("host", ""), cfg.remote_host)
         response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers.append("set-cookie", _cookie_header(start_cookie_session()))
+        cookie = _cookie_header(start_cookie_session(), is_secure=is_secure)
+        response.headers.append("set-cookie", cookie)
         return response
 
     @router.post("/api/auth/nonce")
     async def new_nonce(
         request: Request, _: Annotated[Principal, Depends(require_owner)]
-    ) -> dict[str, str]:
+    ) -> dict[str, str | None]:
+        """A one-time login link; ``remote_url`` signs in another tailnet device."""
         cfg: Config = request.app.state.ctx.cfg
         nonce = issue_login_nonce()
-        return {"nonce": nonce, "url": f"http://127.0.0.1:{cfg.port}/login?nonce={nonce}"}
+        remote = cfg.remote_host
+        return {
+            "nonce": nonce,
+            "url": f"http://127.0.0.1:{cfg.port}/login?nonce={nonce}",
+            "remote_url": f"https://{remote}/login?nonce={nonce}" if remote else None,
+        }
 
     @router.post("/api/auth/rotate")
     async def rotate(

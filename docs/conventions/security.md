@@ -10,7 +10,7 @@ The KB, the user's agent logins and git credentials, and the user's machine.
 
 | Threat | Defense |
 |---|---|
-| Other machines on the network | Bind `127.0.0.1` only |
+| Other machines on the network | Bind `127.0.0.1` only. Optional remote access (ADR 0011) goes through `tailscale serve`: HTTPS on the tailnet only, one extra allowed `Host` (`server.remote_host`), HSTS, and `Secure` cookies on that host |
 | A web page attacking the local server (CSRF, DNS rebinding) | `Host` must be the local origin (otherwise 421). Cross-origin writes get 403. The session cookie is `HttpOnly; SameSite=Strict`. CSP `default-src 'self'` (inline styles allowed for the editor), `frame-ancestors 'none'`, `X-Frame-Options: DENY`. Only `/rss/` adds `img-src 'self' https:` so feed images show (ruling R21; never `http:`, and `no-referrer` applies) |
 | Other local processes | API and MCP need the install token, a session cookie or a session token. `config.toml` is mode 600. The token never appears in a URL (the login link carries a single-use nonce). Browser sessions persist in `sessions.json` (mode 600) as SHA-256 hashes only, bound to a fingerprint of the install token (so any rotation, even offline, discards them), and expire after 30 days unused (ADR 0010) |
 | A prompt-injected agent (via a KB page or remote content) | Context is fenced as `<untrusted-data>`. Sessions are confined (no shell, no file writes, scratch working directory). Writes need approval with a preview of the real target and a diff. Agent saves are capped, and provenance can't be forged |
@@ -23,7 +23,7 @@ The KB, the user's agent logins and git credentials, and the user's machine.
 
 - The install token sits in each agent's user config (`~/.claude.json`,
   `~/.codex/config.toml`), as it does in Jesinia's `config.toml`. It grants loopback
-  access only. Rotate it with `jesinia token rotate` or Settings → Security.
+  access only, or tailnet access too while remote access is on (ADR 0011). Rotate it with `jesinia token rotate` or Settings → Security.
 - Agents run with the user's own account and can read what the CLI's sandbox allows.
 
 ## Reporting

@@ -117,6 +117,6 @@ def create_app(
     app.router.routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))
     if static_root is not None:
         app.include_router(static_router(static_root))  # last: a catch-all for the PWAs
-    app.add_middleware(SessionCookieRenewal)
-    app.add_middleware(LocalOriginGuard, port=cfg.port)
+    app.add_middleware(SessionCookieRenewal, remote_host=cfg.remote_host)
+    app.add_middleware(LocalOriginGuard, port=cfg.port, remote_host=cfg.remote_host)
     return app

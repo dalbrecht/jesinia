@@ -90,17 +90,33 @@ windows share the browser's cookies, so they are signed in too.
 In Chrome or Edge, use **Install** in the address bar to give Jesinia (the launcher),
 Notes and RSS their own app windows.
 
+### From your iPhone, iPad or another computer
+
+Jesinia can be reached from your [Tailscale](https://tailscale.com) network (ADR 0011).
+With Tailscale running and HTTPS certificates enabled for your tailnet, run:
+
+```bash
+jesinia remote enable
+```
+
+It runs `tailscale serve` so `https://<this-mac>.<tailnet>.ts.net/` proxies to the local
+server, allows that host, and restarts the server. To sign a device in, run
+`jesinia login --remote` on the Mac and open the printed link on the device within five
+minutes (AirDrop or Universal Clipboard work well). `jesinia remote disable` turns it off.
+
 ## Everyday commands
 
 | Command | What it does |
 |---|---|
 | `jesinia status` | Server health per module, and a fresh login link |
 | `jesinia login [--print]` | Opens a fresh login link in your browser (or prints it) |
+| `jesinia login --remote` | Prints a login link for another device on your tailnet |
+| `jesinia remote enable` / `disable` / `status` | Serve Jesinia on your tailnet over HTTPS (`tailscale serve`), or stop |
 | `jesinia doctor` | Checks config, KB, git remote, tools, agent logins, the LaunchAgent and the server, with a fix for each problem. Exits 1 on any `fail` |
 | `jesinia sync now` | Runs a KB git sync cycle now |
 | `jesinia reindex` | Rescans the KB and rebuilds search (with the server stopped, it deletes the derived databases instead, and the next start rebuilds them) |
 | `jesinia backup [--dest DIR]` | Copies agent history, RSS feeds and read state, and `config.toml` to a timestamped folder |
-| `jesinia config get KEY` / `set KEY VALUE` | `server.port`, `kb.path`, `kbsync.interval` (e.g. `1h`), `kbsync.quiet`, `folders.note`, `folders.source` (kept RSS posts, default `Sources`), `rss.retention` (1–365 whole days, e.g. `30d`) |
+| `jesinia config get KEY` / `set KEY VALUE` | `server.port`, `server.remote_host` (the tailnet name; set by `jesinia remote enable`), `kb.path`, `kbsync.interval` (e.g. `1h`), `kbsync.quiet`, `folders.note`, `folders.source` (kept RSS posts, default `Sources`), `rss.retention` (1–365 whole days, e.g. `30d`) |
 | `jesinia token show` / `rotate` | Show the install token, or replace it (signs browsers out and re-registers agents) |
 | `jesinia update` | One update attempt (what the update agent runs) |
 | `jesinia openapi` | Prints the HTTP API schema |
