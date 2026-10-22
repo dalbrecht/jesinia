@@ -33,10 +33,12 @@ config_app = typer.Typer(no_args_is_help=True, help="Read or change config.toml.
 token_app = typer.Typer(no_args_is_help=True, help="The install token (MCP + CLI auth).")
 sync_app = typer.Typer(no_args_is_help=True, help="KB git sync.")
 remote_app = typer.Typer(no_args_is_help=True, help="Reach Jesinia from your tailnet.")
+rss_app = typer.Typer(no_args_is_help=True, help="The RSS reader.")
 app.add_typer(config_app, name="config")
 app.add_typer(token_app, name="token")
 app.add_typer(sync_app, name="sync")
 app.add_typer(remote_app, name="remote")
+app.add_typer(rss_app, name="rss")
 
 LOG_BYTES = 10 * 1024 * 1024
 LOG_BACKUPS = 5
@@ -254,6 +256,22 @@ def remote_disable() -> None:
 def remote_status() -> None:
     """Whether remote access is on, and where."""
     typer.echo(remote_mod.describe(_cfg()))
+
+
+@rss_app.command("reader-password")
+def rss_reader_password() -> None:
+    """Create the password NetNewsWire signs in with (revokes the previous one)."""
+    try:
+        body = call(_cfg(), "POST", "/api/rss/reader/password")
+    except ServerBusy as exc:
+        raise _fail(str(exc)) from exc
+    except ServerDown as exc:
+        raise _fail(f"{exc} (start it with ./setup or `jesinia serve`)") from exc
+    typer.echo("In NetNewsWire: Settings → Accounts → + → FreshRSS, then enter")
+    typer.echo(f"  API URL:  {body['server_url']}")
+    typer.echo("  Username: jesinia (any name works)")
+    typer.echo(f"  Password: {body['password']}")
+    typer.echo("This password is shown once; running this again replaces it.")
 
 
 @sync_app.command("now")

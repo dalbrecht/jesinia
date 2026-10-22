@@ -17,6 +17,7 @@ The KB, the user's agent logins and git credentials, and the user's machine.
 | A malicious path or symlink | Writes stay inside the KB, refuse any symlinked path component, and never replace other files |
 | SSRF through `fetch` | http(s) only; every hop and every TCP connect must resolve to public addresses; size and decompression caps; per-host pacing |
 | Remote HTML | Sanitized against an allowlist (`nh3`) before rendering |
+| A NetNewsWire device, or a stolen reader token | The Reader API (`/api/greader`, ADR 0012) has its own password and tokens, stored as SHA-256 only, which reach nothing but the Reader API; writes also need the derived write token. A new reader password revokes every token issued under the old one |
 | Leaked secrets | Jesinia stores no credentials: agents use their own logins, GitHub uses `gh` or the Keychain, git uses the user's helper. Git errors are redacted. TruffleHog runs in CI |
 
 ## Accepted risks

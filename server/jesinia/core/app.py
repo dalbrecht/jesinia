@@ -21,7 +21,7 @@ from jesinia.core.auth import (
 )
 from jesinia.core.config import Config
 from jesinia.core.events import EventBus
-from jesinia.core.module import AppContext, Module, ModuleHealth
+from jesinia.core.module import AppContext, Module, ModuleHealth, PublicRoutes
 from jesinia.core.scheduler import Scheduler
 from jesinia.core.security import LocalOriginGuard
 from jesinia.core.static import STATIC, static_router
@@ -102,6 +102,12 @@ def create_app(
             # handlers.
             app.include_router(
                 router, dependencies=[Depends(require_owner), Depends(available(module.name))]
+            )
+
+    for module in modules:
+        if isinstance(module, PublicRoutes):
+            app.include_router(
+                module.public_router(), dependencies=[Depends(available(module.name))]
             )
 
     @app.get("/healthz")

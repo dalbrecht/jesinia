@@ -11,6 +11,7 @@ dependencies = [
     "httpx>=0.28",
     "jsonschema>=4.23",
     "lxml>=6.0",
+    "markdown-it-py>=4.0",
     "mcp>=1.15",
     "nh3>=0.2",
     "pyyaml>=6.0.2",
@@ -35,7 +36,6 @@ dev = [
     "pip-audit>=2.9",
     "types-pyyaml>=6.0",
     "respx>=0.22",
-    "markdown-it-py>=4.0",
     "types-jsonschema>=4.23",
 ]
 

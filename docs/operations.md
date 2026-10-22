@@ -111,6 +111,7 @@ minutes (AirDrop or Universal Clipboard work well). `jesinia remote disable` tur
 | `jesinia status` | Server health per module, and a fresh login link |
 | `jesinia login [--print]` | Opens a fresh login link in your browser (or prints it) |
 | `jesinia login --remote` | Prints a login link for another device on your tailnet |
+| `jesinia rss reader-password` | Creates the password NetNewsWire signs in with, and prints the API URL (replaces the previous one) |
 | `jesinia remote enable` / `disable` / `status` | Serve Jesinia on your tailnet over HTTPS (`tailscale serve`), or stop |
 | `jesinia doctor` | Checks config, KB, git remote, tools, agent logins, the LaunchAgent and the server, with a fix for each problem. Exits 1 on any `fail` |
 | `jesinia sync now` | Runs a KB git sync cycle now |
@@ -171,6 +172,31 @@ The RSS app (`/rss/`) reads your feeds; keeping a post writes it into the KB.
   links; **Open original** still works. Deleting the folder loses only the images.
 - **Agents** can find and read posts (`rss_search_posts`, `rss_get_post`) but never keep or
   mark them; see [agents](conventions/agents.md).
+
+### Reading in NetNewsWire
+
+Jesinia can be the server behind [NetNewsWire](https://netnewswire.com) on iPhone, iPad
+or Mac (ADR 0012). Turn on remote access first (`jesinia remote enable`) to reach it away
+from this Mac, then:
+
+```bash
+jesinia rss reader-password
+```
+
+It prints the API URL and a password (shown once; running it again replaces it and signs
+NetNewsWire out). In NetNewsWire choose **Settings → Accounts → + → FreshRSS** and enter
+them; the username can be anything.
+
+- **Read and unread** sync both ways with the reader.
+- **Star = Keep.** Starring writes the KB page and archives the article, exactly like
+  **Keep** (no note or tags). Unstarring is only recorded in the star ledger: the page,
+  the archive and the reader's Kept view stay. Keeping in the reader stars the post in
+  NetNewsWire.
+- **Feeds and folders** you add, unsubscribe, rename or move in NetNewsWire change here
+  too. Deleting a folder in NetNewsWire leaves its feeds in no folder.
+- **Full articles** are pulled ahead of time for every new post, so NetNewsWire shows the
+  whole article. A brand-new post appears in NetNewsWire once its article was tried (at
+  most 15 minutes after it was first seen).
 
 ## Review
 

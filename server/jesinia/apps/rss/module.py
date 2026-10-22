@@ -19,6 +19,8 @@ from jesinia.apps.rss.application.feeds import FeedService
 from jesinia.apps.rss.application.keep import KeepService
 from jesinia.apps.rss.application.poller import Poller
 from jesinia.apps.rss.application.posts import PostService
+from jesinia.apps.rss.application.prefetch import ArticlePrefetcher
+from jesinia.apps.rss.application.reader import ReaderService
 from jesinia.apps.rss.domain.settings import (
     DEFAULT_SOURCE_FOLDER,
     SOURCE_FOLDER_KIND,
@@ -26,7 +28,14 @@ from jesinia.apps.rss.domain.settings import (
     RssSettings,
 )
 from jesinia.apps.rss.infrastructure.parse import FeedparserReader
-from jesinia.apps.rss.infrastructure.store import SqliteFeedStore, SqlitePostStore
+from jesinia.apps.rss.infrastructure.render import MarkdownArticleRenderer
+from jesinia.apps.rss.infrastructure.store import (
+    SqliteFeedStore,
+    SqlitePostStore,
+    SqliteReaderStore,
+)
+from jesinia.apps.rss.reader_api import PREFIX as READER_PREFIX
+from jesinia.apps.rss.reader_api import build_reader_router
 from jesinia.core.config import ConfigError, set_values
 from jesinia.core.db import DbClass, ModuleDb, open_db
 from jesinia.core.idempotency import RETENTION, IdempotencyStore, SqliteIdempotencyStore
@@ -43,6 +52,8 @@ RSS_DB = ModuleDb("rss", DbClass.HISTORY, files("jesinia.apps.rss.migrations"))
 IDEMPOTENCY_PRUNE_JOB = "rss.idempotency-prune"
 POLL_JOB = "rss.poll"
 POSTS_PRUNE_JOB = "rss.prune"
+PREFETCH_JOB = "rss.prefetch"
+PREFETCH_TICK = timedelta(seconds=60)
 # How often the poller looks for due feeds; each feed's own interval is 15 min to 12 h.
 POLL_TICK = timedelta(seconds=60)
 
@@ -70,6 +81,8 @@ class RssModule:
         self._poller: Poller | None = None
         self._keeper: KeepService | None = None
         self._engage: EngageService | None = None
+        self._reader: ReaderService | None = None
+        self._prefetcher: ArticlePrefetcher | None = None
         self._idempotency: SqliteIdempotencyStore | None = None
         self._conn: sqlite3.Connection | None = None
 
@@ -108,6 +121,18 @@ class RssModule:
         if self._engage is None:
             raise _missing("engage", "agents") if self._svc is not None else _not_started()
         return self._engage
+
+    @property
+    def reader(self) -> ReaderService:
+        if self._reader is None:
+            raise _not_started()
+        return self._reader
+
+    def reader_server_url(self) -> str:
+        """The tailnet address when remote access is on (ADR 0011), else the local one."""
+        cfg = self._context().cfg
+        origin = f"https://{cfg.remote_host}" if cfg.remote_host else f"http://127.0.0.1:{cfg.port}"
+        return f"{origin}{READER_PREFIX}"
 
     def _context(self) -> AppContext:
         if self._ctx is None:
@@ -157,8 +182,19 @@ class RssModule:
             if summary.polled:
                 log.info("rss poll: %s", summary)
 
+    async def prefetch_articles(self) -> None:
+        """Pull the full articles of new posts ahead of time (a job every minute)."""
+        if self._prefetcher is not None:
+            tried = await self._prefetcher.run()
+            if tried:
+                log.info("rss prefetch: tried %d articles", tried)
+
     def router(self) -> APIRouter | None:
         return build_router(self)
+
+    def public_router(self) -> APIRouter:
+        """The Reader API for NetNewsWire, which checks its own reader tokens."""
+        return build_reader_router(self)
 
     def mcp_tools(self) -> Sequence[ToolDef]:
         return build_tools(self)
@@ -184,6 +220,9 @@ class RssModule:
         self._posts = PostService(posts_store, fetch, retention)
         ctx.scheduler.every(POLL_JOB, POLL_TICK, self.poll_due)
         ctx.scheduler.every(POSTS_PRUNE_JOB, timedelta(days=1), self.prune_posts, at_start=True)
+        reader_store = SqliteReaderStore(self._conn)
+        self._prefetcher = ArticlePrefetcher(reader_store, self._posts, lambda: datetime.now(UTC))
+        ctx.scheduler.every(PREFETCH_JOB, PREFETCH_TICK, self.prefetch_articles)
         kb, tags = ctx.services.get("kb"), ctx.services.get("tags")
         if isinstance(kb, KbService) and isinstance(tags, TagService):
             self._keeper = KeepService(
@@ -196,9 +235,18 @@ class RssModule:
                 fetch,
                 self._source_folder,
                 publish=ctx.bus.publish,
+                ledger=reader_store,
             )
             if resumed := self._keeper.recover():
                 log.info("resumed %d rss archives left running by a stop", resumed)
+        self._reader = ReaderService(
+            reader_store,
+            self._posts,
+            self._svc,
+            lambda: self._keeper,
+            MarkdownArticleRenderer(),
+            lambda: datetime.now(UTC),
+        )
         sessions = ctx.services.get("agents")
         if isinstance(sessions, SessionService):
             self._engage = EngageService(self._posts, sessions)
@@ -208,6 +256,8 @@ class RssModule:
             await self._keeper.stop()
         self._keeper = None
         self._engage = None
+        self._reader = None
+        self._prefetcher = None
         self._svc = None
         self._posts = None
         self._poller = None

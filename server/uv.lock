@@ -874,6 +874,7 @@ dependencies = [
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "lxml" },
+    { name = "markdown-it-py" },
     { name = "mcp" },
     { name = "nh3" },
     { name = "pyyaml" },
@@ -887,7 +888,6 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "import-linter" },
-    { name = "markdown-it-py" },
     { name = "mypy" },
     { name = "pip-audit" },
     { name = "pytest" },
@@ -906,6 +906,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "lxml", specifier = ">=6.0" },
+    { name = "markdown-it-py", specifier = ">=4.0" },
     { name = "mcp", specifier = ">=1.15" },
     { name = "nh3", specifier = ">=0.2" },
     { name = "pyyaml", specifier = ">=6.0.2" },
@@ -919,7 +920,6 @@ requires-dist = [
 dev = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "import-linter", specifier = ">=2.5" },
-    { name = "markdown-it-py", specifier = ">=4.0" },
     { name = "mypy", specifier = ">=1.18" },
     { name = "pip-audit", specifier = ">=2.9" },
     { name = "pytest", specifier = ">=8.4" },

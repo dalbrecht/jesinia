@@ -1090,6 +1090,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rss/reader": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reader Setup */
+        get: operations["reader_setup_api_rss_reader_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rss/reader/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * New Reader Password
+         * @description A new reader password for NetNewsWire; the old one and its sign-ins stop working.
+         *
+         *     Deliberately not idempotent: a stored response would keep the password in clear
+         *     in ``rss.sqlite``, and a retry that makes another password only revokes the first
+         *     (the user copies whichever one they were shown).
+         */
+        post: operations["new_reader_password_api_rss_reader_password_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rss/settings": {
         parameters: {
             query?: never;
@@ -4933,6 +4974,28 @@ export interface components {
             ids: number[];
             /** Read */
             read: boolean;
+        };
+        /** ReaderPasswordOut */
+        ReaderPasswordOut: {
+            /** Has Password */
+            has_password: boolean;
+            /** Server Url */
+            server_url: string;
+            /**
+             * Password
+             * @description Shown once; only its hash is kept.
+             */
+            password: string;
+        };
+        /**
+         * ReaderSetupOut
+         * @description What NetNewsWire's FreshRSS account needs (NetNewsWire sync spec §7).
+         */
+        ReaderSetupOut: {
+            /** Has Password */
+            has_password: boolean;
+            /** Server Url */
+            server_url: string;
         };
         /**
          * ReadinessOut
@@ -9547,6 +9610,136 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    reader_setup_api_rss_reader_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReaderSetupOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+        };
+    };
+    new_reader_password_api_rss_reader_password_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReaderPasswordOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RssErrorOut"];
                 };
             };
             /** @description Bad Gateway */

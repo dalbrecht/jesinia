@@ -45,7 +45,7 @@ whole KB, managed in one place, and never duplicated.
 - Social features, sharing, comment threads inside the app, recommendations or ranking
   algorithms that reorder the feed.
 - Podcasts and video feeds beyond showing their links.
-- Syncing read state with other readers (Feedly, NetNewsWire). OPML is the exchange format.
+- Syncing read state with other readers (Feedly, NetNewsWire). OPML is the exchange format. *(Reversed for NetNewsWire by the [NetNewsWire sync spec](2026-10-22-netnewswire-sync-design.md).)*
 - Full-text search across *unkept* posts beyond the retention window (§4.4).
 
 ### Anti-goals (a failure even if it works)

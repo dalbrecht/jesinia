@@ -24,6 +24,7 @@ from jesinia.apps.rss.domain.feed import (
     FolderNotFound,
     InvalidFeedUrl,
     ParsedFeed,
+    validate_feed_title,
     validate_feed_url,
     validate_folder_name,
 )
@@ -70,7 +71,7 @@ class FeedService:
 
     def _refuse_existing(self, url: str) -> None:
         if self._subscribed(url):
-            raise FeedExists(f"already subscribed to {url}")
+            raise FeedExists(f"already subscribed to {url}", url)
 
     async def _fetch(self, url: str) -> FetchResult:
         try:
@@ -166,6 +167,26 @@ class FeedService:
         folder_id = self._store.ensure_folder(name).id if name else None
         self._store.set_feed_folder(feed_id, folder_id)
         self._store.drop_empty_folders()
+
+    def feed(self, feed_id: int) -> Feed:
+        """A subscribed feed with its polling state; ``FeedNotFound`` otherwise."""
+        found = self._store.feed(feed_id)
+        if found is None or found.deleted:
+            raise FeedNotFound(f"no feed {feed_id}")
+        return found
+
+    def rename(self, feed_id: int, title: str) -> FeedView:
+        """Retitle the feed. Raises ``InvalidFeedTitle`` or ``FeedNotFound``."""
+        if not self._store.rename_feed(feed_id, validate_feed_title(title)):
+            raise FeedNotFound(f"no feed {feed_id}")
+        return self.view(feed_id)
+
+    def delete_folder(self, folder_id: int) -> int:
+        """Delete the folder; its feeds stay subscribed, in no folder. How many it held.
+        Raises ``FolderNotFound``."""
+        if self._store.folder(folder_id) is None:
+            raise FolderNotFound(f"no folder {folder_id}")
+        return self._store.unfile_folder(folder_id)
 
     def set_retention(self, feed_id: int, retention: Retention | None) -> FeedView:
         """Give the feed its own retention, or None to follow the global one."""
