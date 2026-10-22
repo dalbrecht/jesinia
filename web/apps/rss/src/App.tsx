@@ -624,10 +624,19 @@ function Workspace({ runners }: WorkspaceProps) {
   // view as it is then.
   const viewNow = useRef({ scope, feeds });
   viewNow.current = { scope, feeds };
+  // Removes sent before the feed list reloads: several can land in one Undo window, and each must
+  // see the others as gone. An id leaves the set once a reloaded list no longer has it.
+  const removedIds = useRef(new Set<number>());
+  useEffect(() => {
+    // Pruned on every reload, so a feed subscribed again later (same id) counts as present.
+    for (const gone of removedIds.current) if (!feeds.some((f) => f.id === gone)) removedIds.current.delete(gone);
+  }, [feeds]);
   const removed = (id: number) => {
     // R28 and M11: the feed in view, or the last feed of the folder in view, is gone.
     const { scope: now, feeds: all } = viewNow.current;
-    const folderGone = now.folder !== null && !all.some((f) => f.id !== id && f.folder_id === now.folder);
+    removedIds.current.add(id);
+    const folderGone =
+      now.folder !== null && !all.some((f) => !removedIds.current.has(f.id) && f.folder_id === now.folder);
     if (now.feed === id || folderGone) goTo(UNREAD);
   };
 

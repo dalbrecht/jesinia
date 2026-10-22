@@ -737,6 +737,29 @@ describe("Remove", () => {
     expect(await screen.findByRole("heading", { name: "All unread", level: 2 })).toBeInTheDocument();
   });
 
+  it("removing every feed of the folder in view in one Undo window goes back to All unread", async () => {
+    let gone: number[] = [];
+    const drop = (id: number) => () => {
+      gone = [...gone, id];
+      return new Response(null, { status: 204 });
+    };
+    setup({
+      "GET /api/rss/feeds": () => Response.json(FAILING.filter((f) => !gone.includes(f.id))),
+      "DELETE /api/rss/feeds/2": drop(2),
+      "DELETE /api/rss/feeds/3": drop(3),
+    });
+    const pane = within(await screen.findByRole("navigation", { name: "Feeds" }));
+    await userEvent.click(await pane.findByRole("button", { name: /^Engineering/ }));
+    expect(await screen.findByRole("heading", { name: "Engineering", level: 2 })).toBeInTheDocument();
+    const manage = await openManage();
+    await userEvent.click(rowOf(manage, "Fly.io blog").getByRole("button", { name: "Remove" }));
+    await userEvent.click(rowOf(manage, "Old Blog").getByRole("button", { name: "Remove" }));
+    // Both removes are sent on leaving, before the feed list has reloaded.
+    await userEvent.click(screen.getByRole("button", { name: "‹ Back to reading" }));
+    await waitFor(() => expect([...gone].sort()).toEqual([2, 3]));
+    expect(await screen.findByRole("heading", { name: "All unread", level: 2 })).toBeInTheDocument();
+  });
+
   it("says why a remove failed, and the row comes back", async () => {
     setup({
       "DELETE /api/rss/feeds/2": () => Response.json({ error: "FeedNotFound", detail: "no feed 2" }, { status: 404 }),
