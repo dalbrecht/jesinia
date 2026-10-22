@@ -121,7 +121,10 @@ class AiAuthorIn(BaseModel):
 class WriteToolIn(BaseModel):
     id: str | None = None
     title: str = Field(min_length=1)
-    folder: str = ""
+    # None (omitted) keeps an existing page where it is; a new page goes to the KB root.
+    folder: str | None = Field(
+        None, description="Folder to write in; omit on update to keep the page where it is"
+    )
     body: str = ""
     # None (omitted) keeps an existing page's metadata on update; {} clears it.
     jesinia: dict[str, object] | None = Field(

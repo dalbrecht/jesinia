@@ -67,7 +67,7 @@ jesinia:
   Renaming a page updates the title text of links to it.
 - **Tags:** inline `#tags` in the body; see [Tags](#tags).
 - **Assets:** `_assets/<page-id>/` at the KB root, referenced by relative path (from
-  `Sources/x.md`, `../_assets/<page-id>/<file>`). A folder whose files stay on this Mac
+  `Sources/x.md`, `../_assets/<page-id>/<file>`). Moving a page rewrites these links for its new folder. A folder whose files stay on this Mac
   (archived RSS images) holds a `.gitignore` of `*`, so KB sync never commits them. Asset
   file names are derived (a content hash plus an extension), never taken from a URL.
   The server serves them, signed in, at `/api/kb/assets/<page-id>/<file>`: raster images
