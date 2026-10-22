@@ -16,6 +16,7 @@ export const KEY_HELP: { keys: string[]; label: string }[] = [
   { keys: ["e"], label: "Engage" },
   { keys: ["m"], label: "Toggle read" },
   { keys: ["Shift+A"], label: "Mark everything above read" },
+  { keys: ["Shift+M"], label: "Mark all read here" },
   { keys: ["g a"], label: "Go to All unread" },
   { keys: ["g i"], label: "Go to In KB" },
   { keys: ["/"], label: "Search feeds and headlines" },

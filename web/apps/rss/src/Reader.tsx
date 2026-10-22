@@ -4,17 +4,8 @@
 // bottom. Mount one per post (`key={post.id}`): the loaded article belongs to that post.
 import { Button } from "@jesinia/design";
 import { SafeMarkdown, useClient } from "@jesinia/shell";
-import { useMemo, useState, type ReactNode } from "react";
-import {
-  errorCause,
-  fullArticle,
-  needsFullArticle,
-  readingMinutes,
-  retryArchive,
-  RssRequestError,
-  safeHttpUrl,
-  type Post,
-} from "./api";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { errorCause, fullArticle, readingMinutes, retryArchive, RssRequestError, safeHttpUrl, type Post } from "./api";
 import { archiveStatus, ArchiveBadge } from "./PostList";
 import s from "./rss.module.css";
 import { SafeHtml } from "./SafeContent";
@@ -40,7 +31,7 @@ function words(html: string): string {
   return new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
 }
 
-type Article = { state: "idle" | "loading" | "done"; markdown: string; error: string | null };
+type Article = { state: "loading" | "done" | "failed"; markdown: string };
 
 export type ReaderProps = {
   post: Post;
@@ -67,20 +58,28 @@ export type ReaderProps = {
 export function Reader(props: ReaderProps) {
   const { post } = props;
   const client = useClient();
-  const [article, setArticle] = useState<Article>({ state: "idle", markdown: "", error: null });
+  const [article, setArticle] = useState<Article>({ state: "loading", markdown: "" });
+  const [showFeed, setShowFeed] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const original = safeHttpUrl(post.url);
   const status = archiveStatus(post);
 
-  const load = async () => {
-    setArticle((a) => ({ ...a, state: "loading", error: null }));
-    try {
-      setArticle({ state: "done", markdown: await fullArticle(client, post.id), error: null });
-    } catch (e) {
-      setArticle({ state: "idle", markdown: "", error: causeOf(e) });
-    }
-  };
+  // Every opened post tries the full article; a failure keeps the feed text, quietly.
+  useEffect(() => {
+    let cancelled = false;
+    fullArticle(client, post.id).then(
+      (markdown) => {
+        if (!cancelled) setArticle({ state: "done", markdown });
+      },
+      () => {
+        if (!cancelled) setArticle({ state: "failed", markdown: "" });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, post.id]);
 
   const retry = async () => {
     setRetrying(true);
@@ -95,7 +94,8 @@ export function Reader(props: ReaderProps) {
   };
 
   const feedText = useMemo(() => words(post.content_html ?? post.snippet), [post.content_html, post.snippet]);
-  const text = article.state === "done" ? article.markdown : feedText;
+  const full = article.state === "done" && !showFeed;
+  const text = full ? article.markdown : feedText;
   return (
     <section className={s.reader} aria-label="Reader">
       <div className={s.paneHead} role="group" aria-label="Post actions">
@@ -149,25 +149,20 @@ export function Reader(props: ReaderProps) {
             </div>
           ) : null}
           {article.state === "done" ? (
+            <p className={s.fullArticle}>
+              <span>{showFeed ? "Showing feed text · " : "Showing full article · "}</span>
+              <Button variant="ghost" size="sm" onClick={() => setShowFeed((v) => !v)}>
+                {showFeed ? "Show full article" : "Show feed text"}
+              </Button>
+            </p>
+          ) : null}
+          {full ? (
             <SafeMarkdown images markdown={article.markdown} base={post.url} />
           ) : post.content_html ? (
             <SafeHtml html={post.content_html} base={post.url} />
           ) : (
             <p>{post.snippet}</p>
           )}
-          {article.state !== "done" && needsFullArticle(post) ? (
-            <div className={s.fullArticle}>
-              <span>{post.is_summary ? "The feed has a summary only." : "The feed's text may be cut short."}</span>
-              <Button variant="ghost" size="sm" loading={article.state === "loading"} onClick={() => void load()}>
-                Load full article
-              </Button>
-              {article.error ? (
-                <p className={s.error} role="alert">
-                  Couldn't load the full article: {sentence(article.error)} Try again, or open the original.
-                </p>
-              ) : null}
-            </div>
-          ) : null}
         </article>
       </div>
       <div className={s.paneFoot} role="group" aria-label="Reading">

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { COLLAPSED_KEY } from "../Feeds";
 import { ROW_HEIGHT } from "../PostList";
-import { post, routes } from "./fixtures";
+import { FEEDS, POSTS, post, routes } from "./fixtures";
 
 function setup(over: Routes = {}) {
   const env = fakeClient(routes(over));
@@ -70,17 +70,28 @@ describe("feeds pane", () => {
     await userEvent.click(within(nav).getByRole("button", { name: "Feeds in News" }));
     expect(within(nav).getByRole("button", { name: /^News/ })).toHaveTextContent("999+");
     await userEvent.click(within(nav).getByRole("button", { name: "Feeds in News" }));
-    expect(within(nav).getByRole("button", { name: /Hacker News/ })).toHaveTextContent("999+");
-    expect(within(nav).getByRole("button", { name: /Fly\.io blog/ })).toHaveTextContent("4");
-    expect(within(nav).getByRole("button", { name: /Loose feed/ })).toHaveTextContent("2");
+    expect(within(nav).getByRole("button", { name: /^Hacker News/ })).toHaveTextContent("999+");
+    expect(within(nav).getByRole("button", { name: /^Fly\.io blog/ })).toHaveTextContent("4");
+    expect(within(nav).getByRole("button", { name: /^Loose feed/ })).toHaveTextContent("2");
     // A feed with no unread posts shows no zero.
-    expect(within(nav).getByRole("button", { name: /Old Blog/ })).not.toHaveTextContent("0");
+    expect(within(nav).getByRole("button", { name: /^Old Blog/ })).not.toHaveTextContent("0");
   });
 
-  it("a failing feed carries a warning icon with the cause in its tooltip", async () => {
+  it("the sidebar shows no feed warnings or retry; Manage feeds counts the failing ones", async () => {
     setup();
-    const warning = await screen.findByRole("img", { name: /Failing for 3 days: 404 from old\.example/ });
-    expect(warning).toHaveAttribute("title", "Failing for 3 days: 404 from old.example");
+    const nav = within(await screen.findByRole("navigation", { name: "Feeds" }));
+    expect(await nav.findByRole("button", { name: "⚙ Manage feeds · 1" })).toBeInTheDocument();
+    expect(nav.getByRole("button", { name: /^Old Blog/ })).not.toHaveTextContent("!");
+    expect(nav.queryByRole("img", { name: /Warning/ })).toBeNull();
+    expect(nav.queryByText(/Failing for 3 days/)).toBeNull();
+    expect(nav.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(nav.queryByRole("button", { name: "+ Add feed" })).toBeNull();
+  });
+
+  it("Manage feeds shows no count when nothing fails", async () => {
+    setup({ "GET /api/rss/feeds": FEEDS.map((f) => ({ ...f, warning: null })) });
+    const nav = within(await screen.findByRole("navigation", { name: "Feeds" }));
+    expect(await nav.findByRole("button", { name: "⚙ Manage feeds" })).toBeInTheDocument();
   });
 
   it("folders collapse, and the choice is remembered", async () => {
@@ -89,7 +100,7 @@ describe("feeds pane", () => {
     expect(folder).toHaveAttribute("aria-expanded", "true");
     await userEvent.click(folder);
     expect(folder).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: /Fly\.io blog/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Fly\.io blog/ })).toBeNull();
     expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]")).toEqual([11]);
     first.view.unmount();
     setup();
@@ -98,7 +109,7 @@ describe("feeds pane", () => {
       "false",
     );
     await userEvent.click(screen.getByRole("button", { name: "Feeds in Engineering" }));
-    expect(screen.getByRole("button", { name: /Fly\.io blog/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Fly\.io blog/ })).toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]")).toEqual([]);
   });
 
@@ -117,7 +128,7 @@ describe("feeds pane", () => {
   it("choosing a feed or folder lists its posts; the filter switches unread and all", async () => {
     const { calls } = setup();
     await list();
-    await userEvent.click(await screen.findByRole("button", { name: /Hacker News/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Hacker News/ }));
     await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("feed=1"));
     expect(screen.getByRole("heading", { name: "Hacker News", level: 2 })).toBeInTheDocument();
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Show" }), "all");
@@ -128,7 +139,7 @@ describe("feeds pane", () => {
     await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("view=kept"));
     expect(screen.getByRole("combobox", { name: "Show" })).toBeDisabled();
     // From In KB, a feed or folder opens on its unread posts.
-    await userEvent.click(screen.getByRole("button", { name: /Loose feed/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Loose feed/ }));
     await waitFor(() =>
       expect(gets(calls, "/api/rss/posts").at(-1)?.url).toMatch(/view=unread.*feed=4|feed=4.*view=unread/),
     );
@@ -242,39 +253,6 @@ describe("list and reader", () => {
     expect(within(await option(/Post 1/)).getByRole("img", { name: "Unread" })).toBeInTheDocument();
   });
 
-  it("Load full article shows the article, or its cause on failure", async () => {
-    let fail = true;
-    setup({
-      "GET /api/rss/posts": { items: [post(1, { is_summary: true, read: true })], next_before: null },
-      "GET /api/rss/posts/1/article": () =>
-        fail
-          ? Response.json({ error: "ArticleUnavailable", detail: "The site answered 403." }, { status: 502 })
-          : Response.json({ markdown: "## The whole thing\n\nEvery word." }),
-    });
-    await userEvent.click(await option(/Post 1/));
-    await userEvent.click(within(reader()).getByRole("button", { name: "Load full article" }));
-    expect(await within(reader()).findByRole("alert")).toHaveTextContent(
-      "Couldn't load the full article: The site answered 403. Try again, or open the original.",
-    );
-    fail = false;
-    await userEvent.click(within(reader()).getByRole("button", { name: "Load full article" }));
-    expect(await within(reader()).findByRole("heading", { name: "The whole thing" })).toBeInTheDocument();
-    expect(within(reader()).queryByRole("button", { name: "Load full article" })).toBeNull();
-    expect(within(reader()).queryByRole("alert")).toBeNull();
-  });
-
-  it("a long post with full content offers no Load full article", async () => {
-    setup({
-      "GET /api/rss/posts": {
-        items: [post(1, { read: true, content_html: `<p>${"word ".repeat(400)}</p>` })],
-        next_before: null,
-      },
-    });
-    await userEvent.click(await option(/Post 1/));
-    expect(within(reader()).queryByRole("button", { name: "Load full article" })).toBeNull();
-    expect(reader()).toHaveTextContent("2 min");
-  });
-
   it("shows the archive status: Archiving…, In KB, or Archive incomplete with Retry", async () => {
     const { calls } = setup({
       "GET /api/rss/posts": {
@@ -357,8 +335,8 @@ describe("list and reader", () => {
     scroller.scrollTop = ROW_HEIGHT * 200;
     fireEvent.scroll(scroller);
     await userEvent.click(await option(/Post 201\b/));
-    await userEvent.click(screen.getByRole("button", { name: /Hacker News/ }));
-    await userEvent.click(screen.getByRole("button", { name: /Fly\.io blog/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Hacker News/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Fly\.io blog/ }));
     expect(screen.queryByRole("listbox", { name: "Posts" })).toBeNull();
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     press("A", { shiftKey: true });
@@ -406,7 +384,6 @@ describe("list and reader", () => {
     await userEvent.click(await option(/Post 1/));
     expect(reader()).toHaveTextContent("Snippet 1");
     expect(reader()).toHaveTextContent("Fly.io blog · 14 Oct 2026 · 1 min");
-    expect(reader()).toHaveTextContent("The feed's text may be cut short.");
   });
 
   it("feeds that fail to load say why", async () => {
@@ -501,7 +478,7 @@ describe("keys", () => {
     const { calls } = setup({
       "POST /api/rss/posts/read-above": () => Response.json({ detail: "bad time" }, { status: 400 }),
     });
-    await userEvent.click(await screen.findByRole("button", { name: /Fly\.io blog/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Fly\.io blog/ }));
     await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("feed=2"));
     await userEvent.click(await option(/Post 1/));
     press("A", { shiftKey: true });
@@ -595,6 +572,274 @@ describe("focus", () => {
   });
 });
 
+describe("mark all read", () => {
+  const MARKED = {
+    "POST /api/rss/posts/mark-read": { marked: 2, ids: [1, 2] },
+    "POST /api/rss/posts/read-state": { marked: 2 },
+  };
+  const markAll = () => screen.getByRole("button", { name: "✓ Mark all read" });
+
+  it("mark all read in the header applies to the folder in view and offers undo", async () => {
+    const { calls } = setup(MARKED);
+    await list();
+    await userEvent.click(screen.getByRole("button", { name: /^Engineering/ }));
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("folder=11"));
+    await option(/Post 1/);
+    await userEvent.click(markAll());
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
+    const sentBody = (await writes(calls, "/api/rss/posts/mark-read")[0]?.clone().json()) as Record<string, unknown>;
+    expect(sentBody).toMatchObject({ feed: null, folder: 11 });
+    expect(typeof sentBody.as_of).toBe("string");
+    expect(writes(calls, "/api/rss/posts/mark-read")[0]?.headers.get("Idempotency-Key")).toBeTruthy();
+    const message = await toast(/^Marked 2 in Engineering read$/);
+    const shown = message?.closest("[data-toast]") as HTMLElement;
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("folder=11"));
+    const counts = gets(calls, "/api/rss/counts").length;
+    const posts = gets(calls, "/api/rss/posts").length;
+    await userEvent.click(within(shown).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/read-state")).toHaveLength(1));
+    expect(await writes(calls, "/api/rss/posts/read-state")[0]?.clone().json()).toEqual({ ids: [1, 2], read: false });
+    // Undo brings the counts and the list (the same folder) back.
+    await waitFor(() => expect(gets(calls, "/api/rss/counts").length).toBeGreaterThan(counts));
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").length).toBeGreaterThan(posts));
+    expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("folder=11");
+  });
+
+  /** Posts that all turn read once mark-read answers. */
+  function markable() {
+    let marked = false;
+    return {
+      "GET /api/rss/posts": () => Response.json({ items: marked ? [] : POSTS, next_before: null }),
+      "POST /api/rss/posts/mark-read": () => {
+        marked = true;
+        return Response.json({ marked: 3, ids: [2, 4, 5] });
+      },
+    };
+  }
+
+  it("with a post open, mark all read clears the reader and lands on the empty list (§2.2)", async () => {
+    setup(markable());
+    await userEvent.click(await option(/Post 1/));
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+    await userEvent.click(markAll());
+    expect(await toast(/^Marked 3 in All unread read$/)).toBeInTheDocument();
+    expect(await screen.findByText("Nothing unread here.")).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Post \d/ })).toBeNull();
+    expect(reader()).toHaveTextContent("Choose a post to read it here.");
+  });
+
+  it("on a narrow screen, mark all read with a post open goes back to the empty list", async () => {
+    stubNarrow(true);
+    setup(markable());
+    await userEvent.click(await option(/Post 1/));
+    // The reader is full-screen: back to the list, then mark it all read.
+    await userEvent.click(screen.getByRole("button", { name: "‹ All unread" }));
+    expect(screen.getByRole("option", { name: /Post 1/ })).toHaveAttribute("aria-selected", "true");
+    await userEvent.click(markAll());
+    expect(await screen.findByText("Nothing unread here.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Reader" })).toBeNull();
+  });
+
+  it("a post whose Keep note is typed stays open through mark all read (R30)", async () => {
+    setup(markable());
+    await userEvent.click(await option(/Post 1/));
+    press("n");
+    await userEvent.type(screen.getByRole("textbox", { name: "Note" }), "Worth rereading");
+    await userEvent.click(markAll());
+    expect(await toast(/^Marked 3 in All unread read$/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(screen.getByRole("listbox", { name: "Posts" })).queryAllByRole("option")).toHaveLength(1),
+    );
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+    expect(screen.getByRole("textbox", { name: "Note" })).toHaveValue("Worth rereading");
+  });
+
+  it("a post outside the marked feed stays open", async () => {
+    setup({ ...MARKED, "POST /api/rss/posts/mark-read": { marked: 1, ids: [9] } });
+    await userEvent.click(await option(/Post 1/));
+    const nav = within(screen.getByRole("navigation", { name: "Feeds" }));
+    await userEvent.click(nav.getByRole("button", { name: "Mark read: Loose feed" }));
+    expect(await toast(/^Marked 1 in Loose feed read$/)).toBeInTheDocument();
+    expect(within(reader()).getByRole("heading", { level: 1 })).toHaveTextContent("Post 1");
+  });
+
+  it("mark all read waits for a new list to load", async () => {
+    let answer: (r: Response) => void = () => {};
+    const { calls } = setup({
+      ...MARKED,
+      "GET /api/rss/posts": (req: Request) =>
+        new URL(req.url).searchParams.get("feed") === "2"
+          ? new Promise<Response>((done) => (answer = done))
+          : Response.json({ items: POSTS, next_before: null }),
+    });
+    await option(/Post 1/);
+    await userEvent.click(screen.getByRole("button", { name: /^Fly\.io blog/ }));
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("feed=2"));
+    expect(markAll()).toBeDisabled();
+    (document.activeElement as HTMLElement).blur();
+    press("M", { shiftKey: true });
+    await act(async () => {});
+    expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(0);
+    answer(Response.json({ items: POSTS, next_before: null }));
+    await waitFor(() => expect(markAll()).toBeEnabled());
+    press("M", { shiftKey: true });
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
+  });
+
+  it("a failed Undo says why and what to do instead", async () => {
+    setup({
+      ...MARKED,
+      "POST /api/rss/posts/read-state": () => Response.json({ detail: "rss.sqlite is locked" }, { status: 503 }),
+    });
+    await option(/Post 1/);
+    await userEvent.click(markAll());
+    const message = await toast(/^Marked 2 in All unread read$/);
+    await userEvent.click(
+      within(message?.closest("[data-toast]") as HTMLElement).getByRole("button", { name: "Undo" }),
+    );
+    expect(
+      await toast(/^Couldn't undo marking All unread read: rss\.sqlite is locked\. Mark the posts unread with m\.$/),
+    ).toBeInTheDocument();
+  });
+
+  it("mark all read at All unread marks everything", async () => {
+    const { calls } = setup(MARKED);
+    await option(/Post 1/);
+    await userEvent.click(markAll());
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
+    expect(await writes(calls, "/api/rss/posts/mark-read")[0]?.clone().json()).toMatchObject({
+      feed: null,
+      folder: null,
+    });
+    expect(await toast(/^Marked 2 in All unread read$/)).toBeInTheDocument();
+  });
+
+  it("with nothing to mark it says so, with no Undo", async () => {
+    setup({ "POST /api/rss/posts/mark-read": { marked: 0, ids: [] } });
+    await option(/Post 1/);
+    await userEvent.click(markAll());
+    const message = await toast(/^Nothing unread in All unread$/);
+    expect(within(message?.closest("[data-toast]") as HTMLElement).queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+
+  it("a failed mark all read puts the rows back and says why", async () => {
+    setup({
+      "POST /api/rss/posts/mark-read": () => Response.json({ detail: "rss.sqlite is locked" }, { status: 503 }),
+    });
+    await option(/Post 1/);
+    await userEvent.click(markAll());
+    expect(await toast(/^Couldn't mark All unread read: rss\.sqlite is locked\./)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("option", { name: /Post 1/ })).not.toHaveAttribute("data-read"));
+    expect(screen.getByRole("option", { name: /Post 3/ })).toHaveAttribute("data-read", "true");
+  });
+
+  it("sidebar mark read on a feed does not change the scope", async () => {
+    const { calls } = setup({ ...MARKED, "POST /api/rss/posts/mark-read": { marked: 3, ids: [1, 2, 4] } });
+    await option(/Post 1/);
+    const nav = within(screen.getByRole("navigation", { name: "Feeds" }));
+    await waitFor(() => expect(gets(calls, "/api/rss/counts").length).toBeGreaterThan(0));
+    const counts = gets(calls, "/api/rss/counts").length;
+    const posts = gets(calls, "/api/rss/posts").length;
+    await userEvent.hover(nav.getByRole("button", { name: /^Fly\.io blog/ }));
+    const mark = nav.getByRole("button", { name: "Mark read: Fly.io blog" });
+    expect(mark).toHaveTextContent("Mark read");
+    await userEvent.click(mark);
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
+    const body = (await writes(calls, "/api/rss/posts/mark-read")[0]?.clone().json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ feed: 2, folder: null });
+    expect(typeof body.as_of).toBe("string");
+    expect(await toast(/^Marked 3 in Fly\.io blog read$/)).toBeInTheDocument();
+    // Its rows on screen read at once, without reloading the list.
+    expect(screen.getByRole("option", { name: /Post 1/ })).toHaveAttribute("data-read", "true");
+    expect(screen.getByRole("option", { name: /Post 4/ })).toHaveAttribute("data-read", "true");
+    await waitFor(() => expect(gets(calls, "/api/rss/counts").length).toBeGreaterThan(counts));
+    expect(screen.getByRole("heading", { name: "All unread", level: 2 })).toBeInTheDocument();
+    expect(nav.getByRole("button", { name: /^All unread/ })).toHaveAttribute("aria-current", "true");
+    expect(nav.getByRole("button", { name: /^Fly\.io blog/ })).not.toHaveAttribute("aria-current");
+    // One feed doesn't cover All unread: the list is not reloaded.
+    expect(gets(calls, "/api/rss/posts")).toHaveLength(posts);
+  });
+
+  it("sidebar mark read on the folder in view reloads the list", async () => {
+    let marked = false;
+    const { calls } = setup({
+      "GET /api/rss/posts": () =>
+        Response.json({ items: marked ? POSTS.map((p) => ({ ...p, read: true })) : POSTS, next_before: null }),
+      "POST /api/rss/posts/mark-read": () => {
+        marked = true;
+        return Response.json({ marked: 3, ids: [1, 2, 4] });
+      },
+    });
+    await list();
+    const nav = within(screen.getByRole("navigation", { name: "Feeds" }));
+    await userEvent.click(await nav.findByRole("button", { name: /^Fly\.io blog/ }));
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("feed=2"));
+    await option(/Post 1/);
+    const before = gets(calls, "/api/rss/posts").length;
+    await userEvent.click(nav.getByRole("button", { name: "Mark read: Engineering" }));
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
+    expect(await writes(calls, "/api/rss/posts/mark-read")[0]?.clone().json()).toMatchObject({
+      feed: null,
+      folder: 11,
+    });
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").length).toBeGreaterThan(before));
+    expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("feed=2");
+    await waitFor(() => expect(screen.getByRole("option", { name: /Post 1/ })).toHaveAttribute("data-read", "true"));
+    expect(screen.getByRole("option", { name: /Post 4/ })).toHaveAttribute("data-read", "true");
+    expect(screen.getByRole("heading", { name: "Fly.io blog", level: 2 })).toBeInTheDocument();
+  });
+
+  it("the sidebar Mark read is reachable by Tab and its click never selects the row", async () => {
+    const { calls } = setup(MARKED);
+    await option(/Post 1/);
+    const nav = within(screen.getByRole("navigation", { name: "Feeds" }));
+    const row = nav.getByRole("button", { name: /^Loose feed/ });
+    row.focus();
+    await userEvent.tab();
+    expect(nav.getByRole("button", { name: "Mark read: Loose feed" })).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
+    expect(row).not.toHaveAttribute("aria-current");
+    expect(gets(calls, "/api/rss/posts").every((c) => !c.url.includes("feed=4"))).toBe(true);
+  });
+
+  it("no mark all read in In KB or while searching", async () => {
+    setup({ ...MARKED, "GET /api/rss/posts/search": [post(2)] });
+    await option(/Post 1/);
+    expect(markAll()).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^In KB/ }));
+    expect(await screen.findByRole("heading", { name: "In KB", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "✓ Mark all read" })).toBeNull();
+    press("M", { shiftKey: true });
+    await userEvent.click(screen.getByRole("button", { name: /^All unread/ }));
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search headlines" }), "two");
+    expect(await screen.findByRole("heading", { name: "Results for “two”", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "✓ Mark all read" })).toBeNull();
+    (document.activeElement as HTMLElement).blur();
+    press("M", { shiftKey: true });
+    await act(async () => {});
+    expect(screen.queryAllByText(/^Marked /)).toHaveLength(0);
+  });
+
+  it("Shift+M marks all read here, as of the list's load", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-16T10:00:00.000Z"));
+    const { calls } = setup(MARKED);
+    await userEvent.click(await screen.findByRole("button", { name: /^Fly\.io blog/ }));
+    await waitFor(() => expect(gets(calls, "/api/rss/posts").at(-1)?.url).toContain("feed=2"));
+    await option(/Post 1/);
+    vi.setSystemTime(new Date("2026-10-16T10:05:00.000Z"));
+    press("M", { shiftKey: true });
+    await waitFor(() => expect(writes(calls, "/api/rss/posts/mark-read")).toHaveLength(1));
+    expect(await writes(calls, "/api/rss/posts/mark-read")[0]?.clone().json()).toEqual({
+      feed: 2,
+      folder: null,
+      as_of: "2026-10-16T10:00:00.000Z",
+    });
+    expect(await toast(/^Marked 2 in Fly\.io blog read$/)).toBeInTheDocument();
+  });
+});
+
 describe("narrow layout", () => {
   it("the list fills the screen, a post opens the reader full-screen, and Back returns", async () => {
     stubNarrow(true);
@@ -614,44 +859,6 @@ describe("narrow layout", () => {
     await userEvent.click(within(nav).getByRole("button", { name: /In KB/ }));
     expect(await list()).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "In KB", level: 2 })).toBeInTheDocument();
-  });
-
-  it("R30: when the open post drops out of a refreshed list, the narrow reader keeps it", async () => {
-    stubNarrow(true);
-    let first = true;
-    setup({
-      "GET /api/rss/posts": () => {
-        const items = first ? [post(1), post(2)] : [post(2)];
-        first = false;
-        return Response.json({ items, next_before: null });
-      },
-      "POST /api/rss/refresh": { polled: 1, new_items: 0, failed: 0 },
-    });
-    await userEvent.click(await option(/Post 1/));
-    expect(reader()).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "↻ Refresh" }));
-    await waitFor(() => expect(first).toBe(false));
-    await act(async () => {});
-    // Read, it no longer matches All unread, but it stays open until the reader moves on.
-    expect(reader()).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Post 1", level: 1 })).toBeInTheDocument();
-  });
-
-  it("R30: a failed reload while reading on a narrow screen keeps the reader and says why", async () => {
-    stubNarrow(true);
-    let fail = false;
-    setup({
-      "GET /api/rss/posts": () =>
-        fail
-          ? Response.json({ detail: "database locked" }, { status: 500 })
-          : Response.json({ items: [post(1)], next_before: null }),
-      "POST /api/rss/refresh": { polled: 1, new_items: 0, failed: 0 },
-    });
-    await userEvent.click(await option(/Post 1/));
-    fail = true;
-    await userEvent.click(screen.getByRole("button", { name: "↻ Refresh" }));
-    expect((await screen.findAllByText(/Couldn't reload posts: database locked\./)).length).toBeGreaterThan(0);
-    expect(reader()).toBeInTheDocument();
   });
 
   it("a list that fails to load (not a reload) shows its error with Try again", async () => {

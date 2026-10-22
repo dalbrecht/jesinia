@@ -12,6 +12,7 @@ from typing import Protocol
 from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedFeed, ParsedItem
 from jesinia.apps.rss.domain.kept import ArchiveState
 from jesinia.apps.rss.domain.post import Counts, Cursor, PostView, View
+from jesinia.apps.rss.domain.settings import Retention
 from jesinia.services.fetch.application.ports import Article
 from jesinia.services.fetch.application.service import FetchResult
 
@@ -115,6 +116,11 @@ class FeedStore(Protocol):
         """Move the feed; False if there was no such feed."""
         ...
 
+    def set_feed_retention(self, feed_id: int, retention: Retention | None) -> bool:
+        """Set (or clear, with None) the feed's own retention; False if there was no such
+        subscribed feed."""
+        ...
+
     def add_posts(self, feed_id: int, items: Sequence[ParsedItem], now: datetime) -> int:
         """Insert items not seen before (by feed and GUID); how many were new."""
         ...
@@ -163,6 +169,13 @@ class PostStore(Protocol):
 
     def set_read(self, ids: Sequence[int], read: bool) -> int:
         """Set the read state of the posts that exist; how many there were."""
+        ...
+
+    def mark_unread_read(
+        self, feed_id: int | None, folder_id: int | None, as_of: datetime
+    ) -> list[int]:
+        """Mark read every unread post within the feed and folder (if given) that was first
+        seen by ``as_of``; their ids, ascending."""
         ...
 
     def in_scope(

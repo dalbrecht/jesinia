@@ -9,11 +9,48 @@ import { afterEach, describe, expect, it } from "vitest";
 import { App } from "../App";
 
 type Feed = components["schemas"]["FeedOut"];
+const HEALTHY = { last_ok_at: null, fail_count: 0, last_error: null, newest_post_at: null, retention: null };
 const FEEDS: Feed[] = [
-  { id: 1, title: "A", url: "https://a.example/feed", folder: "News", folder_id: 1, unread: 0, warning: null },
-  { id: 2, title: "B", url: "https://b.example/feed", folder: "News", folder_id: 1, unread: 0, warning: null },
-  { id: 3, title: "C", url: "https://c.example/feed", folder: "Eng", folder_id: 2, unread: 0, warning: null },
-  { id: 4, title: "D", url: "https://d.example/feed", folder: null, folder_id: null, unread: 0, warning: null },
+  {
+    id: 1,
+    title: "A",
+    url: "https://a.example/feed",
+    folder: "News",
+    folder_id: 1,
+    unread: 0,
+    warning: null,
+    ...HEALTHY,
+  },
+  {
+    id: 2,
+    title: "B",
+    url: "https://b.example/feed",
+    folder: "News",
+    folder_id: 1,
+    unread: 0,
+    warning: null,
+    ...HEALTHY,
+  },
+  {
+    id: 3,
+    title: "C",
+    url: "https://c.example/feed",
+    folder: "Eng",
+    folder_id: 2,
+    unread: 0,
+    warning: null,
+    ...HEALTHY,
+  },
+  {
+    id: 4,
+    title: "D",
+    url: "https://d.example/feed",
+    folder: null,
+    folder_id: null,
+    unread: 0,
+    warning: null,
+    ...HEALTHY,
+  },
 ];
 const SETTINGS = { retention: 30, source_folder: "Sources" };
 

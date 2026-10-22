@@ -396,6 +396,177 @@ describe("Toast", () => {
     vi.useRealTimers();
   });
 
+  function Show({ opts }: { opts: Parameters<ReturnType<typeof useToast>["show"]>[0] }) {
+    const t = useToast();
+    return (
+      <>
+        <button type="button" onClick={() => t.show(opts)}>
+          fire
+        </button>
+      </>
+    );
+  }
+
+  it("action toast with a duration expires and reports timeout", () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    const onAction = vi.fn();
+    render(
+      <ToastProvider>
+        <Show opts={{ message: "Marked 3 read", action: { label: "Undo", onAction }, duration: 8000, onClose }} />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText("fire"));
+    act(() => vi.advanceTimersByTime(7999));
+    expect(document.querySelectorAll("[data-toast]")).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith("timeout");
+    expect(onAction).not.toHaveBeenCalled();
+    expect(document.querySelectorAll("[data-toast]")).toHaveLength(0);
+  });
+
+  it("action press reports action and closes", () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    const onAction = vi.fn();
+    render(
+      <ToastProvider>
+        <Show opts={{ message: "Marked 3 read", action: { label: "Undo", onAction }, duration: 8000, onClose }} />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText("fire"));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith("action");
+    expect(document.querySelectorAll("[data-toast]")).toHaveLength(0);
+    act(() => vi.advanceTimersByTime(20000));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closing the toast that held focus or the pointer lets the next one time out", () => {
+    vi.useFakeTimers();
+    const first = vi.fn();
+    const second = vi.fn();
+    let api: ReturnType<typeof useToast> | undefined;
+    const Grab = () => {
+      api = useToast();
+      return null;
+    };
+    render(
+      <ToastProvider>
+        <Grab />
+      </ToastProvider>,
+    );
+    const region = screen.getByRole("region", { name: "Notifications" });
+    const show = (onClose: () => void, message: string) =>
+      act(() => {
+        (api as NonNullable<typeof api>).show({
+          message,
+          action: { label: "Undo", onAction: () => {} },
+          duration: 8000,
+          onClose,
+        });
+      });
+    // Undo with the pointer and focus on it: the toast goes, taking the focused button along.
+    show(first, "Removed A");
+    const undo = screen.getByRole("button", { name: "Undo" });
+    fireEvent.mouseEnter(region);
+    fireEvent.mouseOver(undo);
+    act(() => undo.focus());
+    fireEvent.click(undo);
+    expect(first).toHaveBeenCalledWith("action");
+    show(second, "Removed B");
+    act(() => vi.advanceTimersByTime(8000));
+    expect(second).toHaveBeenCalledWith("timeout");
+
+    // The same after × on the toast under the pointer.
+    const third = vi.fn();
+    const fourth = vi.fn();
+    show(third, "Removed C");
+    const dismiss = screen.getByRole("button", { name: "Dismiss" });
+    fireEvent.mouseEnter(region);
+    fireEvent.mouseOver(dismiss);
+    fireEvent.click(dismiss);
+    expect(third).toHaveBeenCalledWith("dismiss");
+    show(fourth, "Removed D");
+    act(() => vi.advanceTimersByTime(8000));
+    expect(fourth).toHaveBeenCalledWith("timeout");
+    vi.useRealTimers();
+  });
+
+  it("evicting the toast under the pointer lets the others time out", () => {
+    vi.useFakeTimers();
+    const closes = [vi.fn(), vi.fn(), vi.fn(), vi.fn()];
+    let api: ReturnType<typeof useToast> | undefined;
+    const Grab = () => {
+      api = useToast();
+      return null;
+    };
+    render(
+      <ToastProvider>
+        <Grab />
+      </ToastProvider>,
+    );
+    const region = screen.getByRole("region", { name: "Notifications" });
+    const show = (i: number) =>
+      act(() => {
+        (api as NonNullable<typeof api>).show({
+          message: `Removed ${i}`,
+          action: { label: "Undo", onAction: () => {} },
+          duration: 8000,
+          onClose: closes[i] as (typeof closes)[number],
+        });
+      });
+    show(0);
+    show(1);
+    show(2);
+    // The pointer rests on the oldest toast, pausing the region; a fourth evicts it.
+    fireEvent.mouseEnter(region);
+    fireEvent.mouseOver(screen.getByText("Removed 0"));
+    show(3);
+    expect(closes[0]).toHaveBeenCalledExactlyOnceWith("dismiss");
+    act(() => vi.advanceTimersByTime(8000));
+    for (const onClose of closes.slice(1)) expect(onClose).toHaveBeenCalledWith("timeout");
+    vi.useRealTimers();
+  });
+
+  it("dismiss reports dismiss, once, for the button and for dismiss(id)", () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    let api: ReturnType<typeof useToast> | undefined;
+    const Grab = () => {
+      api = useToast();
+      return null;
+    };
+    render(
+      <ToastProvider>
+        <Grab />
+        <Show
+          opts={{ message: "Removing feed", action: { label: "Undo", onAction: () => {} }, duration: 8000, onClose }}
+        />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText("fire"));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith("dismiss");
+    act(() => vi.advanceTimersByTime(20000));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    const onClose2 = vi.fn();
+    let id = "";
+    act(() => {
+      id = (api as NonNullable<typeof api>).show({ message: "again", tone: "warn", onClose: onClose2 });
+    });
+    act(() => (api as NonNullable<typeof api>).dismiss(id));
+    act(() => (api as NonNullable<typeof api>).dismiss(id));
+    expect(onClose2).toHaveBeenCalledTimes(1);
+    expect(onClose2).toHaveBeenCalledWith("dismiss");
+  });
+
   it("useToast outside the provider throws; Toast renders an action", () => {
     const Bad = () => {
       useToast();

@@ -19,6 +19,8 @@ export type KeepPopoverProps = {
   hasAgent: boolean;
   onKept: (kept: Kept) => void;
   onCancel: () => void;
+  /** The note as it stands, on opening and as it is typed (the app keeps typed text, R30). */
+  onNoteChange?: (note: string) => void;
 };
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -26,7 +28,15 @@ const FOCUSABLE = "button:not([disabled]), input:not([disabled]), textarea:not([
 
 const causeOf = errorCause;
 
-export function KeepPopover({ post, initialNote = "", takeaway = null, hasAgent, onKept, onCancel }: KeepPopoverProps) {
+export function KeepPopover({
+  post,
+  initialNote = "",
+  takeaway = null,
+  hasAgent,
+  onKept,
+  onCancel,
+  onNoteChange,
+}: KeepPopoverProps) {
   const client = useClient();
   const [note, setNote] = useState(initialNote);
   const [tags, setTags] = useState<string[]>([]);
@@ -42,6 +52,11 @@ export function KeepPopover({ post, initialNote = "", takeaway = null, hasAgent,
   const intent = useRef<{ key: string; request: string } | null>(null);
   const cancel = useRef(onCancel);
   cancel.current = onCancel;
+  const noteChanged = useRef(onNoteChange);
+  noteChanged.current = onNoteChange;
+  useEffect(() => {
+    noteChanged.current?.(note);
+  }, [note]);
 
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;

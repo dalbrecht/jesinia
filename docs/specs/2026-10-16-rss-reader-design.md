@@ -59,6 +59,8 @@ whole KB, managed in one place, and never duplicated.
 
 ### 2.1 Layout (user)
 
+> Amended by the 2026-10-21 feed-management spec (`2026-10-21-rss-feed-management-design.md`).
+
 The classic **three panes** from the wireframe:
 
 - **Feeds sidebar:**
@@ -210,6 +212,8 @@ Takeaway: …
 
 ### 4.1 Subscribing
 
+> Amended by the 2026-10-21 feed-management spec (`2026-10-21-rss-feed-management-design.md`).
+
 - **Formats:** RSS 2.0, Atom and JSON Feed.
 - **Adding a feed:** paste a site or feed URL. Feed autodiscovery finds `<link rel=alternate>`
   on a site.
@@ -240,6 +244,8 @@ Takeaway: …
 Post GUIDs are deduplicated per feed, with link + title as the fallback.
 
 ### 4.4 Retention (builder's call)
+
+> Amended by the 2026-10-21 feed-management spec (`2026-10-21-rss-feed-management-design.md`).
 
 - **Unkept posts:** pruned 30 days after publication (or after they were first seen, when the feed gives no date); the window is configurable.
 - **Kept posts:** never pruned.
@@ -355,6 +361,8 @@ in the catalog shows up as *uncataloged* (§5.4).
 - **Settings → Tags** lives in the launcher app.
 
 ## 7. Errors (foundation §13 applies)
+
+> Amended by the 2026-10-21 feed-management spec (`2026-10-21-rss-feed-management-design.md`).
 
 - **A feed fails:** a warning on the feed, with its cause and a Retry. The rest keep polling.
 - **Extraction fails on Keep:** the page is still written, with the feed content and a note.

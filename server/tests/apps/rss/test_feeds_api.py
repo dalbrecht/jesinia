@@ -34,6 +34,7 @@ from jesinia.apps.rss.domain.feed import (
     validate_folder_name,
 )
 from jesinia.apps.rss.domain.opml import OpmlFeed, parse_opml, render_opml
+from jesinia.apps.rss.domain.settings import InvalidSettings, Retention, validate_retention
 from jesinia.apps.rss.infrastructure.store import SqliteFeedStore
 from jesinia.apps.rss.module import RSS_DB, RssModule
 from jesinia.core.app import create_app
@@ -243,6 +244,11 @@ async def test_add_feed_lists_it_with_its_folder_and_unread_count(
         "folder_id": view["folder_id"],
         "unread": 2,
         "warning": None,
+        "last_ok_at": view["last_ok_at"],
+        "fail_count": 0,
+        "last_error": None,
+        "newest_post_at": view["newest_post_at"],
+        "retention": None,
     }
     assert (await env.client.get(f"{API}/feeds")).json() == [view]
     with env.db() as db:
@@ -363,6 +369,49 @@ async def test_patch_feed_moves_it_between_folders(env: Env, mock: respx.MockRou
     with env.db() as db:
         assert db.execute("SELECT COUNT(*) FROM folders").fetchone()[0] == 0
     missing = await env.client.patch(f"{API}/feeds/999", json={"folder": "News"})
+    _error(missing, 404, "FeedNotFound")
+
+
+def test_retention_is_days_or_posts_within_bounds() -> None:
+    assert validate_retention("days", 365) == Retention("days", 365)
+    assert validate_retention("posts", 10) == Retention("posts", 10)
+    with pytest.raises(InvalidSettings, match="days or posts"):
+        validate_retention("weeks", 3)
+
+
+async def test_feed_out_carries_sync_health_and_newest_post(
+    env: Env, mock: respx.MockRouter
+) -> None:
+    _serve(mock, FEED_URL, _fixture("hn.xml"), "application/rss+xml")
+    assert (await _add(env)).status_code == 201
+    [row] = (await env.client.get(f"{API}/feeds")).json()
+    assert row["last_ok_at"] is not None
+    assert row["fail_count"] == 0 and row["last_error"] is None
+    assert datetime.fromisoformat(row["newest_post_at"]) == datetime(2026, 10, 13, 9, 0, tzinfo=UTC)
+    assert row["retention"] is None
+
+
+async def test_put_retention_sets_and_clears_the_override(env: Env, mock: respx.MockRouter) -> None:
+    _serve(mock, FEED_URL, _fixture("rss2.xml"), "application/rss+xml")
+    feed_id = (await _add(env)).json()["id"]
+    url = f"{API}/feeds/{feed_id}/retention"
+    capped = {"unit": "posts", "value": 200}
+    put = await env.client.put(url, json={"retention": capped})
+    assert put.status_code == 200, put.text
+    assert put.json()["retention"] == capped
+    [listed] = (await env.client.get(f"{API}/feeds")).json()
+    assert listed["retention"] == capped
+    cleared = await env.client.put(url, json={"retention": None})
+    assert cleared.status_code == 200 and cleared.json()["retention"] is None
+    for bad, message in (
+        ({"unit": "days", "value": 0}, "retention must be 1 to 365 days"),
+        ({"unit": "days", "value": 366}, "retention must be 1 to 365 days"),
+        ({"unit": "posts", "value": 5}, "retention must be 10 to 10000 posts"),
+        ({"unit": "posts", "value": 10_001}, "retention must be 10 to 10000 posts"),
+    ):
+        refused = await env.client.put(url, json={"retention": bad})
+        assert _error(refused, 400, "InvalidSettings") == message
+    missing = await env.client.put(f"{API}/feeds/999/retention", json={"retention": capped})
     _error(missing, 404, "FeedNotFound")
 
 

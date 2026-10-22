@@ -25,11 +25,13 @@ export function post(id: number, over: Partial<Post> = {}): Post {
   };
 }
 
+const HEALTHY = { last_ok_at: null, fail_count: 0, last_error: null, newest_post_at: null, retention: null };
+
 export const FEEDS: Feed[] = [
-  { id: 1, title: "Hacker News", url: "https://hnrss.org/frontpage", folder: "News", folder_id: 10, unread: 1200, warning: null },
-  { id: 2, title: "Fly.io blog", url: "https://fly.io/blog/feed.xml", folder: "Engineering", folder_id: 11, unread: 4, warning: null },
-  { id: 3, title: "Old Blog", url: "https://old.example/feed", folder: "Engineering", folder_id: 11, unread: 0, warning: "Failing for 3 days: 404 from old.example" },
-  { id: 4, title: "Loose feed", url: "https://loose.example/feed", folder: null, folder_id: null, unread: 2, warning: null },
+  { id: 1, title: "Hacker News", url: "https://hnrss.org/frontpage", folder: "News", folder_id: 10, unread: 1200, warning: null, ...HEALTHY },
+  { id: 2, title: "Fly.io blog", url: "https://fly.io/blog/feed.xml", folder: "Engineering", folder_id: 11, unread: 4, warning: null, ...HEALTHY },
+  { id: 3, title: "Old Blog", url: "https://old.example/feed", folder: "Engineering", folder_id: 11, unread: 0, warning: "Failing for 3 days: 404 from old.example", ...HEALTHY },
+  { id: 4, title: "Loose feed", url: "https://loose.example/feed", folder: null, folder_id: null, unread: 2, warning: null, ...HEALTHY },
 ]; // prettier-ignore
 
 export const COUNTS: Counts = {
@@ -59,6 +61,7 @@ export function routes(over: Routes = {}): Routes {
     "GET /api/rss/posts": { items: POSTS, next_before: null },
     ...Object.fromEntries(POSTS.map((p) => [`PATCH /api/rss/posts/${p.id}`, echo(p.id)])),
     "POST /api/rss/posts/read-above": { marked: 2 },
+    "GET /api/rss/settings": { retention: 30, source_folder: "Sources" },
     ...over,
   });
 }

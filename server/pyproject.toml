@@ -50,6 +50,8 @@ packages = ["jesinia"]
 # Standards age gate (lang-01 §1): never adopt a package version published < 3 days
 # before this date. Bump deliberately when updating dependencies.
 exclude-newer = "2026-10-13T00:00:00Z"
+# Security exception to the age gate: certifi 2026.10.19 fixes PYSEC-2026-4320.
+exclude-newer-package = { certifi = "2026-10-21T00:00:00Z" }
 
 [tool.ruff]
 line-length = 100
