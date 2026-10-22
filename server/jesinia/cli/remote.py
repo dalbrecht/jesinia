@@ -12,10 +12,18 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from jesinia.cli.install import LABEL, System, _domain, plist_path
+from jesinia.cli.install import LABEL, CommandTimedOut, System, _domain, plist_path
 from jesinia.core.config import Config, ConfigError, load_config, save_config, set_value
 
 MAC_APP_CLI = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+# `tailscale serve` can wait for an approval in the browser (HTTPS certificates or Serve
+# not yet enabled for the tailnet); long enough to approve, never forever.
+SERVE_TIMEOUT = 60.0
+STATUS_TIMEOUT = 15.0
+CLI_HINT = (
+    "install Tailscale's command-line tool (Tailscale menu → Settings → CLI integration) "
+    "if the app's built-in one cannot start"
+)
 
 
 class RemoteError(RuntimeError):
@@ -35,7 +43,7 @@ def tailscale_cli(sys: System) -> str:
 def tailnet_name(sys: System, cli: str) -> str:
     """This machine's MagicDNS name, from ``tailscale status --json``."""
     try:
-        _, out = sys.run([cli, "status", "--json"])
+        _, out = sys.run([cli, "status", "--json"], timeout=STATUS_TIMEOUT)
         status = json.loads(out)
         name = str(status["Self"]["DNSName"]).strip().removesuffix(".")
     except (RuntimeError, ValueError, KeyError, TypeError) as exc:
@@ -47,7 +55,10 @@ def tailnet_name(sys: System, cli: str) -> str:
 
 def _funnel_is_on(sys: System, cli: str, name: str) -> bool:
     """Whether Tailscale Funnel exposes ``name:443`` to the public internet."""
-    code, out = sys.run([cli, "serve", "status", "--json"], check=False)
+    try:
+        code, out = sys.run([cli, "serve", "status", "--json"], check=False, timeout=STATUS_TIMEOUT)
+    except CommandTimedOut as exc:
+        raise RemoteError(f"could not read `tailscale serve status` ({exc}); {CLI_HINT}") from exc
     if code != 0 or not out.strip():
         return False  # nothing served yet
     try:
@@ -68,6 +79,27 @@ def _restart(sys: System) -> bool:
     return False
 
 
+def _serve(sys: System, cli: str, port: int) -> None:
+    """``tailscale serve`` with its own output on screen: when Tailscale asks for approval
+    (enable HTTPS, or Serve, for the tailnet) its link shows while it waits."""
+    if cli == str(MAC_APP_CLI):
+        sys.echo(f"using the Tailscale app's built-in CLI; {CLI_HINT}")
+    sys.echo("asking Tailscale to serve Jesinia (approve any link it prints)…")
+    argv = [cli, "serve", "--bg", "--https=443", f"http://127.0.0.1:{port}"]
+    try:
+        code = sys.run_live(argv, timeout=SERVE_TIMEOUT)
+    except CommandTimedOut as exc:
+        raise RemoteError(
+            f"{exc}. If Tailscale printed a link, open it, approve, and run "
+            f"`jesinia remote enable` again; otherwise {CLI_HINT}"
+        ) from exc
+    if code != 0:
+        raise RemoteError(
+            f"could not enable remote access: `tailscale serve` exited with {code}; "
+            "see Tailscale's output above"
+        )
+
+
 def enable(path: Path, sys: System) -> Config:
     """Serve Jesinia on this machine's tailnet name over HTTPS and allow that host."""
     cli = tailscale_cli(sys)
@@ -78,17 +110,17 @@ def enable(path: Path, sys: System) -> Config:
             "internet; turn it off (`tailscale funnel --https=443 off`) and try again"
         )
     cfg = load_config(path)
+    _serve(sys, cli, cfg.port)
     try:
-        sys.run([cli, "serve", "--bg", "--https=443", f"http://127.0.0.1:{cfg.port}"])
         cfg = set_value(path, "server.remote_host", name)
-    except (RuntimeError, ConfigError) as exc:
+    except ConfigError as exc:
         raise RemoteError(f"could not enable remote access: {exc}") from exc
     try:
         _restart(sys)
     except RuntimeError as exc:
         # Left armed, the next restart (a reboot, an update) would turn remote access on
         # after a command that reported failure: undo both halves instead.
-        sys.run([cli, "serve", "--https=443", "off"], check=False)
+        sys.run([cli, "serve", "--https=443", "off"], check=False, timeout=STATUS_TIMEOUT)
         save_config(replace(cfg, remote_host=None), path)
         raise RemoteError(
             f"the server did not restart ({exc}); remote access was rolled back"
@@ -105,9 +137,9 @@ def disable(path: Path, sys: System) -> Config:
     is_proxy_stopped = False
     try:
         cli = tailscale_cli(sys)
-        code, _ = sys.run([cli, "serve", "--https=443", "off"], check=False)
+        code, _ = sys.run([cli, "serve", "--https=443", "off"], check=False, timeout=STATUS_TIMEOUT)
         is_proxy_stopped = code == 0
-    except RemoteError as exc:
+    except (RemoteError, CommandTimedOut) as exc:
         sys.echo(f"{exc}; only clearing the config")
     if not is_proxy_stopped:
         sys.echo(
