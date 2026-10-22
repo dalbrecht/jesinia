@@ -497,6 +497,42 @@ describe("Toast", () => {
     vi.useRealTimers();
   });
 
+  it("evicting the toast under the pointer lets the others time out", () => {
+    vi.useFakeTimers();
+    const closes = [vi.fn(), vi.fn(), vi.fn(), vi.fn()];
+    let api: ReturnType<typeof useToast> | undefined;
+    const Grab = () => {
+      api = useToast();
+      return null;
+    };
+    render(
+      <ToastProvider>
+        <Grab />
+      </ToastProvider>,
+    );
+    const region = screen.getByRole("region", { name: "Notifications" });
+    const show = (i: number) =>
+      act(() => {
+        (api as NonNullable<typeof api>).show({
+          message: `Removed ${i}`,
+          action: { label: "Undo", onAction: () => {} },
+          duration: 8000,
+          onClose: closes[i] as (typeof closes)[number],
+        });
+      });
+    show(0);
+    show(1);
+    show(2);
+    // The pointer rests on the oldest toast, pausing the region; a fourth evicts it.
+    fireEvent.mouseEnter(region);
+    fireEvent.mouseOver(screen.getByText("Removed 0"));
+    show(3);
+    expect(closes[0]).toHaveBeenCalledExactlyOnceWith("dismiss");
+    act(() => vi.advanceTimersByTime(8000));
+    for (const onClose of closes.slice(1)) expect(onClose).toHaveBeenCalledWith("timeout");
+    vi.useRealTimers();
+  });
+
   it("dismiss reports dismiss, once, for the button and for dismiss(id)", () => {
     vi.useFakeTimers();
     const onClose = vi.fn();

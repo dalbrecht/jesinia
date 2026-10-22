@@ -138,16 +138,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         const oldest = v.findIndex((t) => lifetime(t) !== null);
         if (oldest === -1) setQueue((q) => [...q, entry]);
         else {
-          const evicted = v[oldest] as Entry;
-          update([...v.slice(0, oldest), ...v.slice(oldest + 1), entry]);
-          const onClose = closers.current.get(evicted.id);
-          closers.current.delete(evicted.id);
-          onClose?.("dismiss");
+          // Through close(), so an evicted toast holding the pointer or focus also resumes timers.
+          close((v[oldest] as Entry).id, "dismiss");
+          update([...visibleRef.current, entry]);
         }
       }
       return entry.id;
     },
-    [update],
+    [close, update],
   );
 
   // Promote queued toasts when room frees up.
