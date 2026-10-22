@@ -111,10 +111,7 @@ minutes (AirDrop or Universal Clipboard work well). `jesinia remote disable` tur
 | `jesinia status` | Server health per module, and a fresh login link |
 | `jesinia login [--print]` | Opens a fresh login link in your browser (or prints it) |
 | `jesinia login --remote` | Prints a login link for another device on your tailnet |
-<<<<<<< HEAD
 | `jesinia rss reader-password` | Creates the password NetNewsWire signs in with, and prints the API URL (replaces the previous one) |
-=======
->>>>>>> origin/main
 | `jesinia remote enable` / `disable` / `status` | Serve Jesinia on your tailnet over HTTPS (`tailscale serve`), or stop |
 | `jesinia doctor` | Checks config, KB, git remote, tools, agent logins, the LaunchAgent and the server, with a fix for each problem. Exits 1 on any `fail` |
 | `jesinia sync now` | Runs a KB git sync cycle now |
