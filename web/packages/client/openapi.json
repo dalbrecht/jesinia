@@ -4720,6 +4720,149 @@
         }
       }
     },
+    "/api/rss/reader": {
+      "get": {
+        "tags": [
+          "rss"
+        ],
+        "summary": "Reader Setup",
+        "operationId": "reader_setup_api_rss_reader_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReaderSetupOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rss/reader/password": {
+      "post": {
+        "tags": [
+          "rss"
+        ],
+        "summary": "New Reader Password",
+        "description": "A new reader password for NetNewsWire; the old one and its sign-ins stop working.\n\nDeliberately not idempotent: a stored response would keep the password in clear\nin ``rss.sqlite``, and a retry that makes another password only revokes the first\n(the user copies whichever one they were shown).",
+        "operationId": "new_reader_password_api_rss_reader_password_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReaderPasswordOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RssErrorOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/rss/settings": {
       "get": {
         "tags": [
@@ -21394,6 +21537,49 @@
           "read"
         ],
         "title": "ReadStateIn"
+      },
+      "ReaderPasswordOut": {
+        "properties": {
+          "has_password": {
+            "type": "boolean",
+            "title": "Has Password"
+          },
+          "server_url": {
+            "type": "string",
+            "title": "Server Url"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "Shown once; only its hash is kept."
+          }
+        },
+        "type": "object",
+        "required": [
+          "has_password",
+          "server_url",
+          "password"
+        ],
+        "title": "ReaderPasswordOut"
+      },
+      "ReaderSetupOut": {
+        "properties": {
+          "has_password": {
+            "type": "boolean",
+            "title": "Has Password"
+          },
+          "server_url": {
+            "type": "string",
+            "title": "Server Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "has_password",
+          "server_url"
+        ],
+        "title": "ReaderSetupOut",
+        "description": "What NetNewsWire's FreshRSS account needs (NetNewsWire sync spec \u00a77)."
       },
       "ReadinessOut": {
         "properties": {

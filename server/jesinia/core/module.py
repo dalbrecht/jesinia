@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -65,6 +65,15 @@ class ToolDef:
             raise ValueError(
                 f"invalid MCP tool name {self.name!r} (must match {_WIRE_NAME.pattern})"
             )
+
+
+@runtime_checkable
+class PublicRoutes(Protocol):
+    """A module whose ``public_router`` routes authenticate callers themselves (the Reader
+    API's own tokens): mounted without the owner-auth dependency, so each route must
+    check its caller."""
+
+    def public_router(self) -> APIRouter: ...
 
 
 class Module(Protocol):

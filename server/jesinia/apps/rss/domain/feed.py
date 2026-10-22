@@ -21,6 +21,7 @@ MAX_INTERVAL_S = 12 * 60 * 60
 # Past this many failures the backoff is at its cap; it also keeps 2**n small.
 _BACKOFF_DOUBLINGS = 10
 FOLDER_NAME_MAX = 100
+FEED_TITLE_MAX = 300
 CREDENTIALS_REFUSED = "credentials in URL are not supported"
 # A URL candidate is the whole run of non-space characters after the scheme: parentheses
 # and quotes can be part of a path or query (and so of a token), never a reason to stop.
@@ -44,6 +45,10 @@ class InvalidFeedUrl(RssError):  # noqa: N818 - the error code clients see
 
 class InvalidFolderName(RssError):  # noqa: N818 - the error code clients see
     """A folder name that is blank or too long."""
+
+
+class InvalidFeedTitle(RssError):  # noqa: N818 - the error code clients see
+    """A feed title that is blank or too long."""
 
 
 class FeedNotFound(RssError):  # noqa: N818 - the error code clients see
@@ -145,6 +150,14 @@ def validate_folder_name(raw: str) -> str:
     if not 1 <= len(name) <= FOLDER_NAME_MAX:
         raise InvalidFolderName(f"a folder name must be 1 to {FOLDER_NAME_MAX} characters")
     return name
+
+
+def validate_feed_title(raw: str) -> str:
+    """``raw`` trimmed, if it is 1 to ``FEED_TITLE_MAX`` characters; else ``InvalidFeedTitle``."""
+    title = raw.strip()
+    if not 1 <= len(title) <= FEED_TITLE_MAX:
+        raise InvalidFeedTitle(f"a feed title must be 1 to {FEED_TITLE_MAX} characters")
+    return title
 
 
 def feed_warning(fail_count: int, last_error: str | None) -> str | None:

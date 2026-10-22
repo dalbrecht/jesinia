@@ -458,3 +458,31 @@ def test_reindex_timeout_never_deletes_live_databases(cli: Cli, home: Path) -> N
     assert (home / "search.sqlite").exists()
     respx.get(f"{BASE}/healthz").mock(side_effect=httpx.ReadTimeout("slow"))
     assert cli(["status"]).exit_code == 1
+
+
+@respx.mock
+def test_rss_reader_password_should_print_what_netnewswire_needs(cli: Cli) -> None:
+    respx.post(f"{BASE}/api/rss/reader/password").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "has_password": True,
+                "server_url": "https://mac.tail1.ts.net/api/greader",
+                "password": "s3cret",
+            },
+        )
+    )
+    r = cli(["rss", "reader-password"])
+    assert r.exit_code == 0
+    assert "FreshRSS" in r.stdout and "https://mac.tail1.ts.net/api/greader" in r.stdout
+    assert "Password: s3cret" in r.stdout
+
+
+@respx.mock
+def test_rss_reader_password_when_server_down_or_busy(cli: Cli) -> None:
+    route = respx.post(f"{BASE}/api/rss/reader/password")
+    route.mock(side_effect=httpx.ConnectError("refused"))
+    assert "not running" in cli(["rss", "reader-password"]).stderr
+    route.mock(side_effect=httpx.ReadTimeout("slow"))
+    busy = cli(["rss", "reader-password"])
+    assert busy.exit_code == 1 and "did not answer" in busy.stderr

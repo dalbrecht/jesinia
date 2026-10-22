@@ -12,6 +12,7 @@ from typing import Protocol
 from jesinia.apps.rss.domain.feed import Feed, FeedView, Folder, ParsedFeed, ParsedItem
 from jesinia.apps.rss.domain.kept import ArchiveState
 from jesinia.apps.rss.domain.post import Counts, Cursor, PostView, View
+from jesinia.apps.rss.domain.reader import ItemQuery, ReaderItem, StarAction, StarSource
 from jesinia.apps.rss.domain.settings import Retention
 from jesinia.services.fetch.application.ports import Article
 from jesinia.services.fetch.application.service import FetchResult
@@ -114,6 +115,14 @@ class FeedStore(Protocol):
 
     def set_feed_folder(self, feed_id: int, folder_id: int | None) -> bool:
         """Move the feed; False if there was no such feed."""
+        ...
+
+    def rename_feed(self, feed_id: int, title: str) -> bool:
+        """Retitle a subscribed feed (polling never overwrites it); False if there is none."""
+        ...
+
+    def unfile_folder(self, folder_id: int) -> int:
+        """Delete the folder, leaving its feeds in no folder; how many feeds it held."""
         ...
 
     def set_feed_retention(self, feed_id: int, retention: Retention | None) -> bool:
@@ -235,4 +244,61 @@ class PostStore(Protocol):
     def archiving(self) -> list[tuple[str | None, int]]:
         """``(page id, post id)`` for each page whose archive was left running, one post
         per page; the page id is None for a post marked before its page was written."""
+        ...
+
+
+class StarLedger(Protocol):
+    """The append-only record of every star (Keep) and unstar (spec: NetNewsWire sync §6)."""
+
+    def latest_star(self, post_id: int) -> StarAction | None: ...
+
+    def append_star(
+        self,
+        post_id: int,
+        action: StarAction,
+        source: StarSource,
+        page_id: str | None,
+        at: datetime,
+    ) -> None: ...
+
+
+class PrefetchStore(Protocol):
+    """The queue of posts whose full article is pulled ahead of time."""
+
+    def posts_to_prefetch(self, limit: int) -> list[int]:
+        """Posts whose full article was never tried, newest first."""
+        ...
+
+    def record_article_attempt(self, post_id: int, at: datetime, error: str | None) -> None: ...
+
+
+class ReaderStore(StarLedger, Protocol):
+    """The Reader API's credentials and item lists."""
+
+    def reader_password(self) -> str | None:
+        """The SHA-256 of the reader password, if one was created."""
+        ...
+
+    def replace_reader_password(self, sha256: str, at: datetime) -> None:
+        """Set the password and revoke every reader token issued under the old one."""
+        ...
+
+    def add_reader_token(self, sha256: str, at: datetime) -> None: ...
+
+    def has_reader_token(self, sha256: str) -> bool: ...
+
+    def item_ids(self, query: ItemQuery, now: datetime) -> list[int]:
+        """Visible post ids in the query's stream, newest first (``now`` ends the hold)."""
+        ...
+
+    def items(self, post_ids: Sequence[int]) -> list[ReaderItem]:
+        """The posts that exist among ``post_ids``, newest first."""
+        ...
+
+
+class ArticleRenderer(Protocol):
+    """Markdown (a cached full article) to sanitized HTML for Reader API clients."""
+
+    def render(self, markdown: str, base_url: str) -> str:
+        """Relative links and images resolve against ``base_url`` (the article's URL)."""
         ...

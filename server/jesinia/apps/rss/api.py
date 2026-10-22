@@ -25,6 +25,7 @@ from jesinia.apps.rss.application.feeds import FeedService, ImportResult
 from jesinia.apps.rss.application.keep import KeepService
 from jesinia.apps.rss.application.poller import Poller, PollSummary
 from jesinia.apps.rss.application.posts import PostService
+from jesinia.apps.rss.application.reader import ReaderService
 from jesinia.apps.rss.domain.feed import (
     FOLDER_NAME_MAX,
     FeedExists,
@@ -110,11 +111,29 @@ class RssHost(Protocol):
     @property
     def engage(self) -> EngageService: ...
 
+    @property
+    def reader(self) -> ReaderService: ...
+
+    def reader_server_url(self) -> str:
+        """The server address NetNewsWire's FreshRSS account needs."""
+        ...
+
     def settings(self) -> RssSettings: ...
 
     def update_settings(self, settings: RssSettings) -> RssSettings:
         """Persist to ``config.toml`` and apply to the live config; ``InvalidSettings``."""
         ...
+
+
+class ReaderSetupOut(BaseModel):
+    """What NetNewsWire's FreshRSS account needs (NetNewsWire sync spec §7)."""
+
+    has_password: bool
+    server_url: str
+
+
+class ReaderPasswordOut(ReaderSetupOut):
+    password: str = Field(description="Shown once; only its hash is kept.")
 
 
 class FeedIn(BaseModel):
@@ -743,6 +762,24 @@ def build_router(host: RssHost) -> APIRouter:
             return TakeawayOut.of(await host.engage.takeaway(session_id))
 
         return await idem.run(lambda: _respond(run))
+
+    @r.get("/reader", response_model=ReaderSetupOut)
+    async def reader_setup() -> ReaderSetupOut:
+        return ReaderSetupOut(
+            has_password=host.reader.has_password(), server_url=host.reader_server_url()
+        )
+
+    @r.post("/reader/password", response_model=ReaderPasswordOut)
+    async def new_reader_password() -> ReaderPasswordOut:
+        """A new reader password for NetNewsWire; the old one and its sign-ins stop working.
+
+        Deliberately not idempotent: a stored response would keep the password in clear
+        in ``rss.sqlite``, and a retry that makes another password only revokes the first
+        (the user copies whichever one they were shown)."""
+        password = host.reader.create_password()
+        return ReaderPasswordOut(
+            has_password=True, server_url=host.reader_server_url(), password=password
+        )
 
     @r.get("/settings", response_model=SettingsBody)
     async def get_settings() -> SettingsBody:

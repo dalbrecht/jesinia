@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""``FeedStore`` over the module's own ``rss.sqlite`` connection (autocommit, from ``open_db``)."""
+"""``FeedStore``, ``PostStore`` and ``ReaderStore`` over the module's own ``rss.sqlite``
+connection (autocommit, from ``open_db``)."""
 
 from __future__ import annotations
 
@@ -20,6 +21,16 @@ from jesinia.apps.rss.domain.feed import (
 )
 from jesinia.apps.rss.domain.kept import ArchiveState, archive_state
 from jesinia.apps.rss.domain.post import TOMBSTONE_TTL, Counts, Cursor, PostView, View, utc_text
+from jesinia.apps.rss.domain.reader import (
+    ARTICLE_HOLD_MINUTES,
+    FeedStream,
+    ItemQuery,
+    LabelStream,
+    ReaderItem,
+    StarAction,
+    StarSource,
+    State,
+)
 from jesinia.apps.rss.domain.settings import Retention, validate_retention
 
 _FEED_COLUMNS = (
@@ -158,6 +169,20 @@ class SqliteFeedStore:
             (folder_id, feed_id),
         )
         return moved.rowcount == 1
+
+    def rename_feed(self, feed_id: int, title: str) -> bool:
+        renamed = self._conn.execute(
+            "UPDATE feeds SET title = ? WHERE id = ? AND deleted_at IS NULL", (title, feed_id)
+        )
+        return renamed.rowcount > 0
+
+    def unfile_folder(self, folder_id: int) -> int:
+        with self._transaction():
+            moved = self._conn.execute(
+                "UPDATE feeds SET folder_id = NULL WHERE folder_id = ?", (folder_id,)
+            ).rowcount
+            self._conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+        return moved
 
     def set_feed_retention(self, feed_id: int, retention: Retention | None) -> bool:
         unit = retention.unit if retention is not None else None
@@ -559,3 +584,155 @@ class SqlitePostStore:
             "GROUP BY COALESCE(kept_page_id, 'post:' || id) ORDER BY MIN(id)"
         ).fetchall()
         return [(None if row[0] is None else str(row[0]), int(row[1])) for row in rows]
+
+
+# -- the Reader API (NetNewsWire sync) ----------------------------------------------------
+_HOLD_DAYS = timedelta(minutes=ARTICLE_HOLD_MINUTES) / timedelta(days=1)
+# When a post became visible to the Reader API (julian day): once its full article was
+# tried, or when it was first seen if the article was already cached, else once the hold
+# expires. Fixed SQL; the hold is bound.
+_VISIBLE_AT = (
+    "CASE WHEN p.article_attempted_at IS NOT NULL THEN julianday(p.article_attempted_at) "
+    "WHEN p.full_md IS NOT NULL THEN julianday(p.first_seen_at) "
+    "ELSE julianday(p.first_seen_at) + ? END"
+)
+_IS_STARRED = (
+    "(SELECT l.action FROM star_ledger l WHERE l.post_id = p.id ORDER BY l.id DESC LIMIT 1) "
+    "= 'keep'"
+)
+_STATE_WHERE: dict[State, str] = {
+    "reading-list": "1",
+    "read": "p.read = 1",
+    "starred": _IS_STARRED,
+}
+_EXCLUDE_WHERE: dict[State, str] = {
+    "reading-list": "0",
+    "read": "p.read = 0",
+    "starred": f"NOT {_IS_STARRED}",
+}
+
+
+class SqliteReaderStore:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    # -- reader password and tokens ----------------------------------------------
+    def reader_password(self) -> str | None:
+        row = self._conn.execute("SELECT sha256 FROM reader_password WHERE id = 1").fetchone()
+        return None if row is None else str(row[0])
+
+    def replace_reader_password(self, sha256: str, at: datetime) -> None:
+        with _transaction(self._conn):
+            self._conn.execute("DELETE FROM reader_tokens")
+            self._conn.execute(
+                "INSERT INTO reader_password (id, sha256, created_at) VALUES (1, ?, ?) "
+                "ON CONFLICT (id) DO UPDATE SET sha256 = excluded.sha256, "
+                "created_at = excluded.created_at",
+                (sha256, utc_text(at)),
+            )
+
+    def add_reader_token(self, sha256: str, at: datetime) -> None:
+        self._conn.execute(
+            "INSERT INTO reader_tokens (sha256, created_at) VALUES (?, ?)", (sha256, utc_text(at))
+        )
+
+    def has_reader_token(self, sha256: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM reader_tokens WHERE sha256 = ?", (sha256,)
+        ).fetchone()
+        return row is not None
+
+    # -- star ledger ------------------------------------------------------------------
+    def latest_star(self, post_id: int) -> StarAction | None:
+        row = self._conn.execute(
+            "SELECT action FROM star_ledger WHERE post_id = ? ORDER BY id DESC LIMIT 1",
+            (post_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return "keep" if row[0] == "keep" else "unkeep"
+
+    def append_star(
+        self,
+        post_id: int,
+        action: StarAction,
+        source: StarSource,
+        page_id: str | None,
+        at: datetime,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO star_ledger (post_id, action, source, page_id, at) VALUES (?, ?, ?, ?, ?)",
+            (post_id, action, source, page_id, utc_text(at)),
+        )
+
+    def star_history(self, post_id: int) -> list[tuple[StarAction, StarSource, str | None]]:
+        """``(action, source, page id)`` for the post, oldest first."""
+        rows = self._conn.execute(
+            "SELECT action, source, page_id FROM star_ledger WHERE post_id = ? ORDER BY id",
+            (post_id,),
+        ).fetchall()
+        return [(row[0], row[1], row[2]) for row in rows]
+
+    # -- item lists ---------------------------------------------------------------------
+    def item_ids(self, query: ItemQuery, now: datetime) -> list[int]:
+        """Up to ``query.limit`` visible post ids in the stream, newest first, of feeds still
+        subscribed."""
+        where = ["f.deleted_at IS NULL", f"{_VISIBLE_AT} <= julianday(?)"]
+        params: list[object] = [_HOLD_DAYS, utc_text(now)]
+        stream = query.stream
+        if isinstance(stream, FeedStream):
+            where.append("p.feed_id = ?")
+            params.append(stream.feed_id)
+        elif isinstance(stream, LabelStream):
+            where.append("f.folder_id = (SELECT id FROM folders WHERE name = ?)")
+            params.append(stream.name)
+        else:
+            where.append(_STATE_WHERE[stream.state])
+        if query.exclude is not None:
+            where.append(_EXCLUDE_WHERE[query.exclude])
+        if query.oldest is not None:
+            # Unix seconds to a julian day: 2440587.5 is the Unix epoch.
+            where.append(f"{_VISIBLE_AT} >= ? / 86400.0 + 2440587.5")
+            params += [_HOLD_DAYS, query.oldest]
+        if query.after is not None:
+            where.append("p.id < ?")
+            params.append(query.after)
+        rows = self._conn.execute(
+            f"SELECT p.id {_FROM} WHERE {' AND '.join(where)} ORDER BY p.id DESC LIMIT ?",
+            (*params, query.limit),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def items(self, post_ids: Sequence[int]) -> list[ReaderItem]:
+        """The posts that exist among ``post_ids``, newest first."""
+        found: list[ReaderItem] = []
+        ids = sorted(set(post_ids))
+        for start in range(0, len(ids), _SQL_VARS):
+            chunk = ids[start : start + _SQL_VARS]
+            marks = ",".join("?" * len(chunk))
+            rows = self._conn.execute(
+                f"SELECT {_POST_COLUMNS}, d.name, f.site_url, {_IS_STARRED}, p.full_md "
+                f"{_FROM} LEFT JOIN folders d ON d.id = f.folder_id WHERE p.id IN ({marks})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                post_row: _PostRow = row[:17]
+                folder, site_url, starred, full_md = row[17:]
+                found.append(ReaderItem(_post(post_row), folder, site_url, bool(starred), full_md))
+        return sorted(found, key=lambda item: item.post.id, reverse=True)
+
+    # -- full-article prefetch -----------------------------------------------------------
+    def posts_to_prefetch(self, limit: int) -> list[int]:
+        """Posts whose full article was never tried, newest first."""
+        rows = self._conn.execute(
+            "SELECT id FROM posts WHERE full_md IS NULL AND article_attempted_at IS NULL "
+            "ORDER BY first_seen_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def record_article_attempt(self, post_id: int, at: datetime, error: str | None) -> None:
+        self._conn.execute(
+            "UPDATE posts SET article_attempted_at = ?, article_error = ? WHERE id = ?",
+            (utc_text(at), error, post_id),
+        )

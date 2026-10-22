@@ -23,6 +23,7 @@ from jesinia.apps.rss.application.ports import (
     FeedStore,
     ImageFetcher,
     PostStore,
+    StarLedger,
 )
 from jesinia.apps.rss.application.posts import PostService
 from jesinia.apps.rss.domain.feed import host_of, redact_urls
@@ -48,6 +49,7 @@ from jesinia.apps.rss.domain.kept import (
     takeaway_block,
 )
 from jesinia.apps.rss.domain.post import PostView
+from jesinia.apps.rss.domain.reader import StarSource
 from jesinia.core.events import Event
 from jesinia.services.fetch.application.service import FetchError, FetchTooLarge
 from jesinia.services.kb.application.errors import StaleWrite
@@ -83,10 +85,12 @@ class KeepService:
         folder: Callable[[], str],
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         publish: Callable[[Event], Awaitable[None]] | None = None,
+        ledger: StarLedger | None = None,
     ) -> None:
         """``folder`` gives the ``folders.source`` setting at each Keep, so a change in
         Settings → RSS applies without a restart. ``publish`` (the event bus, which never
-        raises to the publisher) hears every archive state change as ``rss.post_changed``."""
+        raises to the publisher) hears every archive state change as ``rss.post_changed``.
+        ``ledger`` records each Keep as a star (NetNewsWire sync spec §6)."""
         self.tags = tags
         self._kb = kb
         self._posts = posts
@@ -97,6 +101,7 @@ class KeepService:
         self._folder = folder
         self._now = now
         self._publish = publish
+        self._ledger = ledger
         # One Keep or archive write per source at a time, so they don't race each other. A
         # lock lives only while someone holds or waits for it.
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
@@ -111,7 +116,12 @@ class KeepService:
 
     # -- keep ----------------------------------------------------------------------
     async def keep(
-        self, post_id: int, note: str, tags: Sequence[str], takeaway: Takeaway | None
+        self,
+        post_id: int,
+        note: str,
+        tags: Sequence[str],
+        takeaway: Takeaway | None,
+        source: StarSource = "reader",
     ) -> KeepResult:
         """Write (or update) the post's page and start its archive when it needs one.
 
@@ -151,10 +161,16 @@ class KeepService:
                 raise
             page_id = page.page.id
             self._store.set_kept(post_id, page_id, "archiving" if archive else "done")
+            self.record_star(post_id, page_id, source)
             await self._announce(page_id)
             if archive:
                 self._start_archive(page_id, post_id)
         return KeepResult(page_id, page.page.path, created=existing is None)
+
+    def record_star(self, post_id: int, page_id: str, source: StarSource) -> None:
+        """Add a ``keep`` to the star ledger unless the post's latest entry already is one."""
+        if self._ledger is not None and self._ledger.latest_star(post_id) != "keep":
+            self._ledger.append_star(post_id, "keep", source, page_id, self._now())
 
     async def _create(
         self, post: PostView, note: str, tags: list[str], ai_block: str | None, at: datetime
