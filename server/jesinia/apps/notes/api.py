@@ -98,6 +98,8 @@ def build_router(host: NotesHost) -> APIRouter:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"no session {id}") from exc
         except (NotSubjectSessionError, InvalidTag) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        except AgentOnlyPage as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
         except KbError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return _saved(n)

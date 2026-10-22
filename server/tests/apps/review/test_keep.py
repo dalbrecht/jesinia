@@ -245,6 +245,22 @@ async def test_keep_writes_under_the_configured_review_folder(kenv: KEnv) -> Non
     assert state.path == "00 Inbox/acme-web/#1 Merge conflicting edits.md"
 
 
+async def test_keep_refuses_an_agent_only_review_folder(kenv: KEnv) -> None:
+    lock = {"kind": "folder", "access": "agents"}
+    await kenv.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "x", lock))
+    keeper = KeepService(
+        kb=kenv.kb, tags=kenv.tags, store=kenv.store, clock=kenv.clock, folder=lambda: "91 Memory"
+    )
+    round_id = kenv.round()
+    kenv.post(round_id)
+
+    state = await keeper.keep_finished(round_id)
+
+    assert state is not None and state.state == "failed"
+    assert state.error is not None and "agent-only" in state.error
+    assert kenv.pages() == [PurePosixPath("91 Memory/Memory.md")]
+
+
 async def test_quick_reviews_are_not_kept(kenv: KEnv) -> None:
     quick = kenv.round("quick")
     kenv.post(quick)
@@ -494,7 +510,9 @@ async def test_an_edit_between_read_and_write_is_merged_once_more(kenv: KEnv) ->
     real_write = kenv.kb.write
     raced = False
 
-    async def racing_write(draft: PageDraft, *, expected_rev: str | None = None):  # type: ignore[no-untyped-def]
+    async def racing_write(
+        draft: PageDraft, *, expected_rev: str | None = None, for_user: bool = False
+    ) -> PageWithRev:
         nonlocal raced
         if not raced and draft.id is not None:
             raced = True
@@ -502,7 +520,7 @@ async def test_an_edit_between_read_and_write_is_merged_once_more(kenv: KEnv) ->
             await kenv.kb.update_body(
                 draft.id, current.page.body + "\nRaced.\n", expected_rev=current.rev
             )
-        return await real_write(draft, expected_rev=expected_rev)
+        return await real_write(draft, expected_rev=expected_rev, for_user=for_user)
 
     kenv.kb.write = racing_write  # type: ignore[method-assign]
     again = await kenv.keeper.keep_review(round_id)
@@ -661,10 +679,12 @@ async def test_a_write_that_loses_the_race_is_a_conflict(kenv: KEnv) -> None:
     await kenv.keeper.keep_finished(round_id)
     real = kenv.kb.update_body
 
-    async def racing(page_id, body, *, expected_rev):  # type: ignore[no-untyped-def]
-        current = await kenv.kb.read(page_id)
-        await real(page_id, current.page.body + "Edit.\n", expected_rev=current.rev)
-        return await real(page_id, body, expected_rev=expected_rev)
+    async def racing(
+        id: PageId, body: str, *, expected_rev: str, for_user: bool = False
+    ) -> PageWithRev:
+        current = await kenv.kb.read(id)
+        await real(id, current.page.body + "Edit.\n", expected_rev=current.rev)
+        return await real(id, body, expected_rev=expected_rev, for_user=for_user)
 
     kenv.kb.update_body = racing  # type: ignore[method-assign]
     with pytest.raises(SystemPageChanged):

@@ -198,7 +198,8 @@ class NotesService:
         captured = at.astimezone().isoformat(timespec="seconds")
         note = await self.kb.write(
             PageDraft(None, title.strip() or "Untitled note", PurePosixPath(self.folder()), body,
-                      {"kind": "note", "captured": captured})
+                      {"kind": "note", "captured": captured}),
+            for_user=True,
         )  # fmt: skip
         try:
             self.log.record(note.page.id, session_id, session.subject.ref, at)

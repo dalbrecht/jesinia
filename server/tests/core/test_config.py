@@ -238,3 +238,12 @@ def test_rss_section_rejects_unknown_keys_and_types(tmp_path: Path) -> None:
         p.write_text(f'[server]\ntoken = "{token}"\n{bad}')
         with pytest.raises(ConfigError):
             load_config(p)
+
+
+def test_should_keep_new_folder_defaults_when_an_older_file_sets_only_some(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "config.toml"
+    p.write_text('[server]\ntoken = "abc"\n\n[folders]\nnote = "My Notes"\nsource = "Sources"\n')
+    cfg = load_config(p)
+    assert dict(cfg.folders) == {"note": "My Notes", "review": "Reviews", "source": "Sources"}

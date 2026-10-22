@@ -329,13 +329,21 @@ class KbService:
         return finish(root).children
 
     # -- writes --------------------------------------------------------------------
-    async def write(self, draft: PageDraft, *, expected_rev: str | None = None) -> PageWithRev:
+    async def write(
+        self, draft: PageDraft, *, expected_rev: str | None = None, for_user: bool = False
+    ) -> PageWithRev:
         """Create a page (``id=None``) or rewrite one in canonical form.
 
         Updating an existing page requires ``expected_rev``; a mismatch (or none given)
         raises ``StaleWrite`` and leaves the file untouched (spec review focus 2).
+        ``for_user`` marks a write the user's apps make: it raises ``AgentOnlyPage`` for an
+        agent-only page or folder (ADR 0011). Agents' writes leave it unset.
         """
         folder = self._check_folder(draft.folder)
+        if for_user:
+            self.require_user_folder(folder)
+            if draft.id is not None:
+                self.require_user_access(draft.id)
         if draft.id is None:
             id = new_page_id()
             async with self._locks[id]:
@@ -422,9 +430,16 @@ class KbService:
             raise UnsupportedAssetType(f"{disk} is not a PNG, JPEG, GIF, WebP or AVIF image")
         return Asset(data, media_type)
 
-    async def update_body(self, id: PageId, body: str, *, expected_rev: str) -> PageWithRev:
-        """Replace only the body; the raw front-matter block stays byte-identical."""
+    async def update_body(
+        self, id: PageId, body: str, *, expected_rev: str, for_user: bool = False
+    ) -> PageWithRev:
+        """Replace only the body; the raw front-matter block stays byte-identical.
+
+        ``for_user`` refuses an agent-only page, as for ``write``.
+        """
         self._fs()
+        if for_user:
+            self.require_user_access(id)
         async with self._locks[id]:
             disk, data = self._current(id)
             if sha256(data) != expected_rev:
@@ -437,13 +452,25 @@ class KbService:
         await self._emit(id, row.path, "updated")
         return result
 
-    async def move(self, id: PageId, folder: PurePosixPath, title: str | None = None) -> MoveResult:
-        """Move and/or rename. A rename updates inbound ``[[id|Title]]`` link text."""
+    async def move(
+        self,
+        id: PageId,
+        folder: PurePosixPath,
+        title: str | None = None,
+        *,
+        for_user: bool = False,
+    ) -> MoveResult:
+        """Move and/or rename. A rename updates inbound ``[[id|Title]]`` link text.
+
+        ``for_user`` refuses agent-only pages and folders, as for ``write``, and leaves
+        agent-only linkers alone (they are reported in ``skipped``).
+        """
         current = await self.read(id)
         new_title = title if title is not None else current.page.title
         moved = await self.write(
             PageDraft(id, new_title, folder, current.page.body, current.page.jesinia),
             expected_rev=current.rev,
+            for_user=for_user,
         )
         relinked: list[PageId] = []
         skipped: list[PageId] = []
@@ -460,10 +487,10 @@ class KbService:
                         raise StaleWrite(src)
                     body = retitle_links(linker.page.body, id, new_title)
                     if body != linker.page.body:
-                        await self.update_body(src, body, expected_rev=row.rev)
+                        await self.update_body(src, body, expected_rev=row.rev, for_user=for_user)
                         relinked.append(src)
                 except (KbError, OSError, ValueError):
-                    # Stale, missing, unreadable, or malformed linkers are left alone; the
-                    # rename itself already succeeded.
+                    # Stale, missing, unreadable, malformed or (for the user) agent-only
+                    # linkers are left alone; the rename itself already succeeded.
                     skipped.append(src)
         return MoveResult(moved, relinked, skipped)

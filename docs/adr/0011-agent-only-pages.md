@@ -26,7 +26,10 @@ way to say "agents only": every indexed page showed up in the tree and in search
 - **Locks apply to the user's views only.** The `/api/kb` routes leave locked pages out of
   the tree and refuse to read, edit, move, serve assets for or create pages in them
   (`403 AgentOnlyPage`). `GET /api/search` and Notes' related pages leave them out, and
-  Notes refuses to start a session about one. The MCP tools (`kb_*`, `kb_search`,
+  Notes refuses to start a session about one. Writes the apps make for the user (a Notes
+  save, an RSS keep, a kept review or "How it works") go through `KbService` with
+  `for_user=True`, which applies the same refusals, and a user rename skips agent-only
+  linkers rather than retitling their links. The MCP tools (`kb_*`, `kb_search`,
   `search_query`) are unchanged: agents see everything.
 - **Paths compare case-insensitively**, matching the Mac's file system.
 

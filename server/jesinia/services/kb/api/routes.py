@@ -98,14 +98,6 @@ def build_router(host: KbHost) -> APIRouter:
             raise _http(exc) from exc
         return PageId(id)
 
-    def writable_folder(folder: str) -> PurePosixPath:
-        """``folder`` once it is known not to be agent-only (else 403)."""
-        try:
-            host.service.require_user_folder(PurePosixPath(folder))
-        except KbError as exc:
-            raise _http(exc) from exc
-        return PurePosixPath(folder)
-
     @r.get("/pages/{id}")
     async def get_page(id: str) -> PageOut:
         page_id = readable(id)
@@ -130,23 +122,24 @@ def build_router(host: KbHost) -> APIRouter:
     @r.put("/pages")
     async def put_page(body: PageIn) -> PageOut:
         draft = PageDraft(
-            readable(body.id) if body.id else None,
+            PageId(body.id) if body.id else None,
             body.title,
-            writable_folder(body.folder),
+            PurePosixPath(body.folder),
             body.body,
             body.jesinia,
         )
         return PageOut.of(
-            await _guard(lambda: host.service.write(draft, expected_rev=body.expected_rev))
+            await _guard(
+                lambda: host.service.write(draft, expected_rev=body.expected_rev, for_user=True)
+            )
         )
 
     @r.patch("/pages/{id}/body", response_model=None)
     async def patch_body(id: str, body: BodyIn) -> PageOut | JSONResponse:
-        readable(id)
         try:
             return PageOut.of(
                 await host.service.update_body(
-                    PageId(id), body.body, expected_rev=body.expected_rev
+                    PageId(id), body.body, expected_rev=body.expected_rev, for_user=True
                 )
             )
         except StaleWrite:
@@ -160,8 +153,11 @@ def build_router(host: KbHost) -> APIRouter:
 
     @r.post("/pages/{id}/move")
     async def move_page(id: str, body: MoveIn) -> MoveOut:
-        page_id, folder = readable(id), writable_folder(body.folder)
-        result = await _guard(lambda: host.service.move(page_id, folder, body.title))
+        result = await _guard(
+            lambda: host.service.move(
+                PageId(id), PurePosixPath(body.folder), body.title, for_user=True
+            )
+        )
         return MoveOut.of(result)
 
     @r.get("/tree")

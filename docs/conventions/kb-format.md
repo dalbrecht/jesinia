@@ -167,7 +167,9 @@ jesinia:
   `kb_search`, `kb_write`, …) exactly as any other page.
 - **The user's apps** don't list them (`GET /api/kb/tree`, `GET /api/search`, Notes'
   related pages) and refuse to open, edit, move, start a Notes session about, or create
-  pages in them (`403 AgentOnlyPage`).
+  pages in them (`403 AgentOnlyPage`). That includes the apps' own writes: a Notes save,
+  an RSS keep or a kept review aimed at an agent-only folder is refused. Renaming a page
+  from the user's apps leaves links to it on agent-only pages as they were.
 - The marker is ordinary front matter, so it travels with the KB through git sync. To
   unlock, remove `access: agents` with an editor outside Jesinia, or ask an agent to.
 - It hides pages from Jesinia's user-facing views; it is not a security boundary against

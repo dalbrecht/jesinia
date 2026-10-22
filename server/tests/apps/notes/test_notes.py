@@ -496,3 +496,19 @@ async def test_related_pages_should_leave_out_agent_only_pages(env: Env) -> None
     assert {h.title for h in await search.query("Topic")} >= {"Topic secret", "Topic open"}
     related = await env.notes.service._related(subj.page.id, "Topic")
     assert "Topic open" in related and "Topic secret" not in related
+
+
+async def test_should_refuse_to_save_a_note_into_an_agent_only_notes_folder(env: Env) -> None:
+    lock = {"kind": "folder", "access": "agents"}
+    await env.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "x", lock))
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    env.notes.service.folder = lambda: "91 Memory"
+    sid = (
+        await env.client.post(
+            "/api/notes/sessions", json={"page_id": subj.page.id, "runner": "fake"}
+        )
+    ).json()["id"]
+    r = await env.client.post(
+        f"/api/notes/sessions/{sid}/save", json={"title": "N", "agent_text": "t"}
+    )
+    assert r.status_code == 403 and "agent-only" in r.json()["detail"]

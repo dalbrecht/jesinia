@@ -65,6 +65,7 @@ from jesinia.services.agents.application.packs import UntrustedDoc, wrap_untrust
 from jesinia.services.agents.domain.session import Session
 from jesinia.services.kb.api.schemas import TAG_MAX
 from jesinia.services.kb.application.errors import (
+    AgentOnlyPage,
     InvalidAssetName,
     InvalidTag,
     KbError,
@@ -467,6 +468,7 @@ _STATUS: dict[type[RssError], int] = {
 }
 # KB errors from Keep. Unavailable is the KB banner's cause; the action was refused whole.
 _KB_STATUS: dict[type[KbError], int] = {
+    AgentOnlyPage: status.HTTP_403_FORBIDDEN,
     KbUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     InvalidTag: status.HTTP_400_BAD_REQUEST,
     InvalidAssetName: status.HTTP_400_BAD_REQUEST,

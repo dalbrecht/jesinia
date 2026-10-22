@@ -402,3 +402,41 @@ async def test_tree_should_hide_agent_only_pages_and_emptied_folders_on_request(
     visible = await kb.tree(hide_agent_only=True)
     assert [n.path.name for n in visible] == ["Notes"]
     assert [c.title for c in visible[0].children] == ["Open"] and visible[0].pages == 1
+
+
+async def test_user_writes_should_be_refused_in_agent_only_places(kb: KbService) -> None:
+    await kb.write(PageDraft(None, "Memory", MEMORY, "x", FOLDER_LOCK))
+    locked = await kb.write(PageDraft(None, "Prefs", MEMORY, "x"))
+    open_page = await kb.write(PageDraft(None, "Open", N, "x"))
+
+    with pytest.raises(AgentOnlyPage):
+        await kb.write(PageDraft(None, "New", MEMORY / "sub", "x"), for_user=True)
+    with pytest.raises(AgentOnlyPage):
+        await kb.write(
+            PageDraft(locked.page.id, "Prefs", N, "x"), expected_rev=locked.rev, for_user=True
+        )
+    with pytest.raises(AgentOnlyPage):
+        await kb.update_body(locked.page.id, "y", expected_rev=locked.rev, for_user=True)
+    with pytest.raises(AgentOnlyPage):
+        await kb.move(open_page.page.id, MEMORY, for_user=True)
+    with pytest.raises(AgentOnlyPage):
+        await kb.move(locked.page.id, N, for_user=True)
+    assert (await kb.read(locked.page.id)).rev == locked.rev  # nothing was written
+    # The same writes on behalf of an agent go through.
+    await kb.update_body(locked.page.id, "y", expected_rev=locked.rev)
+    created = await kb.write(PageDraft(None, "New", MEMORY / "sub", "x"))
+    assert kb.is_agent_only(created.page.id)
+
+
+async def test_user_rename_should_leave_agent_only_linkers_alone(kb: KbService) -> None:
+    await kb.write(PageDraft(None, "Memory", MEMORY, "x", FOLDER_LOCK))
+    target = await kb.write(PageDraft(None, "Old", N, "x"))
+    link = f"See [[{target.page.id}|Old]]."
+    agents = await kb.write(PageDraft(None, "Prefs", MEMORY, link))
+    users = await kb.write(PageDraft(None, "Mine", N, link))
+
+    result = await kb.move(target.page.id, N, "New", for_user=True)
+
+    assert result.relinked == [users.page.id] and result.skipped == [agents.page.id]
+    assert (await kb.read(agents.page.id)).rev == agents.rev
+    assert "|New]]" in (await kb.read(users.page.id)).page.body

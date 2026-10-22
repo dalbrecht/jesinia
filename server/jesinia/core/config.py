@@ -183,10 +183,10 @@ def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
     for key in ("interval", "quiet"):
         if key in kbsync:
             cfg = _apply(cfg, f"kbsync.{key}", str(kbsync[key]))
-    if folders:
-        cfg = replace(cfg, folders={})
-        for kind, folder in folders.items():
-            cfg = _apply(cfg, f"folders.{kind}", str(folder))
+    # Overrides go on top of the defaults: a file written before a folder kind existed
+    # still gets that kind's default.
+    for kind, folder in folders.items():
+        cfg = _apply(cfg, f"folders.{kind}", str(folder))
     if "retention" in rss:
         cfg = _apply(cfg, "rss.retention", str(rss["retention"]))
     return cfg

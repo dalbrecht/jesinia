@@ -203,7 +203,7 @@ class KeepService:
                     merge_round_section("", kept.round_id, section),
                     review_front_matter(kept),
                 )
-                return await self._kb.write(draft)
+                return await self._kb.write(draft, for_user=True)
             try:
                 return await self._rewrite(page_id, kept, section)
             except StaleWrite:  # edited between the read and the write: once more
@@ -353,7 +353,7 @@ class KeepService:
             merge_round_section(page.body, kept.round_id, section),
             review_front_matter(kept, page.jesinia),
         )
-        return await self._kb.write(draft, expected_rev=current.rev)
+        return await self._kb.write(draft, expected_rev=current.rev, for_user=True)
 
     # --- How it works -------------------------------------------------------------------------
 
@@ -505,14 +505,15 @@ class KeepService:
                     draft.text,
                     # The source finds the page again wherever it lands (N3).
                     {"kind": SYSTEM_KIND, "repo": repo, "source": system_source(repo)},
-                )
+                ),
+                for_user=True,
             )
         if current is None or current.rev != draft.base_rev:
             raise changed
         try:
             # Body only: the page's front matter stays byte-for-byte the author's.
             return await self._kb.update_body(
-                current.page.id, draft.text, expected_rev=draft.base_rev
+                current.page.id, draft.text, expected_rev=draft.base_rev, for_user=True
             )
         except StaleWrite as exc:
             raise changed from exc
