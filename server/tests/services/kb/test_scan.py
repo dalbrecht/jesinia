@@ -191,3 +191,24 @@ async def test_adoption_skips_file_changed_during_write(kb: KbService, monkeypat
     monkeypatch.setattr(LocalFiles, "write_atomic", typing)
     report = await scan(kb)
     assert report.adopted == [] and f.read_text() == "draft, still typing\n"
+
+
+async def test_should_pick_up_an_agent_only_marker_written_outside_jesinia(
+    kb: KbService,
+) -> None:
+    folder = _root(kb) / "93 Scratch"
+    folder.mkdir()
+    (folder / "Scratch.md").write_text(
+        "---\nid: 0192f7a8-0000-7000-8000-000000000093\ntitle: Scratch\n"
+        "jesinia:\n  kind: folder\n  access: agents\n---\nAgents only.\n"
+    )
+    (folder / "Draft.md").write_text("plain\n")
+    await scan(kb)
+    assert kb.agent_only().covers(PurePosixPath("93 Scratch/Draft.md"))
+
+    # Removing the marker by hand unlocks the folder on the next scan.
+    text = (folder / "Scratch.md").read_text().replace("  access: agents\n", "")
+    (folder / "Scratch.md").write_text(text)
+    os.utime(folder / "Scratch.md", (1, 1))
+    await scan(kb)
+    assert not kb.agent_only()

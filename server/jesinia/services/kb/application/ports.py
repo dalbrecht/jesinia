@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
+from jesinia.services.kb.domain.access import LockScope
 from jesinia.services.kb.domain.page import PageId
 
 
@@ -78,10 +79,12 @@ class PageIndex(Protocol):
         links: Iterable[PageId] | None = None,
         tags: Iterable[str] | None = None,
         source: str | None = None,
+        access: LockScope | None = None,
     ) -> None:
         """Upsert a page row; with ``links``, replace its outbound links atomically.
 
-        With ``tags``, also replace its tags and its ``source`` (``None`` clears it).
+        With ``tags``, also replace its tags, its ``source`` and its agent-only ``access``
+        lock (``None`` clears either).
         """
         ...
 
@@ -94,6 +97,10 @@ class PageIndex(Protocol):
     def set_tags(self, id: PageId, tags: Iterable[str]) -> None: ...
 
     def set_source(self, id: PageId, url: str | None) -> None: ...
+
+    def locks(self) -> list[tuple[PurePosixPath, LockScope]]:
+        """Every agent-only page's path and lock scope (ADR 0011)."""
+        ...
 
     def tag_counts(self) -> dict[str, int]:
         """How many pages carry each tag."""

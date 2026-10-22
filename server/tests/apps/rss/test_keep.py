@@ -41,7 +41,7 @@ from jesinia.core.config import Config
 from jesinia.core.events import Event
 from jesinia.services.fetch.application.service import FetchError, FetchService
 from jesinia.services.kb.application.errors import StaleWrite
-from jesinia.services.kb.application.service import PageDraft
+from jesinia.services.kb.application.service import PageDraft, PageWithRev
 from jesinia.services.kb.domain.page import PageId
 from jesinia.services.kb.domain.tags import extract_tags
 from tests.apps.rss.conftest import KEEP_API, PUBLISHED, KeepEnv, keep_server
@@ -210,6 +210,17 @@ async def test_keep_reports_an_unwritable_source_folder(keep_env: KeepEnv) -> No
     post_id = keep_env.post()
     refused = await keep_env.keep(post_id)
     assert refused.status_code == 400 and refused.json()["error"] == "ReservedPath"
+    assert keep_env.state(post_id) == (None, None, None)
+
+
+async def test_keep_refuses_an_agent_only_source_folder(keep_env: KeepEnv) -> None:
+    lock = {"kind": "folder", "access": "agents"}
+    await keep_env.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "x", lock))
+    ctx = keep_env.app.state.ctx
+    ctx.cfg = replace_config(ctx.cfg, folders={**ctx.cfg.folders, "source": "91 Memory"})
+    post_id = keep_env.post()
+    refused = await keep_env.keep(post_id)
+    assert refused.status_code == 403 and refused.json()["error"] == "AgentOnlyPage"
     assert keep_env.state(post_id) == (None, None, None)
 
 
@@ -586,7 +597,9 @@ async def test_a_failed_keep_again_leaves_the_failed_archive_as_it_was(
     assert failed[1] == "failed"
     kb = keep_env.kb
 
-    async def stale(draft: PageDraft, *, expected_rev: str | None = None) -> None:
+    async def stale(
+        draft: PageDraft, *, expected_rev: str | None = None, for_user: bool = False
+    ) -> None:
         raise StaleWrite("changed since read")
 
     monkeypatch.setattr(kb, "write", stale)
@@ -638,6 +651,34 @@ async def test_archive_failure_is_visible_and_retryable(
     assert "Keep it anyway." in text and FEED_FALLBACK_NOTE not in text
     assert "Most personal tools never outgrow a single file database" in text
     assert "](../_assets/" in text
+
+
+async def test_archive_retry_of_a_page_moved_into_an_agent_only_folder_writes_nothing(
+    keep_env: KeepEnv, mock: respx.MockRouter
+) -> None:
+    route = mock.get("https://fly.io/blog/sqlite-wal").mock(return_value=httpx.Response(503))
+    post_id = keep_env.post()
+    kept = await keep_env.keep(post_id, "Keep it anyway.")
+    await keep_env.rss.keeper.drain()
+    page_id = PageId(kept.json()["page_id"])
+    lock = {"kind": "folder", "access": "agents"}
+    await keep_env.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "x", lock))
+    await keep_env.kb.move(page_id, PurePosixPath("91 Memory"))
+    route.mock(
+        return_value=httpx.Response(
+            200, content=ARTICLE_FIXTURE.read_bytes(), headers={"content-type": "text/html"}
+        )
+    )
+    images = mock.get(url__regex=r"https://(news|cdn)\.example(\.org)?/.*\.png").mock(
+        return_value=httpx.Response(200, content=PNG_MAGIC + b"img", headers={"content-type": PNG})
+    )
+
+    await keep_env.client.post(f"{KEEP_API}/posts/{post_id}/archive")
+    await keep_env.rss.keeper.drain()
+
+    _, state, error = keep_env.state(post_id)
+    assert state == "failed" and error is not None and "agent-only" in error
+    assert not images.called and not (keep_env.root / "_assets" / page_id).exists()
 
 
 def _post_changes(env: KeepEnv) -> list[dict[str, object]]:
@@ -704,13 +745,15 @@ async def test_archive_retries_once_against_a_page_edited_meanwhile(
     original = kb.write
     edits: list[str] = []
 
-    async def edited_meanwhile(draft: PageDraft, *, expected_rev: str | None = None):  # type: ignore[no-untyped-def]
+    async def edited_meanwhile(
+        draft: PageDraft, *, expected_rev: str | None = None, for_user: bool = False
+    ) -> PageWithRev:
         if draft.id is not None and not edits:
             # The author saves the page in an editor just before the archive's write.
             path = keep_env.root / str(kb.resolve(draft.id))
             path.write_text(path.read_text().replace("Mine.", "Mine, edited."))
             edits.append(str(path))
-        return await original(draft, expected_rev=expected_rev)
+        return await original(draft, expected_rev=expected_rev, for_user=for_user)
 
     monkeypatch.setattr(kb, "write", edited_meanwhile)
     kept = await keep_env.keep(post_id, "Mine.")
@@ -728,10 +771,12 @@ async def test_archive_gives_up_after_a_second_conflict(
     kb = keep_env.kb
     original = kb.write
 
-    async def always_stale(draft: PageDraft, *, expected_rev: str | None = None):  # type: ignore[no-untyped-def]
+    async def always_stale(
+        draft: PageDraft, *, expected_rev: str | None = None, for_user: bool = False
+    ) -> PageWithRev:
         if draft.id is not None:
             raise StaleWrite(f"{draft.id}: changed since read")
-        return await original(draft, expected_rev=expected_rev)
+        return await original(draft, expected_rev=expected_rev, for_user=for_user)
 
     monkeypatch.setattr(kb, "write", always_stale)
     await keep_env.keep(post_id, "Mine.")
@@ -1042,12 +1087,14 @@ async def test_a_prune_during_keep_never_takes_the_post_being_kept(
     original = kb.write
     pruned: list[int] = []
 
-    async def prune_first(draft: PageDraft, *, expected_rev: str | None = None):  # type: ignore[no-untyped-def]
+    async def prune_first(
+        draft: PageDraft, *, expected_rev: str | None = None, for_user: bool = False
+    ) -> PageWithRev:
         if draft.id is None and not pruned:
             # The daily prune runs after Keep marked the post, before its page is written.
             assert keep_env.state(post_id) == (None, "archiving", None)
             pruned.append(keep_env.rss.posts.prune(datetime.now(UTC)))
-        return await original(draft, expected_rev=expected_rev)
+        return await original(draft, expected_rev=expected_rev, for_user=for_user)
 
     monkeypatch.setattr(kb, "write", prune_first)
     kept = await keep_env.keep(post_id, "Mine.")

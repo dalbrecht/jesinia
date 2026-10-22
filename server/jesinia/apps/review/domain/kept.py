@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Kept review pages and the repo's "How it works" page (spec §6.2, §8; plan Task 16).
 
-A deep review the author finishes is kept as ``Reviews/<owner>-<repo>/#<n> <title>.md``:
+A deep review the author finishes is kept as ``<reviews folder>/<owner>-<repo>/#<n> <title>.md``
+(``folders.review`` in ``config.toml``, ``Reviews`` by default):
 one page per PR, with one section per kept round between ``jesinia:review-round`` markers,
 so keeping a round again replaces its own section and leaves the author's edits elsewhere
 alone. Everything Jesinia owns in the front matter sits under ``jesinia:`` (foundation
@@ -26,7 +27,8 @@ from jesinia.apps.review.domain.workspace import parse_repo
 from jesinia.services.kb.domain.provenance import inert, provenance_label, wrap_ai
 from jesinia.services.kb.domain.tags import render_tag_line
 
-REVIEWS_FOLDER: Final = "Reviews"
+REVIEWS_FOLDER: Final = "Reviews"  # the default; ``folders.review`` overrides it
+REVIEW_FOLDER_KIND: Final = "review"  # the ``folders.review`` config key
 SYSTEM_PAGE_TITLE: Final = "How it works"
 REVIEW_KIND: Final = "review/pr"
 SYSTEM_KIND: Final = "review/system"
@@ -228,19 +230,20 @@ def _text_or_none(value: object) -> str | None:
 # --- where pages go -----------------------------------------------------------------------------
 
 
-def repo_folder(repo: str) -> PurePosixPath:
-    """``Reviews/<owner>-<repo>``, in the repo's canonical (lowercase) spelling.
+def repo_folder(repo: str, base: str = REVIEWS_FOLDER) -> PurePosixPath:
+    """``<base>/<owner>-<repo>``, in the repo's canonical (lowercase) spelling. The per-repo
+    folder keeps each repo's "How it works" page apart from the others'.
 
     Raises:
         InvalidRepoError: ``repo`` isn't ``owner/name``.
     """
     owner, name = parse_repo(repo)
-    return PurePosixPath(REVIEWS_FOLDER, f"{owner}-{name}")
+    return PurePosixPath(base, f"{owner}-{name}")
 
 
-def system_page_path(repo: str) -> PurePosixPath:
+def system_page_path(repo: str, base: str = REVIEWS_FOLDER) -> PurePosixPath:
     """The repo's ``How it works.md``."""
-    return repo_folder(repo) / f"{SYSTEM_PAGE_TITLE}.md"
+    return repo_folder(repo, base) / f"{SYSTEM_PAGE_TITLE}.md"
 
 
 def system_source(repo: str) -> str:

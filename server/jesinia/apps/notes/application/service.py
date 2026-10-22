@@ -105,7 +105,10 @@ class NotesService:
         if self.search is None:
             return "(search is unavailable)\n"
         try:
-            found = await self.search.query(title, limit=RELATED + 1, sources={"kb"})
+            # The list reaches the user's chat too: keep agent-only pages out of it.
+            found = await self.search.query(
+                title, limit=RELATED + 1, sources={"kb"}, hide_agent_only=True
+            )
         except Exception:  # derived index; a session about the page still works without it
             log.exception("related-pages search failed for page %s", id)
             return "(search is unavailable)\n"
@@ -195,7 +198,8 @@ class NotesService:
         captured = at.astimezone().isoformat(timespec="seconds")
         note = await self.kb.write(
             PageDraft(None, title.strip() or "Untitled note", PurePosixPath(self.folder()), body,
-                      {"kind": "note", "captured": captured})
+                      {"kind": "note", "captured": captured}),
+            for_user=True,
         )  # fmt: skip
         try:
             self.log.record(note.page.id, session_id, session.subject.ref, at)

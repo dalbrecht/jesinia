@@ -62,7 +62,9 @@ def build_router(host: SearchHost) -> APIRouter:
         limit: Annotated[int, Query(ge=1, le=200)] = 20,
         source: Annotated[list[str] | None, Query()] = None,
     ) -> list[HitOut]:
-        hits = await host.service.query(q, limit=limit, sources=set(source) if source else None)
+        hits = await host.service.query(
+            q, limit=limit, sources=set(source) if source else None, hide_agent_only=True
+        )
         return [HitOut.of(h) for h in hits]
 
     @r.post("/reindex")

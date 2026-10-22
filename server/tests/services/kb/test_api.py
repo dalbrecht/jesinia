@@ -334,3 +334,66 @@ async def test_get_path_reports_folder_and_problem(
             "problem": "no KB path configured",
             "pages": 0,
         }
+
+
+# --- agent-only pages and folders (ADR 0011) -----------------------------------------------
+
+
+async def _locked_memory(module: KbModule) -> tuple[dict[str, object], dict[str, object]]:
+    """An agent-only `91 Memory` folder (lock page + one page), written as an agent would."""
+    lock = await _write(
+        module, title="Memory", folder="91 Memory", body="x",
+        jesinia={"kind": "folder", "access": "agents"},
+    )  # fmt: skip
+    page = await _write(module, title="Prefs", folder="91 Memory/claude", body="secret")
+    return lock, page
+
+
+async def test_user_routes_should_hide_and_refuse_agent_only_pages(
+    client: httpx.AsyncClient, module: KbModule
+) -> None:
+    lock, page = await _locked_memory(module)
+    open_page = await _create(client, "Open")
+
+    tree = (await client.get("/api/kb/tree")).json()
+    assert [n["path"] for n in tree] == ["Notes"]
+    for id in (lock["id"], page["id"]):
+        r = await client.get(f"/api/kb/pages/{id}")
+        assert r.status_code == 403 and "AgentOnlyPage" in r.json()["detail"]
+    patch = await client.patch(
+        f"/api/kb/pages/{page['id']}/body", json={"body": "mine", "expected_rev": page["rev"]}
+    )
+    assert patch.status_code == 403
+    update = await client.put(
+        "/api/kb/pages",
+        json={"id": page["id"], "title": "Prefs", "folder": "Notes", "body": "out",
+              "expected_rev": page["rev"]},
+    )  # fmt: skip
+    assert update.status_code == 403
+    create = await client.put(
+        "/api/kb/pages", json={"title": "Sneak", "folder": "91 Memory/claude", "body": "x"}
+    )
+    assert create.status_code == 403
+    into = await client.post(f"/api/kb/pages/{open_page['id']}/move", json={"folder": "91 Memory"})
+    assert into.status_code == 403
+    out = await client.post(f"/api/kb/pages/{page['id']}/move", json={"folder": "Notes"})
+    assert out.status_code == 403
+    asset = await client.get(f"/api/kb/assets/{page['id']}/{'a' * 64}.png")
+    assert asset.status_code == 403
+
+
+async def test_agents_should_keep_full_access_to_agent_only_pages(
+    client: httpx.AsyncClient, module: KbModule
+) -> None:
+    _, page = await _locked_memory(module)
+    read = _tool(module, "kb_read")
+    got = await read.handler(read.input_model(id=page["id"]), CallContext("s-1"))
+    assert isinstance(got, dict) and got["body"] == "secret"
+    updated = await _write(
+        module, id=page["id"], title="Prefs", folder="91 Memory/claude", body="new",
+        expected_rev=got["rev"],
+    )  # fmt: skip
+    assert updated["body"] == "new"
+    tree = _tool(module, "kb_tree")
+    via_mcp = await tree.handler(tree.input_model(), CallContext(None))
+    assert isinstance(via_mcp, list) and [n["path"] for n in via_mcp] == ["91 Memory"]

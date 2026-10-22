@@ -21,7 +21,8 @@ def test_defaults_and_token_created_0600(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "config.toml")
     assert cfg.port == 5374 and cfg.kbsync_interval == timedelta(hours=4)
     assert cfg.kbsync_quiet == timedelta(seconds=30)
-    assert cfg.kb_path is None and dict(cfg.folders) == {"note": "Notes", "source": "Sources"}
+    assert cfg.kb_path is None
+    assert dict(cfg.folders) == {"note": "Notes", "review": "Reviews", "source": "Sources"}
     assert cfg.rss_retention == timedelta(days=30)
     assert len(cfg.token) >= 43
     assert stat.S_IMODE((tmp_path / "config.toml").stat().st_mode) == 0o600
@@ -67,7 +68,9 @@ def test_kb_path_and_folders(tmp_path: Path) -> None:
     assert set_value(p, "kb.path", str(kb)).kb_path == kb
     assert set_value(p, "folders.source", "Sources").folders["source"] == "Sources"
     cfg = load_config(p)
-    assert cfg.kb_path == kb and cfg.folders == {"note": "Notes", "source": "Sources"}
+    assert cfg.kb_path == kb
+    assert cfg.folders == {"note": "Notes", "review": "Reviews", "source": "Sources"}
+    assert set_value(p, "folders.review", "00 Inbox").folders["review"] == "00 Inbox"
     assert set_value(p, "kb.path", "").kb_path is None
 
 
@@ -169,7 +172,7 @@ def test_minimal_file_uses_defaults(tmp_path: Path) -> None:
     cfg = load_config(p)
     assert cfg.token == "abc" and cfg.port == 5374 and cfg.kb_path is None
     assert cfg.kbsync_interval == timedelta(hours=4)
-    assert dict(cfg.folders) == {"note": "Notes", "source": "Sources"}
+    assert dict(cfg.folders) == {"note": "Notes", "review": "Reviews", "source": "Sources"}
 
 
 @pytest.mark.parametrize("text", ["server = 5\n", "[server]\nport = 1\n", '[server]\ntoken = ""\n'])
@@ -235,6 +238,15 @@ def test_rss_section_rejects_unknown_keys_and_types(tmp_path: Path) -> None:
         p.write_text(f'[server]\ntoken = "{token}"\n{bad}')
         with pytest.raises(ConfigError):
             load_config(p)
+
+
+def test_should_keep_new_folder_defaults_when_an_older_file_sets_only_some(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "config.toml"
+    p.write_text('[server]\ntoken = "abc"\n\n[folders]\nnote = "My Notes"\nsource = "Sources"\n')
+    cfg = load_config(p)
+    assert dict(cfg.folders) == {"note": "My Notes", "review": "Reviews", "source": "Sources"}
 
 
 def test_should_round_trip_remote_host_and_default_to_off(tmp_path: Path) -> None:

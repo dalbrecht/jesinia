@@ -21,6 +21,7 @@ from typing import Literal
 
 from jesinia.services.kb.application.errors import KbError, StaleWrite
 from jesinia.services.kb.application.service import Change, KbService, nfc
+from jesinia.services.kb.domain.access import LockScope, lock_scope
 from jesinia.services.kb.domain.frontmatter import page_from, parse_document, serialize_page
 from jesinia.services.kb.domain.links import link_targets
 from jesinia.services.kb.domain.page import Page, PageId, new_page_id, source_of
@@ -57,6 +58,7 @@ class _Found:
     body: str | None  # None when reused from the index (unchanged mtime)
     source: str | None = None
     tags: list[str] | None = None  # None when reused from the index (unchanged mtime)
+    access: LockScope | None = None
 
 
 Visit = Literal["page", "foreign", "skipped"]
@@ -107,6 +109,7 @@ def _visit(
             page.body,
             source_of(page.jesinia),
             indexed_tags(page.body, page.jesinia),
+            lock_scope(page.jesinia),
         )
     )
     return "page"
@@ -155,6 +158,7 @@ async def scan(svc: KbService) -> ScanReport:
             links,
             keep.tags,
             keep.source,
+            keep.access,
         )
         change: Change
         if previous is None:

@@ -143,6 +143,38 @@ One line per tag:
   create a near-duplicate of an existing tag. Those MCP tools answer from the catalog alone;
   the calling agent judges meaning itself.
 
+## Agent-only pages and folders
+
+Some pages are for agents alone: their memory, scratch work, scripts. A page is
+**agent-only** when its front matter says so (ADR 0011):
+
+```yaml
+---
+id: 01a1639a-5e53-70ce-a14f-f7ae7e3880f9
+title: Memory
+jesinia:
+  kind: folder        # this page speaks for its folder
+  access: agents      # agent-only
+---
+```
+
+- `access: agents` locks the page. Only that exact value locks.
+- With `kind: folder` as well, the page is its folder's **lock page**: the lock covers every
+  page in that folder and its subfolders, including pages added later. A lock page at the
+  KB root locks only itself, never the whole KB.
+- Paths compare case-insensitively, as on the Mac's file system.
+- **Agents** read, search, write and move agent-only pages through MCP (`kb_read`,
+  `kb_search`, `kb_write`, …) exactly as any other page.
+- **The user's apps** don't list them (`GET /api/kb/tree`, `GET /api/search`, Notes'
+  related pages) and refuse to open, edit, move, start a Notes session about, or create
+  pages in them (`403 AgentOnlyPage`). That includes the apps' own writes: a Notes save,
+  an RSS keep or a kept review aimed at an agent-only folder is refused. Renaming a page
+  from the user's apps leaves links to it on agent-only pages as they were.
+- The marker is ordinary front matter, so it travels with the KB through git sync. To
+  unlock, remove `access: agents` with an editor outside Jesinia, or ask an agent to.
+- It hides pages from Jesinia's user-facing views; it is not a security boundary against
+  anything that reads the files on disk.
+
 ## Writing safely
 
 - Every write is atomic: temp file `*.jesinia-tmp`, fsync, then rename. Git sync never

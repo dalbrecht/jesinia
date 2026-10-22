@@ -180,7 +180,7 @@ class KeepService:
         body = render_kept_body(note, tags, ai_block, article)
         front = kept_front_matter(post, feed.url if feed is not None else "", at.astimezone())
         draft = PageDraft(None, kept_title(post), PurePosixPath(self._folder()), body, front)
-        return await self._kb.write(draft)
+        return await self._kb.write(draft, for_user=True)
 
     async def _feed_markdown(self, post: PostView) -> str:
         """The feed's (already sanitised) content as Markdown, else its plain snippet."""
@@ -203,7 +203,7 @@ class KeepService:
         current = await self._kb.read(page_id)
         page = current.page
         draft = PageDraft(page_id, page.title, page.path.parent, change(page), page.jesinia)
-        return await self._kb.write(draft, expected_rev=current.rev)
+        return await self._kb.write(draft, expected_rev=current.rev, for_user=True)
 
     async def _rewrite(self, page_id: PageId, change: Callable[[Page], str]) -> PageWithRev:
         """Write ``change(page)`` as the page's body against its current revision; if it is
@@ -312,6 +312,9 @@ class KeepService:
         await self._announce(page_id)
 
     async def _archive(self, page_id: PageId, post_id: int) -> None:
+        # Before any download or asset write: the page may have moved into an agent-only
+        # folder since it was kept (ADR 0011).
+        self._kb.require_user_access(page_id)
         post = self._posts.get(post_id)
         markdown = await self._posts.full_article(post_id)
         saved = await self._save_images(page_id, markdown)

@@ -22,6 +22,10 @@ def kb_cfg(cfg: Config, tmp_path: Path) -> Config:
     (root / "Notes").mkdir(parents=True)
     for i in range(3):
         (root / "Notes" / f"Page {i}.md").write_text(f"shared word and unique{i}\n")
+    (root / "Notes" / "Agents.md").write_text(
+        "---\nid: 0192f7a8-0000-7000-8000-000000000091\ntitle: Agents\n"
+        "jesinia:\n  access: agents\n---\nunique9\n"
+    )
     return replace(cfg, kb_path=root)
 
 
@@ -41,6 +45,8 @@ async def test_route_and_tools(client: tuple[httpx.AsyncClient, SearchModule]) -
     c, search = client
     hits = (await c.get("/api/search", params={"q": "unique1"})).json()
     assert [h["title"] for h in hits] == ["Page 1"] and hits[0]["source"] == "kb"
+    # Agent-only pages are left out of the user's search, never out of the agents'.
+    assert (await c.get("/api/search", params={"q": "unique9"})).json() == []
     assert len((await c.get("/api/search", params={"q": "shared", "limit": 2})).json()) == 2
     assert (await c.get("/api/search", params={"q": "shared", "source": "rss"})).json() == []
     tools = {t.name: t for t in search.mcp_tools()}
@@ -49,6 +55,10 @@ async def test_route_and_tools(client: tuple[httpx.AsyncClient, SearchModule]) -
         tools["kb_search"].input_model(q="unique2"), CallContext(None)
     )
     assert isinstance(via_tool, list) and via_tool[0]["title"] == "Page 2"
+    locked = await tools["kb_search"].handler(
+        tools["kb_search"].input_model(q="unique9"), CallContext(None)
+    )
+    assert isinstance(locked, list) and [h["title"] for h in locked] == ["Agents"]
     q = tools["search_query"]
     assert await q.handler(q.input_model(q="shared", sources=["rss"]), CallContext(None)) == []
     assert (await c.get("/healthz")).json()["modules"]["search"] == {"ok": True, "detail": "ready"}

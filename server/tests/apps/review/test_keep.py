@@ -232,6 +232,35 @@ async def test_keep_writes_review_page_with_front_matter(kenv: KEnv) -> None:
     assert KeptState.from_json(kenv.store.artifact(round_id, KEPT)) == state
 
 
+async def test_keep_writes_under_the_configured_review_folder(kenv: KEnv) -> None:
+    keeper = KeepService(
+        kb=kenv.kb, tags=kenv.tags, store=kenv.store, clock=kenv.clock, folder=lambda: "00 Inbox"
+    )
+    round_id = kenv.round()
+    kenv.post(round_id)
+
+    state = await keeper.keep_finished(round_id)
+
+    assert state is not None and state.state == "kept"
+    assert state.path == "00 Inbox/acme-web/#1 Merge conflicting edits.md"
+
+
+async def test_keep_refuses_an_agent_only_review_folder(kenv: KEnv) -> None:
+    lock = {"kind": "folder", "access": "agents"}
+    await kenv.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "x", lock))
+    keeper = KeepService(
+        kb=kenv.kb, tags=kenv.tags, store=kenv.store, clock=kenv.clock, folder=lambda: "91 Memory"
+    )
+    round_id = kenv.round()
+    kenv.post(round_id)
+
+    state = await keeper.keep_finished(round_id)
+
+    assert state is not None and state.state == "failed"
+    assert state.error is not None and "agent-only" in state.error
+    assert kenv.pages() == [PurePosixPath("91 Memory/Memory.md")]
+
+
 async def test_quick_reviews_are_not_kept(kenv: KEnv) -> None:
     quick = kenv.round("quick")
     kenv.post(quick)
@@ -289,6 +318,28 @@ async def test_system_page_update_only_on_accept(kenv: KEnv) -> None:
     await kenv.keeper.accept_system_update(kenv.ref, second, fresh.base_rev)
     text = kenv.page_text(system)
     assert "My own edit." in text and "What #1 Merge conflicting edits changed" in text
+
+
+async def test_an_agent_only_system_page_gets_no_user_facing_draft(kenv: KEnv) -> None:
+    first = kenv.round()
+    kenv.store.mark_round_done(first)
+    await kenv.keeper.keep_finished(first)
+    written = await kenv.keeper.accept_system_update(kenv.ref, first, None)
+    page = written.page
+    meta = {**page.jesinia, "access": "agents"}
+    await kenv.kb.write(
+        PageDraft(page.id, page.title, page.path.parent, page.body, meta),
+        expected_rev=written.rev,
+    )
+
+    kenv.clock.advance(60)
+    second = kenv.round(head="c" * 40)
+    kenv.post(second, "APPROVE")
+    await kenv.keeper.keep_finished(second)
+
+    # Nothing of the locked page reaches the Review app; agents still get it as context.
+    assert kenv.store.artifact(second, SYSTEM_DRAFT) is None
+    assert "Sync pulls, then pushes." in await kenv.keeper.system_notes("acme/web")
 
 
 async def test_contradiction_becomes_design_finding(env: Env) -> None:  # noqa: F811
@@ -481,7 +532,9 @@ async def test_an_edit_between_read_and_write_is_merged_once_more(kenv: KEnv) ->
     real_write = kenv.kb.write
     raced = False
 
-    async def racing_write(draft: PageDraft, *, expected_rev: str | None = None):  # type: ignore[no-untyped-def]
+    async def racing_write(
+        draft: PageDraft, *, expected_rev: str | None = None, for_user: bool = False
+    ) -> PageWithRev:
         nonlocal raced
         if not raced and draft.id is not None:
             raced = True
@@ -489,7 +542,7 @@ async def test_an_edit_between_read_and_write_is_merged_once_more(kenv: KEnv) ->
             await kenv.kb.update_body(
                 draft.id, current.page.body + "\nRaced.\n", expected_rev=current.rev
             )
-        return await real_write(draft, expected_rev=expected_rev)
+        return await real_write(draft, expected_rev=expected_rev, for_user=for_user)
 
     kenv.kb.write = racing_write  # type: ignore[method-assign]
     again = await kenv.keeper.keep_review(round_id)
@@ -648,10 +701,12 @@ async def test_a_write_that_loses_the_race_is_a_conflict(kenv: KEnv) -> None:
     await kenv.keeper.keep_finished(round_id)
     real = kenv.kb.update_body
 
-    async def racing(page_id, body, *, expected_rev):  # type: ignore[no-untyped-def]
-        current = await kenv.kb.read(page_id)
-        await real(page_id, current.page.body + "Edit.\n", expected_rev=current.rev)
-        return await real(page_id, body, expected_rev=expected_rev)
+    async def racing(
+        id: PageId, body: str, *, expected_rev: str, for_user: bool = False
+    ) -> PageWithRev:
+        current = await kenv.kb.read(id)
+        await real(id, current.page.body + "Edit.\n", expected_rev=current.rev)
+        return await real(id, body, expected_rev=expected_rev, for_user=for_user)
 
     kenv.kb.update_body = racing  # type: ignore[method-assign]
     with pytest.raises(SystemPageChanged):
@@ -667,6 +722,10 @@ def test_titles_folders_and_section_merges() -> None:
     assert len(review_title(7, "x" * 1000)) < 220
     assert repo_folder("Acme/Web") == PurePosixPath("Reviews/acme-web")
     assert system_page_path("acme/web") == PurePosixPath("Reviews/acme-web/How it works.md")
+    assert repo_folder("acme/web", "00 Inbox") == PurePosixPath("00 Inbox/acme-web")
+    assert system_page_path("acme/web", "00 Inbox") == PurePosixPath(
+        "00 Inbox/acme-web/How it works.md"
+    )
     section = "<!-- jesinia:review-round 3 -->\nNew\n<!-- /jesinia:review-round 3 -->"
     assert merge_round_section("", 3, section) == f"{section}\n"
     assert merge_round_section("Mine.\n", 3, section) == f"Mine.\n\n{section}\n"

@@ -475,3 +475,40 @@ async def test_save_note_refused_part_way_adds_nothing_to_the_catalog(env: Env) 
     assert near.value.near == ["database"]  # near the first new tag of this same save
     assert [info.tag for info in await env.tags.catalog()] == ["sqlite"]
     assert not (env.root / "Notes/Refused.md").exists()
+
+
+async def test_should_refuse_a_session_about_an_agent_only_page(env: Env) -> None:
+    lock = {"kind": "folder", "access": "agents"}
+    page = await env.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "x", lock))
+    r = await env.client.post(
+        "/api/notes/sessions", json={"page_id": page.page.id, "runner": "fake"}
+    )
+    assert r.status_code == 403 and "agent-only" in r.json()["detail"]
+
+
+async def test_related_pages_should_leave_out_agent_only_pages(env: Env) -> None:
+    lock = {"access": "agents"}
+    await env.kb.write(PageDraft(None, "Topic secret", PurePosixPath("Ideas"), "x", lock))
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    await env.kb.write(PageDraft(None, "Topic open", PurePosixPath("Ideas"), "x"))
+    search = env.notes.service.search
+    assert search is not None
+    assert {h.title for h in await search.query("Topic")} >= {"Topic secret", "Topic open"}
+    related = await env.notes.service._related(subj.page.id, "Topic")
+    assert "Topic open" in related and "Topic secret" not in related
+
+
+async def test_should_refuse_to_save_a_note_into_an_agent_only_notes_folder(env: Env) -> None:
+    lock = {"kind": "folder", "access": "agents"}
+    await env.kb.write(PageDraft(None, "Memory", PurePosixPath("91 Memory"), "x", lock))
+    subj = await env.kb.write(PageDraft(None, "Topic", PurePosixPath("Ideas"), "x"))
+    env.notes.service.folder = lambda: "91 Memory"
+    sid = (
+        await env.client.post(
+            "/api/notes/sessions", json={"page_id": subj.page.id, "runner": "fake"}
+        )
+    ).json()["id"]
+    r = await env.client.post(
+        f"/api/notes/sessions/{sid}/save", json={"title": "N", "agent_text": "t"}
+    )
+    assert r.status_code == 403 and "agent-only" in r.json()["detail"]

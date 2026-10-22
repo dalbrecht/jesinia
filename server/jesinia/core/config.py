@@ -26,7 +26,9 @@ from jesinia.core.paths import default_log_dir
 DEFAULT_PORT = 5374
 DEFAULT_INTERVAL = timedelta(hours=4)
 DEFAULT_QUIET = timedelta(seconds=30)
-DEFAULT_FOLDERS: Mapping[str, str] = MappingProxyType({"note": "Notes", "source": "Sources"})
+DEFAULT_FOLDERS: Mapping[str, str] = MappingProxyType(
+    {"note": "Notes", "review": "Reviews", "source": "Sources"}
+)
 # Unkept RSS posts are pruned this long after publication (rss spec §4.4).
 DEFAULT_RSS_RETENTION = timedelta(days=30)
 RSS_RETENTION_DAYS_MAX = 365
@@ -191,10 +193,10 @@ def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
     for key in ("interval", "quiet"):
         if key in kbsync:
             cfg = _apply(cfg, f"kbsync.{key}", str(kbsync[key]))
-    if folders:
-        cfg = replace(cfg, folders={})
-        for kind, folder in folders.items():
-            cfg = _apply(cfg, f"folders.{kind}", str(folder))
+    # Overrides go on top of the defaults: a file written before a folder kind existed
+    # still gets that kind's default.
+    for kind, folder in folders.items():
+        cfg = _apply(cfg, f"folders.{kind}", str(folder))
     if "retention" in rss:
         cfg = _apply(cfg, "rss.retention", str(rss["retention"]))
     return cfg

@@ -14,7 +14,12 @@ from jesinia.core.module import CallContext, ToolDef
 from jesinia.services.agents.application.sessions import SessionNotFound
 from jesinia.services.agents.domain.session import Session
 from jesinia.services.kb.api.schemas import TAG_MAX
-from jesinia.services.kb.application.errors import InvalidTag, KbError, PageNotFound
+from jesinia.services.kb.application.errors import (
+    AgentOnlyPage,
+    InvalidTag,
+    KbError,
+    PageNotFound,
+)
 from jesinia.services.kb.application.service import PageWithRev
 from jesinia.services.kb.domain.page import PageId
 
@@ -67,7 +72,11 @@ def build_router(host: NotesHost) -> APIRouter:
     @r.post("/sessions", status_code=status.HTTP_201_CREATED)
     async def start(body: StartIn) -> dict[str, object]:
         try:
+            # The user's app never opens an agent-only page (ADR 0011).
+            host.service.kb.require_user_access(PageId(body.page_id))
             s = await host.service.start_session(PageId(body.page_id), body.runner)
+        except AgentOnlyPage as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
         except PageNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         except ValueError as exc:  # unknown runner
@@ -89,6 +98,8 @@ def build_router(host: NotesHost) -> APIRouter:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"no session {id}") from exc
         except (NotSubjectSessionError, InvalidTag) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        except AgentOnlyPage as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
         except KbError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return _saved(n)

@@ -28,6 +28,7 @@ from jesinia.apps.review.domain.kept import (
     REBASE_KINDS,
     REVIEW_KIND,
     REVIEW_TAG,
+    REVIEWS_FOLDER,
     SYSTEM_DRAFT,
     SYSTEM_KIND,
     SYSTEM_PAGE_TITLE,
@@ -119,10 +120,21 @@ class KeepService:
         tags: the shared tag catalog (``TagService.ensure``).
         store: ``review.sqlite``.
         clock: the current UTC time.
+        folder: the KB folder new pages go under (``folders.review``), read per write so a
+            config change applies without a restart.
     """
 
-    def __init__(self, *, kb: KbService, tags: TagService, store: KeepStore, clock: Clock) -> None:
+    def __init__(
+        self,
+        *,
+        kb: KbService,
+        tags: TagService,
+        store: KeepStore,
+        clock: Clock,
+        folder: Callable[[], str] = lambda: REVIEWS_FOLDER,
+    ) -> None:
         self._kb = kb
+        self._folder = folder
         self._tags = tags
         self._store = store
         self._clock = clock
@@ -187,11 +199,11 @@ class KeepService:
                 draft = PageDraft(
                     None,
                     review_title(kept.number, kept.title),
-                    repo_folder(kept.repo),
+                    repo_folder(kept.repo, self._folder()),
                     merge_round_section("", kept.round_id, section),
                     review_front_matter(kept),
                 )
-                return await self._kb.write(draft)
+                return await self._kb.write(draft, for_user=True)
             try:
                 return await self._rewrite(page_id, kept, section)
             except StaleWrite:  # edited between the read and the write: once more
@@ -341,7 +353,7 @@ class KeepService:
             merge_round_section(page.body, kept.round_id, section),
             review_front_matter(kept, page.jesinia),
         )
-        return await self._kb.write(draft, expected_rev=current.rev)
+        return await self._kb.write(draft, expected_rev=current.rev, for_user=True)
 
     # --- How it works -------------------------------------------------------------------------
 
@@ -362,7 +374,7 @@ class KeepService:
             if meta.get("kind") == SYSTEM_KIND and isinstance(owner, str):
                 if owner.lower() == canonical:
                     return found
-        row = self._kb.index.by_path(system_page_path(repo))
+        row = self._kb.index.by_path(system_page_path(repo, self._folder()))
         if row is None:
             return None
         page = await self._kb.read(row.id)
@@ -404,7 +416,8 @@ class KeepService:
             author = self._author(rnd, JobKind.BACKGROUND, JobKind.OVERVIEW)
             text = system_seed(kept, background, author)
             draft = SystemDraft("seed", text, None, None, "proposed")
-        elif kept.outcome == "approve":
+        # An agent-only page (ADR 0011) stays agents' context: no draft shows it to the user.
+        elif kept.outcome == "approve" and not self._kb.is_agent_only(current.page.id):
             author = self._author(rnd, JobKind.OVERVIEW, JobKind.WALKTHROUGH)
             text = system_update(current.page.body, kept, author)
             draft = SystemDraft("update", text, current.rev, current.page.id, "proposed")
@@ -489,18 +502,19 @@ class KeepService:
                 PageDraft(
                     None,
                     SYSTEM_PAGE_TITLE,
-                    repo_folder(repo),
+                    repo_folder(repo, self._folder()),
                     draft.text,
                     # The source finds the page again wherever it lands (N3).
                     {"kind": SYSTEM_KIND, "repo": repo, "source": system_source(repo)},
-                )
+                ),
+                for_user=True,
             )
         if current is None or current.rev != draft.base_rev:
             raise changed
         try:
             # Body only: the page's front matter stays byte-for-byte the author's.
             return await self._kb.update_body(
-                current.page.id, draft.text, expected_rev=draft.base_rev
+                current.page.id, draft.text, expected_rev=draft.base_rev, for_user=True
             )
         except StaleWrite as exc:
             raise changed from exc

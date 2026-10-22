@@ -15,6 +15,7 @@ from typing import Literal
 
 from jesinia.core.events import Event, EventBus
 from jesinia.services.kb.application.errors import (
+    AgentOnlyPage,
     AssetNotFound,
     InvalidAssetName,
     KbError,
@@ -26,6 +27,7 @@ from jesinia.services.kb.application.errors import (
     UnsupportedAssetType,
 )
 from jesinia.services.kb.application.ports import Conflict, PageFiles, PageIndex
+from jesinia.services.kb.domain.access import AgentOnly, lock_scope
 from jesinia.services.kb.domain.assets import (
     image_media_type,
     is_asset_file_name,
@@ -224,6 +226,7 @@ class KbService:
                 link_targets(page.body),
                 indexed_tags(page.body, page.jesinia),
                 source_of(page.jesinia),
+                lock_scope(page.jesinia),
             )
         except Exception:
             log.exception("KB index update failed for %s; the next scan will repair it", page.id)
@@ -265,6 +268,28 @@ class KbService:
         except FileNotFoundError as exc:
             raise PageNotFound(f"{id}: {row.path} is missing") from exc
 
+    # -- agent-only locks (ADR 0011) ------------------------------------------------
+    def agent_only(self) -> AgentOnly:
+        """Which paths are agent-only right now, from the indexed lock markers."""
+        return AgentOnly.of(self._index.locks())
+
+    def is_agent_only(self, id: PageId) -> bool:
+        row = self._index.get(id)
+        return row is not None and self.agent_only().covers(row.path)
+
+    def require_user_access(self, id: PageId) -> None:
+        """Raise ``AgentOnlyPage`` when a user-facing route must not open page ``id``.
+
+        Agents reach locked pages through MCP, which never calls this.
+        """
+        if self.is_agent_only(id):
+            raise AgentOnlyPage(f"{id} is agent-only; agents use it through MCP")
+
+    def require_user_folder(self, folder: PurePosixPath) -> None:
+        """Raise ``AgentOnlyPage`` when a user-facing route must not write into ``folder``."""
+        if self.agent_only().covers_folder(nfc(folder)):
+            raise AgentOnlyPage(f"{folder} is an agent-only folder; agents use it through MCP")
+
     # -- reads ---------------------------------------------------------------------
     async def read(self, id: PageId) -> PageWithRev:
         self._fs()
@@ -274,8 +299,11 @@ class KbService:
         page = page_from(parse_document(data.decode("utf-8")), row.path)
         return PageWithRev(page, sha256(data))
 
-    async def tree(self) -> list[TreeNode]:
+    async def tree(self, *, hide_agent_only: bool = False) -> list[TreeNode]:
+        """Folders and pages; ``hide_agent_only`` leaves out locked pages and the folders
+        that hold nothing else (the user's view)."""
         self._fs()
+        hidden = self.agent_only() if hide_agent_only else AgentOnly()
         root = TreeNode(PurePosixPath(""), "folder")
         folders: dict[PurePosixPath, TreeNode] = {PurePosixPath(""): root}
 
@@ -287,7 +315,7 @@ class KbService:
             return folders[path]
 
         for row in self._index.all():
-            if is_reserved(row.path) or is_hidden(row.path):
+            if is_reserved(row.path) or is_hidden(row.path) or hidden.covers(row.path):
                 continue
             folder(row.path.parent).children.append(
                 TreeNode(row.path, "page", title=row.title, id=row.id, pages=1)
@@ -301,13 +329,21 @@ class KbService:
         return finish(root).children
 
     # -- writes --------------------------------------------------------------------
-    async def write(self, draft: PageDraft, *, expected_rev: str | None = None) -> PageWithRev:
+    async def write(
+        self, draft: PageDraft, *, expected_rev: str | None = None, for_user: bool = False
+    ) -> PageWithRev:
         """Create a page (``id=None``) or rewrite one in canonical form.
 
         Updating an existing page requires ``expected_rev``; a mismatch (or none given)
         raises ``StaleWrite`` and leaves the file untouched (spec review focus 2).
+        ``for_user`` marks a write the user's apps make: it raises ``AgentOnlyPage`` for an
+        agent-only page or folder (ADR 0011). Agents' writes leave it unset.
         """
         folder = self._check_folder(draft.folder)
+        if for_user:
+            self.require_user_folder(folder)
+            if draft.id is not None:
+                self.require_user_access(draft.id)
         if draft.id is None:
             id = new_page_id()
             async with self._locks[id]:
@@ -394,9 +430,16 @@ class KbService:
             raise UnsupportedAssetType(f"{disk} is not a PNG, JPEG, GIF, WebP or AVIF image")
         return Asset(data, media_type)
 
-    async def update_body(self, id: PageId, body: str, *, expected_rev: str) -> PageWithRev:
-        """Replace only the body; the raw front-matter block stays byte-identical."""
+    async def update_body(
+        self, id: PageId, body: str, *, expected_rev: str, for_user: bool = False
+    ) -> PageWithRev:
+        """Replace only the body; the raw front-matter block stays byte-identical.
+
+        ``for_user`` refuses an agent-only page, as for ``write``.
+        """
         self._fs()
+        if for_user:
+            self.require_user_access(id)
         async with self._locks[id]:
             disk, data = self._current(id)
             if sha256(data) != expected_rev:
@@ -409,13 +452,25 @@ class KbService:
         await self._emit(id, row.path, "updated")
         return result
 
-    async def move(self, id: PageId, folder: PurePosixPath, title: str | None = None) -> MoveResult:
-        """Move and/or rename. A rename updates inbound ``[[id|Title]]`` link text."""
+    async def move(
+        self,
+        id: PageId,
+        folder: PurePosixPath,
+        title: str | None = None,
+        *,
+        for_user: bool = False,
+    ) -> MoveResult:
+        """Move and/or rename. A rename updates inbound ``[[id|Title]]`` link text.
+
+        ``for_user`` refuses agent-only pages and folders, as for ``write``, and leaves
+        agent-only linkers alone (they are reported in ``skipped``).
+        """
         current = await self.read(id)
         new_title = title if title is not None else current.page.title
         moved = await self.write(
             PageDraft(id, new_title, folder, current.page.body, current.page.jesinia),
             expected_rev=current.rev,
+            for_user=for_user,
         )
         relinked: list[PageId] = []
         skipped: list[PageId] = []
@@ -432,10 +487,10 @@ class KbService:
                         raise StaleWrite(src)
                     body = retitle_links(linker.page.body, id, new_title)
                     if body != linker.page.body:
-                        await self.update_body(src, body, expected_rev=row.rev)
+                        await self.update_body(src, body, expected_rev=row.rev, for_user=for_user)
                         relinked.append(src)
                 except (KbError, OSError, ValueError):
-                    # Stale, missing, unreadable, or malformed linkers are left alone; the
-                    # rename itself already succeeded.
+                    # Stale, missing, unreadable, malformed or (for the user) agent-only
+                    # linkers are left alone; the rename itself already succeeded.
                     skipped.append(src)
         return MoveResult(moved, relinked, skipped)

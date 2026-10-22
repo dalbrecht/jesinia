@@ -117,7 +117,7 @@ minutes (AirDrop or Universal Clipboard work well). `jesinia remote disable` tur
 | `jesinia sync now` | Runs a KB git sync cycle now |
 | `jesinia reindex` | Rescans the KB and rebuilds search (with the server stopped, it deletes the derived databases instead, and the next start rebuilds them) |
 | `jesinia backup [--dest DIR]` | Copies agent history, RSS feeds and read state, and `config.toml` to a timestamped folder |
-| `jesinia config get KEY` / `set KEY VALUE` | `server.port`, `server.remote_host` (the tailnet name; set by `jesinia remote enable`), `kb.path`, `kbsync.interval` (e.g. `1h`), `kbsync.quiet`, `folders.note`, `folders.source` (kept RSS posts, default `Sources`), `rss.retention` (1–365 whole days, e.g. `30d`) |
+| `jesinia config get KEY` / `set KEY VALUE` | `server.port`, `server.remote_host` (the tailnet name; set by `jesinia remote enable`), `kb.path`, `kbsync.interval` (e.g. `1h`), `kbsync.quiet`, `folders.note`, `folders.source` (kept RSS posts, default `Sources`), `folders.review` (kept code reviews, default `Reviews`), `rss.retention` (1–365 whole days, e.g. `30d`) |
 | `jesinia token show` / `rotate` | Show the install token, or replace it (signs browsers out and re-registers agents) |
 | `jesinia update` | One update attempt (what the update agent runs) |
 | `jesinia openapi` | Prints the HTTP API schema |
@@ -239,7 +239,8 @@ picks it up (no restart). `/healthz` reports the `github` module as "no token: r
     folder covers everything beneath it and the list says where an inherited mark comes from.
     **Show more** reads the next areas. KB pages aren't counted yet.
 - **Kept reviews:** a deep review you post or mark **Done** is kept in your KB as
-  `Reviews/<owner>-<repo>/#<n> <title>.md`, with its overview, the findings that mattered and
+  `Reviews/<owner>-<repo>/#<n> <title>.md` (`folders.review` sets the folder in place of
+  `Reviews`), with its overview, the findings that mattered and
   your notes; keeping it again updates its section and keeps your edits. The PR view's last
   page says where it went, or why it couldn't be written, with **Retry** (**Keep it** before
   a first keep).
