@@ -120,8 +120,12 @@ def enable(path: Path, sys: System) -> Config:
     except RuntimeError as exc:
         # Left armed, the next restart (a reboot, an update) would turn remote access on
         # after a command that reported failure: undo both halves instead.
-        sys.run([cli, "serve", "--https=443", "off"], check=False, timeout=STATUS_TIMEOUT)
-        save_config(replace(cfg, remote_host=None), path)
+        try:
+            sys.run([cli, "serve", "--https=443", "off"], check=False, timeout=STATUS_TIMEOUT)
+        except CommandTimedOut as stuck:  # best-effort: the host is forgotten regardless
+            sys.echo(f"warning: {stuck}; check `tailscale serve status`")
+        finally:
+            save_config(replace(cfg, remote_host=None), path)
         raise RemoteError(
             f"the server did not restart ({exc}); remote access was rolled back"
         ) from exc

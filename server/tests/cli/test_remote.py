@@ -362,3 +362,24 @@ def test_disable_should_clear_the_host_when_tailscale_does_not_answer(config: Pa
     remote.disable(config, sys)
     assert load_config(config).remote_host is None
     assert any("did not finish" in line for line in sys.out)
+
+
+def test_enable_rollback_should_clear_the_host_even_when_tailscale_does_not_answer(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Stuck(FakeTailscale):
+        def run(
+            self, argv: list[str], *, check: bool = True, timeout: float | None = None
+        ) -> tuple[int, str]:
+            if argv[-1] == "off":
+                raise CommandTimedOut("tailscale serve did not finish in 15s")
+            return super().run(argv, check=check, timeout=timeout)
+
+    plist = tmp_path / "agent.plist"
+    plist.write_text("x")
+    monkeypatch.setattr(remote, "plist_path", lambda: plist)
+    sys = Stuck(failing="kickstart")
+    with pytest.raises(remote.RemoteError, match="rolled back"):
+        remote.enable(config, sys)
+    assert load_config(config).remote_host is None
+    assert any("did not finish" in line for line in sys.out)
