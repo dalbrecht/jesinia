@@ -102,3 +102,10 @@ def test_should_rebase_reference_style_asset_link_definitions() -> None:
         f"![logo][asset]\n\n[asset]: ../../_assets/{ID}/logo.png\n"
         f"  [b]: <../../_assets/{ID}/b.png>\n"
     )
+
+
+def test_should_leave_escaped_markdown_links_alone() -> None:
+    body = f"\\[example](../_assets/{ID}/a.png) and \\[x [y](../_assets/{ID}/b.png)"
+    assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == (
+        f"\\[example](../_assets/{ID}/a.png) and \\[x [y](../../_assets/{ID}/b.png)"
+    )
