@@ -172,6 +172,20 @@ describe("The manage screen", () => {
     expect(old.getByText("Failing for 3 days: 404 from old.example")).toBeInTheDocument();
   });
 
+  it("counts a feed as failing from its first failed poll, before the sidebar warning", async () => {
+    setup({
+      "GET /api/rss/feeds": FEEDS.map((f) =>
+        f.id === 1 ? { ...f, warning: null, fail_count: 1, last_error: "timed out after 20s" } : f,
+      ),
+    });
+    const manage = await openManage();
+    const hn = rowOf(manage, "Hacker News");
+    expect(hn.getByText("Failing (1 try)")).toBeInTheDocument();
+    expect(hn.getByText("timed out after 20s")).toBeInTheDocument();
+    await userEvent.click(manage.getByRole("button", { name: /^Failing/ }));
+    expect(manage.getAllByRole("row").map((r) => r.getAttribute("aria-label"))).toContain("Hacker News");
+  });
+
   it("shows newest post and last synced", async () => {
     const synced = ago(5 * 60_000);
     setup({

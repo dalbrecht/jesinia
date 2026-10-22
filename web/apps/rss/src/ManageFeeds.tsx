@@ -21,7 +21,7 @@ import {
   type ImportResult,
   type RssSettings,
 } from "./api";
-import { FeedRow, type FolderRef } from "./FeedRow";
+import { FeedRow, isFailing, type FolderRef } from "./FeedRow";
 import { sentence } from "./Reader";
 import s from "./rss.module.css";
 
@@ -45,9 +45,7 @@ function foldersOf(feeds: Feed[]): FolderRef[] {
 /** Failing feeds first, then by title whatever its case. */
 function sorted(feeds: Feed[]): Feed[] {
   return [...feeds].sort(
-    (a, b) =>
-      Number(b.warning !== null) - Number(a.warning !== null) ||
-      a.title.toLowerCase().localeCompare(b.title.toLowerCase()),
+    (a, b) => Number(isFailing(b)) - Number(isFailing(a)) || a.title.toLowerCase().localeCompare(b.title.toLowerCase()),
   );
 }
 
@@ -257,8 +255,8 @@ export function ManageFeeds({ feeds, onChanged, onRemoved, onBack }: ManageFeeds
 
   const folders = foldersOf(feeds);
   const shown = feeds.filter((f) => !hidden.has(f.id));
-  const failingCount = shown.filter((f) => f.warning !== null).length;
-  const rows = sorted(only === "failing" ? shown.filter((f) => f.warning !== null) : shown);
+  const failingCount = shown.filter(isFailing).length;
+  const rows = sorted(only === "failing" ? shown.filter(isFailing) : shown);
   const dayChoices = settings ? [...new Set([...DAY_CHOICES, settings.retention])].sort((a, b) => a - b) : [];
 
   return (

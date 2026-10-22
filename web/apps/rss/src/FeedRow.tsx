@@ -109,6 +109,14 @@ export type FeedRowProps = {
   onRemove: (feed: Feed) => void;
 };
 
+/**
+ * Failing from the first failed poll: the sidebar waits for three (`warning`) so it doesn't nag,
+ * but this screen is where a fresh failure, such as a Sync now that just failed, must show.
+ */
+export function isFailing(feed: Feed): boolean {
+  return feed.fail_count > 0;
+}
+
 export function FeedRow({ feed: given, folders, syncingAll, onChanged, onRemove }: FeedRowProps) {
   const client = useClient();
   const toast = useToast();
@@ -191,7 +199,7 @@ export function FeedRow({ feed: given, folders, syncingAll, onChanged, onRemove 
     }
   };
 
-  const failing = feed.warning !== null;
+  const failing = isFailing(feed);
   const tries = `${feed.fail_count} ${feed.fail_count === 1 ? "try" : "tries"}`;
   return (
     <tr className={s.feedRow} aria-label={title} data-failing={failing || undefined}>
