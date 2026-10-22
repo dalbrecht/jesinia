@@ -28,7 +28,12 @@ from jesinia.services.kb.application.errors import (
 )
 from jesinia.services.kb.application.ports import Conflict, PageFiles, PageIndex
 from jesinia.services.kb.domain.access import AgentOnly, lock_scope
-from jesinia.services.kb.domain.assets import image_media_type, is_asset_file_name, is_page_id
+from jesinia.services.kb.domain.assets import (
+    image_media_type,
+    is_asset_file_name,
+    is_page_id,
+    rebase_asset_links,
+)
 from jesinia.services.kb.domain.frontmatter import (
     page_from,
     parse_document,
@@ -353,7 +358,9 @@ class KbService:
             current = page_from(parse_document(data.decode("utf-8")), row.path)
             moved = draft.title != current.title or folder != row.path.parent
             path = self._target(folder, draft.title, id) if moved else row.path
-            page = Page(id, draft.title, path, draft.body, dict(draft.jesinia), current.foreign)
+            # Links still written for the old folder would miss its images from the new one.
+            body = rebase_asset_links(draft.body, row.path.parent, folder)
+            page = Page(id, draft.title, path, body, dict(draft.jesinia), current.foreign)
             result = self._store(
                 page, disk, serialize_page(page).encode(), expected_rev=base_rev,
                 old_path=row.path,

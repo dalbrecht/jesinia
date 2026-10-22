@@ -207,6 +207,20 @@ async def test_should_keep_jesinia_metadata_when_an_update_omits_it(
     assert cleared["jesinia"] == {}
 
 
+async def test_should_keep_the_folder_when_a_kb_write_update_omits_it(
+    client: httpx.AsyncClient, module: KbModule
+) -> None:
+    made = await _write(module, title="Family", folder="20 Areas/Life/Family", body="v1")
+    update = {"id": str(made["id"]), "title": "Family", "body": "v2"}
+    preview = _tool(module, "kb_write").preview
+    assert preview is not None
+    assert (await preview(_tool(module, "kb_write").input_model(**update)))["action"] == "update"
+    kept = await _write(module, expected_rev=made["rev"], **update)
+    assert kept["path"] == "20 Areas/Life/Family/Family.md" and kept["body"] == "v2"
+    moved = await _write(module, expected_rev=kept["rev"], folder="", **update)
+    assert moved["path"] == "Family.md"
+
+
 async def test_conflicts_and_scan_routes(client: httpx.AsyncClient, kb_root: Path) -> None:
     (kb_root / "Inbox").mkdir()
     (kb_root / "Inbox/Plain.md").write_text("plain\n")

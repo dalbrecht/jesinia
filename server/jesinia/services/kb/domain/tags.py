@@ -103,8 +103,14 @@ def _mask_inline_code(masked_lines: list[str], prose_indexes: list[int]) -> None
         cursor += length
 
 
-def _mask_ignored(body: str) -> str:
-    """Blank out fenced and indented code, headings and inline code, keeping offsets identical."""
+def mask_code(body: str) -> str:
+    """Blank out fenced, indented and inline code, keeping offsets identical."""
+    return _mask_ignored(body, mask_headings=False)
+
+
+def _mask_ignored(body: str, *, mask_headings: bool = True) -> str:
+    """Blank out fenced and indented code, headings (unless ``mask_headings`` is False) and
+    inline code, keeping offsets identical."""
     masked_lines: list[str] = []
     paragraph: list[int] = []  # indexes of consecutive prose lines, the unit inline code spans in
     open_fence: str | None = None
@@ -123,7 +129,7 @@ def _mask_ignored(body: str) -> str:
         elif _is_indented_code(line, may_start_code):
             is_code = True
             masked_lines.append(_blank(line))
-        elif _HEADING_LINE.match(line):
+        elif mask_headings and _HEADING_LINE.match(line):
             masked_lines.append(_blank(line))
         else:
             is_prose = line.strip() != ""
