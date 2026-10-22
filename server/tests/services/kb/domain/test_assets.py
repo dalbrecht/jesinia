@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import time
+from pathlib import PurePosixPath
+
 import pytest
 
-from jesinia.services.kb.domain.assets import image_media_type, is_asset_file_name, is_page_id
+from jesinia.services.kb.domain.assets import (
+    image_media_type,
+    is_asset_file_name,
+    is_page_id,
+    rebase_asset_links,
+)
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 8
@@ -53,3 +61,60 @@ def test_should_accept_only_one_plain_file_name() -> None:
     bad_names = ["", ".", "..", ".gitignore", "a/b.png", "a\\b.png", "..png", "a b.png"]
     for bad in [*bad_names, "a.png/", "a..png", "%2e.png"]:
         assert not is_asset_file_name(bad), bad
+
+
+ID = "01a14979-9e48-78ec-b36a-dc04f9ac2fdf"
+
+
+def test_should_rebase_relative_asset_links_when_a_page_moves_deeper() -> None:
+    body = f'Intro\n\n![a](../_assets/{ID}/ab12.png)\n<img src="../_assets/{ID}/cd34.jpg">'
+    rebased = rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("30 R/Making"))
+    assert rebased == (
+        f'Intro\n\n![a](../../_assets/{ID}/ab12.png)\n<img src="../../_assets/{ID}/cd34.jpg">'
+    )
+
+
+def test_should_rebase_asset_links_to_and_from_the_kb_root() -> None:
+    body = f"![a](_assets/{ID}/ab12.png)"
+    deeper = rebase_asset_links(body, PurePosixPath(""), PurePosixPath("A/B"))
+    assert deeper == f"![a](../../_assets/{ID}/ab12.png)"
+    assert rebase_asset_links(deeper, PurePosixPath("A/B"), PurePosixPath("")) == body
+
+
+def test_should_leave_links_that_do_not_resolve_to_the_root_assets_folder() -> None:
+    body = (
+        f"![wrong depth](../../_assets/{ID}/a.png) ![other](img/_assets/{ID}/a.png) "
+        f"![web](https://x.test/_assets/{ID}/a.png) `../_assets/{ID}/a.png` in prose"
+    )
+    assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == body
+
+
+def test_should_leave_asset_link_examples_inside_code_alone() -> None:
+    link = f"![x](../_assets/{ID}/a.png)"
+    body = f"`{link}`\n\n```\n{link}\n```\n\n    {link}\n\n# {link}\n"
+    assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == (
+        f"`{link}`\n\n```\n{link}\n```\n\n    {link}\n\n# ![x](../../_assets/{ID}/a.png)\n"
+    )
+
+
+def test_should_rebase_reference_style_asset_link_definitions() -> None:
+    body = f"![logo][asset]\n\n[asset]: ../_assets/{ID}/logo.png\n  [b]: <../_assets/{ID}/b.png>\n"
+    assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == (
+        f"![logo][asset]\n\n[asset]: ../../_assets/{ID}/logo.png\n"
+        f"  [b]: <../../_assets/{ID}/b.png>\n"
+    )
+
+
+def test_should_leave_escaped_markdown_links_alone() -> None:
+    body = f"\\[example](../_assets/{ID}/a.png) and \\[x [y](../_assets/{ID}/b.png)"
+    assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == (
+        f"\\[example](../_assets/{ID}/a.png) and \\[x [y](../../_assets/{ID}/b.png)"
+    )
+
+
+def test_should_scan_an_unclosed_bracket_run_in_linear_time() -> None:
+    body = "[" * 200_000 + f"](../_assets/{ID}/a.png)"
+    started = time.perf_counter()
+    rebased = rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B"))
+    assert time.perf_counter() - started < 1
+    assert rebased.endswith(f"[](../../_assets/{ID}/a.png)")

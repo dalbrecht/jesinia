@@ -33,12 +33,18 @@ config_app = typer.Typer(no_args_is_help=True, help="Read or change config.toml.
 token_app = typer.Typer(no_args_is_help=True, help="The install token (MCP + CLI auth).")
 sync_app = typer.Typer(no_args_is_help=True, help="KB git sync.")
 remote_app = typer.Typer(no_args_is_help=True, help="Reach Jesinia from your tailnet.")
+<<<<<<< HEAD
 rss_app = typer.Typer(no_args_is_help=True, help="The RSS reader.")
+=======
+>>>>>>> origin/main
 app.add_typer(config_app, name="config")
 app.add_typer(token_app, name="token")
 app.add_typer(sync_app, name="sync")
 app.add_typer(remote_app, name="remote")
+<<<<<<< HEAD
 app.add_typer(rss_app, name="rss")
+=======
+>>>>>>> origin/main
 
 LOG_BYTES = 10 * 1024 * 1024
 LOG_BACKUPS = 5
@@ -258,6 +264,7 @@ def remote_status() -> None:
     typer.echo(remote_mod.describe(_cfg()))
 
 
+<<<<<<< HEAD
 @rss_app.command("reader-password")
 def rss_reader_password() -> None:
     """Create the password NetNewsWire signs in with (revokes the previous one)."""
@@ -274,6 +281,8 @@ def rss_reader_password() -> None:
     typer.echo("This password is shown once; running this again replaces it.")
 
 
+=======
+>>>>>>> origin/main
 @sync_app.command("now")
 def sync_now() -> None:
     """Run a KB sync cycle now."""

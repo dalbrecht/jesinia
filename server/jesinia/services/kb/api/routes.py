@@ -165,6 +165,15 @@ def build_router(host: KbHost) -> APIRouter:
 
 
 def build_tools(host: KbHost) -> Sequence[ToolDef]:
+    async def _write_folder(a: WriteToolIn) -> PurePosixPath:
+        """The folder a kb_write targets: the one given, else (on update) the page's own,
+        so an update that omits ``folder`` never moves the page to the KB root."""
+        if a.folder is not None:
+            return PurePosixPath(a.folder)
+        if a.id:
+            return (await host.service.read(PageId(a.id))).page.path.parent
+        return PurePosixPath("")
+
     async def kb_read(args: BaseModel, call: CallContext) -> object:
         a = IdIn.model_validate(args.model_dump())
         return PageOut.of(await host.service.read(PageId(a.id))).model_dump()
@@ -187,9 +196,8 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
         if jesinia is None:
             # An omitted `jesinia` must not wipe kind/captured on update: keep what is there.
             jesinia = dict((await host.service.read(PageId(a.id))).page.jesinia) if a.id else {}
-        draft = PageDraft(
-            PageId(a.id) if a.id else None, a.title, PurePosixPath(a.folder), body, jesinia
-        )
+        folder = await _write_folder(a)
+        draft = PageDraft(PageId(a.id) if a.id else None, a.title, folder, body, jesinia)
         return PageOut.of(await host.service.write(draft, expected_rev=a.expected_rev)).model_dump()
 
     async def kb_move(args: BaseModel, call: CallContext) -> object:
@@ -201,7 +209,8 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
         a = WriteToolIn.model_validate(args.model_dump())
         if a.id:
             current = await host.service.read(PageId(a.id))
-            to, _ = host.service.planned_path(PurePosixPath(a.folder), a.title, PageId(a.id))
+            folder = await _write_folder(a)
+            to, _ = host.service.planned_path(folder, a.title, PageId(a.id))
             preview: dict[str, object] = {
                 "action": "update",
                 "path": str(current.page.path),
@@ -209,12 +218,12 @@ def build_tools(host: KbHost) -> Sequence[ToolDef]:
                 "current": current.page.body,
             }
             # kb_write also retitles/moves when title or folder differ: say so.
-            if a.title != current.page.title or PurePosixPath(a.folder) != current.page.path.parent:
+            if a.title != current.page.title or folder != current.page.path.parent:
                 preview.update(action="update+move", to=str(to), new_title=a.title)
             if a.jesinia is not None and a.jesinia != current.page.jesinia:
                 preview["jesinia"] = {"from": current.page.jesinia, "to": a.jesinia}
             return preview
-        path, suffixed = host.service.planned_path(PurePosixPath(a.folder), a.title)
+        path, suffixed = host.service.planned_path(await _write_folder(a), a.title)
         created: dict[str, object] = {"action": "create", "path": str(path), "title": a.title}
         if a.provenance is not None:
             created["provenance"] = {"agent": a.provenance.agent, "model": a.provenance.model}
