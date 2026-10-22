@@ -42,9 +42,15 @@ class Spy(System):
     out: list[str] = field(default_factory=list)
     fail: tuple[str, ...] = ()
     origin: str = "https://github.com/dalbrecht/jesinia.git"
+    # launchd: how many `launchctl print` polls still find a service after its bootout, and
+    # how many bootstraps it refuses (error 5) before one succeeds.
+    still_loaded: int = 0
+    refused_bootstraps: int = 0
+    slept: list[float] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.echo = self.out.append
+        self.sleep = self.slept.append
         self.which = lambda n: f"/bin/{n}"
         self.environ = {"PATH": "/usr/bin", "SSH_AUTH_SOCK": "/tmp/ssh", "CODEX_HOME": ""}
 
@@ -57,6 +63,16 @@ class Spy(System):
             raise RuntimeError("failed")
         if not failed and argv[-2:] == ["get-url", "origin"]:
             return 0, self.origin
+        if argv[:2] == ["launchctl", "print"]:
+            if self.still_loaded > 0:
+                self.still_loaded -= 1
+                return 0, "state = running"
+            return 113, ""  # "Could not find service"
+        if argv[:2] == ["launchctl", "bootstrap"] and self.refused_bootstraps > 0:
+            self.refused_bootstraps -= 1
+            if check:
+                raise RuntimeError("Bootstrap failed: 5: Input/output error")
+            return 5, ""
         return (1 if failed else 0), ""
 
 
@@ -102,7 +118,7 @@ def test_install_then_idempotent(tmp_home: Path, kb: Path, healthy: None) -> Non
     token = load_config(cfg_path).token
     assert load_config(cfg_path).kb_path == kb.resolve()
     first = [c[:2] for c in spy.calls if c[0] == "launchctl"]
-    assert first == [["launchctl", "bootout"], ["launchctl", "bootstrap"]]
+    assert first == [["launchctl", "bootout"], ["launchctl", "print"], ["launchctl", "bootstrap"]]
     assert any(c[:3] == ["/bin/claude", "mcp", "add"] for c in spy.calls)
     codex = tomllib.loads((tmp_home / ".codex/config.toml").read_text())
     assert codex["mcp_servers"]["jesinia"]["http_headers"]["Authorization"] == f"Bearer {token}"
@@ -424,3 +440,53 @@ def test_codex_home_that_does_not_exist_yet(tmp_home: Path, healthy: None) -> No
     inst.register_codex(spy, cfg, "/bin/codex")
     assert (tmp_home / "new-codex-home").is_dir()
     assert "Authorization" in (tmp_home / "new-codex-home/config.toml").read_text()
+
+
+def _launchctl(spy: Spy) -> list[str]:
+    return [c[1] for c in spy.calls if c[0] == "launchctl"]
+
+
+def test_should_wait_for_the_old_server_to_unload_before_bootstrapping(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    # Regression: bootout returns before launchd has unloaded the job, and an immediate
+    # bootstrap fails with "Bootstrap failed: 5: Input/output error", leaving no server.
+    spy = Spy(yes=True, still_loaded=3)
+    assert inst.install(kb, spy) == 0
+    assert _launchctl(spy)[:6] == ["bootout", "print", "print", "print", "print", "bootstrap"]
+    assert spy.slept[:3] == [inst.UNLOAD_POLL] * 3
+
+
+def test_should_retry_a_bootstrap_launchd_refuses_while_unloading(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    spy = Spy(yes=True, refused_bootstraps=2)
+    assert inst.install(kb, spy) == 0
+    assert _launchctl(spy).count("bootstrap") == 3
+
+
+def test_should_report_the_cause_when_bootstrap_keeps_failing(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    spy = Spy(yes=True, refused_bootstraps=inst.BOOTSTRAP_ATTEMPTS)
+    with pytest.raises(RuntimeError, match="Input/output error"):
+        inst.install(kb, spy)
+
+
+def test_should_give_up_waiting_for_an_unload_and_try_the_bootstrap(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    polls = int(inst.UNLOAD_TIMEOUT / inst.UNLOAD_POLL)
+    spy = Spy(yes=True, still_loaded=polls + 50)
+    assert inst.install(kb, spy) == 0
+    calls = _launchctl(spy)
+    assert calls[1 : polls + 1] == ["print"] * polls and calls[polls + 1] == "bootstrap"
+
+
+def test_the_updater_should_also_wait_for_its_unload(
+    tmp_home: Path, kb: Path, healthy: None
+) -> None:
+    spy = Spy(yes=True)
+    assert inst.install(kb, spy, auto_update=True) == 0
+    updater = [c[1] for c in spy.calls if c[0] == "launchctl" and "com.jesinia.updater" in c[-1]]
+    assert updater == ["bootout", "print", "bootstrap"]
