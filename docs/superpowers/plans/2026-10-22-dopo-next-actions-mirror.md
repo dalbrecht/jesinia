@@ -63,7 +63,7 @@
 - Test: `server/tests/services/tasksmirror/domain/test_{select,mapping,region}.py`
 
 - [ ] **Step 1 (select):** `open_actions(lines, today)` keeps `next/in-progress/waiting/blocked` with no future `defer`. Tests per state and defer boundary (`defer == today` is kept).
-- [ ] **Step 2 (mapping):** `map_projects(pages: list[ProjectPage], lines) -> Mapping` with NFC + casefold + trim keys, the `tasks_project` override, `unmatched`, `collisions`. Tests: `test_should_match_case_and_nfc_insensitively`, `test_should_prefer_tasks_project_key`, `test_should_withhold_both_pages_on_collision`, `test_should_skip_lines_without_project`.
+- [ ] **Step 2 (mapping):** `map_projects(pages: list[ProjectPage], lines) -> Mapping` with NFC + casefold + trim keys, the `tasks_project` override, `unmatched`, `collisions`. Tests: `test_should_match_case_and_nfc_insensitively`, `test_should_prefer_tasks_project_key`, `test_should_withhold_both_pages_on_collision`, `test_should_skip_lines_without_project`, `test_should_flag_paused_page_with_next_actions` (spec §4.3; `waiting`/`blocked` alone doesn't flag).
 - [ ] **Step 3 (render):** `render_project_region(project, actions) -> str` following spec §5.5 line shape and order, and the empty text. Neutralize `<!--`/`-->` in titles (reuse the KB service's neutralizer if it is a pure function. Otherwise move it into `core` in this task, with tests).
 - [ ] **Step 4 (replace):** `replace_region(body, heading="## Next Actions", region) -> str | None` returns `None` when the heading is missing. Handles: markers present; first run over the exact seeded placeholder; first run over other text (insert at top, keep text); user lines inside the region moved below the closing marker; the enclosing `jesinia:ai` block left alone. Tests for each, plus `test_should_move_user_lines_out_of_the_region` and `test_should_be_idempotent`.
 - [ ] **Step 5:** Commit `feat(tasksmirror): map actions to project pages and render regions`.
@@ -97,7 +97,7 @@
 - Modify: `server/jesinia/registry.py` (after `KbSyncModule`), import-linter contracts in `pyproject.toml`
 - Test: `server/tests/services/tasksmirror/{infrastructure,api}/…`, `server/tests/services/tasksmirror/test_module.py`
 
-- [ ] **Step 1:** `FsTasksFile` (stat by mtime_ns + size, read UTF-8). `KbPages` adapter over `KbService` (`10 Projects/<X>/<X>.md` folder notes only, excluding `_Paused/` and `_Someday/`; Today at `01 Today/Today.md`).
+- [ ] **Step 1:** `FsTasksFile` (stat by mtime_ns + size, read UTF-8). `KbPages` adapter over `KbService`: folder notes `<X>/<X>.md` under `10 Projects/`, `10 Projects/_Paused/` and `10 Projects/_Someday/`, each tagged with its KB status (`active`/`paused`/`someday`); nothing from `40 Archive/` or `20 Areas/`; Today at `01 Today/Today.md`. Tests include a paused page being mirrored and a folder that moved to `20 Areas/` no longer being written.
 - [ ] **Step 2:** Module: idle and healthy when `tasks_md_path` is unset, degraded when the path is missing. Scheduler `every("tasksmirror", 15s, poll, at_start=True)`, where poll runs a pass when the stamp changes or the local date rolled over.
 - [ ] **Step 3:** Routes `GET /api/tasksmirror/status`, `POST /api/tasksmirror/sync` (owner only, idempotency key like other POSTs). Agent tokens get 403.
 - [ ] **Step 4:** `make gen-client`. Commit with the generated client: `feat(tasksmirror): add the module, poller and status API`.
@@ -107,7 +107,7 @@
 **Files:**
 - Modify: `web/apps/launcher/src/…` (Settings page; add a `DopoTasksCard` component and test)
 
-- [ ] **Step 1:** Failing vitest tests: Not connected state with a path field (saves via the existing config route); connected state showing last synced, **Sync now**, and lists of unmatched, collisions and no-section pages; error shows cause then what to do.
+- [ ] **Step 1:** Failing vitest tests: Not connected state with a path field (saves via the existing config route); connected state showing last synced, **Sync now**, and lists of unmatched, collisions, no-section pages and paused-with-next-actions pages; error shows cause then what to do.
 - [ ] **Step 2:** Implement with `@jesinia/design` components only.
 - [ ] **Step 3:** `make ci` green. Manual: set `tasks_md_path` to the real DOPO file; check all nine project pages and Today, then change an action in DOPO and see it within ~20 s. Note results in the PR.
 - [ ] **Step 4:** Commit `feat(launcher): show DOPO Tasks mirror status in Settings`. Open the Phase 1 PR.

@@ -94,8 +94,11 @@ in `amicus-platform`:
 
 ### 4.1 Rule (builder's call)
 
-1. Jesinia considers **project pages**: a page `10 Projects/<X>/<X>.md` (the folder note),
-   not under `_Paused/` or `_Someday/`.
+1. Jesinia considers **project pages**: the folder note `<X>/<X>.md` of a project folder in
+   `10 Projects/`, `10 Projects/_Paused/` or `10 Projects/_Someday/` (for example
+   `10 Projects/Mote3d/Mote3d.md`, `10 Projects/_Paused/SCAD on Mac/SCAD on Mac.md`). Pages
+   under `40 Archive/` and `20 Areas/` are not project pages. A former project that became
+   an area (MakerTools) stops being mirrored when its folder moves.
 2. A page's **project key** is `jesinia.tasks_project` from its front matter if present,
    otherwise its title.
 3. A DOPO project name **matches** a page when NFC-normalized, case-folded and trimmed
@@ -104,8 +107,27 @@ in `amicus-platform`:
    not mirrored (single actions live in DOPO only).
 
 Matching by name fits how the pages were seeded: each placeholder already names its DOPO
-project, and all nine titles are DOPO project names. An explicit key handles a rename on
-either side without renaming the other.
+project, and each title is a DOPO project name. An explicit key handles a rename on either
+side without renaming the other.
+
+### 4.3 Project status (builder's call)
+
+The KB states a project's status by folder: active, `_Paused/` or `_Someday/`. DOPO has its
+own `ProjectStatus`: `active`, `someday` or `done`. There is no *paused*, so a KB-paused
+project is presumably `someday` or `active` in DOPO. **`tasks.md` carries no project status
+at all**, so Jesinia can neither read nor set it. The design follows from that:
+
+- **Every project page is mirrored, whatever its folder.** A paused project's open actions
+  (often a *waiting* item) stay visible on its page. The region looks the same everywhere.
+- **Moving a folder is the KB's statement only.** Jesinia doesn't tell DOPO. The user changes
+  the project's status in DOPO too.
+- **Drift is flagged where it can be seen.** A page under `_Paused/` or `_Someday/` with
+  `next` or `in-progress` actions is listed in Settings as *paused with next actions*, since
+  in GTD a paused project shouldn't have next actions on the user's lists. The opposite
+  check (a DOPO project that is `someday` but sits in the active folder) needs project
+  status in the dialect, which is a follow-up ask (§10).
+- **Today ignores the folder.** A dated action shows on Today whatever its project's status,
+  as DOPO would show it.
 
 ### 4.2 Misses and collisions
 
@@ -268,8 +290,8 @@ The mirror region refreshes itself, at midnight and on every change.
 (project name, action count), `collisions`, `pending_completions` (Phase 2).
 
 Settings gets a **DOPO Tasks** card: the path field, "Last synced …", **Sync now**, then
-lists of unmatched projects, collisions, pages without a section, and ticks still waiting
-for DOPO. `/healthz` reports the module's health like any other.
+lists of unmatched projects, collisions, pages without a section, paused projects with
+next actions (§4.3), and ticks still waiting for DOPO. `/healthz` reports the module's health like any other.
 
 ## 8. Phase 2: ticking off from the KB
 
@@ -350,5 +372,6 @@ while.
   but latency is outside Jesinia's control.
 - **Open:** whether the user wants `waiting` items on project pages (included here, labeled)
   or in a separate *Waiting for* list.
-- **Follow-ups on `amicus-platform`:** `@today:`/`@priority:` tokens (§6.1); a cross-test
-  for external completion edits (§9).
+- **Follow-ups on `amicus-platform`:** `@today:`/`@priority:` tokens (§6.1); project status
+  in `tasks.md`, for example a `## Projects` section or a per-project status line (§4.3); a
+  cross-test for external completion edits (§9).
