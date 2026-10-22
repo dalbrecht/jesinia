@@ -94,3 +94,11 @@ def test_should_leave_asset_link_examples_inside_code_alone() -> None:
     assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == (
         f"`{link}`\n\n```\n{link}\n```\n\n    {link}\n\n# ![x](../../_assets/{ID}/a.png)\n"
     )
+
+
+def test_should_rebase_reference_style_asset_link_definitions() -> None:
+    body = f"![logo][asset]\n\n[asset]: ../_assets/{ID}/logo.png\n  [b]: <../_assets/{ID}/b.png>\n"
+    assert rebase_asset_links(body, PurePosixPath("Sources"), PurePosixPath("A/B")) == (
+        f"![logo][asset]\n\n[asset]: ../../_assets/{ID}/logo.png\n"
+        f"  [b]: <../../_assets/{ID}/b.png>\n"
+    )

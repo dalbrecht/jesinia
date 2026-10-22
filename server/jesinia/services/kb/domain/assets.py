@@ -12,12 +12,13 @@ from jesinia.services.kb.domain.tags import mask_code
 _PAGE_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # One plain file name: no folders, no leading dot, no spaces or shell-special characters.
 ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9]+)?")
-# A relative link into the root asset folder, as a Markdown link or an HTML ``src``/``href``
-# value: only these are links (an ``_assets`` path in prose or code is left alone).
+# A relative link into the root asset folder, as a Markdown inline link, a reference-style
+# definition or an HTML ``src``/``href`` value: only these are links (an ``_assets`` path in
+# prose or code is left alone).
 _ASSET_LINK = re.compile(
-    r"(?P<lead>\]\(<?|\b(?:src|href)=[\"']?)(?P<up>(?:\.\./)*)(?P<rest>_assets/"
-    + _PAGE_ID.pattern
-    + r"/)"
+    r"(?P<lead>\]\(<?|^ {0,3}\[[^\]\n]+\]:[ \t]*<?|\b(?:src|href)=[\"']?)"
+    r"(?P<up>(?:\.\./)*)(?P<rest>_assets/" + _PAGE_ID.pattern + r"/)",
+    re.MULTILINE,
 )
 
 
