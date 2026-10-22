@@ -1,10 +1,9 @@
 # Jesinia — RSS Feed Management, Bankruptcy and Auto Full Article
 
 - **Status:** Implemented
-- **Acceptance:** 2026-10-21, branch `feat/rss-feed-management`: all nine plan tasks shipped. Passing: e2e 20/20
-  (including the done-for-the-day path and a reload at `/rss/manage`), `make ci-js`, and in `ci-py` the Python lint,
-  mypy, import-linter, coverage, SPDX and docs checks. Not passing, for reasons unrelated to this branch: `audit-py`
-  (certifi PYSEC-2026-4320, needs a lockfile bump) and `lint-standards` (its script is missing from this checkout).
+- **Acceptance:** 2026-10-22, branch `feat/rss-feed-management`: all nine plan tasks shipped; `make ci` passes
+  (with certifi bumped to 2026.10.19 for PYSEC-2026-4320) and e2e 20/20, including the done-for-the-day path and a
+  reload at `/rss/manage`.
 - **Date:** 2026-10-21
 - **Author:** Don Albrecht (with Claude)
 - **Builds on:** the RSS reader spec (`2026-10-16-rss-reader-design.md`, Implemented). This
