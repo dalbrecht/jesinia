@@ -27,8 +27,11 @@ With that convention, no change would ever reach the changelog or bump the versi
   already had. The web packages are private workspace internals and are not versioned.
   `bootstrap-sha` is the last commit before adoption, so the first release only covers what
   lands after this ADR.
-- **The version lives in `server/pyproject.toml`**, which release-please bumps as an extra
-  file. Its TOML updater cannot select the `jesinia` entry in `server/uv.lock` (filters do
+- **The version lives in `server/pyproject.toml` and `jesinia.__version__`**, which
+  release-please bumps as extra files (the `__init__.py` line carries an
+  `x-release-please-version` marker). Everything else that reports a version, the FastAPI app
+  and the MCP server, reads `jesinia.__version__`, and a test checks it matches
+  `pyproject.toml`. The TOML updater cannot select the `jesinia` entry in `server/uv.lock` (filters do
   not match its wrapped values, and an array index would break as dependencies change).
   After release-please opens or updates the release PR, the workflow runs `make lock` on the
   release branch and commits the one-line lock change.

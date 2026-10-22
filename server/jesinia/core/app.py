@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, status
 from starlette.routing import Route
 
+import jesinia
 from jesinia.core.auth import (
     SESSIONS_FILE,
     SessionCookieRenewal,
@@ -76,7 +77,7 @@ def create_app(
                     log.exception("module %s failed to stop", module.name)
             started.clear()
 
-    app = FastAPI(title="Jesinia", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Jesinia", version=jesinia.__version__, lifespan=lifespan)
     app.state.ctx = ctx
     load_sessions(cfg.data_dir / SESSIONS_FILE, cfg.token)
     app.include_router(auth_router())

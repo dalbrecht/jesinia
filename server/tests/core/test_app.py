@@ -5,6 +5,7 @@ import pytest
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+import jesinia
 from jesinia.core.app import create_app
 from jesinia.core.config import Config
 from jesinia.core.module import AppContext, CallContext, ModuleHealth, ToolDef
@@ -51,6 +52,11 @@ class Exploding(Healthy):
 
     def router(self) -> APIRouter | None:
         return None
+
+
+def test_app_reports_the_package_version(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(jesinia, "__version__", "9.9.9")
+    assert create_app(cfg, []).version == "9.9.9"
 
 
 async def test_failing_module_does_not_block_others(cfg: Config) -> None:

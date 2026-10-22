@@ -20,7 +20,10 @@
       "release-type": "simple",
       "package-name": "jesinia",
       "changelog-path": "CHANGELOG.md",
-      "extra-files": [{ "type": "toml", "path": "server/pyproject.toml", "jsonpath": "$.project.version" }]
+      "extra-files": [
+        { "type": "toml", "path": "server/pyproject.toml", "jsonpath": "$.project.version" },
+        { "type": "generic", "path": "server/jesinia/__init__.py" }
+      ]
     }
   }
 }
