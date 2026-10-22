@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Local-origin guard and security headers (spec §7.3).
 
-- ``421`` when ``Host`` is not ``127.0.0.1:<port>`` or ``localhost:<port>``
-  (DNS-rebinding defense).
-- ``403`` for state-changing requests whose ``Origin`` is present and not the local origin.
+- ``421`` when ``Host`` is not ``127.0.0.1:<port>`` or ``localhost:<port>``, or the
+  configured tailnet host (ADR 0011) (DNS-rebinding defense).
+- ``403`` for state-changing requests whose ``Origin`` is present and not the local origin
+  (or ``https://<remote host>``).
+- HSTS on responses to the remote host, which ``tailscale serve`` only offers over HTTPS.
 - A strict CSP (including ``frame-ancestors 'none'``: no other local port may frame the
   authenticated UI; the RSS pages may also load https images) plus ``X-Frame-Options``,
   ``nosniff``, and ``no-referrer``.
@@ -32,6 +34,7 @@ _OTHER_HEADERS = [
     (b"referrer-policy", b"no-referrer"),
     (b"x-frame-options", b"DENY"),  # legacy equivalent of frame-ancestors 'none'
 ]
+_HSTS = (b"strict-transport-security", b"max-age=31536000")
 _HEADERS = [(b"content-security-policy", CSP.encode()), *_OTHER_HEADERS]
 _RSS_HEADERS = [(b"content-security-policy", RSS_CSP.encode()), *_OTHER_HEADERS]
 
@@ -58,11 +61,20 @@ def _enforce(
     return [*kept, *(h for h in policy if h not in present)]
 
 
+def is_remote_host(host: str, remote_host: str | None) -> bool:
+    """Whether a request's ``Host`` header names the tailnet host (with or without :443)."""
+    return remote_host is not None and host in (remote_host, f"{remote_host}:443")
+
+
 class LocalOriginGuard:
-    def __init__(self, app: ASGIApp, port: int) -> None:
+    def __init__(self, app: ASGIApp, port: int, remote_host: str | None = None) -> None:
         self.app = app
+        self.remote_host = remote_host
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self.origins = {f"http://{h}" for h in self.hosts}
+        if remote_host is not None:
+            self.hosts |= {remote_host, f"{remote_host}:443"}
+            self.origins.add(f"https://{remote_host}")
 
     async def _reject(self, send: Send, code: int, text: str) -> None:
         body = text.encode()
@@ -93,6 +105,8 @@ class LocalOriginGuard:
             return
 
         extra = _headers_for(scope["path"])
+        if is_remote_host(headers["host"], self.remote_host):
+            extra = [*extra, _HSTS]
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":

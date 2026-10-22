@@ -33,6 +33,7 @@ RSS_RETENTION_DAYS_MAX = 365
 
 _DURATION = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _FOLDER_KIND = re.compile(r"^[a-z][a-z0-9_-]*$")
+_DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class ConfigError(ValueError):
@@ -50,6 +51,8 @@ class Config:
     kbsync_quiet: timedelta = DEFAULT_QUIET
     folders: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_FOLDERS))
     rss_retention: timedelta = DEFAULT_RSS_RETENTION
+    # The tailnet name ``tailscale serve`` fronts Jesinia on (ADR 0011); None: local only.
+    remote_host: str | None = None
 
 
 def parse_duration(text: str) -> timedelta:
@@ -81,6 +84,10 @@ def _serialize(cfg: Config) -> str:
         "[server]",
         f"port = {cfg.port}",
         f"token = {_quote(cfg.token)}",
+    ]
+    if cfg.remote_host is not None:
+        lines.append(f"remote_host = {_quote(cfg.remote_host)}")
+    lines += [
         "",
         "[kb]",
     ]
@@ -125,7 +132,7 @@ def _section(doc: Mapping[str, object], name: str) -> Mapping[str, object]:
 
 
 _ALLOWED: dict[str, frozenset[str] | None] = {
-    "server": frozenset({"port", "token"}),
+    "server": frozenset({"port", "token", "remote_host"}),
     "kb": frozenset({"path"}),
     "kbsync": frozenset({"interval", "quiet"}),
     "folders": None,  # any folder kind; validated by _apply
@@ -136,6 +143,7 @@ _ALLOWED: dict[str, frozenset[str] | None] = {
 _TYPES: dict[tuple[str, str], type] = {
     ("server", "port"): int,
     ("server", "token"): str,
+    ("server", "remote_host"): str,
     ("kb", "path"): str,
     ("kbsync", "interval"): str,
     ("kbsync", "quiet"): str,
@@ -176,6 +184,8 @@ def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
     cfg = Config(token=token, data_dir=path.parent, log_dir=default_log_dir())
     if "port" in server:
         cfg = _apply(cfg, "server.port", str(server["port"]))
+    if "remote_host" in server:
+        cfg = _apply(cfg, "server.remote_host", str(server["remote_host"]))
     if "path" in kb:
         cfg = _apply(cfg, "kb.path", str(kb["path"]))
     for key in ("interval", "quiet"):
@@ -213,6 +223,19 @@ def _validate_folder(raw: str) -> str:
     return folder
 
 
+def _validate_remote_host(raw: str) -> str | None:
+    """A bare DNS name, lower-cased, without the trailing root dot MagicDNS reports."""
+    host = raw.strip().lower().removesuffix(".")
+    if not host:
+        return None
+    labels = host.split(".")
+    if len(host) > 253 or len(labels) < 2 or not all(_DNS_LABEL.match(x) for x in labels):
+        raise ConfigError(
+            f"server.remote_host must be a bare DNS name like mac.tail1234.ts.net, got {raw!r}"
+        )
+    return host
+
+
 def _apply(cfg: Config, key: str, raw: str) -> Config:
     if key == "server.port":
         try:
@@ -222,6 +245,8 @@ def _apply(cfg: Config, key: str, raw: str) -> Config:
         if not 1 <= port <= 65535:
             raise ConfigError(f"server.port out of range: {port}")
         return replace(cfg, port=port)
+    if key == "server.remote_host":
+        return replace(cfg, remote_host=_validate_remote_host(raw))
     if key == "kb.path":
         if not raw.strip():
             return replace(cfg, kb_path=None)
@@ -251,7 +276,7 @@ def _apply(cfg: Config, key: str, raw: str) -> Config:
             raise ConfigError(f"invalid folder kind {kind!r}")
         return replace(cfg, folders={**cfg.folders, kind: _validate_folder(raw)})
     raise ConfigError(
-        f"unknown key {key!r} (known: server.port, kb.path, kbsync.interval, "
+        f"unknown key {key!r} (known: server.port, server.remote_host, kb.path, kbsync.interval, "
         "kbsync.quiet, folders.<kind>, rss.retention)"
     )
 

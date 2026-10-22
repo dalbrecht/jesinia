@@ -8,13 +8,14 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.routing import Route
 
 from jesinia.core.auth import (
     SESSIONS_FILE,
     SessionCookieRenewal,
     auth_router,
+    is_authorized,
     load_sessions,
     require_owner,
 )
@@ -104,7 +105,7 @@ def create_app(
             )
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, object]:
+    async def healthz(request: Request) -> dict[str, object]:
         report: dict[str, dict[str, object]] = {}
         for module in modules:
             if module.name in failed:
@@ -112,11 +113,14 @@ def create_app(
             else:
                 health = module.health()
             report[module.name] = {"ok": health.ok, "detail": health.detail}
-        return {"ok": all(m["ok"] for m in report.values()), "modules": report}
+        ok = all(m["ok"] for m in report.values())
+        # Liveness is public; which modules fail and why needs a credential. Never decided
+        # by Host: through ``tailscale serve`` a client chooses its own (ADR 0011).
+        return {"ok": ok, "modules": report if is_authorized(request) else {}}
 
     app.router.routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))
     if static_root is not None:
         app.include_router(static_router(static_root))  # last: a catch-all for the PWAs
-    app.add_middleware(SessionCookieRenewal)
-    app.add_middleware(LocalOriginGuard, port=cfg.port)
+    app.add_middleware(SessionCookieRenewal, remote_host=cfg.remote_host)
+    app.add_middleware(LocalOriginGuard, port=cfg.port, remote_host=cfg.remote_host)
     return app

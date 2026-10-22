@@ -9,6 +9,7 @@ import logging.handlers
 import secrets
 import sys
 import webbrowser
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ import typer
 from jesinia.cli import backup as backup_mod
 from jesinia.cli import doctor as doctor_mod
 from jesinia.cli import install as install_mod
+from jesinia.cli import remote as remote_mod
 from jesinia.cli.server import ServerBusy, ServerDown, call
 from jesinia.core.config import Config, ConfigError, format_duration, load_config, save_config
 from jesinia.core.config import set_value as config_set_value
@@ -30,9 +32,11 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="Jesinia serv
 config_app = typer.Typer(no_args_is_help=True, help="Read or change config.toml.")
 token_app = typer.Typer(no_args_is_help=True, help="The install token (MCP + CLI auth).")
 sync_app = typer.Typer(no_args_is_help=True, help="KB git sync.")
+remote_app = typer.Typer(no_args_is_help=True, help="Reach Jesinia from your tailnet.")
 app.add_typer(config_app, name="config")
 app.add_typer(token_app, name="token")
 app.add_typer(sync_app, name="sync")
+app.add_typer(remote_app, name="remote")
 
 LOG_BYTES = 10 * 1024 * 1024
 LOG_BACKUPS = 5
@@ -115,6 +119,8 @@ def status() -> None:
     for name, m in health["modules"].items():
         typer.echo(f"  {'ok  ' if m['ok'] else 'FAIL'} {name}: {m['detail']}")
     typer.echo(f"login: {login['url']}")
+    if login.get("remote_url"):
+        typer.echo(f"login from another device: {login['remote_url']}")
 
 
 @app.command()
@@ -122,15 +128,29 @@ def login(
     print_only: Annotated[
         bool, typer.Option("--print", help="Print the link instead of opening it.")
     ] = False,
+    remote: Annotated[
+        bool,
+        typer.Option("--remote", help="Print a link for another device on your tailnet."),
+    ] = False,
 ) -> None:
     """Sign this Mac's browser in: open a fresh one-time login link."""
     cfg = _cfg()
+    if remote and cfg.remote_host is None:
+        raise _fail("remote access is off (turn it on with `jesinia remote enable`)")
     try:
-        url = call(cfg, "POST", "/api/auth/nonce")["url"]
+        body = call(cfg, "POST", "/api/auth/nonce")
     except ServerBusy as exc:
         raise _fail(str(exc)) from exc
     except ServerDown as exc:
         raise _fail(f"{exc} (start it with ./setup or `jesinia serve`)") from exc
+    if remote:
+        if not body.get("remote_url"):
+            raise _fail("the server has not picked up remote access yet; restart it")
+        typer.echo(
+            f"Open this on your other device (valid for 5 minutes, once): {body['remote_url']}"
+        )
+        return
+    url = body["url"]
     if print_only:
         typer.echo(url)
     elif webbrowser.open(url):
@@ -149,8 +169,9 @@ def doctor() -> None:
         raise typer.Exit(1)
 
 
-_GETTERS = {
+_GETTERS: dict[str, Callable[[Config], str]] = {
     "server.port": lambda c: str(c.port),
+    "server.remote_host": lambda c: c.remote_host or "",
     "kb.path": lambda c: str(c.kb_path) if c.kb_path else "",
     "kbsync.interval": lambda c: format_duration(c.kbsync_interval),
     "kbsync.quiet": lambda c: format_duration(c.kbsync_quiet),
@@ -160,8 +181,8 @@ _GETTERS = {
 
 @config_app.command("get")
 def config_get(key: str) -> None:
-    """Print one value (``server.port``, ``kb.path``, ``kbsync.*``, ``folders.<kind>``,
-    ``rss.retention``)."""
+    """Print one value (``server.port``, ``server.remote_host``, ``kb.path``, ``kbsync.*``,
+    ``folders.<kind>``, ``rss.retention``)."""
     cfg = _cfg()
     if key in _GETTERS:
         typer.echo(_GETTERS[key](cfg))
@@ -205,6 +226,34 @@ def token_rotate() -> None:
         typer.echo("server: not running; it will use the new token when it starts")
     reregister_agents(new)
     typer.echo("token rotated")
+
+
+def _remote_system() -> install_mod.System:
+    return install_mod.System(echo=typer.echo)
+
+
+@remote_app.command("enable")
+def remote_enable() -> None:
+    """Serve Jesinia over HTTPS on this machine's tailnet name (tailscale serve)."""
+    try:
+        remote_mod.enable(config_path(), _remote_system())
+    except (remote_mod.RemoteError, RuntimeError) as exc:
+        raise _fail(str(exc)) from exc
+
+
+@remote_app.command("disable")
+def remote_disable() -> None:
+    """Stop serving Jesinia on the tailnet."""
+    try:
+        remote_mod.disable(config_path(), _remote_system())
+    except RuntimeError as exc:
+        raise _fail(str(exc)) from exc
+
+
+@remote_app.command("status")
+def remote_status() -> None:
+    """Whether remote access is on, and where."""
+    typer.echo(remote_mod.describe(_cfg()))
 
 
 @sync_app.command("now")

@@ -133,7 +133,12 @@ def _launchd(run: Run) -> Check:
 def _server(cfg: Config) -> Check:
     remedy = "jesinia serve or ./setup"
     try:
-        r = httpx.get(f"http://127.0.0.1:{cfg.port}/healthz", timeout=5, trust_env=False)
+        r = httpx.get(
+            f"http://127.0.0.1:{cfg.port}/healthz",
+            headers={"Authorization": f"Bearer {cfg.token}"},
+            timeout=5,
+            trust_env=False,
+        )
         body = r.json()
     except (httpx.HTTPError, ValueError):
         return Check("fail", "server", f"not answering on port {cfg.port}", remedy)

@@ -301,7 +301,12 @@ def _wait_healthy(sys: System, cfg: Config) -> bool:
     deadline = time.monotonic() + HEALTH_TIMEOUT
     while True:
         try:
-            r = httpx.get(f"http://127.0.0.1:{cfg.port}/healthz", timeout=2, trust_env=False)
+            r = httpx.get(
+                f"http://127.0.0.1:{cfg.port}/healthz",
+                headers={"Authorization": f"Bearer {cfg.token}"},
+                timeout=2,
+                trust_env=False,
+            )
             if r.status_code == 200 and not unhealthy_modules(r.json()):
                 return True
         except (httpx.HTTPError, ValueError):

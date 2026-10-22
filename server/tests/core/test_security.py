@@ -127,3 +127,72 @@ async def test_rss_pages_keep_their_image_policy_over_a_response_csp() -> None:
     async with _guarded([(b"content-security-policy", b"default-src *")]) as c:
         r = await c.get("/rss/")
     assert r.headers.get_list("content-security-policy") == [RSS_CSP]
+
+
+REMOTE = "mac.tail1234.ts.net"
+
+
+@pytest.fixture
+async def remote_client(cfg: Config):  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    async with lifespan_client(create_app(replace(cfg, remote_host=REMOTE), [])) as c:
+        yield c
+
+
+@pytest.mark.parametrize("host", [REMOTE, f"{REMOTE}:443", "127.0.0.1:5374"])
+async def test_should_accept_the_remote_host_when_configured(
+    remote_client: httpx.AsyncClient, host: str
+) -> None:
+    assert (await remote_client.get("/healthz", headers={"Host": host})).status_code == 200
+
+
+async def test_should_refuse_the_remote_host_when_not_configured(
+    client: httpx.AsyncClient,
+) -> None:
+    assert (await client.get("/healthz", headers={"Host": REMOTE})).status_code == 421
+
+
+async def test_should_refuse_other_tailnet_hosts(remote_client: httpx.AsyncClient) -> None:
+    for host in ("other.tail1234.ts.net", f"{REMOTE}:8443", f"x.{REMOTE}"):
+        assert (await remote_client.get("/healthz", headers={"Host": host})).status_code == 421
+
+
+async def test_should_accept_writes_from_the_remote_https_origin_only(
+    remote_client: httpx.AsyncClient, cfg: Config
+) -> None:
+    def post(origin: str):  # type: ignore[no-untyped-def]
+        headers = {**bearer(cfg.token), "Host": REMOTE, "Origin": origin}
+        return remote_client.post("/api/auth/nonce", headers=headers)
+
+    assert (await post(f"https://{REMOTE}")).status_code == 200
+    assert (await post(f"http://{REMOTE}")).status_code == 403
+
+
+async def test_should_send_hsts_on_remote_responses_only(
+    remote_client: httpx.AsyncClient,
+) -> None:
+    remote = await remote_client.get("/healthz", headers={"Host": REMOTE})
+    assert remote.headers["strict-transport-security"] == "max-age=31536000"
+    local = await remote_client.get("/healthz")
+    assert "strict-transport-security" not in local.headers
+    refused = await remote_client.get("/healthz", headers={"Host": "evil.example"})
+    assert "strict-transport-security" not in refused.headers
+
+
+async def test_health_should_hide_module_details_until_signed_in(
+    cfg: Config,
+) -> None:
+    from dataclasses import replace
+
+    from tests.core.test_app import Exploding
+
+    app = create_app(replace(cfg, remote_host=REMOTE), [Exploding("kb")])
+    async with lifespan_client(app) as c:
+        anonymous = await c.get("/healthz", headers={"Host": REMOTE})
+        assert anonymous.json() == {"ok": False, "modules": {}}
+        signed_in = await c.get("/healthz", headers={"Host": REMOTE, **bearer(cfg.token)})
+        assert "start failed" in signed_in.json()["modules"]["kb"]["detail"]
+        # Host decides nothing: a tailnet client can claim to be local.
+        spoofed = await c.get("/healthz", headers={"Host": "127.0.0.1:5374"})
+        assert spoofed.json() == {"ok": False, "modules": {}}
