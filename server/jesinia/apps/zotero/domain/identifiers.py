@@ -8,7 +8,8 @@ from typing import NewType
 
 ItemKey = NewType("ItemKey", str)
 
-_NEW_ARXIV = r"\d{4}\.\d{4,5}"
+NEW_ARXIV_PATTERN = r"\d{4}\.\d{4,5}"
+_NEW_ARXIV = NEW_ARXIV_PATTERN
 # Pre-2007 arXiv archives; a generic [a-z]+ prefix would match URLs like /stable/1234567.
 OLD_ARXIV_ARCHIVES = (
     "astro-ph|cond-mat|gr-qc|hep-ex|hep-lat|hep-ph|hep-th|math-ph|nlin|nucl-ex|nucl-th"
@@ -16,7 +17,8 @@ OLD_ARXIV_ARCHIVES = (
     "|patt-sol|solv-int|adap-org|comp-gas|supr-con|acc-phys|ao-sci|atom-ph|bayes-an"
     "|chem-ph|plasm-ph|mtrl-th"
 )
-_OLD_ARXIV = rf"(?:{OLD_ARXIV_ARCHIVES})(?:\.[A-Z]{{2}})?/\d{{7}}"
+OLD_ARXIV_PATTERN = rf"(?:{OLD_ARXIV_ARCHIVES})(?:\.[A-Z]{{2}})?/\d{{7}}"
+_OLD_ARXIV = OLD_ARXIV_PATTERN
 _ARXIV_ID = re.compile(rf"(?<![\w.-])(?:({_NEW_ARXIV})|({_OLD_ARXIV}))(?:v\d+)?(?!\d)")
 _BARE_ARXIV_TITLE = re.compile(rf"(?:arxiv:)?(?:{_NEW_ARXIV})(?:v\d+)?", re.IGNORECASE)
 _DOI = re.compile(r"10\.\d{4,9}/[^\s\"<>]+")
