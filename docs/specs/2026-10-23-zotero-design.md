@@ -134,6 +134,38 @@ gate.
   `config.toml`.
 - Nothing in the repo mentions Zotero yet.
 
+## 2a. Spike results (2026-10-23, Zotero 10.0.6, real app)
+
+Tested on spike items only; nothing of the author's was touched.
+
+- **Authorize:** `POST /api/local/authorize` with `{"appName": …}` and `Zotero-Server-ID`
+  blocks until the author answers the dialog, then returns `{"key": <32 chars>, "remember":
+  bool}`. "Allow" gives `remember: false`, a single-use key. Jesinia must check `remember` and
+  ask for "Always Allow" again if it's false.
+- **Writes:**
+  - Create (POST `/items`, batch): 200.
+  - PATCH: 204.
+  - A stale `If-Unmodified-Since-Version`: 412. A PATCH with no version header: **428**, so the
+    version is required.
+  - A reused `Zotero-Write-Token`: 412 "Write token already used".
+- **Related links are not reciprocal through the API.** After PATCHing `dc:relation` on A
+  pointing to B, B's `relations` stayed `{}`. Jesinia must write both sides (§6.4).
+- **Notes:** creating a child note and PATCHing it both work. A `data-jesinia-write="…"`
+  attribute survives storage, so the note stamp works.
+- **Parent items:** creating a parent with a `jesinia-write:<token>` line in `extra`, then
+  PATCHing the standalone attachment's `parentItem`, works. The stamp survives.
+- **Item type:** PATCHing `itemType` webpage → preprint works. Zotero drops fields the new
+  type doesn't support (`websiteTitle`) on its own.
+- **Reads:**
+  - `/items?since=`, `format=versions`, `format=keys`, `/items/trash?since=` and
+    `/fulltext?since=` all work.
+  - `/items/<KEY>/fulltext` returns `{content, indexedPages, totalPages}`. One real paper was
+    147k characters.
+  - **`/deleted?since=` doesn't exist on the local API (404).** Permanent deletions are found
+    by diffing `GET /items?format=keys` (every live key) against the mirror on each sync
+    (§4).
+- The library had no annotations yet, so annotation reads are untested (the fake covers them).
+
 ## 3. How Jesinia talks to Zotero
 
 - **Reads and writes both go through Zotero 10's local API** (builder's call). This needs the
@@ -173,7 +205,8 @@ gate.
   1. `/items?since=V` for changed items.
   2. `/items/trash?since=V` (or `includeTrashed=1`) for items moved to the trash, which count
      as deleted. The plain `/items` feed leaves these out.
-  3. `/deleted?since=V` for permanent deletions (tombstones).
+  3. Permanent deletions. The local API has no `/deleted` feed (§2a), so Jesinia diffs
+     `GET /items?format=keys` against the mirror's keys. A key missing from Zotero is gone.
   4. `/fulltext?since=V`, the full-text change feed. For each attachment it lists, Jesinia
      fetches `/items/<KEY>/fulltext`. This catches text that Zotero indexes after the
      attachment itself synced (§2). Without it, those papers would never be searchable by
