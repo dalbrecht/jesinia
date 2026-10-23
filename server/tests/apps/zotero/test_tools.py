@@ -10,7 +10,6 @@ import pytest
 from fastapi import HTTPException
 from pydantic import BaseModel, ValidationError
 
-from jesinia.apps.zotero.api import paper_link
 from jesinia.apps.zotero.domain.errors import PaperNotFound
 from jesinia.apps.zotero.module import ZoteroModule
 from jesinia.core.config import Config
@@ -101,7 +100,7 @@ async def test_should_fence_paper_text_in_get(cfg: Config) -> None:
     assert got["key"] == key and got["year"] == 2021
     assert got["doi"] == "10.1000/xyz" and got["arxiv_id"] == "2101.00001"
     assert got["related"] == [{"key": related}]
-    assert got["link"] == f"[Fenced Paper](zotero://select/library/items/{key})"
+    assert got["link"] == f"[Open in Zotero](zotero://select/library/items/{key})"
 
 
 async def test_should_tolerate_sparse_papers_in_get(cfg: Config) -> None:
@@ -179,8 +178,7 @@ async def test_should_return_paste_ready_link_in_search(cfg: Config) -> None:
     assert isinstance(hits, list) and len(hits) == 1
     hit = hits[0]
     assert set(hit) == {"key", "link", "content"} and hit["key"] == key
-    assert str(hit["link"]).startswith("[Attention \\[Is\\] Everything")
-    assert str(hit["link"]).endswith(f"](zotero://select/library/items/{key})")
+    assert hit["link"] == f"[Open in Zotero](zotero://select/library/items/{key})"
 
 
 async def test_should_fence_search_snippet(cfg: Config) -> None:
@@ -220,7 +218,7 @@ async def test_should_keep_injection_text_in_title_and_tags_inside_fence(cfg: Co
     for result in (got, hits[0]):
         outside = {k: v for k, v in result.items() if k != "content"}
         assert evil not in json.dumps(outside)
-        assert "\n" not in str(result["link"])
+        assert result["link"] == f"[Open in Zotero](zotero://select/library/items/{key})"
         assert evil in str(result["content"])
 
 
@@ -232,15 +230,6 @@ async def test_should_null_invalid_doi_and_arxiv_id(cfg: Config) -> None:
         await zotero.sync_now()
         got = await invoke(zotero, "zotero_get", key=key)
     assert got["doi"] is None and got["arxiv_id"] is None
-
-
-def test_should_sanitise_link_text() -> None:
-    assert paper_link("a\nb\x00\tc  d", "K1") == "[a b c d](zotero://select/library/items/K1)"
-    assert paper_link("x[y]\\z", "K1").startswith("[x\\[y\\]\\\\z]")
-    long = paper_link("w" * 300, "K1")
-    assert long.startswith("[" + "w" * 120 + "…](")
-    assert paper_link("w" * 120, "K1").startswith("[" + "w" * 120 + "](")
-    assert paper_link("\n", "K1") == "[](zotero://select/library/items/K1)"
 
 
 def test_should_validate_search_input() -> None:

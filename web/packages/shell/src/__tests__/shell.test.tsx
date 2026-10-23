@@ -51,6 +51,14 @@ afterEach(() => {
   delete document.documentElement.dataset.theme;
 });
 
+// A search endpoint that, like the server, returns only the hits of the requested sources.
+function searchRoute(hits: ({ source: string } & Record<string, unknown>)[]) {
+  return (req: Request) => {
+    const sources = new URL(req.url).searchParams.getAll("source");
+    return Response.json(hits.filter((h) => sources.includes(h.source)));
+  };
+}
+
 function setup(over = {}, props: Partial<Parameters<typeof AppShell>[0]> = {}) {
   vi.stubGlobal("EventSource", FakeSource);
   Object.defineProperty(window, "location", {
@@ -137,7 +145,7 @@ describe("AppShell", () => {
     const appRun = vi.fn();
     const calls = setup(
       {
-        "GET /api/search": [
+        "GET /api/search": searchRoute([
           {
             source: "kb",
             key: "p1",
@@ -148,7 +156,7 @@ describe("AppShell", () => {
             score: 1,
             url: null,
           },
-        ],
+        ]),
         "POST /api/kbsync/run": { result: { outcome: "error", message: "push failed" }, status: syncStatus() },
       },
       { commands: [{ id: "new", label: "New note", group: "command", onRun: appRun }], controls: <span>ctl</span> },
@@ -184,7 +192,62 @@ describe("AppShell", () => {
     fireEvent.click(await screen.findByText("Budget"), { metaKey: true });
     expect(open).toHaveBeenCalledWith("/notes/page/p1", "_blank", "noopener");
     const search = calls.find((c) => c.url.includes("/api/search"));
-    expect(new URL(search?.url ?? "").searchParams.getAll("source")).toEqual(["kb", "zotero"]);
+    expect(search).toBeDefined();
+    const searches = calls.filter((c) => c.url.includes("/api/search")).map((c) => new URL(c.url).searchParams);
+    expect(new Set(searches.map((q) => q.getAll("source").join()))).toEqual(new Set(["kb", "zotero"]));
+    expect(new Set(searches.map((q) => q.get("limit")))).toEqual(new Set(["6"]));
+  });
+
+  describe("palette search groups", () => {
+    const hit = (source: string, key: string) => ({
+      source,
+      key,
+      title: `${source} ${key}`,
+      snippet: "",
+      path: null,
+      authoritative: source === "kb",
+      score: 1,
+      url: source === "zotero" ? `zotero://select/library/items/${key}` : null,
+    });
+    const searchSetup = (handler: (source: string) => Response | Promise<Response>) =>
+      setup({
+        "GET /api/search": (req: Request) => handler(new URL(req.url).searchParams.get("source") ?? ""),
+      });
+    const type = async () => {
+      await screen.findByText("ready");
+      fireEvent.keyDown(window, { key: "k", metaKey: true });
+      await userEvent.type(screen.getByRole("combobox"), "q");
+    };
+
+    it("still shows papers when there are many KB hits", async () => {
+      searchSetup((source) =>
+        Response.json(
+          source === "kb" ? Array.from({ length: 6 }, (_, i) => hit("kb", `k${i}`)) : [hit("zotero", "PAPER001")],
+        ),
+      );
+      await type();
+      const group = await screen.findByRole("group", { name: "Papers" });
+      expect(within(group).getByText("zotero PAPER001")).toBeInTheDocument();
+      expect(screen.getByText("kb k0")).toBeInTheDocument();
+    });
+
+    it("still shows KB hits when the paper search fails", async () => {
+      searchSetup((source) =>
+        source === "kb" ? Response.json([hit("kb", "k1")]) : Response.json({ detail: "down" }, { status: 503 }),
+      );
+      await type();
+      expect(await screen.findByText("kb k1")).toBeInTheDocument();
+      expect(screen.queryByRole("group", { name: "Papers" })).toBeNull();
+    });
+
+    it("still shows KB hits when the paper request throws", async () => {
+      searchSetup((source) =>
+        source === "kb" ? Response.json([hit("kb", "k1")]) : Promise.reject(new TypeError("Failed to fetch")),
+      );
+      await type();
+      expect(await screen.findByText("kb k1")).toBeInTheDocument();
+      expect(screen.queryByRole("group", { name: "Papers" })).toBeNull();
+    });
   });
 
   it("palette shows paper hits under Papers and opens their url", async () => {
@@ -200,11 +263,11 @@ describe("AppShell", () => {
       url,
     });
     setup({
-      "GET /api/search": [
+      "GET /api/search": searchRoute([
         paper("ABCD1234", "zotero://select/library/items/ABCD1234"),
         paper("NOURL000", null),
         paper("EVIL0000", "https://evil.example/"),
-      ],
+      ]),
     });
     const location = { ...window.location, assign, origin: "http://localhost:3000" };
     Object.defineProperty(location, "href", { configurable: true, get: () => "http://localhost:3000/", set: href });
@@ -249,7 +312,7 @@ describe("AppShell edge cases", () => {
       "GET /api/agents/runners": fail,
       "POST /api/kbsync/resume": fail,
       "POST /api/kbsync/run": fail,
-      "GET /api/search": [
+      "GET /api/search": searchRoute([
         {
           source: "kb",
           key: "p2",
@@ -260,7 +323,7 @@ describe("AppShell edge cases", () => {
           score: 1,
           url: null,
         },
-      ],
+      ]),
     });
     render(
       <AppShell app={{ id: "launcher", name: "Jesinia" }} client={client}>
@@ -290,9 +353,9 @@ describe("AppShell edge cases", () => {
   it("offers no KB results while Notes is unbuilt", async () => {
     setNotesBuilt(false);
     const calls = setup({
-      "GET /api/search": [
+      "GET /api/search": searchRoute([
         { source: "kb", key: "p3", title: "Hidden", snippet: "", path: null, authoritative: true, score: 1, url: null },
-      ],
+      ]),
     });
     await screen.findByText("ready");
     fireEvent.keyDown(window, { key: "k", metaKey: true });
