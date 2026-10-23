@@ -20,6 +20,8 @@ This page tests how the Pigeonpile Wiki and Dopo Tasks handle task lines (ADR 00
 
 - [ ] Water the garden every:1w scheduled:2026-10-25
 - [ ] Change the filter after:3m due:2026-11-01
+- [ ] Pay rent every:1m due:2026-01-31
+- [ ] Reopened task closed:2026-10-18
 
 ## Nesting and other markers
 

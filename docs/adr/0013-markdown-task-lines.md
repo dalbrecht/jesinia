@@ -73,6 +73,13 @@ Prose, headings and links around it stay ordinary Markdown.
   in Org: no offset, no zone.
 - **Intervals** are a positive integer and a unit: `d`, `w`, `m` (month) or `y`. A repeater
   needs a `scheduled` or `due` date.
+- **Month and year steps** keep the day of the month, clamped to the last day of a shorter
+  month: Jan 31 + `1m` is Feb 28 (Feb 29 in a leap year), and Feb 29 + `1y` is Feb 28.
+  The line stores no other anchor, so each step starts from the date as written and a
+  clamped day stays clamped: Jan 31, Feb 28, Mar 28. For a month-end task, use a date on
+  or before the 28th, or a `d` or `w` interval.
+- **`closed:` on an open task** (`[ ]`, for example after the Wiki unticks it) is ignored
+  when read and left as written.
 - Priority is a field, not Org's `[#A]` cookie, because `#A` after `[` is a tag in the KB
   tag grammar.
 
@@ -81,11 +88,15 @@ Prose, headings and links around it stay ordinary Markdown.
 - Writers change only the tokens they own, in place, and keep the rest of the line and
   the file byte-for-byte. A new field is appended at the end of the line.
 - New task lines are written as `- [ ] <title> <tags> <fields>`, fields in table order.
-- **Completing** a task sets `[x]` and appends `closed:` with today's date. Completing a
-  repeating task instead keeps `[ ]` and moves its dates forward. With `every`, each date
+- **Completing** a task sets `[x]` and sets `closed:` to today's date: it updates the
+  line's existing `closed:` token if it has one (a task reopened and done again), and
+  appends one only when there is none. Completing a repeating task instead keeps `[ ]`
+  and moves its dates forward, leaving any `closed:` as written. With `every`, each date
   steps by the interval until it is after today, keeping the original cadence. With
   `after`, the earlier date becomes today plus the interval, and the other date moves by
-  the same amount. Time of day is kept.
+  the same number of days. Time of day is kept.
+- **Reopening** a task (`[x]` to `[ ]`) changes only the checkbox, the same as the Wiki
+  does, so the stale `closed:` is ignored until the next completion updates it.
 - Edits use the page's revision check (`expected_rev`, KB format "Writing safely"); a
   stale edit is refused, never merged by line.
 
