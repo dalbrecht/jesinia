@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 
@@ -17,6 +19,7 @@ from jesinia.apps.zotero.infrastructure.local_api import LocalApiClient, parse_p
 from jesinia.testing.fake_zotero import FakeZotero
 
 BASE_URL = "http://127.0.0.1:23119/api"
+TOKEN = "t" * 32
 
 
 class MemoryKeyStore:
@@ -130,15 +133,136 @@ async def test_should_create_nothing_for_empty_list(fake: FakeZotero) -> None:
 
 async def test_should_send_write_token_and_reject_reuse(fake: FakeZotero) -> None:
     api = client(fake)
-    await api.create_items([{"itemType": "book", "title": "a"}], write_token="tok")
-    assert fake.last_headers["zotero-write-token"] == "tok"
+    await api.create_items([{"itemType": "book", "title": "a"}], write_token=TOKEN)
+    assert fake.last_headers["zotero-write-token"] == TOKEN
     with pytest.raises(WriteTokenUsed):
-        await api.create_items([{"itemType": "book", "title": "a"}], write_token="tok")
+        await api.create_items([{"itemType": "book", "title": "a"}], write_token=TOKEN)
 
 
-async def test_should_derive_distinct_write_tokens_for_later_batches(fake: FakeZotero) -> None:
+async def test_should_reject_write_token_batch_over_fifty(fake: FakeZotero) -> None:
     payload: list[dict[str, object]] = [{"itemType": "book", "title": "x"}] * 51
-    assert len(await client(fake).create_items(payload, write_token="tok")) == 51
+    with pytest.raises(ValueError, match="at most 50"):
+        await client(fake).create_items(payload, write_token=TOKEN)
+    assert fake.writes == []
+
+
+async def test_fake_should_reject_malformed_write_token(fake: FakeZotero) -> None:
+    with pytest.raises(ZoteroError, match="400"):
+        await client(fake).create_items([{"itemType": "book"}], write_token="short")
+
+
+async def test_should_treat_other_412_on_create_as_plain_error() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(412, text="Library changed")
+        return httpx.Response(200, json=[])
+
+    mock = httpx.MockTransport(respond)
+    api = LocalApiClient(BASE_URL, MemoryKeyStore("k"), transport=_with_server_id(mock))
+    with pytest.raises(ZoteroError, match="Library changed") as raised:
+        await api.create_items([{"itemType": "book"}])
+    assert not isinstance(raised.value, WriteTokenUsed)
+
+
+async def test_should_never_put_the_api_key_in_error_text() -> None:
+    mock = httpx.MockTransport(lambda request: httpx.Response(500, text="boom"))
+    api = LocalApiClient(
+        BASE_URL, MemoryKeyStore("secret-key-123"), transport=_with_server_id(mock)
+    )
+    with pytest.raises(ZoteroError) as raised:
+        await api.patch_item(ItemKey("K"), 1, {"title": "y"})
+    assert "secret-key-123" not in str(raised.value) and "secret-key-123" not in repr(raised.value)
+
+
+def _with_server_id(inner: httpx.MockTransport) -> httpx.AsyncBaseTransport:
+    class Wrapper(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            response = await inner.handle_async_request(request)
+            response.headers["Zotero-Server-ID"] = "S"
+            return response
+
+    return Wrapper()
+
+
+async def test_should_map_other_transport_errors_to_not_running() -> None:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    api = LocalApiClient(BASE_URL, MemoryKeyStore("k"), transport=httpx.MockTransport(fail))
+    with pytest.raises(ZoteroUnavailable, match="ReadTimeout") as raised:
+        await api.library_version()
+    assert raised.value.state == "not_running"
+
+
+async def test_should_restart_paging_when_library_changes_between_pages(fake: FakeZotero) -> None:
+    keys = [fake.add_item(title=f"t{i}") for i in range(130)]
+    bumps: list[int] = []
+
+    def bump_once(start: int) -> None:
+        if not bumps:
+            bumps.append(start)
+            fake.add_item(title="late")
+
+    fake.on_page = bump_once
+    items, version = await client(fake).changed_since(0)
+    assert len(items) == 131 and version == fake.version and keys[0] in {i["key"] for i in items}
+
+
+async def test_should_give_up_when_library_never_stops_changing(fake: FakeZotero) -> None:
+    for index in range(101):
+        fake.add_item(title=f"t{index}")
+
+    def churn(start: int) -> None:
+        fake.add_item(title="churn")
+
+    fake.on_page = churn
+    with pytest.raises(ZoteroError, match="kept changing"):
+        await client(fake).changed_since(0)
+
+
+async def test_should_page_without_total_results_header(fake: FakeZotero) -> None:
+    for index in range(230):
+        fake.add_item(title=f"t{index}")
+    fake.omit_total = True
+    items, _ = await client(fake).changed_since(0)
+    assert len(items) == 230
+
+
+async def test_should_page_when_total_is_an_exact_multiple_of_page_size(fake: FakeZotero) -> None:
+    for index in range(100):
+        fake.add_item(title=f"t{index}")
+    items, _ = await client(fake).changed_since(0)
+    assert len(items) == 100
+
+
+async def test_should_ignore_proxy_environment(
+    fake: FakeZotero, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[object] = []
+    real = httpx.AsyncClient
+
+    def spy(**kwargs: Any) -> httpx.AsyncClient:  # noqa: ANN401 - forwards httpx's open kwargs
+        seen.append(kwargs.get("trust_env"))
+        return real(**kwargs)
+
+    monkeypatch.setenv("HTTP_PROXY", "http://bogus.invalid:1")
+    monkeypatch.setenv("ALL_PROXY", "http://bogus.invalid:1")
+    monkeypatch.setattr(httpx, "AsyncClient", spy)
+    assert await client(fake).status() == "connected"
+    assert seen == [False]
+
+
+@pytest.mark.parametrize(
+    "url", ["http://example.com/api", "https://127.0.0.1:23119/api", "http://192.168.1.5/api"]
+)
+def test_should_reject_non_loopback_base_url(url: str) -> None:
+    with pytest.raises(ValueError, match="loopback"):
+        LocalApiClient(url, MemoryKeyStore("k"))
+
+
+@pytest.mark.parametrize("url", ["http://localhost:23119/api", "http://[::1]:23119/api"])
+def test_should_accept_loopback_base_urls(url: str) -> None:
+    LocalApiClient(url, MemoryKeyStore("k"))
 
 
 async def test_should_raise_when_create_reports_failures(fake: FakeZotero) -> None:

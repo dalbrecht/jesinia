@@ -8,6 +8,7 @@ the author's library. The API key is read from the key store per write and never
 from __future__ import annotations
 
 from typing import Literal, cast
+from urllib.parse import urlparse
 
 import httpx
 
@@ -34,6 +35,9 @@ _USER_PREFIX = "/users/0"
 _API_OFF_TEXT = "Local API is not enabled"
 _PDF = "application/pdf"
 _AUTOMATIC_TAG_TYPE = 1
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_WRITE_TOKEN_USED_TEXT = "Write token already used"
+_MAX_PAGING_ATTEMPTS = 3
 
 RawItem = dict[str, object]
 
@@ -47,6 +51,12 @@ class LocalApiClient:
         key_store: KeyStore,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        parsed = urlparse(base_url)
+        if parsed.scheme != "http" or parsed.hostname not in _LOOPBACK_HOSTS:
+            # The API key travels in a header, so it must never leave the machine.
+            raise ValueError(
+                f"Zotero base_url must be http on loopback, got {parsed.scheme}://{parsed.hostname}"
+            )
         self._base_url = base_url.rstrip("/")
         self._key_store = key_store
         self._transport = transport
@@ -63,7 +73,10 @@ class LocalApiClient:
         passthrough: tuple[int, ...] = (),
     ) -> httpx.Response:
         try:
-            async with httpx.AsyncClient(transport=self._transport, timeout=30.0) as http:
+            # trust_env=False: proxy environment variables must not carry the API key anywhere.
+            async with httpx.AsyncClient(
+                transport=self._transport, timeout=30.0, trust_env=False
+            ) as http:
                 response = await http.request(
                     method,
                     f"{self._base_url}{_USER_PREFIX}{path}",
@@ -73,6 +86,8 @@ class LocalApiClient:
                 )
         except httpx.ConnectError as error:
             raise ZoteroUnavailable("not_running", str(error)) from error
+        except httpx.TransportError as error:
+            raise ZoteroUnavailable("not_running", type(error).__name__) from error
         server_id = response.headers.get("Zotero-Server-ID")
         if server_id:
             self._cached_server_id = server_id
@@ -94,20 +109,30 @@ class LocalApiClient:
         return headers | (extra or {})
 
     async def _paged(self, path: str, since: int) -> tuple[list[RawItem], int]:
-        collected: list[RawItem] = []
-        version = 0
-        start = 0
-        while True:
-            response = await self._send(
-                "GET", path, params={"since": since, "limit": PAGE_SIZE, "start": start}
-            )
-            if start == 0:
+        for _ in range(_MAX_PAGING_ATTEMPTS):
+            collected: list[RawItem] = []
+            first_version: int | None = None
+            while True:
+                response = await self._send(
+                    "GET",
+                    path,
+                    params={
+                        "since": since,
+                        "limit": PAGE_SIZE,
+                        "start": len(collected),
+                        "sort": "dateAdded",
+                        "direction": "asc",
+                    },
+                )
                 version = int(response.headers.get("Last-Modified-Version", "0"))
-            page = cast(list[RawItem], response.json())
-            collected.extend(page)
-            start += len(page)
-            if not page or start >= int(response.headers.get("Total-Results", "0")):
-                return collected, version
+                first_version = version if first_version is None else first_version
+                page = cast(list[RawItem], response.json())
+                collected.extend(page)
+                if len(page) < PAGE_SIZE:
+                    break
+            if version == first_version:
+                return collected, first_version
+        raise ZoteroError("library kept changing during sync")
 
     async def library_version(self) -> int:
         response = await self._send("GET", "/items", params={"limit": 1})
@@ -151,15 +176,13 @@ class LocalApiClient:
     async def create_items(
         self, items: list[dict[str, object]], *, write_token: str | None = None
     ) -> list[ItemKey]:
+        if write_token is not None and len(items) > CREATE_BATCH_SIZE:
+            # One token is one atomic batch; splitting would make a partial failure unrecoverable.
+            raise ValueError(f"a write token covers at most {CREATE_BATCH_SIZE} items")
         keys: list[ItemKey] = []
-        for batch_number, start in enumerate(range(0, len(items), CREATE_BATCH_SIZE)):
+        for start in range(0, len(items), CREATE_BATCH_SIZE):
             batch = items[start : start + CREATE_BATCH_SIZE]
-            extra: dict[str, str] = {}
-            if write_token is not None:
-                # A token is single-use, so later batches of one logical create get their own.
-                extra["Zotero-Write-Token"] = (
-                    write_token if batch_number == 0 else f"{write_token}-{batch_number}"
-                )
+            extra = {} if write_token is None else {"Zotero-Write-Token": write_token}
             response = await self._send(
                 "POST",
                 "/items",
@@ -168,7 +191,9 @@ class LocalApiClient:
                 passthrough=(412,),
             )
             if response.status_code == 412:
-                raise WriteTokenUsed(response.text.strip())
+                if _WRITE_TOKEN_USED_TEXT in response.text:
+                    raise WriteTokenUsed(response.text.strip())
+                raise ZoteroError(f"Zotero POST /items returned 412: {response.text[:200]}")
             outcome = cast(dict[str, object], response.json())
             if outcome.get("failed"):
                 raise ZoteroError(

@@ -22,6 +22,7 @@ from starlette.routing import Route
 from jesinia.apps.zotero.domain.identifiers import ItemKey
 
 PREFIX = "/api/users/0"
+WRITE_TOKEN_LENGTH = 32
 _Item = dict[str, object]
 _Handler = Callable[[Request], Awaitable[Response]]
 
@@ -48,6 +49,8 @@ class FakeZotero:
         self.valid_key: str | None = None
         self.mode = "ok"  # "ok" | "off" | "unauthorized" | "forbidden" | "broken"
         self.down = False
+        self.omit_total = False
+        self.on_page: Callable[[int], None] | None = None  # called with ``start`` after a page
         self.last_headers: dict[str, str] = {}
         self.writes: list[tuple[str, str, object]] = []
         self._items: dict[str, _Item] = {}
@@ -189,12 +192,13 @@ class FakeZotero:
         limit = int(request.query_params.get("limit", "25"))
         start = int(request.query_params.get("start", "0"))
         body = [self._public(item) for item in items[start : start + limit]]
-        return self._respond(
-            request,
-            JSONResponse(body),
-            Total_Results=len(items),
-            Last_Modified_Version=self.version,
-        )
+        response = self._respond(request, JSONResponse(body))
+        if not self.omit_total:
+            response.headers["Total-Results"] = str(len(items))
+        response.headers["Last-Modified-Version"] = str(self.version)
+        if self.on_page is not None:
+            self.on_page(start)
+        return response
 
     @staticmethod
     def _public(item: _Item) -> _Item:
@@ -237,6 +241,10 @@ class FakeZotero:
         self.writes.append(("POST", request.url.path, payload))
         token = request.headers.get("zotero-write-token")
         if token is not None:
+            if len(token) != WRITE_TOKEN_LENGTH:
+                return self._respond(
+                    request, PlainTextResponse("Invalid write token", status_code=400)
+                )
             if token in self._used_tokens:
                 return self._respond(
                     request, PlainTextResponse("Write token already used", status_code=412)
