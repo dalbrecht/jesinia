@@ -34,3 +34,7 @@ class WriteTokenUsed(ZoteroError):  # noqa: N818 - name fixed by the spec
 
 class AuthorizeTooSoon(ZoteroError):  # noqa: N818 - name fixed by the spec
     """Authorize was requested again within a minute; Zotero would show another dialog."""
+
+
+class KeychainWriteUnverified(ZoteroError):  # noqa: N818 - name fixed by the spec
+    """The Keychain write exited cleanly but the key could not be read back."""

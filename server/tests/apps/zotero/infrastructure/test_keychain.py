@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from jesinia.apps.zotero.domain.errors import ZoteroError
+from jesinia.apps.zotero.domain.errors import KeychainWriteUnverified, ZoteroError
 from jesinia.apps.zotero.infrastructure import keychain
 from jesinia.apps.zotero.infrastructure.keychain import KeychainKeyStore
 
@@ -13,17 +13,20 @@ KEY = "AbC123xyz0AbC123xyz0AbC123xyz012"
 
 
 class FakeRun:
-    def __init__(self, code: int = 0, out: str = "") -> None:
+    def __init__(self, code: int = 0, out: str = "", read_out: str | None = None) -> None:
         self.code, self.out = code, out
+        self.read_out = out if read_out is None else read_out
         self.calls: list[tuple[list[str], str | None]] = []
 
     async def __call__(self, argv: list[str], stdin: str | None) -> tuple[int, str]:
         self.calls.append((argv, stdin))
+        if argv[:2] == ["security", "find-generic-password"]:
+            return self.code, self.read_out
         return self.code, self.out
 
 
 async def test_should_write_key_via_stdin_not_argv() -> None:
-    run = FakeRun()
+    run = FakeRun(read_out=KEY)
     await KeychainKeyStore(run).write(KEY)
     argv, stdin = run.calls[0]
     assert argv == ["security", "-i"]
@@ -31,12 +34,30 @@ async def test_should_write_key_via_stdin_not_argv() -> None:
     assert stdin == (f"add-generic-password -U -s jesinia-zotero -a local-api -w {KEY}\nquit\n")
 
 
-@pytest.mark.parametrize("bad", ["", "a b", "a\nquit", 'a"b', "a\\b"])
+@pytest.mark.parametrize("bad", ["", "a b", "a\nquit", 'a"b', "a\\b", "abc\n"])
 async def test_should_refuse_to_store_a_malformed_key(bad: str) -> None:
     run = FakeRun()
     with pytest.raises(ValueError, match="malformed") as raised:
         await KeychainKeyStore(run).write(bad)
     assert run.calls == [] and bad not in str(raised.value) or bad == ""
+
+
+async def test_should_detect_a_write_that_exited_zero_but_stored_nothing() -> None:
+    # `security -i` can exit 0 after an inner command failed.
+    run = FakeRun(code=0, out="", read_out="")
+    with pytest.raises(KeychainWriteUnverified) as raised:
+        await KeychainKeyStore(run).write(KEY)
+    assert KEY not in str(raised.value)
+    assert run.calls[-1][0][:2] == ["security", "find-generic-password"]
+
+
+async def test_should_detect_a_write_that_stored_a_different_key() -> None:
+    with pytest.raises(KeychainWriteUnverified):
+        await KeychainKeyStore(FakeRun(read_out="OTHER\n")).write(KEY)
+
+
+async def test_should_accept_a_write_that_reads_back() -> None:
+    await KeychainKeyStore(FakeRun(read_out=f"{KEY}\n")).write(KEY)
 
 
 async def test_should_not_leak_key_when_the_write_fails() -> None:

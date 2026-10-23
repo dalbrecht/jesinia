@@ -15,7 +15,7 @@ import re
 from asyncio import create_subprocess_exec as spawn
 from collections.abc import Awaitable, Callable
 
-from jesinia.apps.zotero.domain.errors import ZoteroError
+from jesinia.apps.zotero.domain.errors import KeychainWriteUnverified, ZoteroError
 
 Run = Callable[[list[str], str | None], Awaitable[tuple[int, str]]]
 KEYCHAIN_SERVICE = "jesinia-zotero"
@@ -74,7 +74,7 @@ class KeychainKeyStore:
         return out.strip() or None
 
     async def write(self, key: str) -> None:
-        if _SAFE_KEY.match(key) is None:
+        if _SAFE_KEY.fullmatch(key) is None:
             raise ValueError("refusing to store a malformed Zotero API key")
         command = (
             f"add-generic-password -U -s {KEYCHAIN_SERVICE} -a {KEYCHAIN_ACCOUNT} -w {key}\nquit\n"
@@ -82,3 +82,6 @@ class KeychainKeyStore:
         code, _ = await self._run(["security", "-i"], command)
         if code != 0:
             raise ZoteroError(f"storing the Zotero key in the Keychain failed (exit {code})")
+        # `security -i` can exit 0 even when the inner command failed, so confirm the write.
+        if await self.read() != key:
+            raise KeychainWriteUnverified("the Zotero key could not be read back from the Keychain")

@@ -19,7 +19,7 @@ from jesinia.apps.zotero.domain.identifiers import ItemKey
 from jesinia.apps.zotero.infrastructure.local_api import LocalApiClient, parse_paper
 from jesinia.testing.fake_zotero import FakeZotero
 
-BASE_URL = "http://127.0.0.1:23119/api"
+BASE_URL = "http://127.0.0.1:23119"
 TOKEN = "t" * 32
 
 
@@ -82,7 +82,7 @@ async def test_should_list_trashed_keys_since_version(fake: FakeZotero) -> None:
 
 async def test_should_not_expose_deleted_endpoint(fake: FakeZotero) -> None:
     async with httpx.AsyncClient(transport=fake.transport(), base_url=BASE_URL) as http:
-        assert (await http.get("/users/0/deleted", params={"since": 0})).status_code == 404
+        assert (await http.get("/api/users/0/deleted", params={"since": 0})).status_code == 404
 
 
 async def test_should_get_item_and_children(fake: FakeZotero) -> None:
@@ -254,14 +254,14 @@ async def test_should_ignore_proxy_environment(
 
 
 @pytest.mark.parametrize(
-    "url", ["http://example.com/api", "https://127.0.0.1:23119/api", "http://192.168.1.5/api"]
+    "url", ["http://example.com", "https://127.0.0.1:23119", "http://192.168.1.5"]
 )
 def test_should_reject_non_loopback_base_url(url: str) -> None:
     with pytest.raises(ValueError, match="loopback"):
         LocalApiClient(url, MemoryKeyStore("k"))
 
 
-@pytest.mark.parametrize("url", ["http://localhost:23119/api", "http://[::1]:23119/api"])
+@pytest.mark.parametrize("url", ["http://localhost:23119", "http://[::1]:23119"])
 def test_should_accept_loopback_base_urls(url: str) -> None:
     LocalApiClient(url, MemoryKeyStore("k"))
 
@@ -365,8 +365,8 @@ async def test_fake_should_require_version_header_and_know_missing_items(fake: F
     key = fake.add_item(title="x")
     headers = {"Zotero-API-Key": "k"}
     async with httpx.AsyncClient(transport=fake.transport(), base_url=BASE_URL) as http:
-        missing_version = await http.patch(f"/users/0/items/{key}", json={}, headers=headers)
-        unknown = await http.patch("/users/0/items/NOPE0000", json={}, headers=headers)
+        missing_version = await http.patch(f"/api/users/0/items/{key}", json={}, headers=headers)
+        unknown = await http.patch("/api/users/0/items/NOPE0000", json={}, headers=headers)
     assert (missing_version.status_code, unknown.status_code) == (428, 404)
 
 
@@ -382,10 +382,10 @@ def test_authorize_endpoint_is_served_by_the_fake(fake: FakeZotero) -> None:
 
     async def call() -> dict[str, object]:
         async with httpx.AsyncClient(transport=fake.transport(), base_url=BASE_URL) as http:
-            missing = await http.post("/local/authorize", json={"appName": "Jesinia"})
+            missing = await http.post("/api/local/authorize", json={"appName": "Jesinia"})
             assert missing.status_code == 428
             response = await http.post(
-                "/local/authorize",
+                "/api/local/authorize",
                 json={"appName": "Jesinia"},
                 headers={"Zotero-Server-ID": fake.server_id},
             )
@@ -605,3 +605,40 @@ async def test_should_wait_for_the_author_to_answer_the_dialog(
     monkeypatch.setattr(httpx, "AsyncClient", spy)
     await authorizing_client(fake, MemoryKeyStore(None), Clock()).authorize()
     assert seen[-1] >= 300  # the authorize POST is the last request
+
+
+async def test_should_request_api_prefixed_paths(fake: FakeZotero) -> None:
+    seen: list[str] = []
+
+    class Spy(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.path)
+            return await fake.transport().handle_async_request(request)
+
+    api = LocalApiClient(BASE_URL + "/", MemoryKeyStore("k"), transport=Spy())
+    await api.library_version()
+    await api.authorize()
+    assert seen[0] == "/api/users/0/items"
+    assert seen[-1] == "/api/local/authorize"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"remember": True},
+        {"remember": True, "key": None},
+        {"remember": True, "key": ""},
+        {"remember": True, "key": 12},
+        {"remember": "yes", "key": "abc"},
+        {"key": "abc"},
+    ],
+)
+async def test_should_reject_a_malformed_authorize_response(
+    body: dict[str, object],
+) -> None:
+    mock = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    store = MemoryKeyStore(None)
+    api = LocalApiClient(BASE_URL, store, transport=_with_server_id(mock), clock=Clock())
+    with pytest.raises(ZoteroError, match="unexpected authorize response"):
+        await api.authorize()
+    assert store.key is None

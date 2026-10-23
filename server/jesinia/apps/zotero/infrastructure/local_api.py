@@ -34,7 +34,8 @@ from jesinia.apps.zotero.domain.paper import (
 
 PAGE_SIZE = 100
 CREATE_BATCH_SIZE = 50
-_USER_PREFIX = "/users/0"
+_API_PREFIX = "/api"
+_USER_PREFIX = f"{_API_PREFIX}/users/0"
 _API_OFF_TEXT = "Local API is not enabled"
 _PDF = "application/pdf"
 _AUTOMATIC_TAG_TYPE = 1
@@ -92,7 +93,7 @@ class LocalApiClient:
             ) as http:
                 response = await http.request(
                     method,
-                    f"{self._base_url}{_USER_PREFIX if user_scoped else ''}{path}",
+                    f"{self._base_url}{_USER_PREFIX if user_scoped else _API_PREFIX}{path}",
                     params=params,
                     headers=headers,
                     json=json_body,
@@ -175,9 +176,12 @@ class LocalApiClient:
             retry_after = response.headers.get("Retry-After", "unknown")
             raise AuthorizeTooSoon(f"Zotero throttled authorize; retry after {retry_after}s")
         body = cast(dict[str, object], response.json())
-        remember = body.get("remember") is True
+        remember, key = body.get("remember"), body.get("key")
+        if not isinstance(remember, bool) or (remember and not (isinstance(key, str) and key)):
+            # Never echo the body: it may carry a key.
+            raise ZoteroError("unexpected authorize response")
         if remember:
-            await self._key_store.write(str(body["key"]))
+            await self._key_store.write(cast(str, key))
         return remember
 
     async def library_version(self) -> int:
