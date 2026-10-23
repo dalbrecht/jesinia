@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { UNAUTHORIZED_EVENT } from "@jesinia/client";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -184,7 +184,38 @@ describe("AppShell", () => {
     fireEvent.click(await screen.findByText("Budget"), { metaKey: true });
     expect(open).toHaveBeenCalledWith("/notes/page/p1", "_blank", "noopener");
     const search = calls.find((c) => c.url.includes("/api/search"));
-    expect(new URL(search?.url ?? "").searchParams.get("source")).toBe("kb");
+    expect(new URL(search?.url ?? "").searchParams.getAll("source")).toEqual(["kb", "zotero"]);
+  });
+
+  it("palette shows paper hits under Papers and opens their url", async () => {
+    const href = vi.fn();
+    const paper = (key: string, url: string | null) => ({
+      source: "zotero",
+      key,
+      title: `Paper ${key} \u2014 Smith 2024`,
+      snippet: "",
+      path: null,
+      authoritative: false,
+      score: 1,
+      url,
+    });
+    setup({
+      "GET /api/search": [
+        paper("ABCD1234", "zotero://select/library/items/ABCD1234"),
+        paper("NOURL000", null),
+        paper("EVIL0000", "https://evil.example/"),
+      ],
+    });
+    const location = { ...window.location, assign, origin: "http://localhost:3000" };
+    Object.defineProperty(location, "href", { configurable: true, get: () => "http://localhost:3000/", set: href });
+    Object.defineProperty(window, "location", { configurable: true, value: location });
+    await screen.findByText("ready");
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await userEvent.type(screen.getByRole("combobox"), "smith");
+    const group = await screen.findByRole("group", { name: "Papers" });
+    expect(within(group).getAllByRole("option")).toHaveLength(1);
+    await userEvent.click(within(group).getByText(/Paper ABCD1234/));
+    expect(href).toHaveBeenCalledWith("zotero://select/library/items/ABCD1234");
   });
 
   it("apps with their own search have no ⌕ button; static children render", async () => {

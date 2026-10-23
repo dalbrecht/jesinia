@@ -26,6 +26,7 @@ export {
   SafeMarkdown,
   safeHttpUrl,
   type MdNode,
+  safeZoteroUrl,
   type PageLinks,
   type SafeMarkdownProps,
 } from "./safe-markdown";

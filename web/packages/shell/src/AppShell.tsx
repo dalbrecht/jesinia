@@ -108,14 +108,35 @@ function Shell({ app, children, controls, ownSearch, appSearch, commands = [] }:
   ); // prettier-ignore
 
   const kbSearch = async (q: string, signal: AbortSignal): Promise<PaletteItem[]> => {
-    const r = await client.GET("/api/search", { params: { query: { q, source: ["kb"], limit: 12 } }, signal });
-    return (r.data ?? []).map((h) => ({
-      id: `kb-${h.key}`,
-      label: h.title,
-      group: "kb" as const,
-      ...(h.path ? { detail: h.path } : {}),
-      onRun: ({ newWindow }: { newWindow: boolean }) => go(`/notes/page/${encodeURIComponent(h.key)}`, newWindow),
-    }));
+    const r = await client.GET("/api/search", {
+      params: { query: { q, source: ["kb", "zotero"], limit: 12 } },
+      signal,
+    });
+    const items: PaletteItem[] = [];
+    for (const h of r.data ?? []) {
+      if (h.source === "zotero") {
+        // Only a zotero:// url may be followed; anything else is ignored.
+        const url = h.url;
+        if (typeof url !== "string" || !url.startsWith("zotero://")) continue;
+        items.push({
+          id: `zotero-${h.key}`,
+          label: h.title,
+          group: "papers",
+          onRun: () => {
+            window.location.href = url;
+          },
+        });
+        continue;
+      }
+      items.push({
+        id: `kb-${h.key}`,
+        label: h.title,
+        group: "kb",
+        ...(h.path ? { detail: h.path } : {}),
+        onRun: ({ newWindow }) => go(`/notes/page/${encodeURIComponent(h.key)}`, newWindow),
+      });
+    }
+    return items;
   };
 
   // KB results open in Notes; until Notes ships there is nowhere to send them.

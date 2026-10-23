@@ -7,6 +7,7 @@ import {
   httpOnly,
   isKbAssetUrl,
   PAGE_LINK_SCHEME,
+  safeZoteroUrl,
   renderMarkdown,
   resolveHttpUrl,
   SafeMarkdown,
@@ -219,5 +220,40 @@ describe("SafeMarkdown with local images (KB pages)", () => {
     const { container } = render(<SafeMarkdown markdown="original" transform={transform} />);
     expect(container.querySelector("mark")).toHaveTextContent("changed");
     expect(container).not.toHaveTextContent("original");
+  });
+
+  it("keeps a zotero select link", () => {
+    const { container } = render(<SafeMarkdown markdown="[paper](zotero://select/library/items/ABCD1234)" />);
+    const link = container.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("zotero://select/library/items/ABCD1234");
+    // A new tab would break protocol handling, and there is no host to show.
+    expect(link?.getAttribute("target")).toBeNull();
+  });
+
+  it("keeps a zotero open-pdf link with a page", () => {
+    const { container } = render(
+      <SafeMarkdown images markdown="[pdf](zotero://open-pdf/library/items/ABCD1234?page=3)" />,
+    );
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("zotero://open-pdf/library/items/ABCD1234?page=3");
+  });
+
+  it("drops a zotero link with a bad path", () => {
+    const { container } = render(
+      <SafeMarkdown markdown="[a](zotero://evil/library/items/ABCD1234) [b](zotero://select/library/items/abcd1234)" />,
+    );
+    expect(container.querySelector("a[href]")).toBeNull();
+  });
+
+  it("never loads a zotero url as an image", () => {
+    const { container } = render(<SafeMarkdown images markdown="![x](zotero://select/library/items/ABCD1234)" />);
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("safeZoteroUrl accepts only the item schemes", () => {
+    expect(safeZoteroUrl("zotero://select/library/items/ABCD1234")).toBe("zotero://select/library/items/ABCD1234");
+    expect(safeZoteroUrl("zotero://select/library/items/ABCD1234\n")).toBeNull();
+    expect(safeZoteroUrl("zotero://select/library/items/ABCD12345")).toBeNull();
+    expect(safeZoteroUrl("zotero://select/library/items/ABCD1234?a=<b>")).toBeNull();
+    expect(safeZoteroUrl("https://a.example/")).toBeNull();
   });
 });
