@@ -31,6 +31,9 @@ This page tests how the Pigeonpile Wiki and Dopo Tasks handle task lines (ADR 00
 * [ ] Star bullet task
 + [ ] Plus bullet task
 1. [ ] Numbered task
+2. [ ] Second numbered task
+
+1) [ ] Parenthesis numbered task
 - [X] Uppercase done mark closed:2026-10-19
 
 ## Not fields (title text)

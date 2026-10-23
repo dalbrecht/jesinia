@@ -21,9 +21,9 @@ the Pigeonpile Wiki and record the results in `docs/adr/0007-pigeonpile-compat-r
 | f | Was `Plain File.md` adopted? What front-matter was written? | file |
 | g | Did any file get renamed or moved? | `ls -R` |
 | h | In `Tag grammar.md`, are `#SQLite` and `#sqlite` one tag? Are `#wal-mode`, `#2026` and `#ünïcode` recognized whole? | Wiki tag facets |
-| i | In `Task lines.md`, do the task lines render as checkboxes (`-`, `*`, `+` and `1.` markers, `[x]` and `[X]`, nested ones included), and is the code-block line plain text? | Wiki view |
+| i | In `Task lines.md`, do the task lines render as checkboxes (`-`, `*`, `+`, `1.`, `2.` and `1)` markers, `[x]` and `[X]`, nested ones included), and is the code-block line plain text? | Wiki view |
 | j | When you toggle a checkbox in the Wiki, does only `[ ]` ↔ `[x]` change, with the `key:value` fields and the rest of the file byte-for-byte? Is `[X]` kept as written on re-save? | file diff |
-| k | Are `*`, `+` and `1.` markers, indentation and spacing kept on re-save (not rewritten to `-`)? | file diff |
+| k | Are `*`, `+`, `2.` and `1)` markers, numbering, indentation and spacing kept on re-save (not rewritten to `-`)? | file diff |
 | l | Is `#jesinia` on a task line recognized as a tag, and is no `key:value` token shown as a link or tag? | Wiki view + tag facets |
 | m | Opening the folder in Dopo Tasks: which lines does it list as tasks, and does it read the fields? Does completing one there write what ADR 0013 says? | Dopo Tasks + file diff |
 

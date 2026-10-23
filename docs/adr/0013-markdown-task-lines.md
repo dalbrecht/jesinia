@@ -40,7 +40,8 @@ Prose, headings and links around it stay ordinary Markdown.
 
 ### Grammar
 
-- **Task line:** a list item (`-`, `*` or `+`, or an ordered `1.`) followed by `[ ]`,
+- **Task line:** a list item (`-`, `*` or `+`, or an ordered marker: 1–9 digits then
+  `.` or `)`, as in GFM, such as `1.`, `2.` or `10)`) followed by `[ ]`,
   `[x]` or `[X]` and a space. Indentation nests a task under the item above it (a
   subtask). Task lines inside fenced or indented code blocks are not tasks.
 - **Fields:** a field is a whitespace-separated token `key:value` with a key from the
