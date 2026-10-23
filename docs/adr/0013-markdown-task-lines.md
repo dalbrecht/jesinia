@@ -1,121 +1,101 @@
-# ADR 0013: Tasks are Markdown task lines with Org's model
+# ADR 0013: KB tasks use Dopo Tasks' task-line dialect
 
-- **Status:** Proposed (pending the compat check in `docs/design/compat/`, row i–m)
+- **Status:** Proposed (pending the compat check in `docs/design/compat/`, rows i–m, and
+  the shared dialect spec, c65llc/amicus-platform#3264)
 - **Date:** 2026-10-23
 - **Related:** [ADR 0003](0003-format-only-pigeonpile-interop.md);
-  [ADR 0007](0007-pigeonpile-compat-results.md); [KB format](../conventions/kb-format.md)
+  [ADR 0007](0007-pigeonpile-compat-results.md); [KB format](../conventions/kb-format.md);
+  [DOPO next-actions mirror spec](../specs/2026-10-22-dopo-next-actions-mirror-design.md)
 
 ## Context
 
-Tasks need to move between the Pigeonpile Wiki, Dopo Tasks and Jesinia through the shared
-KB folder, which these tools share by file format only (ADR 0003). Emacs Org mode has a
-proven task model (states, priorities, scheduled and deadline dates, repeaters, a closed
-date), so it was considered as the exchange format.
-
+Tasks need to move between the Pigeonpile Wiki, Dopo Tasks and Jesinia through files only
+(ADR 0003). Emacs Org mode has a proven task model (states, priorities, scheduled and
+deadline dates, repeaters, a closed date), so it was considered as the exchange format.
 Embedding Org syntax in Markdown was rejected:
 
 - In a fenced ```` ```org ```` block, every Markdown viewer shows raw text, nothing can be
-  checked off in place, and Jesinia's tag grammar ignores fenced code, so the tasks fall
-  out of tag search.
-- Unfenced between markers, Org lines change meaning: `* TODO` is a bullet, a leading `**`
-  can turn bold, `:PROPERTIES:` drawers show as stray text, and a Wiki re-save may rewrite
-  them.
-- Org brings a second tag syntax (`:a:b:`) and a second link and id syntax (`:ID:`,
-  `[[id:…]]`).
-- Org tools (Emacs, Orgzly, Bloom) read `.org` files, not Org inside `.md`, so embedding
-  adds a grammar without gaining those tools.
+  checked off in place, and Jesinia's tag grammar ignores fenced code.
+- Unfenced, Org lines change meaning in Markdown (`* TODO` is a bullet, `:PROPERTIES:`
+  drawers are stray text), and a Wiki re-save may rewrite them.
+- Org brings a second tag syntax and a second id and link syntax, and Org tools read
+  `.org` files, not Org inside `.md`.
+
+Dopo Tasks already has a Markdown task-line dialect: the GFM checklist file `tasks.v2.md`
+that it reconciles two-way with its database. Dopo owns that format, and Jesinia's mirror
+already has to read it. A second task syntax in the same KB would mean two parsers and
+two sets of rules for one checkbox.
 
 ## Decision
 
-A task is a **GFM task-list item** whose trailing `key:value` fields carry Org's model.
-Prose, headings and links around it stay ordinary Markdown.
+Task lines in KB pages use **Dopo's `tasks.v2.md` dialect**, as written down in the shared
+spec `docs/specs/2026-10-23-tasks-md-dialect.md` in `c65llc/amicus-platform` (the
+*dialect spec*). Where Org's model and Dopo's differ, Dopo's wins. What Dopo lacked
+(priority, repeaters, the completion date, hand-added to Today) is proposed there as new
+tokens, for fields Dopo's item model already has, rather than invented here.
 
 ```markdown
-- [ ] Ship feed management #jesinia priority:a scheduled:2026-10-24 due:2026-10-31
-- [ ] Water the garden every:1w scheduled:2026-10-25
-- [ ] Renew passport state:waiting due:2026-12-01
-  - [x] Book photo appointment closed:2026-10-22
-- [x] Old idea state:cancelled closed:2026-10-20
+- [ ] Ship feed management #jesinia @status:next @priority:1 due:2026-10-31 defer:2026-10-24
+- [ ] Water the garden @every:1w due:2026-10-25
+- [ ] Renew passport @status:waiting @waiting:"photo appointment" due:2026-12-01
+  - [x] Book photo appointment completed:2026-10-22
 ```
 
-### Grammar
+### What Jesinia takes from the dialect spec
 
-- **Task line:** a list item (`-`, `*` or `+`, or an ordered marker: 1–9 digits then
-  `.` or `)`, as in GFM, such as `1.`, `2.` or `10)`) followed by `[ ]`,
-  `[x]` or `[X]` and a space. Indentation nests a task under the item above it (a
-  subtask). Task lines inside fenced or indented code blocks are not tasks.
-- **Fields:** a field is a whitespace-separated token `key:value` with a key from the
-  table below and a value that matches its form. A token with an unknown key, or a known
-  key with an invalid value (`due:tomorrow`), is title text and is never rewritten. Tokens
-  inside inline code are text. Fields may appear anywhere after the checkbox; the title is
-  the rest of the line with the fields removed and spaces collapsed.
-- **One of each:** a key appears at most once per line, and `every` and `after` count as
-  one key. If a line has more than one, the first valid token, reading left to right, is
-  the field. Every later one is title text: shown in the title, never read, never
-  rewritten. Writers update that first token, and never write a second token for a key
-  the line already has.
-- **Tags:** ordinary `#tags` on the line, per the KB tag grammar. There is no second tag
-  syntax.
+- **Line grammar** (§1): `-`, `*` or `+`, then `[ ]`, `[x]` or `[X]`. Ordered-list items are
+  not tasks. Nesting is 2 spaces per level.
+- **Tokens** (§2, §4): one contiguous run at the **end** of the line, after the title and
+  any `#tags`. A `#tag` after a token ends the run and turns the whole line into title.
+- **Reading rules** (§3): explicit `@status:` wins over the checkbox, and an open box
+  without one is `inbox`. Invalid and unknown tokens are kept verbatim. For a duplicated
+  key the last valid token wins. Dates are `YYYY-MM-DD` days, with no time.
+- **Org mapping:** `TODO` is `[ ]` (`inbox`/`next`), `NEXT` is `@status:next`, `WAITING`
+  is `@status:waiting` plus a reason, `CANCELLED` is `@status:trash`, `SCHEDULED` is
+  `defer:`, `DEADLINE` is `due:`, `CLOSED` is `completed:`, priority is `@priority:<rank>`
+  (1 highest), `++1w` is `@every:1w` and `.+1w` is `@after:1w`. There is no yearly unit
+  (use `12m`) and no time of day.
+- **Recurrence math** is Dopo's engine: month steps clamp to month end, and the clamp is
+  sticky.
 
-| Key | Value | Org equivalent |
-|---|---|---|
-| `state` | `next`, `waiting` (open) or `cancelled` (done) | extra TODO keywords |
-| `priority` | `a`, `b` or `c` | `[#A]`–`[#C]` |
-| `scheduled` | date, optionally with time | `SCHEDULED:` |
-| `due` | date, optionally with time | `DEADLINE:` |
-| `every` | repeat interval, keeping the cadence | `++1w` |
-| `after` | repeat interval, counted from completion | `.+1w` |
-| `closed` | date, optionally with time | `CLOSED:` |
+### Jesinia-specific rules (KB pages)
 
-- **States:** `[ ]` is open (Org `TODO`), `[x]` is done (`DONE`). `state:` refines them:
-  `next` and `waiting` need `[ ]`; `cancelled` needs `[x]`. A contradictory line
-  (`[x] … state:waiting`) is read as its checkbox says, and the field is left as written.
-- **Dates** are `YYYY-MM-DD` with an optional `THH:MM`. They are floating local time, as
-  in Org: no offset, no zone.
-- **Intervals** are a positive integer and a unit: `d`, `w`, `m` (month) or `y`. A repeater
-  needs a `scheduled` or `due` date.
-- **Month and year steps** keep the day of the month, clamped to the last day of a shorter
-  month: Jan 31 + `1m` is Feb 28 (Feb 29 in a leap year), and Feb 29 + `1y` is Feb 28.
-  The line stores no other anchor, so each step starts from the date as written and a
-  clamped day stays clamped: Jan 31, Feb 28, Mar 28. For a month-end task, use a date on
-  or before the 28th, or a `d` or `w` interval.
-- **`closed:` on an open task** (`[ ]`, for example after the Wiki unticks it) is ignored
-  when read and left as written.
-- Priority is a field, not Org's `[#A]` cookie, because `#A` after `[` is a tag in the KB
-  tag grammar.
+The dialect spec governs `tasks.v2.md`, which Dopo rewrites whole. KB pages are the user's
+text, so Jesinia's writers add these rules there:
 
-### Writing
+- **Bytes are kept.** A writer changes only the tokens it touches, in place, and keeps the
+  rest of the line and file byte-for-byte. A new token is appended to the end of the token
+  run, before any trailer. Bullet style, `[X]`, indentation and token order are not
+  normalized.
+- **Ids.** A KB task line has no trailer. Jesinia never mints Dopo ids or revs. Lines
+  inside a `<!-- jesinia:mirror … -->` region are the mirror's rendering of Dopo items
+  (mirror spec §5.5), not KB tasks.
+- **Completing** a task sets `[x]`. It sets the line's `@status:` to `done` if the line has
+  one (since an explicit status wins), and sets `completed:` to today's local date, updating
+  the existing token if there is one. Reopening changes only the checkbox, the same as the
+  Wiki, and `completed:` on an open line is ignored.
+- **Completing a repeating task** follows Dopo's respawn: the line is completed as above,
+  and the next occurrence is inserted directly below it as a new open line, with its dates
+  moved by the engine and the recurrence tokens moved to it (`@repeat-count:` decremented).
+  The finished line keeps no recurrence tokens.
+- **Writes** use the page's revision check (`expected_rev`); a stale edit is refused.
 
-- Writers change only the tokens they own, in place, and keep the rest of the line and
-  the file byte-for-byte. A new field is appended at the end of the line.
-- New task lines are written as `- [ ] <title> <tags> <fields>`, fields in table order.
-- **Completing** a task sets `[x]` and sets `closed:` to today's date: it updates the
-  line's existing `closed:` token if it has one (a task reopened and done again), and
-  appends one only when there is none. Completing a repeating task instead keeps `[ ]`
-  and moves its dates forward, leaving any `closed:` as written. With `every`, each date
-  steps by the interval until it is after today, keeping the original cadence. With
-  `after`, the earlier date becomes today plus the interval, and the other date moves by
-  the same number of days. Time of day is kept.
-- **Reopening** a task (`[x]` to `[ ]`) changes only the checkbox, the same as the Wiki
-  does, so the stale `closed:` is ignored until the next completion updates it.
-- Edits use the page's revision check (`expected_rev`, KB format "Writing safely"); a
-  stale edit is refused, never merged by line.
+### What stays out of `tasks.v2.md`
 
-## Open questions
-
-- **Task identity across apps.** Lines have no ids in this proposal, so a task is
-  addressed by page `id` plus line content. If Dopo Tasks needs a stable id for its own
-  store, add an optional `id:` field (short, base32) rather than a block reference.
-- **Agenda ownership.** Which app answers "what's due today" for agents (an MCP tool in
-  Jesinia, or Dopo Tasks), so there is one computed view.
+Until Dopo's codec reads the new tokens (dialect spec §4.1), Jesinia doesn't add them to
+`tasks.v2.md`. Dopo would keep them as inert extras that go stale. The mirror's
+completion edit stays as its spec describes it.
 
 ## Consequences
 
-- Task pages read and toggle as normal checklists in any Markdown tool, including the Wiki.
-- Jesinia's tag index and search keep working on task lines with no changes.
-- Each app needs a small parser for the field table; it should share test cases (the
-  fixture page) rather than code, per ADR 0003.
-- Org tools can't read these tasks directly. If that's wanted later, add an `.org` export,
-  not a second source of truth.
-- When this ADR is accepted, the grammar moves into `docs/conventions/kb-format.md` as a
-  Tasks section, and this ADR points to it.
+- One task syntax across the KB and Dopo's file. KB pages read and toggle as checklists in
+  any Markdown tool, and `#tags` keep working, provided they come before the tokens.
+- Jesinia's parser follows the dialect spec. ADR 0003 still applies: no suite code, and
+  test cases are shared through fixtures, not code.
+- Token names may still change in review of the dialect spec. This ADR follows whatever it
+  settles.
+- The DOPO mirror spec was written against the v1 `tasks.md` (with `@project:`). Dopo now
+  writes `tasks.v2.md` (nesting and `@kind:project` instead of `@project:`), so its §3–§4
+  need revising before that plan runs.
+- When this ADR is accepted, the KB rules above move into `docs/conventions/kb-format.md`
+  as a Tasks section, which links to the dialect spec.

@@ -9,6 +9,14 @@
   conventions.
 - **Plan:** `docs/superpowers/plans/2026-10-22-dopo-next-actions-mirror.md`
 
+> **Needs revision before the plan runs (2026-10-23).** §3 describes the v1 `tasks.md`. Dopo
+> now writes `tasks.v2.md`, which nests by indentation and marks projects with
+> `@kind:project` instead of `@project:` (amicus-platform ADR 0028). The dialect is now
+> written down in the shared spec `docs/specs/2026-10-23-tasks-md-dialect.md` in
+> `c65llc/amicus-platform` (c65llc/amicus-platform#3264), which supersedes §3; §4's
+> name-based project mapping needs reworking for the tree. KB task lines use the same
+> dialect ([ADR 0013](../adr/0013-markdown-task-lines.md)).
+
 Decisions marked **(user)** came from the author. Decisions marked **(builder's call)** were
 made while writing this and are open to change in review.
 
@@ -264,8 +272,8 @@ only the first two, so Jesinia's Today is:
 Unlike project pages, Today includes actions with no project and inbox items that have a
 date, because a dated item belongs on Today even if it hasn't been triaged.
 
-Hand-added and prioritized items are missing until the dialect carries them. This needs a
-follow-up issue on `amicus-platform` asking for `@today:<date>` and `@priority:<n>` tokens.
+Hand-added and prioritized items are missing until the dialect carries them. These tokens
+are now proposed as `@today:<date>` and `@priority:<rank>` in the shared dialect spec (§4).
 When they appear, the reader keeps them in `extra_tokens` today and only the rule changes.
 
 **Days are local (builder's call).** DOPO computes "today" in UTC (`startOfUtcDayTs`), so
@@ -432,6 +440,7 @@ while.
   but latency is outside Jesinia's control.
 - **Open:** whether the user wants `waiting` items on project pages (included here, labeled)
   or in a separate *Waiting for* list.
-- **Follow-ups on `amicus-platform`:** `@today:`/`@priority:` tokens (§6.1); project status
+- **Follow-ups on `amicus-platform`:** codec support for the proposed `@today:`/`@priority:`
+  tokens (§6.1, dialect spec §4); project status
   in `tasks.md`, for example a `## Projects` section or a per-project status line (§4.3); a
   cross-test for external completion edits (§9).

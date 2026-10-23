@@ -21,7 +21,7 @@
   - [0008 design system and shell](adr/0008-design-system-and-shell.md)
   - [0009 install and operations](adr/0009-install-and-operations.md)
   - [0010 browser sessions survive restarts](adr/0010-persistent-browser-sessions.md)
-  - [0013 Markdown task lines (proposed)](adr/0013-markdown-task-lines.md)
+  - [0013 KB tasks use Dopo's dialect (proposed)](adr/0013-markdown-task-lines.md)
 - **Design sources:** [docs/design](design/README.md), covering the brief, tokens,
   components, wireframes and icons.
 - **Specs and plans:** [foundation spec](specs/2026-10-16-jesinia-foundation-design.md)
