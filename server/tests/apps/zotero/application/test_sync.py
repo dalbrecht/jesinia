@@ -382,3 +382,27 @@ async def test_should_not_refetch_fulltext_for_unchanged_or_empty_pdfs(
 
 def test_should_not_let_a_stray_closing_tag_silence_the_rest_of_a_note() -> None:
     assert html_to_text("</script>kept <b>text</b></style> too") == "kept text too"
+
+
+async def test_should_resync_previous_parent_when_attachment_moves(rig: Rig) -> None:
+    paper_a, pdf = rig.add_paper("Alpha Paper", fulltext="zebra stripes")
+    paper_b = rig.fake.add_item("Beta Paper")
+    await rig.sync.sync()
+    assert await hit_keys(rig, "zebra") == [paper_a] and rig.mirror.owner_of(pdf) == paper_a
+    item = rig.fake._items[pdf]  # noqa: SLF001
+    cast(dict[str, object], item["data"])["parentItem"] = paper_b
+    item["version"] = rig.fake._bump()  # noqa: SLF001
+    await rig.sync.sync()
+    assert await hit_keys(rig, "zebra") == [paper_b]
+    assert rig.mirror.owner_of(pdf) == paper_b
+    previous = rig.mirror.get(paper_a)
+    assert previous is not None and previous.attachments == ()
+
+
+async def test_should_not_resync_owner_again_when_child_stays_under_it(rig: Rig) -> None:
+    key, pdf = rig.add_paper("Stays Put")
+    await rig.sync.sync()
+    item = rig.fake._items[pdf]  # noqa: SLF001
+    item["version"] = rig.fake._bump()  # noqa: SLF001
+    report = await rig.sync.sync()
+    assert report.changed == 1 and rig.mirror.owner_of(pdf) == key

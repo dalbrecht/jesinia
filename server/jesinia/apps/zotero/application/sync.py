@@ -221,6 +221,11 @@ class SyncService:
             root = await self._root_key(key, known_parents)
             if root in live:
                 to_sync[root] = None
+            if known_parents.get(key) is not None:
+                # A PDF dragged to another paper leaves its old owner's mirror stale.
+                previous = self._mirror.owner_of(key)
+                if previous is not None and previous != root and previous in live:
+                    to_sync[previous] = None
         if cursor:
             # A trashed child (note, annotation) changes its parent's record.
             for key in trashed:
