@@ -56,6 +56,17 @@ def _to_paper(data: dict[str, Any]) -> Paper:
     )
 
 
+def _descendant_keys(paper: Paper) -> list[ItemKey]:
+    """Keys of the notes, PDFs and annotations stored inside ``paper``; a standalone PDF's own
+    attachment row is the paper itself, not a child."""
+    keys = [note.key for note in paper.notes]
+    for attachment in paper.attachments:
+        if attachment.key != paper.key:
+            keys.append(attachment.key)
+        keys += [annotation.key for annotation in attachment.annotations]
+    return keys
+
+
 class SqliteMirrorStore:
     """Implements :class:`MirrorStore` over an autocommit connection from ``open_db``."""
 
@@ -85,6 +96,11 @@ class SqliteMirrorStore:
                 "VALUES (?, ?, ?)",
                 [(a.key, paper.key, versions.get(a.key, 0)) for a in paper.attachments],
             )
+            self._conn.execute("DELETE FROM children WHERE paper_key = ?", (paper.key,))
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO children (child_key, paper_key) VALUES (?, ?)",
+                [(child, paper.key) for child in _descendant_keys(paper)],
+            )
             if fulltext is None:
                 self._conn.execute("DELETE FROM fulltext WHERE key = ?", (paper.key,))
             else:
@@ -99,17 +115,23 @@ class SqliteMirrorStore:
             self._conn.execute("DELETE FROM papers WHERE key = ?", (key,))
             self._conn.execute("DELETE FROM fulltext WHERE key = ?", (key,))
             self._conn.execute("DELETE FROM attachments WHERE paper_key = ?", (key,))
+            self._conn.execute("DELETE FROM children WHERE paper_key = ?", (key,))
 
     def clear(self) -> None:
         with _transaction(self._conn):
             self._conn.execute("DELETE FROM papers")
             self._conn.execute("DELETE FROM fulltext")
             self._conn.execute("DELETE FROM attachments")
+            self._conn.execute("DELETE FROM children")
             self._conn.execute("DELETE FROM meta WHERE name = ?", (_LIBRARY_VERSION,))
 
     def all_keys(self) -> list[ItemKey]:
         rows = self._conn.execute("SELECT key FROM papers ORDER BY key").fetchall()
         return [ItemKey(row[0]) for row in rows]
+
+    def descendant_keys(self) -> dict[ItemKey, ItemKey]:
+        rows = self._conn.execute("SELECT child_key, paper_key FROM children").fetchall()
+        return {ItemKey(child): ItemKey(paper) for child, paper in rows}
 
     def owner_of(self, attachment_key: ItemKey) -> ItemKey | None:
         row = self._conn.execute(

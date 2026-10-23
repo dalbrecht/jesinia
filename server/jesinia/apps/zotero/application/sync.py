@@ -226,6 +226,10 @@ class SyncService:
                 previous = self._mirror.owner_of(key)
                 if previous is not None and previous != root and previous in live:
                     to_sync[previous] = None
+        for child, owner in self._mirror.descendant_keys().items():
+            # Permanently deleted children appear in no feed, only as a gap in the live keys.
+            if child not in live and owner in live:
+                to_sync[owner] = None
         if cursor:
             # A trashed child (note, annotation) changes its parent's record.
             for key in trashed:

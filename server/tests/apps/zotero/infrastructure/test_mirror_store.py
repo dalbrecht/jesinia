@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from jesinia.apps.zotero.domain.identifiers import ItemKey
+from jesinia.apps.zotero.domain.paper import Attachment
 from jesinia.apps.zotero.infrastructure.mirror_store import SqliteMirrorStore
 from jesinia.core.db import open_db
 from tests.apps.zotero.application.test_sync import make_paper
@@ -55,3 +56,27 @@ def test_should_roll_back_a_failed_write(tmp_path: Path) -> None:
     assert store.all_keys() == []
     store.put(make_paper(), None)
     assert store.all_keys() == ["K1"]
+
+
+def test_should_map_every_child_to_its_paper_and_skip_standalone_self_row(tmp_path: Path) -> None:
+    store = SqliteMirrorStore(open_db(tmp_path, MIRROR_DB))
+    store.put(make_paper(), None)
+    standalone = make_paper(
+        key=ItemKey("S1"),
+        notes=(),
+        standalone=True,
+        attachments=(Attachment(ItemKey("S1"), "s", "application/pdf", "s.pdf", "", ()),),
+    )
+    store.put(standalone, None)
+    assert store.descendant_keys() == {
+        ItemKey("N1"): ItemKey("K1"),
+        ItemKey("A1"): ItemKey("K1"),
+        ItemKey("X1"): ItemKey("K1"),
+    }
+    store.put(make_paper(notes=()), None)
+    assert ItemKey("N1") not in store.descendant_keys()
+    store.remove(ItemKey("K1"))
+    assert store.descendant_keys() == {}
+    store.put(make_paper(), None)
+    store.clear()
+    assert store.descendant_keys() == {}

@@ -79,6 +79,10 @@ class MirrorStore(Protocol):
 
     def all_keys(self) -> list[ItemKey]: ...
 
+    def descendant_keys(self) -> dict[ItemKey, ItemKey]:
+        """Every mirrored note, child PDF and annotation key mapped to its owning paper."""
+        ...
+
     def owner_of(self, attachment_key: ItemKey) -> ItemKey | None:
         """The paper whose PDFs include ``attachment_key`` (a standalone PDF's paper is itself)."""
         ...

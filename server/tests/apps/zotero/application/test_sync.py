@@ -406,3 +406,51 @@ async def test_should_not_resync_owner_again_when_child_stays_under_it(rig: Rig)
     item["version"] = rig.fake._bump()  # noqa: SLF001
     report = await rig.sync.sync()
     assert report.changed == 1 and rig.mirror.owner_of(pdf) == key
+
+
+async def test_should_refresh_parent_when_child_note_is_permanently_deleted(rig: Rig) -> None:
+    key = rig.fake.add_item("Holder")
+    note = rig.fake.add_item("", item_type="note", parent=key, note="<p>vanishingnote</p>")
+    await rig.sync.sync()
+    assert await hit_keys(rig, "vanishingnote") == [key]
+    rig.fake.remove(note)
+    report = await rig.sync.sync()
+    assert await hit_keys(rig, "vanishingnote") == []
+    assert report.changed == 1 and report.removed == 0 and rig.gone_calls == []
+    paper = rig.mirror.get(key)
+    assert paper is not None and paper.notes == ()
+
+
+async def test_should_refresh_parent_when_annotation_is_permanently_deleted(rig: Rig) -> None:
+    key = rig.fake.add_item("Holder")
+    pdf = rig.fake.add_item(
+        "p.pdf", item_type="attachment", parent=key, contentType="application/pdf"
+    )
+    mark = rig.fake.add_item("", item_type="annotation", parent=pdf, annotationText="vanishingmark")
+    await rig.sync.sync()
+    assert await hit_keys(rig, "vanishingmark") == [key]
+    rig.fake.remove(mark)
+    await rig.sync.sync()
+    assert await hit_keys(rig, "vanishingmark") == []
+
+
+async def test_should_refresh_parent_when_child_pdf_is_permanently_deleted(rig: Rig) -> None:
+    key, pdf = rig.add_paper("Holder", fulltext="vanishingtext")
+    await rig.sync.sync()
+    assert await hit_keys(rig, "vanishingtext") == [key]
+    rig.fake.remove(pdf)
+    await rig.sync.sync()
+    assert await hit_keys(rig, "vanishingtext") == []
+    assert rig.mirror.fulltext(key) is None
+
+
+async def test_should_not_remirror_when_library_is_unchanged(rig: Rig) -> None:
+    rig.add_paper("Stable", note="<p>n</p>", highlight=("h", "c"), fulltext="t")
+    standalone = rig.fake.add_item(
+        "solo.pdf", item_type="attachment", contentType="application/pdf"
+    )
+    await rig.sync.sync()
+    rig.new_calls.clear()
+    report = await rig.sync.sync()
+    assert report == SyncReport(changed=0, removed=0, fulltext_updated=0)
+    assert rig.mirror.descendant_keys().keys().isdisjoint({standalone})

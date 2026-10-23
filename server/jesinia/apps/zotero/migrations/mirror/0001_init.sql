@@ -20,6 +20,14 @@ CREATE TABLE attachments (
 );
 CREATE INDEX attachments_paper ON attachments (paper_key);
 
+-- ``children`` maps every other mirrored descendant (notes, child PDFs, annotations) to its paper,
+-- so a permanently deleted child can be traced back to the paper that still holds its text.
+CREATE TABLE children (
+    child_key TEXT PRIMARY KEY,
+    paper_key TEXT NOT NULL
+);
+CREATE INDEX children_paper ON children (paper_key);
+
 CREATE TABLE meta (
     name TEXT PRIMARY KEY,
     value TEXT NOT NULL
