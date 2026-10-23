@@ -1,4 +1,4 @@
-# ADR 0011: Tasks are Markdown task lines with Org's model
+# ADR 0013: Tasks are Markdown task lines with Org's model
 
 - **Status:** Proposed (pending the compat check in `docs/design/compat/`, row i–m)
 - **Date:** 2026-10-23
@@ -48,6 +48,11 @@ Prose, headings and links around it stay ordinary Markdown.
   key with an invalid value (`due:tomorrow`), is title text and is never rewritten. Tokens
   inside inline code are text. Fields may appear anywhere after the checkbox; the title is
   the rest of the line with the fields removed and spaces collapsed.
+- **One of each:** a key appears at most once per line, and `every` and `after` count as
+  one key. If a line has more than one, the first valid token, reading left to right, is
+  the field. Every later one is title text: shown in the title, never read, never
+  rewritten. Writers update that first token, and never write a second token for a key
+  the line already has.
 - **Tags:** ordinary `#tags` on the line, per the KB tag grammar. There is no second tag
   syntax.
 
@@ -67,7 +72,7 @@ Prose, headings and links around it stay ordinary Markdown.
 - **Dates** are `YYYY-MM-DD` with an optional `THH:MM`. They are floating local time, as
   in Org: no offset, no zone.
 - **Intervals** are a positive integer and a unit: `d`, `w`, `m` (month) or `y`. A repeater
-  needs a `scheduled` or `due` date and at most one of `every` and `after`.
+  needs a `scheduled` or `due` date.
 - Priority is a field, not Org's `[#A]` cookie, because `#A` after `[` is a tag in the KB
   tag grammar.
 

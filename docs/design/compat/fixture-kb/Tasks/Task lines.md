@@ -2,7 +2,7 @@
 id: 01a16990-1ff4-71a5-b681-d31cf764376e
 title: Task lines
 ---
-This page tests how the Pigeonpile Wiki and Dopo Tasks handle task lines (ADR 0011). #compat
+This page tests how the Pigeonpile Wiki and Dopo Tasks handle task lines (ADR 0013). #compat
 
 ## Basic
 
@@ -27,12 +27,16 @@ This page tests how the Pigeonpile Wiki and Dopo Tasks handle task lines (ADR 00
   - [ ] Book flights due:2026-11-15
   - [x] Pick dates closed:2026-10-21
 * [ ] Star bullet task
++ [ ] Plus bullet task
 1. [ ] Numbered task
+- [X] Uppercase done mark closed:2026-10-19
 
 ## Not fields (title text)
 
 - [ ] Ask about due:tomorrow and priority:z
 - [ ] Explain the `due:2026-01-01` syntax
+- [ ] Duplicate due due:2026-10-24 due:2026-10-31
+- [ ] Both repeaters every:1w after:2w scheduled:2026-10-26
 
 ```markdown
 - [ ] Inside a code block, not a task due:2026-10-31
