@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from jesinia.apps.zotero.domain.errors import (
+    AuthorizeTooSoon,
     StaleVersion,
     WriteTokenUsed,
     ZoteroError,
@@ -381,7 +382,13 @@ def test_authorize_endpoint_is_served_by_the_fake(fake: FakeZotero) -> None:
 
     async def call() -> dict[str, object]:
         async with httpx.AsyncClient(transport=fake.transport(), base_url=BASE_URL) as http:
-            response = await http.post("/local/authorize", json={"appName": "Jesinia"})
+            missing = await http.post("/local/authorize", json={"appName": "Jesinia"})
+            assert missing.status_code == 428
+            response = await http.post(
+                "/local/authorize",
+                json={"appName": "Jesinia"},
+                headers={"Zotero-Server-ID": fake.server_id},
+            )
             return dict(response.json())
 
     assert asyncio.run(call()) == {"key": fake.issued_key, "remember": True}
@@ -532,3 +539,69 @@ def test_should_parse_sparse_item_and_single_relation() -> None:
     assert (paper.title, paper.creators, paper.tags, paper.doi) == ("", (), (), "")
     assert paper.related == ("ONLY0001",)
     assert parse_paper({"key": "R3", "version": 1, "data": {"itemType": "book"}}, []).related == ()
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def authorizing_client(fake: FakeZotero, store: MemoryKeyStore, clock: Clock) -> LocalApiClient:
+    return LocalApiClient(BASE_URL, store, transport=fake.transport(), clock=clock)
+
+
+async def test_should_store_key_when_always_allow_is_chosen(fake: FakeZotero) -> None:
+    store = MemoryKeyStore(None)
+    assert await authorizing_client(fake, store, Clock()).authorize() is True
+    assert store.key == fake.issued_key
+    assert fake.authorize_body == {"appName": "Jesinia"}
+    assert fake.last_headers["zotero-server-id"] == fake.server_id
+
+
+async def test_should_not_store_a_single_use_key(fake: FakeZotero) -> None:
+    fake.authorize_outcome = "once"
+    store = MemoryKeyStore(None)
+    assert await authorizing_client(fake, store, Clock()).authorize() is False
+    assert store.key is None
+
+
+async def test_should_report_unauthorized_when_authorize_is_denied(fake: FakeZotero) -> None:
+    fake.authorize_outcome = "denied"
+    with pytest.raises(ZoteroUnavailable) as raised:
+        await authorizing_client(fake, MemoryKeyStore(None), Clock()).authorize()
+    assert raised.value.state == "unauthorized"
+
+
+async def test_should_surface_zotero_throttling_of_authorize(fake: FakeZotero) -> None:
+    fake.authorize_outcome = "throttled"
+    with pytest.raises(AuthorizeTooSoon, match="30"):
+        await authorizing_client(fake, MemoryKeyStore(None), Clock()).authorize()
+
+
+async def test_should_refuse_a_second_authorize_within_a_minute(fake: FakeZotero) -> None:
+    clock = Clock()
+    api = authorizing_client(fake, MemoryKeyStore(None), clock)
+    await api.authorize()
+    clock.now += 59
+    with pytest.raises(AuthorizeTooSoon):
+        await api.authorize()
+    clock.now += 2
+    assert await api.authorize() is True
+
+
+async def test_should_wait_for_the_author_to_answer_the_dialog(
+    fake: FakeZotero, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[float] = []
+    real_client = httpx.AsyncClient
+
+    def spy(**kwargs: Any) -> httpx.AsyncClient:
+        seen.append(kwargs["timeout"])
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", spy)
+    await authorizing_client(fake, MemoryKeyStore(None), Clock()).authorize()
+    assert seen[-1] >= 300  # the authorize POST is the last request

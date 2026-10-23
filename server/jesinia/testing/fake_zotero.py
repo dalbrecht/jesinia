@@ -49,6 +49,8 @@ class FakeZotero:
         self.valid_key: str | None = None
         self.mode = "ok"  # "ok" | "off" | "unauthorized" | "forbidden" | "broken"
         self.down = False
+        self.authorize_outcome = "always"  # "always" | "once" | "denied" | "throttled"
+        self.authorize_body: object = None
         self.omit_total = False
         self.on_page: Callable[[int], None] | None = None  # called with ``start`` after a page
         self.last_headers: dict[str, str] = {}
@@ -166,7 +168,18 @@ class FakeZotero:
         return sorted(live, key=lambda item: cast(int, item["version"]))
 
     async def _authorize(self, request: Request) -> Response:
-        return self._respond(request, JSONResponse({"key": self.issued_key, "remember": True}))
+        self.authorize_body = json.loads(await request.body())
+        self.last_headers = {name.lower(): value for name, value in request.headers.items()}
+        if "zotero-server-id" not in self.last_headers:
+            return PlainTextResponse("Zotero-Server-ID required", status_code=428)
+        if self.authorize_outcome == "denied":
+            return self._respond(request, JSONResponse({"denied": True}, status_code=403))
+        if self.authorize_outcome == "throttled":
+            response = PlainTextResponse("slow down", status_code=429)
+            response.headers["Retry-After"] = "30"
+            return self._respond(request, response)
+        remember = self.authorize_outcome == "always"
+        return self._respond(request, JSONResponse({"key": self.issued_key, "remember": remember}))
 
     async def _list_items(self, request: Request) -> Response:
         since = int(request.query_params.get("since", "0"))

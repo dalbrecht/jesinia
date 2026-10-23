@@ -7,6 +7,8 @@ the author's library. The API key is read from the key store per write and never
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from typing import Literal, cast
 from urllib.parse import urlparse
 
@@ -14,6 +16,7 @@ import httpx
 
 from jesinia.apps.zotero.application.ports import KeyStore
 from jesinia.apps.zotero.domain.errors import (
+    AuthorizeTooSoon,
     StaleVersion,
     WriteTokenUsed,
     ZoteroError,
@@ -38,6 +41,11 @@ _AUTOMATIC_TAG_TYPE = 1
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _WRITE_TOKEN_USED_TEXT = "Write token already used"
 _MAX_PAGING_ATTEMPTS = 3
+# Zotero shows a dialog per authorize call and throttles at 5 a minute (spec 2a).
+AUTHORIZE_MIN_INTERVAL_SECONDS = 60.0
+# The call blocks until the author answers Zotero's dialog, which can take minutes.
+AUTHORIZE_TIMEOUT_SECONDS = 330.0
+_APP_NAME = "Jesinia"
 
 RawItem = dict[str, object]
 
@@ -50,6 +58,7 @@ class LocalApiClient:
         base_url: str,
         key_store: KeyStore,
         transport: httpx.AsyncBaseTransport | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         parsed = urlparse(base_url)
         if parsed.scheme != "http" or parsed.hostname not in _LOOPBACK_HOSTS:
@@ -61,6 +70,8 @@ class LocalApiClient:
         self._key_store = key_store
         self._transport = transport
         self._cached_server_id: str | None = None
+        self._clock = clock
+        self._last_authorize_at: float | None = None
 
     async def _send(
         self,
@@ -71,15 +82,17 @@ class LocalApiClient:
         headers: dict[str, str] | None = None,
         json_body: object = None,
         passthrough: tuple[int, ...] = (),
+        timeout: float = 30.0,
+        user_scoped: bool = True,
     ) -> httpx.Response:
         try:
             # trust_env=False: proxy environment variables must not carry the API key anywhere.
             async with httpx.AsyncClient(
-                transport=self._transport, timeout=30.0, trust_env=False
+                transport=self._transport, timeout=timeout, trust_env=False
             ) as http:
                 response = await http.request(
                     method,
-                    f"{self._base_url}{_USER_PREFIX}{path}",
+                    f"{self._base_url}{_USER_PREFIX if user_scoped else ''}{path}",
                     params=params,
                     headers=headers,
                     json=json_body,
@@ -133,6 +146,39 @@ class LocalApiClient:
             if version == first_version:
                 return collected, first_version
         raise ZoteroError("library kept changing during sync")
+
+    async def authorize(self) -> bool:
+        """Ask Zotero for a local API key; store it only if the author chose "Always Allow".
+
+        Returns whether the key was remembered. A single-use key (plain "Allow") is not
+        stored, so the caller should tell the author to pick "Always Allow".
+        """
+        now = self._clock()
+        if (
+            self._last_authorize_at is not None
+            and now - self._last_authorize_at < AUTHORIZE_MIN_INTERVAL_SECONDS
+        ):
+            raise AuthorizeTooSoon("Zotero authorize was requested less than a minute ago")
+        self._last_authorize_at = now
+        response = await self._send(
+            "POST",
+            "/local/authorize",
+            headers={"Zotero-Server-ID": await self.server_id()},
+            json_body={"appName": _APP_NAME},
+            passthrough=(403, 429),
+            timeout=AUTHORIZE_TIMEOUT_SECONDS,
+            user_scoped=False,
+        )
+        if response.status_code == 403:
+            raise ZoteroUnavailable("unauthorized", "denied")
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "unknown")
+            raise AuthorizeTooSoon(f"Zotero throttled authorize; retry after {retry_after}s")
+        body = cast(dict[str, object], response.json())
+        remember = body.get("remember") is True
+        if remember:
+            await self._key_store.write(str(body["key"]))
+        return remember
 
     async def library_version(self) -> int:
         response = await self._send("GET", "/items", params={"limit": 1})

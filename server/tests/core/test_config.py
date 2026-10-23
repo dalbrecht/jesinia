@@ -13,6 +13,7 @@ from jesinia.core.config import (
     parse_duration,
     save_config,
     set_value,
+    set_values,
 )
 from jesinia.core.paths import config_path, default_data_dir, default_log_dir
 
@@ -276,3 +277,68 @@ def test_should_reject_a_remote_host_that_is_not_a_bare_dns_name(tmp_path: Path,
     load_config(p)
     with pytest.raises(ConfigError, match="server.remote_host"):
         set_value(p, "server.remote_host", raw)
+
+
+def test_should_default_zotero_section(tmp_path: Path) -> None:
+    zotero = load_config(tmp_path / "config.toml").zotero
+    assert zotero.base_url == "http://127.0.0.1:23119"
+    assert zotero.sync_interval == timedelta(minutes=10)
+    assert zotero.propose_interval == timedelta(hours=4)
+    assert (zotero.batch_size, zotero.tag_creation) == (15, "generous")
+
+
+def test_should_round_trip_zotero_section(tmp_path: Path) -> None:
+    p = tmp_path / "config.toml"
+    load_config(p)
+    set_values(
+        p,
+        {
+            "zotero.base_url": "http://localhost:23119/",
+            "zotero.sync_interval": "5m",
+            "zotero.propose_interval": "1h30m",
+            "zotero.batch_size": "20",
+            "zotero.tag_creation": "conservative",
+        },
+    )
+    zotero = load_config(p).zotero
+    assert zotero.base_url == "http://localhost:23119"
+    assert zotero.sync_interval == timedelta(minutes=5)
+    assert zotero.propose_interval == timedelta(hours=1, minutes=30)
+    assert (zotero.batch_size, zotero.tag_creation) == (20, "conservative")
+    assert '[zotero]\nbase_url = "http://localhost:23119"' in p.read_text()
+
+
+def test_should_reject_unknown_tag_creation_value(tmp_path: Path) -> None:
+    p = tmp_path / "config.toml"
+    load_config(p)
+    with pytest.raises(ConfigError):
+        set_values(p, {"zotero.tag_creation": "wild"})
+
+
+@pytest.mark.parametrize(
+    ("key", "raw"),
+    [
+        ("zotero.base_url", "http://example.com:23119"),
+        ("zotero.base_url", "https://127.0.0.1:23119"),
+        ("zotero.sync_interval", "0s"),
+        ("zotero.propose_interval", "soon"),
+        ("zotero.batch_size", "0"),
+        ("zotero.batch_size", "51"),
+        ("zotero.batch_size", "many"),
+        ("zotero.nope", "1"),
+    ],
+)
+def test_should_reject_invalid_zotero_values(tmp_path: Path, key: str, raw: str) -> None:
+    p = tmp_path / "config.toml"
+    load_config(p)
+    with pytest.raises(ConfigError):
+        set_values(p, {key: raw})
+
+
+def test_should_reject_unknown_zotero_keys_and_types_in_file(tmp_path: Path) -> None:
+    p = tmp_path / "config.toml"
+    token = load_config(p).token
+    for bad in ("[zotero]\nnope = 1\n", '[zotero]\nbatch_size = "15"\n'):
+        p.write_text(f'[server]\ntoken = "{token}"\n{bad}')
+        with pytest.raises(ConfigError):
+            load_config(p)

@@ -30,3 +30,7 @@ class ForbiddenWrite(ZoteroError):  # noqa: N818 - name fixed by the spec
 
 class WriteTokenUsed(ZoteroError):  # noqa: N818 - name fixed by the spec
     """Zotero rejected a create because its ``Zotero-Write-Token`` was already used."""
+
+
+class AuthorizeTooSoon(ZoteroError):  # noqa: N818 - name fixed by the spec
+    """Authorize was requested again within a minute; Zotero would show another dialog."""
