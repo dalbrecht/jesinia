@@ -26,12 +26,21 @@ from jesinia.apps.zotero.domain.identifiers import (
         (("", "https://arxiv.org/pdf/2403.01234v2"), "2403.01234"),
         (("arXiv:2403.01234",), "2403.01234"),
         (("https://arxiv.org/abs/hep-th/9901001v2",), "hep-th/9901001"),
+        (("https://arxiv.org/abs/math.AG/0601001",), "math.AG/0601001"),
         (("the-illusion-of-thinking.pdf",), None),
         ((), None),
     ],
 )
 def test_should_find_arxiv_id_in_any_text(texts: tuple[str, ...], expected: str | None) -> None:
     assert find_arxiv_id(*texts) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://www.jstor.org/stable/1234567", "https://site.com/article/1234567"],
+)
+def test_should_not_find_arxiv_id_in_ordinary_numeric_url(url: str) -> None:
+    assert find_arxiv_id(url) is None
 
 
 def test_should_find_doi_and_strip_resolver_prefix() -> None:
