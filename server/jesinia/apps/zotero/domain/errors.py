@@ -26,3 +26,7 @@ class StaleVersion(ZoteroError):  # noqa: N818 - name fixed by the spec
 
 class ForbiddenWrite(ZoteroError):  # noqa: N818 - name fixed by the spec
     """A write targeted a field or item the integration is not allowed to modify."""
+
+
+class WriteTokenUsed(ZoteroError):  # noqa: N818 - name fixed by the spec
+    """Zotero rejected a create because its ``Zotero-Write-Token`` was already used."""
