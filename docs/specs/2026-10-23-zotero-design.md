@@ -290,7 +290,8 @@ them.
 | Change | How |
 |---|---|
 | Title and metadata fix | PATCH title, creators, date, abstract, DOI, URL, arXiv id in `extra`, and `itemType` when the source says it's a paper (for example webpage → preprint, §5.2). Fields the new type doesn't support are left out of the PATCH, not cleared |
-| Standalone PDF → paper | Create a parent item from the source's metadata, then PATCH the PDF's `parentItem` |
+| Title the author typed (no source, or an edited title) | PATCH `title` only. On a standalone PDF, create a parent of type `document` with just that title |
+| Standalone PDF → paper | Create a parent item from the source's metadata, then PATCH the PDF's `parentItem`. Jesinia then moves its own state for the paper (inbox, review record, search) from the PDF's key to the new parent's key |
 | Add tags | Merge into the item's `tags`. Tags Jesinia adds are manual tags (`type` 0) |
 | Related link | Add `dc:relation` on **both** papers (§6.4) |
 | Claude's note | Create one child note, or update the note Jesinia created earlier (§6.2) |
