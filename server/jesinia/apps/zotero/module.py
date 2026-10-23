@@ -11,6 +11,7 @@ from importlib.resources import files
 
 from fastapi import APIRouter, HTTPException, status
 
+from jesinia.apps.zotero.api import build_tools
 from jesinia.apps.zotero.application.ports import MirrorStore, ZoteroLibrary
 from jesinia.apps.zotero.application.sync import SyncService
 from jesinia.apps.zotero.domain.errors import ZoteroUnavailable
@@ -51,6 +52,7 @@ class ZoteroModule:
         self._library: ZoteroLibrary | None = None
         self._mirror: SqliteMirrorStore | None = None
         self._sync: SyncService | None = None
+        self._search: SearchService | None = None
         self._conn: sqlite3.Connection | None = None
 
     @property
@@ -64,6 +66,12 @@ class ZoteroModule:
         if self._mirror is None:
             raise _not_started()
         return self._mirror
+
+    @property
+    def search(self) -> SearchService:
+        if self._search is None:
+            raise _not_started()
+        return self._search
 
     @property
     def sync_service(self) -> SyncService:
@@ -90,7 +98,9 @@ class ZoteroModule:
         return None
 
     def mcp_tools(self) -> Sequence[ToolDef]:
-        return []
+        # Tools reach the mirror and search through the properties at call time: this runs
+        # before start().
+        return build_tools(self)
 
     async def start(self, ctx: AppContext) -> None:
         search = ctx.services.get("search")
@@ -99,6 +109,7 @@ class ZoteroModule:
         self._conn = open_db(ctx.cfg.data_dir, ZOTERO_MIRROR_DB)
         self._mirror = SqliteMirrorStore(self._conn)
         self._library = self._library_factory(ctx.cfg)
+        self._search = search
         self._sync = SyncService(self._library, self._mirror, search, parse=parse_paper)
         try:
             await self._sync.reregister_all()
@@ -109,6 +120,7 @@ class ZoteroModule:
 
     async def stop(self) -> None:
         self._sync = None
+        self._search = None
         self._library = None
         self._mirror = None
         if self._conn is not None:

@@ -38,3 +38,11 @@ class AuthorizeTooSoon(ZoteroError):  # noqa: N818 - name fixed by the spec
 
 class KeychainWriteUnverified(ZoteroError):  # noqa: N818 - name fixed by the spec
     """The Keychain write exited cleanly but the key could not be read back."""
+
+
+class PaperNotFound(ZoteroError):  # noqa: N818 - reads as the condition, like the other errors
+    """No mirrored paper has this key (it may be new, trashed or mistyped)."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"no Zotero paper with key {key!r}")
+        self.key = key

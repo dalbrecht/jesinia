@@ -40,7 +40,7 @@ async def test_should_register_papers_found_by_sync_now(cfg: Config) -> None:
         await zotero.sync_now()
         hits = await search.service.query("module", sources={"zotero"})
         assert [hit.key for hit in hits] == [key]
-        assert zotero.health().ok and zotero.router() is None and list(zotero.mcp_tools()) == []
+        assert zotero.health().ok and zotero.router() is None and len(zotero.mcp_tools()) == 3
 
 
 async def test_should_reregister_all_papers_at_start(cfg: Config) -> None:
@@ -103,6 +103,8 @@ async def test_should_report_not_started_before_start_and_after_stop(cfg: Config
         _ = zotero.mirror
     with pytest.raises(HTTPException):
         _ = zotero.library
+    with pytest.raises(HTTPException):
+        _ = zotero.search
     assert not zotero.health().ok
     await zotero.sync_now()  # a no-op, not an error
     fake = FakeZotero()
