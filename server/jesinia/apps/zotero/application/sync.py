@@ -32,6 +32,7 @@ _BLOCK_SEPARATOR = "\n\n"
 PaperParser = Callable[[dict[str, object], list[dict[str, object]]], Paper]
 KeyHook = Callable[[ItemKey], Awaitable[None]]
 ServerChangedHook = Callable[[str], Awaitable[None]]
+MovedHook = Callable[[ItemKey, ItemKey], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,7 @@ class _TextExtractor(HTMLParser):
         self.parts.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in _SKIPPED_HTML:
+        if tag in _SKIPPED_HTML and self._skip_depth:
             self._skip_depth -= 1
         self.parts.append(" ")
 
@@ -104,6 +105,10 @@ async def _noop_key(key: ItemKey) -> None:
     return None
 
 
+async def _noop_moved(old_key: ItemKey, parent_key: ItemKey) -> None:
+    return None
+
+
 async def _noop_server(old_server_id: str) -> None:
     return None
 
@@ -136,10 +141,17 @@ class SyncService:
         on_gone: KeyHook = _noop_key,
         on_server_changed: ServerChangedHook = _noop_server,
         *,
+        on_moved: MovedHook = _noop_moved,
         parse: PaperParser,
     ) -> None:
         """``parse`` turns a raw item and its descendants into a Paper (infrastructure's
-        ``parse_paper``); it is injected so this layer does not import infrastructure."""
+        ``parse_paper``); it is injected so this layer does not import infrastructure.
+
+        ``on_moved(old_key, parent_key)`` fires when a standalone PDF gains a parent.
+
+        The mirror write is always the last step for a paper, so a failure in search or in a
+        hook makes the next pass redo that paper. Hooks must therefore tolerate being called
+        again for the same key."""
         self._parse = parse
         self._library = library
         self._mirror = mirror
@@ -147,6 +159,7 @@ class SyncService:
         self._on_new = on_new
         self._on_gone = on_gone
         self._on_server_changed = on_server_changed
+        self._on_moved = on_moved
         self._lock = asyncio.Lock()
 
     async def reregister_all(self) -> None:
@@ -202,6 +215,7 @@ class SyncService:
             key: (ItemKey(str(parent)) if (parent := _data(raw).get("parentItem")) else None)
             for key, raw in raw_by_key.items()
         }
+        await self._drop_moved(raw_by_key)
         to_sync: dict[ItemKey, None] = {}
         for key, raw in raw_by_key.items():
             root = await self._root_key(key, known_parents)
@@ -224,14 +238,23 @@ class SyncService:
         self._mirror.set_library_version(new_cursor)
         return SyncReport(changed=changed, removed=removed, fulltext_updated=refreshed)
 
+    async def _drop_moved(self, raw_by_key: dict[ItemKey, dict[str, object]]) -> None:
+        """A standalone PDF dragged under a paper stops being a paper of its own."""
+        for key, raw in raw_by_key.items():
+            parent = _data(raw).get("parentItem")
+            if parent and self._mirror.get(key) is not None:
+                await self._search.unregister(SEARCH_SOURCE, key)
+                await self._on_moved(key, ItemKey(str(parent)))
+                self._mirror.remove(key)
+
     async def _drop_gone(self, gone: set[ItemKey]) -> int:
         removed = 0
         for key in sorted(gone):
             if self._mirror.get(key) is None:
                 continue
-            self._mirror.remove(key)
             await self._search.unregister(SEARCH_SOURCE, key)
             await self._on_gone(key)
+            self._mirror.remove(key)
             removed += 1
         return removed
 
@@ -252,40 +275,45 @@ class SyncService:
                 children += await self._library.children(ItemKey(str(child["key"])))
         paper = self._parse(raw, children)
         is_new = self._mirror.get(key) is None
-        fulltext, version = await self._fetch_fulltext(paper, fulltext_versions)
-        self._mirror.put(paper, fulltext, version)
+        fulltext, versions = await self._fetch_fulltext(paper, fulltext_versions)
         await self._search.register(search_record(paper, fulltext))
         if is_new:
             await self._on_new(key)
+        self._mirror.put(paper, fulltext, versions)
         return True
 
     async def _fetch_fulltext(
         self, paper: Paper, fulltext_versions: dict[ItemKey, int]
-    ) -> tuple[str | None, int]:
+    ) -> tuple[str | None, dict[ItemKey, int]]:
+        """The PDFs' text joined, and the full-text version seen per PDF (even with no text)."""
         texts: list[str] = []
         for attachment in paper.attachments:
             text = await self._library.fulltext(attachment.key)
             if text:
                 texts.append(text)
-        version = max((fulltext_versions.get(a.key, 0) for a in paper.attachments), default=0)
-        return (_BLOCK_SEPARATOR.join(texts) or None), version
+        versions = {a.key: fulltext_versions.get(a.key, 0) for a in paper.attachments}
+        return (_BLOCK_SEPARATOR.join(texts) or None), versions
 
     async def _refresh_fulltext(
         self, fulltext_versions: dict[ItemKey, int], already_synced: set[ItemKey]
     ) -> int:
-        """Re-fetch full text for papers whose PDFs were indexed since we last looked."""
-        newest: dict[ItemKey, int] = {}
+        """Re-fetch full text for papers with a PDF indexed since we last looked."""
+        stale: dict[ItemKey, None] = {}
         for attachment_key, version in fulltext_versions.items():
             owner = self._mirror.owner_of(attachment_key)
-            if owner is not None and owner not in already_synced:
-                newest[owner] = max(newest.get(owner, 0), version)
+            if (
+                owner is not None
+                and owner not in already_synced
+                and version > self._mirror.fulltext_version(attachment_key)
+            ):
+                stale[owner] = None
         refreshed = 0
-        for owner, version in sorted(newest.items()):
+        for owner in sorted(stale):
             paper = self._mirror.get(owner)
-            if paper is None or version <= self._mirror.fulltext_version(owner):
+            if paper is None:  # pragma: no cover - owner_of only returns mirrored papers
                 continue
-            fulltext, stored_version = await self._fetch_fulltext(paper, fulltext_versions)
-            self._mirror.put(paper, fulltext, stored_version)
+            fulltext, versions = await self._fetch_fulltext(paper, fulltext_versions)
             await self._search.register(search_record(paper, fulltext))
+            self._mirror.put(paper, fulltext, versions)
             refreshed += 1
         return refreshed

@@ -9,6 +9,7 @@ from dataclasses import replace
 import pytest
 from fastapi import FastAPI, HTTPException
 
+from jesinia.apps.zotero.application.sync import SyncService
 from jesinia.apps.zotero.infrastructure.local_api import LocalApiClient
 from jesinia.apps.zotero.module import ZoteroModule
 from jesinia.core.app import create_app
@@ -118,3 +119,17 @@ async def test_should_fail_start_without_the_search_service(cfg: Config) -> None
     app = create_app(cfg, [zotero], static_root=None)
     async with running(app):
         assert not zotero.health().ok
+
+
+async def test_should_start_even_when_reregistering_papers_fails(
+    cfg: Config, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(self: SyncService) -> None:
+        raise RuntimeError("search index unreadable")
+
+    monkeypatch.setattr(SyncService, "reregister_all", broken)
+    zotero, _, app = build(cfg, FakeZotero())
+    with caplog.at_level(logging.WARNING):
+        async with running(app):
+            assert zotero.health().ok
+    assert "search index unreadable" in caplog.text

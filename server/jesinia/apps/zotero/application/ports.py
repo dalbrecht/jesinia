@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Literal, Protocol
 
 from jesinia.apps.zotero.domain.identifiers import ItemKey
@@ -60,7 +61,15 @@ class MirrorStore(Protocol):
 
     def get(self, key: ItemKey) -> Paper | None: ...
 
-    def put(self, paper: Paper, fulltext: str | None, fulltext_version: int = 0) -> None: ...
+    def put(
+        self,
+        paper: Paper,
+        fulltext: str | None,
+        fulltext_versions: Mapping[ItemKey, int] | None = None,
+    ) -> None:
+        """Store ``paper`` with its joined PDF text and the Zotero full-text version last seen
+        per PDF attachment (recorded even when ``fulltext`` is None)."""
+        ...
 
     def remove(self, key: ItemKey) -> None: ...
 
@@ -71,7 +80,7 @@ class MirrorStore(Protocol):
     def all_keys(self) -> list[ItemKey]: ...
 
     def owner_of(self, attachment_key: ItemKey) -> ItemKey | None:
-        """The paper whose PDFs include ``attachment_key`` (a standalone PDF owns itself)."""
+        """The paper whose PDFs include ``attachment_key`` (a standalone PDF's paper is itself)."""
         ...
 
     def library_version(self) -> int: ...
@@ -84,4 +93,6 @@ class MirrorStore(Protocol):
 
     def fulltext(self, key: ItemKey) -> str | None: ...
 
-    def fulltext_version(self, key: ItemKey) -> int: ...
+    def fulltext_version(self, attachment_key: ItemKey) -> int:
+        """The full-text version last seen for a PDF attachment; 0 when unknown."""
+        ...

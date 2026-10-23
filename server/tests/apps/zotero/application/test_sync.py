@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from jesinia.apps.zotero.application.sync import (
@@ -23,6 +25,7 @@ from jesinia.apps.zotero.domain.paper import (
     ZoteroTag,
 )
 from jesinia.apps.zotero.infrastructure.local_api import parse_paper
+from jesinia.services.search.application.service import ExternalRecord
 from tests.apps.zotero.conftest import Rig
 
 
@@ -272,3 +275,110 @@ async def test_should_work_without_any_hooks(rig: Rig) -> None:
     rig.fake.trash(key)
     await bare.sync()
     assert rig.mirror.all_keys() == []
+    pdf = rig.fake.add_item("Scan", item_type="attachment", contentType="application/pdf")
+    await bare.sync()
+    parent = reparent(rig, pdf, "Home")
+    await bare.sync()
+    assert rig.mirror.all_keys() == [parent]
+
+
+def reparent(rig: Rig, key: ItemKey, parent_title: str) -> ItemKey:
+    """Drag ``key`` under a new paper, as Zotero does; the fake has no public call for it."""
+    parent = rig.fake.add_item(parent_title)
+    item = rig.fake._items[key]  # noqa: SLF001
+    cast(dict[str, object], item["data"])["parentItem"] = parent
+    item["version"] = rig.fake._bump()  # noqa: SLF001
+    return parent
+
+
+async def test_should_drop_standalone_pdf_record_when_it_gains_a_parent(rig: Rig) -> None:
+    pdf = rig.fake.add_item("Loose Scan", item_type="attachment", contentType="application/pdf")
+    await rig.sync.sync()
+    assert await hit_keys(rig, "loose") == [pdf]
+    parent = reparent(rig, pdf, "Real Parent")
+    await rig.sync.sync()
+    assert await hit_keys(rig, "loose") == []
+    assert await hit_keys(rig, "parent") == [parent]
+    assert rig.mirror.all_keys() == [parent]
+    assert rig.mirror.owner_of(pdf) == parent
+    assert rig.moved_calls == [(pdf, parent)] and rig.gone_calls == []
+
+
+async def test_should_retry_unregister_and_gone_hook_after_a_failed_pass(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = rig.fake.add_item("Doomed")
+    await rig.sync.sync()
+    rig.fake.trash(key)
+    real = rig.search.unregister
+    calls = {"count": 0}
+
+    async def flaky(source: str, record_key: str) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("index busy")
+        await real(source, record_key)
+
+    monkeypatch.setattr(rig.search, "unregister", flaky)
+    with pytest.raises(RuntimeError):
+        await rig.sync.sync()
+    await rig.sync.sync()
+    assert await hit_keys(rig, "doomed") == [] and key in rig.gone_calls
+
+
+async def test_should_retry_register_and_new_hook_after_a_failed_pass(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = rig.fake.add_item("Fresh Arrival")
+    real = rig.search.register
+    calls = {"count": 0}
+
+    async def flaky(record: ExternalRecord) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("index busy")
+        await real(record)
+
+    monkeypatch.setattr(rig.search, "register", flaky)
+    with pytest.raises(RuntimeError):
+        await rig.sync.sync()
+    await rig.sync.sync()
+    assert await hit_keys(rig, "arrival") == [key] and key in rig.new_calls
+
+
+async def test_should_retry_new_hook_that_failed_once(rig: Rig) -> None:
+    attempts: list[ItemKey] = []
+
+    async def flaky_new(key: ItemKey) -> None:
+        attempts.append(key)
+        if len(attempts) == 1:
+            raise RuntimeError("inbox busy")
+
+    sync = SyncService(rig.library, rig.mirror, rig.search, flaky_new, parse=parse_paper)
+    key = rig.fake.add_item("Hooked")
+    with pytest.raises(RuntimeError):
+        await sync.sync()
+    await sync.sync()
+    assert attempts == [key, key] and rig.mirror.all_keys() == [key]
+
+
+async def test_should_not_refetch_fulltext_for_unchanged_or_empty_pdfs(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig.add_paper("Has Text", fulltext="some words")
+    rig.add_paper("Empty Text", fulltext="")
+    await rig.sync.sync()
+    fetched: list[ItemKey] = []
+    real = rig.library.fulltext
+
+    async def counting(key: ItemKey) -> str | None:
+        fetched.append(key)
+        return await real(key)
+
+    monkeypatch.setattr(rig.library, "fulltext", counting)
+    report = await rig.sync.sync()
+    assert fetched == [] and report == SyncReport(0, 0, 0)
+
+
+def test_should_not_let_a_stray_closing_tag_silence_the_rest_of_a_note() -> None:
+    assert html_to_text("</script>kept <b>text</b></style> too") == "kept text too"

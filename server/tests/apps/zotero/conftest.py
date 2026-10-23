@@ -48,6 +48,7 @@ class Rig:
     new_calls: list[ItemKey] = field(default_factory=list)
     gone_calls: list[ItemKey] = field(default_factory=list)
     server_changed_calls: list[str] = field(default_factory=list)
+    moved_calls: list[tuple[ItemKey, ItemKey]] = field(default_factory=list)
 
     def add_paper(
         self,
@@ -106,8 +107,18 @@ async def rig(tmp_path: Path, fake: FakeZotero) -> AsyncIterator[Rig]:
     async def on_server_changed(old: str) -> None:
         holder["rig"].server_changed_calls.append(old)
 
+    async def on_moved(old: ItemKey, parent: ItemKey) -> None:
+        holder["rig"].moved_calls.append((old, parent))
+
     sync = SyncService(
-        library, mirror, search, on_new, on_gone, on_server_changed, parse=parse_paper
+        library,
+        mirror,
+        search,
+        on_new,
+        on_gone,
+        on_server_changed,
+        on_moved=on_moved,
+        parse=parse_paper,
     )
     holder["rig"] = Rig(fake, sync, search, mirror, library)
     yield holder["rig"]

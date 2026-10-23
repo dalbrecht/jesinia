@@ -100,7 +100,11 @@ class ZoteroModule:
         self._mirror = SqliteMirrorStore(self._conn)
         self._library = self._library_factory(ctx.cfg)
         self._sync = SyncService(self._library, self._mirror, search, parse=parse_paper)
-        await self._sync.reregister_all()
+        try:
+            await self._sync.reregister_all()
+        except Exception:
+            # Search is derived: a failure here must not keep the module from starting.
+            log.exception("zotero could not re-register mirrored papers in search")
         ctx.scheduler.every(SYNC_JOB, ctx.cfg.zotero.sync_interval, self.sync_now, at_start=True)
 
     async def stop(self) -> None:

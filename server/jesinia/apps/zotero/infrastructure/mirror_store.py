@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, cast
@@ -66,32 +66,45 @@ class SqliteMirrorStore:
         row = self._conn.execute("SELECT json FROM papers WHERE key = ?", (key,)).fetchone()
         return None if row is None else _to_paper(json.loads(row[0]))
 
-    def put(self, paper: Paper, fulltext: str | None, fulltext_version: int = 0) -> None:
+    def put(
+        self,
+        paper: Paper,
+        fulltext: str | None,
+        fulltext_versions: Mapping[ItemKey, int] | None = None,
+    ) -> None:
+        versions = fulltext_versions or {}
         with _transaction(self._conn):
             self._conn.execute(
                 "INSERT INTO papers (key, version, json) VALUES (?, ?, ?) "
                 "ON CONFLICT (key) DO UPDATE SET version = excluded.version, json = excluded.json",
                 (paper.key, paper.version, json.dumps(asdict(paper))),
             )
+            self._conn.execute("DELETE FROM attachments WHERE paper_key = ?", (paper.key,))
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO attachments (attachment_key, paper_key, fulltext_version) "
+                "VALUES (?, ?, ?)",
+                [(a.key, paper.key, versions.get(a.key, 0)) for a in paper.attachments],
+            )
             if fulltext is None:
                 self._conn.execute("DELETE FROM fulltext WHERE key = ?", (paper.key,))
             else:
                 self._conn.execute(
-                    "INSERT INTO fulltext (key, version, text) VALUES (?, ?, ?) "
-                    "ON CONFLICT (key) DO UPDATE SET version = excluded.version, "
-                    "text = excluded.text",
-                    (paper.key, fulltext_version, fulltext),
+                    "INSERT INTO fulltext (key, text) VALUES (?, ?) "
+                    "ON CONFLICT (key) DO UPDATE SET text = excluded.text",
+                    (paper.key, fulltext),
                 )
 
     def remove(self, key: ItemKey) -> None:
         with _transaction(self._conn):
             self._conn.execute("DELETE FROM papers WHERE key = ?", (key,))
             self._conn.execute("DELETE FROM fulltext WHERE key = ?", (key,))
+            self._conn.execute("DELETE FROM attachments WHERE paper_key = ?", (key,))
 
     def clear(self) -> None:
         with _transaction(self._conn):
             self._conn.execute("DELETE FROM papers")
             self._conn.execute("DELETE FROM fulltext")
+            self._conn.execute("DELETE FROM attachments")
             self._conn.execute("DELETE FROM meta WHERE name = ?", (_LIBRARY_VERSION,))
 
     def all_keys(self) -> list[ItemKey]:
@@ -100,10 +113,7 @@ class SqliteMirrorStore:
 
     def owner_of(self, attachment_key: ItemKey) -> ItemKey | None:
         row = self._conn.execute(
-            "SELECT key FROM papers WHERE key = ?1 OR EXISTS ("
-            "SELECT 1 FROM json_each(papers.json, '$.attachments') "
-            "WHERE json_extract(value, '$.key') = ?1)",
-            (attachment_key,),
+            "SELECT paper_key FROM attachments WHERE attachment_key = ?", (attachment_key,)
         ).fetchone()
         return None if row is None else ItemKey(row[0])
 
@@ -135,6 +145,8 @@ class SqliteMirrorStore:
         row = self._conn.execute("SELECT text FROM fulltext WHERE key = ?", (key,)).fetchone()
         return None if row is None else cast(str, row[0])
 
-    def fulltext_version(self, key: ItemKey) -> int:
-        row = self._conn.execute("SELECT version FROM fulltext WHERE key = ?", (key,)).fetchone()
+    def fulltext_version(self, attachment_key: ItemKey) -> int:
+        row = self._conn.execute(
+            "SELECT fulltext_version FROM attachments WHERE attachment_key = ?", (attachment_key,)
+        ).fetchone()
         return 0 if row is None else int(row[0])
