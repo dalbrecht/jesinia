@@ -168,11 +168,25 @@ gate.
   - child notes
   - each PDF attachment's annotations (highlight text, comment, page label, color)
   - the PDF's full text
-- **Incrementally:** use `since=<version>` on the local API and remember the last library
-  version.
-  - Deletions in Zotero remove the paper from Jesinia's store and search index. Jesinia never
-    deletes anything in Zotero.
-  - Items in the trash count as deleted.
+- **Incrementally:** each pass starts from the stored cursor `V` and reads four feeds, all
+  `since=V`. The new cursor is committed only after all four have been processed:
+  1. `/items?since=V` for changed items.
+  2. `/items/trash?since=V` (or `includeTrashed=1`) for items moved to the trash, which count
+     as deleted. The plain `/items` feed leaves these out.
+  3. `/deleted?since=V` for permanent deletions (tombstones).
+  4. `/fulltext?since=V`, the full-text change feed. For each attachment it lists, Jesinia
+     fetches `/items/<KEY>/fulltext`. This catches text that Zotero indexes after the
+     attachment itself synced (§2). Without it, those papers would never be searchable by
+     full text.
+  - Deletions and trashed items remove the paper from Jesinia's mirror and search index, and
+    close its open inbox item as "paper gone". Jesinia never deletes anything in Zotero.
+- **Server ID:** the cursor and the mirror are stored together with the `Zotero-Server-ID`
+  they came from, as the local API docs require. A different server ID on any response means
+  a different Zotero database (another profile, a replaced data directory, a restore). When
+  that happens:
+  - sync stops using the old cursor and rebuilds the mirror and search records from scratch;
+  - pending outbox writes tied to the old server ID are quarantined, not sent. Their inbox
+    items show "Zotero library changed" and can be re-proposed.
 - **Schedule:** `ctx.scheduler.every` runs it on a light interval (builder's call, for example
   every 10 minutes). It also runs at start and on demand from Settings.
 - **Store:** a new `zotero.sqlite` under Jesinia's data dir (not Zotero's). It is a mirror,
@@ -275,7 +289,7 @@ them.
 
 | Change | How |
 |---|---|
-| Title and metadata fix | PATCH title, creators, date, abstract, DOI, URL, and arXiv id in `extra` |
+| Title and metadata fix | PATCH title, creators, date, abstract, DOI, URL, arXiv id in `extra`, and `itemType` when the source says it's a paper (for example webpage → preprint, §5.2). Fields the new type doesn't support are left out of the PATCH, not cleared |
 | Standalone PDF → paper | Create a parent item from the source's metadata, then PATCH the PDF's `parentItem` |
 | Add tags | Merge into the item's `tags`. Tags Jesinia adds are manual tags (`type` 0) |
 | Related link | Add `dc:relation` on **both** papers (§6.4) |
@@ -368,10 +382,18 @@ no attachment changes.
 - **It runs in the background** on a schedule, in batches. "Sometime today" is fine **(user)**,
   so the builder picks the cadence, for example a few times a day plus once after a backlog
   batch is due.
-- The agent reads paper text through MCP, which is fenced as untrusted (§9).
-- The agent writes its proposals into the inbox with a tool such as `zotero_propose`. That
-  tool writes only to Jesinia's inbox, never to Zotero. The builder decides whether it runs
-  under the session write gate or is pre-authorized for these background sessions.
+- **The background agent has no write tools.** It runs in a `read_only` session (the review
+  app's pattern), limited to the read tools `zotero_get`, `zotero_fulltext`, `zotero_search`,
+  `tags_list`, `tags_suggest` and `tags_check`. Paper text arrives fenced as untrusted (§9).
+- **It answers with JSON**, holding the tags (with meanings for new ones), the related keys
+  and reasons, and the note. The server parses it against a schema (the issues app's
+  `parse_agent_json` pattern, with one corrective retry). Then the server, which is trusted
+  code:
+  - validates it (related keys must exist in the mirror; caps on counts and lengths);
+  - normalizes the tags;
+  - adds the server-resolved title fix;
+  - writes the inbox item itself.
+  No agent write passes through `SessionWriteGate`, and nothing needs pre-authorizing.
 - **No API bill:** the work uses the CLI's own login, the same way the existing agent runners
   do.
 
@@ -394,13 +416,26 @@ no attachment changes.
 
 ### 9.2 MCP tools
 
-Read-only, named `zotero_<verb>`, with paper text fenced as untrusted the way RSS posts are
-(`_fenced`). For example:
+Named `zotero_<verb>`, with paper text fenced as untrusted the way RSS posts are
+(`_fenced`).
+
+**Read tools** (`writes=False`):
 
 - `zotero_search`: snippets plus paper keys.
 - `zotero_get`: metadata, tags, notes, highlights, related papers, and the link.
 - `zotero_fulltext`: the PDF's text, paged if it's long.
-- `zotero_propose`: the background agent's inbox write (§8).
+
+**One write tool**, `zotero_revise` (`writes=True`, with a preview). It edits an inbox item's
+proposals during "Discuss with Claude" (§5.2), and never touches Zotero.
+
+- It is pre-authorized only in Discuss sessions. Those sessions start from the author's own
+  click on that paper, and the author asked for Claude to change the suggestions there
+  **(user)**.
+- It can only edit the one inbox item its session was opened for, and the author's Apply is
+  still the only path to Zotero.
+- The builder adds this case to the pre-authorization rule in `docs/conventions/agents.md`
+  ("Writes and approval"), next to Notes' `notes_save`.
+- In any other session, it goes through the normal write gate.
 
 Each result includes a ready-to-paste link, so agents can cite papers in KB pages (builder's
 call).
@@ -468,7 +503,7 @@ hasn't agreed to it.
 - Scheduling intervals and the batch size default.
 - The inbox component split, CSS and copy, following `docs/design/`.
 - The agent prompt for proposals.
-- How `zotero_propose` relates to the session write gate.
+- The JSON schema for the background agent's answer (§8).
 - The ADR for storing the Zotero local API key (§3).
 
 ## 13. Before building: the author's setup
