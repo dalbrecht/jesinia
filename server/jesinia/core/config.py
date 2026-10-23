@@ -18,6 +18,8 @@ from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
+from typing import Literal, cast
+from urllib.parse import urlparse
 
 from jesinia.core.paths import default_log_dir
 
@@ -33,6 +35,11 @@ DEFAULT_FOLDERS: Mapping[str, str] = MappingProxyType(
 DEFAULT_RSS_RETENTION = timedelta(days=30)
 RSS_RETENTION_DAYS_MAX = 365
 
+DEFAULT_ZOTERO_BASE_URL = "http://127.0.0.1:23119"
+ZOTERO_BATCH_SIZE_MAX = 50
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+TAG_CREATION_MODES = ("generous", "conservative")
+
 _DURATION = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _FOLDER_KIND = re.compile(r"^[a-z][a-z0-9_-]*$")
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -40,6 +47,17 @@ _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 class ConfigError(ValueError):
     """An unknown key, an invalid value, or an unreadable config file."""
+
+
+@dataclass(frozen=True)
+class ZoteroConfig:
+    """The ``[zotero]`` section: where the local API lives and how often to sync."""
+
+    base_url: str = DEFAULT_ZOTERO_BASE_URL
+    sync_interval: timedelta = timedelta(minutes=10)
+    propose_interval: timedelta = timedelta(hours=4)
+    batch_size: int = 15
+    tag_creation: Literal["generous", "conservative"] = "generous"
 
 
 @dataclass(frozen=True)
@@ -53,6 +71,7 @@ class Config:
     kbsync_quiet: timedelta = DEFAULT_QUIET
     folders: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_FOLDERS))
     rss_retention: timedelta = DEFAULT_RSS_RETENTION
+    zotero: ZoteroConfig = field(default_factory=ZoteroConfig)
     # The tailnet name ``tailscale serve`` fronts Jesinia on (ADR 0011); None: local only.
     remote_host: str | None = None
 
@@ -105,6 +124,16 @@ def _serialize(cfg: Config) -> str:
     ]
     lines += [f"{kind} = {_quote(folder)}" for kind, folder in sorted(cfg.folders.items())]
     lines += ["", "[rss]", f"retention = {_quote(format_duration(cfg.rss_retention))}"]
+    zotero = cfg.zotero
+    lines += [
+        "",
+        "[zotero]",
+        f"base_url = {_quote(zotero.base_url)}",
+        f"sync_interval = {_quote(format_duration(zotero.sync_interval))}",
+        f"propose_interval = {_quote(format_duration(zotero.propose_interval))}",
+        f"batch_size = {zotero.batch_size}",
+        f"tag_creation = {_quote(zotero.tag_creation)}",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -139,6 +168,9 @@ _ALLOWED: dict[str, frozenset[str] | None] = {
     "kbsync": frozenset({"interval", "quiet"}),
     "folders": None,  # any folder kind; validated by _apply
     "rss": frozenset({"retention"}),
+    "zotero": frozenset(
+        {"base_url", "sync_interval", "propose_interval", "batch_size", "tag_creation"}
+    ),
 }
 
 
@@ -150,6 +182,7 @@ _TYPES: dict[tuple[str, str], type] = {
     ("kbsync", "interval"): str,
     ("kbsync", "quiet"): str,
     ("rss", "retention"): str,
+    ("zotero", "batch_size"): int,
 }
 
 
@@ -177,8 +210,8 @@ def _check_keys(doc: Mapping[str, object]) -> None:
 def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
     _check_keys(doc)
     _check_types(doc)
-    server, kb, kbsync, folders, rss = (
-        _section(doc, s) for s in ("server", "kb", "kbsync", "folders", "rss")
+    server, kb, kbsync, folders, rss, zotero = (
+        _section(doc, s) for s in ("server", "kb", "kbsync", "folders", "rss", "zotero")
     )
     token = server.get("token")
     if not isinstance(token, str) or not token:
@@ -199,6 +232,9 @@ def _from_doc(doc: Mapping[str, object], path: Path) -> Config:
         cfg = _apply(cfg, f"folders.{kind}", str(folder))
     if "retention" in rss:
         cfg = _apply(cfg, "rss.retention", str(rss["retention"]))
+    for key in _ALLOWED["zotero"] or ():
+        if key in zotero:
+            cfg = _apply(cfg, f"zotero.{key}", str(zotero[key]))
     return cfg
 
 
@@ -238,6 +274,35 @@ def _validate_remote_host(raw: str) -> str | None:
     return host
 
 
+def _apply_zotero(current: ZoteroConfig, name: str, raw: str) -> ZoteroConfig:
+    if name == "base_url":
+        parsed = urlparse(raw.strip())
+        if parsed.scheme != "http" or parsed.hostname not in _LOOPBACK_HOSTS:
+            # The Zotero API key travels in a header, so the URL must stay on this machine.
+            raise ConfigError(f"zotero.base_url must be an http loopback URL, got {raw!r}")
+        return replace(current, base_url=raw.strip().rstrip("/"))
+    if name in ("sync_interval", "propose_interval"):
+        td = parse_duration(raw)
+        if td <= timedelta(0):
+            raise ConfigError(f"zotero.{name} must be positive")
+        if name == "sync_interval":
+            return replace(current, sync_interval=td)
+        return replace(current, propose_interval=td)
+    if name == "batch_size":
+        try:
+            size = int(raw)
+        except ValueError as exc:
+            raise ConfigError(f"zotero.batch_size must be an integer, got {raw!r}") from exc
+        if not 1 <= size <= ZOTERO_BATCH_SIZE_MAX:
+            raise ConfigError(f"zotero.batch_size must be 1 to {ZOTERO_BATCH_SIZE_MAX}")
+        return replace(current, batch_size=size)
+    if name == "tag_creation":
+        if raw not in TAG_CREATION_MODES:
+            raise ConfigError(f"zotero.tag_creation must be one of {', '.join(TAG_CREATION_MODES)}")
+        return replace(current, tag_creation=cast(Literal["generous", "conservative"], raw))
+    raise ConfigError(f"unknown key 'zotero.{name}'")
+
+
 def _apply(cfg: Config, key: str, raw: str) -> Config:
     if key == "server.port":
         try:
@@ -272,6 +337,8 @@ def _apply(cfg: Config, key: str, raw: str) -> Config:
                 f"got {raw!r}"
             )
         return replace(cfg, rss_retention=td)
+    if key.startswith("zotero."):
+        return replace(cfg, zotero=_apply_zotero(cfg.zotero, key.removeprefix("zotero."), raw))
     if key.startswith("folders."):
         kind = key.removeprefix("folders.")
         if not _FOLDER_KIND.match(kind):
@@ -279,7 +346,8 @@ def _apply(cfg: Config, key: str, raw: str) -> Config:
         return replace(cfg, folders={**cfg.folders, kind: _validate_folder(raw)})
     raise ConfigError(
         f"unknown key {key!r} (known: server.port, server.remote_host, kb.path, kbsync.interval, "
-        "kbsync.quiet, folders.<kind>, rss.retention)"
+        "kbsync.quiet, folders.<kind>, rss.retention, zotero.base_url, zotero.sync_interval, "
+        "zotero.propose_interval, zotero.batch_size, zotero.tag_creation)"
     )
 
 

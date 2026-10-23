@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import type { JesiniaClient } from "@jesinia/client";
+import type { JesiniaClient, components } from "@jesinia/client";
 import {
   Banner,
   BannerRegion,
@@ -17,6 +17,8 @@ import { APPS, RUNNER_NAMES, type AppInfo } from "./apps";
 import { ClientProvider, useClient } from "./context";
 import { useServerStatus, type ServerStatus } from "./status";
 import { applyTheme, cycleTheme, readTheme } from "./theme";
+
+type SearchHit = components["schemas"]["HitOut"];
 
 export type ShellApp = { id: string; name: string; glyph?: string };
 
@@ -107,15 +109,45 @@ function Shell({ app, children, controls, ownSearch, appSearch, commands = [] }:
     [app.id],
   ); // prettier-ignore
 
+  // Two requests, so a flood of KB hits can never crowd out papers (or the reverse); each
+  // fails on its own, because a Zotero that is closed must not cost the user their notes.
+  const searchSource = async (source: "kb" | "zotero", q: string, signal: AbortSignal): Promise<SearchHit[]> => {
+    try {
+      const r = await client.GET("/api/search", { params: { query: { q, source: [source], limit: 6 } }, signal });
+      return r.data ?? [];
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return [];
+    }
+  };
+
   const kbSearch = async (q: string, signal: AbortSignal): Promise<PaletteItem[]> => {
-    const r = await client.GET("/api/search", { params: { query: { q, source: ["kb"], limit: 12 } }, signal });
-    return (r.data ?? []).map((h) => ({
-      id: `kb-${h.key}`,
-      label: h.title,
-      group: "kb" as const,
-      ...(h.path ? { detail: h.path } : {}),
-      onRun: ({ newWindow }: { newWindow: boolean }) => go(`/notes/page/${encodeURIComponent(h.key)}`, newWindow),
-    }));
+    const [kbHits, paperHits] = await Promise.all([searchSource("kb", q, signal), searchSource("zotero", q, signal)]);
+    const items: PaletteItem[] = [];
+    for (const h of [...kbHits, ...paperHits]) {
+      if (h.source === "zotero") {
+        // Only a zotero:// url may be followed; anything else is ignored.
+        const url = h.url;
+        if (typeof url !== "string" || !url.startsWith("zotero://")) continue;
+        items.push({
+          id: `zotero-${h.key}`,
+          label: h.title,
+          group: "papers",
+          onRun: () => {
+            window.location.href = url;
+          },
+        });
+        continue;
+      }
+      items.push({
+        id: `kb-${h.key}`,
+        label: h.title,
+        group: "kb",
+        ...(h.path ? { detail: h.path } : {}),
+        onRun: ({ newWindow }) => go(`/notes/page/${encodeURIComponent(h.key)}`, newWindow),
+      });
+    }
+    return items;
   };
 
   // KB results open in Notes; until Notes ships there is nowhere to send them.
