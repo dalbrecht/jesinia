@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Keeps a release PR open that bumps the version and CHANGELOG.md from the Conventional
+# Commits on main; merging it tags vX.Y.Z and publishes a GitHub release (ADR 0011).
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Release PR and release
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # release-please bumps server/pyproject.toml but cannot address the jesinia entry in
+      # uv.lock (its TOML filter never matches), so refresh the lock on the release branch.
+      - name: Checkout the release branch
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+
+      - name: Set up uv
+        if: steps.release.outputs.prs_created == 'true'
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.13.1"
+
+      - name: Refresh uv.lock
+        if: steps.release.outputs.prs_created == 'true'
+        run: make lock
+
+      - name: Commit the refreshed lock
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          git diff --quiet -- server/uv.lock && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(release): refresh uv.lock" -- server/uv.lock
+          git push

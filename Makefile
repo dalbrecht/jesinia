@@ -8,7 +8,7 @@ PNPM := cd web && pnpm  # run inside web/ so Corepack reads its packageManager p
 .DEFAULT_GOAL := help
 .PHONY: help install build test test-py test-js test-e2e lint fmt fmt-check coverage-check \
         typecheck spdx imports audit audit-py audit-js hooks ci-py ci-js ci lint-standards sync-standards doctor \
-        gen-client e2e-browsers e2e-server docs icons
+        gen-client e2e-browsers e2e-server docs icons lock
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -16,6 +16,9 @@ help: ## Show available targets
 install: ## Install Python and JS dependencies
 	$(UV) sync --frozen
 	$(PNPM) install --frozen-lockfile
+
+lock: ## Refresh server/uv.lock (the release workflow runs this after a version bump)
+	$(UV) lock
 
 build: ## Build web apps into the server's static directory
 	$(PNPM) run build
