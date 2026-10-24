@@ -10,7 +10,7 @@ import errno
 import os
 import sqlite3
 import subprocess
-import time
+import threading
 from collections.abc import Callable, Iterator
 from importlib.resources import files
 from pathlib import Path
@@ -588,31 +588,29 @@ async def test_unreadable_local_files_and_bad_repo_names_are_typed(
         await loader.load(REPO, BASE, None, [])
 
 
-async def test_loading_large_standards_never_blocks_the_event_loop(standards_dir: Path) -> None:
+async def test_loading_large_standards_never_blocks_the_event_loop(
+    standards_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     body = "".join(f"# h{i}\n{'w' * 80}\n" for i in range(MAX_SECTIONS))
     mirror = FakeMirror({(BASE, REPO_REVIEW_FILE): body.encode()})
     loader = StandardsLoader(mirror, lambda: standards_dir)
-    gaps: list[float] = []
-    done = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    real_open = os.open
+    answers: list[bool] = []
 
-    async def ticker() -> None:
-        last = time.perf_counter()
-        while not done.is_set():
-            await asyncio.sleep(0.005)
-            now = time.perf_counter()
-            gaps.append(now - last)
-            last = now
+    # A handshake, not a stopwatch: the load takes milliseconds, so gap timings can't tell
+    # blocking from a slow CI runner. Each file read asks the loop to answer; a loader running
+    # on the loop can't let it answer until the read returns, so the wait times out.
+    def open_once_the_loop_answers(path: object, flags: int, *args: int) -> int:
+        answered = threading.Event()
+        loop.call_soon_threadsafe(answered.set)
+        answers.append(answered.wait(timeout=2))
+        return real_open(path, flags, *args)  # type: ignore[arg-type]
 
-    tick = asyncio.create_task(ticker())
-    started = time.perf_counter()
+    monkeypatch.setattr(os, "open", open_once_the_loop_answers)
     loaded = await loader.load(REPO, BASE, None, [])
-    total = time.perf_counter() - started
-    done.set()
-    await tick
     assert len(loaded.sections) > MAX_SECTIONS
-    # Blocking would show as one gap as long as the whole load; a loaded runner only
-    # stretches every gap a little. Relative, with a floor for very fast loads.
-    assert max(gaps) < max(0.25, 0.6 * total)
+    assert answers and all(answers)
 
 
 @pytest.fixture
