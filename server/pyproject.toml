@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 [project]
 name = "jesinia"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local knowledge base server and app suite."
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
