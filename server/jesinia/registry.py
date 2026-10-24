@@ -7,6 +7,7 @@ from jesinia.apps.issues.module import ISSUES_DB, IssuesModule
 from jesinia.apps.notes.module import NOTES_DB, NotesModule
 from jesinia.apps.review.module import REVIEW_DB, ReviewModule
 from jesinia.apps.rss.module import RSS_DB, RssModule
+from jesinia.apps.zotero.module import ZOTERO_MIRROR_DB, ZoteroModule
 from jesinia.core.db import ModuleDb
 from jesinia.core.module import Module
 from jesinia.services.agents.module import SESSIONS_DB, AgentsModule
@@ -19,8 +20,8 @@ from jesinia.services.search.module import SEARCH_DB, SearchModule
 
 def modules() -> list[Module]:
     """Fresh module instances, in start order: kb first (search, kbsync and notes depend
-    on it); then notes (it needs kb, search and agents), rss (it needs fetch), issues (it
-    needs kb, agents and github) and review (it needs github)."""
+    on it); then notes (it needs kb, search and agents), rss (it needs fetch), zotero (it
+    needs search), issues (it needs kb, agents and github) and review (it needs github)."""
     return [
         KbModule(),
         SearchModule(),
@@ -30,6 +31,7 @@ def modules() -> list[Module]:
         FetchModule(),
         NotesModule(),
         RssModule(),
+        ZoteroModule(),
         IssuesModule(),
         ReviewModule(),
     ]
@@ -43,6 +45,7 @@ DATABASES: tuple[ModuleDb, ...] = (
     FETCH_DB,
     NOTES_DB,
     RSS_DB,
+    ZOTERO_MIRROR_DB,
     ISSUES_DB,
     REVIEW_DB,
 )

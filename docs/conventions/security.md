@@ -18,7 +18,7 @@ The KB, the user's agent logins and git credentials, and the user's machine.
 | SSRF through `fetch` | http(s) only; every hop and every TCP connect must resolve to public addresses; size and decompression caps; per-host pacing |
 | Remote HTML | Sanitized against an allowlist (`nh3`) before rendering |
 | A NetNewsWire device, or a stolen reader token | The Reader API (`/api/greader`, ADR 0012) has its own password and tokens, stored as SHA-256 only, which reach nothing but the Reader API; writes also need the derived write token. A new reader password revokes every token issued under the old one |
-| Leaked secrets | Jesinia stores no credentials: agents use their own logins, GitHub uses `gh` or the Keychain, git uses the user's helper. Git errors are redacted. TruffleHog runs in CI |
+| Leaked secrets | Jesinia stores one credential: the Zotero local API key, in the macOS Keychain, written via stdin and never logged ([ADR 0013](../adr/0013-store-zotero-local-api-key-in-keychain.md)). Otherwise agents use their own logins, GitHub uses `gh` or the Keychain, git uses the user's helper. Git errors are redacted. TruffleHog runs in CI |
 
 ## Accepted risks
 

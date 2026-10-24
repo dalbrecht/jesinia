@@ -7,7 +7,7 @@ export type PaletteItem = {
   id: string;
   label: string;
   detail?: string;
-  group: "app" | "kb" | "command";
+  group: "app" | "kb" | "papers" | "command";
   icon?: ReactNode;
   onRun: (opts: { newWindow: boolean }) => void;
 };
@@ -15,7 +15,7 @@ type Search = (q: string, signal: AbortSignal) => Promise<PaletteItem[]>;
 
 export type CommandPaletteProps = {
   appSearch?: Search;
-  /** The "Knowledge base" group (the search service); supplied by the app shell. */
+  /** The "Knowledge base" and "Papers" groups (the search service); supplied by the app shell. */
   kbSearch?: Search;
   commands?: PaletteItem[];
 };
@@ -23,6 +23,7 @@ export type CommandPaletteProps = {
 const GROUPS: { id: PaletteItem["group"]; label: string }[] = [
   { id: "app", label: "In this app" },
   { id: "kb", label: "Knowledge base" },
+  { id: "papers", label: "Papers" },
   { id: "command", label: "Commands" },
 ];
 const PER_GROUP = 6;
@@ -85,7 +86,12 @@ export function CommandPalette({ appSearch, kbSearch, commands = [] }: CommandPa
   const groups = useMemo(() => {
     const needle = q.toLowerCase();
     const cmds = needle ? commands.filter((c) => c.label.toLowerCase().includes(needle)) : commands;
-    const all = { app: appItems, kb: kbItems, command: cmds };
+    const all = {
+      app: appItems,
+      kb: kbItems.filter((item) => item.group === "kb"),
+      papers: kbItems.filter((item) => item.group === "papers"),
+      command: cmds,
+    };
     return GROUPS.map((g) => {
       const items = all[g.id];
       const showAll = expanded.has(g.id) || items.length <= PER_GROUP;

@@ -39,6 +39,17 @@ export function httpOnly(url: string, base = ""): string {
   return resolveHttpUrl(url, base) ?? "";
 }
 
+const ZOTERO_ITEM_PATH = /^zotero:\/\/(?:select|open-pdf)\/library\/items\/[A-Z0-9]{8}$/;
+const ZOTERO_QUERY = /^[\w=&.-]*$/;
+
+/** `raw` when it is exactly a Zotero item link (select or open-pdf, optional query), else null. */
+export function safeZoteroUrl(raw: string): string | null {
+  const queryAt = raw.indexOf("?");
+  const path = queryAt === -1 ? raw : raw.slice(0, queryAt);
+  const query = queryAt === -1 ? "" : raw.slice(queryAt + 1);
+  return ZOTERO_ITEM_PATH.test(path) && ZOTERO_QUERY.test(query) ? raw : null;
+}
+
 /** A KB page's local image, as the server serves it: `/api/kb/assets/<page-id>/<file>`. */
 const KB_ASSET =
   /^\/api\/kb\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[A-Za-z0-9][A-Za-z0-9_-]*(?:$|\.[A-Za-z0-9]+$)/;
@@ -172,6 +183,25 @@ function withPageLinks(base: Components, Other: (props: LinkProps) => ReactNode,
   };
 }
 
+/**
+ * `components` with Zotero item links as plain anchors: no new tab (it would break the protocol
+ * handoff to the desktop app) and no host suffix; `Other` renders every other link.
+ */
+function withZoteroLinks(base: Components): Components {
+  const Other = base.a as (props: LinkProps) => ReactNode;
+  return {
+    ...base,
+    a: ({ href, children }) =>
+      href !== undefined && safeZoteroUrl(href) !== null ? (
+        <a href={href} rel="noopener noreferrer">
+          {children}
+        </a>
+      ) : (
+        Other({ href, children })
+      ),
+  };
+}
+
 export type SafeMarkdownProps = {
   markdown: string;
   /** A post's URL: relative links and images resolve against it. */
@@ -195,12 +225,17 @@ export type SafeMarkdownProps = {
 export function SafeMarkdown({ markdown, base = "", images = false, transform, pageLinks }: SafeMarkdownProps) {
   const components = useMemo(() => {
     const chosen = images === "local" ? LOCAL : images ? ARTICLE : NO_LOADS;
-    return pageLinks ? withPageLinks(chosen, images ? NewTabLink : HostLink, pageLinks) : chosen;
+    const withPages = pageLinks ? withPageLinks(chosen, images ? NewTabLink : HostLink, pageLinks) : chosen;
+    return withZoteroLinks(withPages);
   }, [images, pageLinks]);
   const plugins = useMemo(() => (transform ? [() => transform] : []), [transform]);
   const urlTransform = (url: string, key: string) => {
     if (images === "local" && key === "src" && isKbAssetUrl(url)) return url;
     if (pageLinks && key === "href" && PAGE_LINK.test(url)) return url;
+    if (key === "href") {
+      const zotero = safeZoteroUrl(url);
+      if (zotero !== null) return zotero;
+    }
     return httpOnly(url, base);
   };
   return (
