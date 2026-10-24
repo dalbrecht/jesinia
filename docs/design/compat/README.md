@@ -21,6 +21,11 @@ the Pigeonpile Wiki and record the results in `docs/adr/0007-pigeonpile-compat-r
 | f | Was `Plain File.md` adopted? What front-matter was written? | file |
 | g | Did any file get renamed or moved? | `ls -R` |
 | h | In `Tag grammar.md`, are `#SQLite` and `#sqlite` one tag? Are `#wal-mode`, `#2026` and `#ünïcode` recognized whole? | Wiki tag facets |
+| i | In `Task lines.md`, do the task lines render as checkboxes (`-`, `*` and `+` markers, `[x]` and `[X]`, nested ones included), and is the code-block line plain text? | Wiki view |
+| j | When you toggle a checkbox in the Wiki, does only `[ ]` ↔ `[x]` change, with the `@key:`/`key:` tokens and the rest of the file byte-for-byte? Is `[X]` kept as written on re-save? | file diff |
+| k | Are `*` and `+` markers, indentation and spacing kept on re-save (not rewritten to `-`)? | file diff |
+| l | Is `#jesinia` on a task line recognized as a tag? Is no token (`@status:next`, `@context:computer`) shown as a link, mention or tag? | Wiki view + tag facets |
+| m | Copy the task lines from `Task lines.md` into a scratch Dopo sync folder's `tasks.v2.md` and open it in Dopo Tasks. Which lines does it list as tasks, with which state and dates? After you edit one item in Dopo, are the proposed tokens (`@priority:`, `@every:`, `completed:`…) still on the other lines? | Dopo Tasks + file diff |
 
 ## Decisions the results drive
 
@@ -28,3 +33,7 @@ the Pigeonpile Wiki and record the results in `docs/adr/0007-pigeonpile-compat-r
 - (c) shows comments as text → pick a different provenance marker before the RSS spec.
 - (h) differs → narrow Jesinia's tag grammar (`docs/conventions/kb-format.md#tags`) to what
   the Wiki accepts, with a follow-up issue if the change is not trivial.
+- (i)–(l) pass → ADR 0013 can be accepted as far as the Wiki goes; a failure changes the
+  KB rules in ADR 0013 before any parser ships. (m) checks the dialect spec
+  (c65llc/amicus-platform#3264) against the shipped Dopo build: core tokens read as §2–§3
+  say, and proposed tokens survive as extras until the codec learns them.
